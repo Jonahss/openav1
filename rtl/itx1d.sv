@@ -11,9 +11,7 @@
 // Start latches the input vector and the program; done pulses with the result in out_vec.
 // Cycle count = ROM rows for the program (+1): DCT4 5, DCT8 7, DCT16 14, DCT32 29, DCT64 65,
 // ADST8 9, ADST16 17, ADST4/identity/WHT 3 — at NSLOTS=4. Widen NSLOTS to trade area for speed.
-module itx1d
-    import itx_ucode_pkg::*;
-#(
+module itx1d #(
     parameter int TW = 20                   // element width (bits): BitDepth + 10 covers every intermediate (20 for 8/10-bit, 22 for 12-bit)
 ) (
     input  logic                 clk,
@@ -28,7 +26,7 @@ module itx1d
     output logic                 done,      // one-cycle pulse; out_vec valid from this cycle on
     output logic [64*TW-1:0]     out_vec
 );
-    localparam int NS = ITX_NSLOTS;
+    localparam int NS = itx_ucode_pkg::ITX_NSLOTS;
 
     // ------------------------------------------------------------------ state
     logic signed [TW-1:0] T [64];
@@ -37,7 +35,7 @@ module itx1d
     logic [4:0]           l_r;
     logic [1:0]           l_wht;
 
-    logic [ITX_ROW_W-1:0] row;
+    logic [itx_ucode_pkg::ITX_ROW_W-1:0] row;
     logic [7:0]           prog_addr;
     itx_ucode_rom  u_rom   (.addr(pc), .row(row));
     itx_prog_start u_start (.pid(prog), .addr(prog_addr));
