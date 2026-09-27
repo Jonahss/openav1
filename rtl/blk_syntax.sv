@@ -101,7 +101,7 @@ module blk_syntax
     logic [2:0]  seg;
     logic [3:0]  ymode, uvmode;
     logic signed [2:0] ang_y, ang_uv;
-    logic signed [4:0] cfl_u, cfl_v;
+    logic signed [5:0] cfl_u, cfl_v;
     logic        use_fi;
     logic [2:0]  fi_mode;
     logic [4:0]  txsz;
@@ -301,7 +301,7 @@ module blk_syntax
                     br <= r; bc <= c; bs <= bsize;
                     bw4 <= num4x4w(bsize); bh4 <= num4x4h(bsize); bwp <= blk_w(bsize); bhp <= blk_h(bsize);
                     skip <= 1'b0; seg <= 3'd0; lossless <= hdr.lossless[0];
-                    ymode <= DC_PRED; uvmode <= DC_PRED; ang_y <= 3'sd0; ang_uv <= 3'sd0; cfl_u <= 5'sd0; cfl_v <= 5'sd0;
+                    ymode <= DC_PRED; uvmode <= DC_PRED; ang_y <= 3'sd0; ang_uv <= 3'sd0; cfl_u <= 6'sd0; cfl_v <= 6'sd0;
                     use_fi <= 1'b0; fi_mode <= 3'd0; cdef_valid <= 1'b0; cdef_units <= 4'd0;
                     nb_req <= 1'b1;
                     st <= S_NB;
@@ -450,23 +450,23 @@ module blk_syntax
                     st <= S_CFLU;
                 end
                 S_CFLU: begin
-                    if (sign_u == 2'd0) begin cfl_u <= 5'sd0; st <= S_CFLV; end
+                    if (sign_u == 2'd0) begin cfl_u <= 6'sd0; st <= S_CFLV; end
                     else st <= S_CFLU_GO;
                 end
                 S_CFLU_GO: begin st <= S_CFLU_W;
                 end
                 S_CFLU_W: if (sq_done) begin
-                    cfl_u <= (sign_u == 2'd1) ? -5'(5'd1 + 5'(sq_sym)) : 5'(5'd1 + 5'(sq_sym));   // CFL_SIGN_NEG = 1
+                    cfl_u <= (sign_u == 2'd1) ? -6'(6'd1 + 6'(sq_sym)) : 6'(6'd1 + 6'(sq_sym));   // CFL_SIGN_NEG = 1
                     st <= S_CFLV;
                 end
                 S_CFLV: begin
-                    if (sign_v == 2'd0) begin cfl_v <= 5'sd0; st <= S_ANGUV; end
+                    if (sign_v == 2'd0) begin cfl_v <= 6'sd0; st <= S_ANGUV; end
                     else st <= S_CFLV_GO;
                 end
                 S_CFLV_GO: begin st <= S_CFLV_W;
                 end
                 S_CFLV_W: if (sq_done) begin
-                    cfl_v <= (sign_v == 2'd1) ? -5'(5'd1 + 5'(sq_sym)) : 5'(5'd1 + 5'(sq_sym));
+                    cfl_v <= (sign_v == 2'd1) ? -6'(6'd1 + 6'(sq_sym)) : 6'(6'd1 + 6'(sq_sym));
                     st <= S_ANGUV;
                 end
                 S_ANGUV: begin

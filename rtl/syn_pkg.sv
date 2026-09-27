@@ -33,8 +33,22 @@ package syn_pkg;
         logic [1:0]  delta_lf_res;
         logic        delta_lf_multi;
         logic        disable_cdf_update;
-        logic        lr_any;                   // any FrameRestorationType != NONE (read_lr: not yet supported)
+        logic [5:0]  lr_type;                  // FrameRestorationType[p] at [2p+1:2p] (0 NONE, 1 WIENER, 2 SGRPROJ, 3 SWITCHABLE)
+        logic [5:0]  lr_size;                  // log2(LoopRestorationSize[p]) - 6 at [2p+1:2p]
+        logic [12:0] frame_height;
+        logic [12:0] upscaled_width;
     } hdr_t;
+
+    // Per loop-restoration-unit record (read_lr_unit).
+    typedef struct packed {
+        logic [1:0]  plane;
+        logic [7:0]  unit_row;
+        logic [7:0]  unit_col;
+        logic [1:0]  lr_type;                  // RESTORE_NONE / WIENER / SGRPROJ
+        logic [41:0] wiener;                   // [pass][tap] signed 7 bits: pass1 tap2 .. pass0 tap0 (LSB)
+        logic [3:0]  sgr_set;
+        logic [15:0] xqd;                      // 2 x signed 8 bits, xqd[1] in the upper byte
+    } lr_rec_t;
 
     // Per-block record emitted by the syntax decoder.
     typedef struct packed {
@@ -49,8 +63,8 @@ package syn_pkg;
         logic [3:0]  uvmode;
         logic signed [2:0] angle_y;
         logic signed [2:0] angle_uv;
-        logic signed [4:0] cfl_u;
-        logic signed [4:0] cfl_v;
+        logic signed [5:0] cfl_u;
+        logic signed [5:0] cfl_v;
         logic        use_fi;
         logic [2:0]  fi_mode;
         logic [4:0]  txsz;

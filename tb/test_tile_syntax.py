@@ -32,12 +32,13 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
     ("last_active_segid", 3), ("seg_skip_en", 8), ("lossless", 8), ("seg_qidx", 64), ("base_q_idx", 8), ("tx_mode", 2),
     ("reduced_tx_set", 1), ("allow_sct", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
     ("coded_lossless", 1), ("delta_q_present", 1), ("delta_q_res", 2), ("delta_lf_present", 1), ("delta_lf_res", 2),
-    ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_any", 1)]
+    ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", 13), ("upscaled_width", 13)]
 BLK_FIELDS = [
     ("r", 11), ("c", 11), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
-    ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 5), ("cfl_v", 5), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
+    ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
     ("delta_lf", 28), ("cdef_valid", 1), ("cdef_idx", 3), ("cdef_units", 4)]
 TX_FIELDS = [("plane", 2), ("x", 13), ("y", 13), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1)]
+LR_FIELDS = [("plane", 2), ("unit_row", 8), ("unit_col", 8), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
 
 def pack(fields, vals):
@@ -68,6 +69,7 @@ class RecDecoder(tm.TileDecoder):
     def __init__(self, hdr, data):
         super().__init__(hdr, data, None)
         self.tx_recs = []
+        self.lr_recs = []
         self.symlog = []
         self.idmap = {}
         for name in M.INTRA_TABLES:
@@ -104,6 +106,15 @@ class RecDecoder(tm.TileDecoder):
         rec["quant"] = list(self.Quant[:segEob]) if eob > 0 else [0] * segEob
         return eob
 
+    def read_lr_unit(self, plane, unitRow, unitCol):
+        super().read_lr_unit(plane, unitRow, unitCol)
+        key = (plane, unitRow, unitCol)
+        t = self.LrType[key]
+        self.lr_recs.append(dict(plane=plane, unit_row=unitRow, unit_col=unitCol, lr_type=t,
+                                 wiener=self.LrWiener.get(key, [[0, 0, 0], [0, 0, 0]]) if t == tm.RESTORE_WIENER else [[0, 0, 0], [0, 0, 0]],
+                                 sgr_set=self.LrSgrSet.get(key, 0) if t == tm.RESTORE_SGRPROJ else 0,
+                                 xqd=self.LrSgrXqd.get(key, [0, 0]) if t == tm.RESTORE_SGRPROJ else [0, 0]))
+
     def decode_block(self, r, c, subSize):
         super().decode_block(r, c, subSize)
         self.blocks[-1]["qidx"] = self.CurrentQIndex
@@ -126,7 +137,9 @@ def hdr_vals(th, dec):
              cdef_bits=th.cdef_bits, coded_lossless=th.CodedLossless, delta_q_present=th.delta_q_present,
              delta_q_res=th.delta_q_res, delta_lf_present=th.delta_lf_present, delta_lf_res=th.delta_lf_res,
              delta_lf_multi=th.delta_lf_multi, disable_cdf_update=th.disable_cdf_update,
-             lr_any=1 if any(th.FrameRestorationType) else 0)
+             lr_type=sum(th.FrameRestorationType[p] << (2 * p) for p in range(3)),
+             lr_size=sum((th.LoopRestorationSize[p].bit_length() - 1 - 6) << (2 * p) for p in range(3)),
+             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth)
     return v
 
 
@@ -178,7 +191,7 @@ async def feed_bytes(dut, data):
 def gen(seed, w, h, fmt):
     rng = random.Random(seed)
     args = dict(fmt=fmt, bd=rng.choice([8, 10, 12]), w=w, h=h, sb128=rng.random() < 0.3, tiles=rng.random() < 0.3,
-                screen=False, lossless=rng.random() < 0.15, nolr=True, frames=1)
+                screen=False, lossless=rng.random() < 0.15, nolr=bool(os.environ.get("TS_NOLR")), frames=1)
     if fmt == "422":
         args["bd"] = rng.choice([10, 12])
     data, info = g.generate(seed, args)
@@ -200,7 +213,7 @@ async def tile_vs_model(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(tiles=0, blocks=0, txblocks=0, coefs=0)
+    stats = dict(tiles=0, blocks=0, txblocks=0, coefs=0, lrunits=0)
     symlog = []
     debug = bool(os.environ.get("TS_DEBUG"))
     nblog = []
@@ -255,7 +268,7 @@ async def tile_vs_model(dut):
             dec = RecDecoder(th, data)
             dec.decode_tile()
             hv = hdr_vals(th, dec)
-            assert hv["lr_any"] == 0 and hv["allow_sct"] == 0
+            assert hv["allow_sct"] == 0
             dut.hdr.value = pack(HDR_FIELDS, hv)
             # defaults for base_q_idx
             for i, row in enumerate(M.default_rows(th.base_q_idx)):
@@ -282,6 +295,7 @@ async def tile_vs_model(dut):
 async def collect(dut, dec, tag0, stats):
             blk_i = 0
             tx_i = 0
+            lr_i = 0
             cycles = 0
             idle = 0
             while True:
@@ -309,12 +323,24 @@ async def collect(dut, dec, tag0, stats):
                                angle_uv=m["angle"][1], cfl_u=m["cfl"][0], cfl_v=m["cfl"][1], use_fi=m["fi"], fi_mode=m["fim"] if m["fi"] else 0,
                                txsz=m["tx"], qidx=m["qidx"], dlf=m["dlf"])
                     gsigned = dict(got, angle_y=to_signed(got["angle_y"], 3), angle_uv=to_signed(got["angle_uv"], 3),
-                                   cfl_u=to_signed(got["cfl_u"], 5), cfl_v=to_signed(got["cfl_v"], 5),
+                                   cfl_u=to_signed(got["cfl_u"], 6), cfl_v=to_signed(got["cfl_v"], 6),
                                    dlf=[to_signed((got["delta_lf"] >> (7 * i)) & 0x7F, 7) for i in range(4)])
                     bad = {k: (gsigned[k], exp[k]) for k in exp if gsigned[k] != exp[k]}
                     assert not bad, f"{tag0} block {blk_i} at ({m['r']},{m['c']}) size {m['size']}: mismatches (rtl, model) {bad}"
                     blk_i += 1
                     stats["blocks"] += 1
+                if int(dut.lr_done.value):
+                    idle = 0
+                    got = unpack(LR_FIELDS, int(dut.lr_rec.value))
+                    assert lr_i < len(dec.lr_recs), f"{tag0}: RTL produced extra LR unit {got}"
+                    m = dec.lr_recs[lr_i]
+                    gw = [[to_signed((got["wiener"] >> (7 * (3 * p + j))) & 0x7F, 7) for j in range(3)] for p in range(2)]
+                    gx = [to_signed((got["xqd"] >> (8 * i)) & 0xFF, 8) for i in range(2)]
+                    g = dict(plane=got["plane"], unit_row=got["unit_row"], unit_col=got["unit_col"], lr_type=got["lr_type"], wiener=gw, sgr_set=got["sgr_set"], xqd=gx)
+                    bad = {k: (g[k], m[k]) for k in m if g[k] != m[k]}
+                    assert not bad, f"{tag0} LR unit {lr_i}: mismatches (rtl, model) {bad}"
+                    lr_i += 1
+                    stats["lrunits"] += 1
                 if int(dut.tx_done.value):
                     idle = 0
                     got = unpack(TX_FIELDS, int(dut.tx_rec.value))
@@ -348,5 +374,6 @@ async def collect(dut, dec, tag0, stats):
                     break
             assert blk_i == len(dec.blocks), f"{tag0}: RTL emitted {blk_i} blocks, model {len(dec.blocks)}"
             assert tx_i == len(dec.tx_recs), f"{tag0}: RTL emitted {tx_i} tx blocks, model {len(dec.tx_recs)}"
+            assert lr_i == len(dec.lr_recs), f"{tag0}: RTL emitted {lr_i} LR units, model {len(dec.lr_recs)}"
             stats["tiles"] += 1
-            dut._log.info(f"{tag0}: OK {len(dec.blocks)} blocks, {len(dec.tx_recs)} tx blocks, {cycles} cycles")
+            dut._log.info(f"{tag0}: OK {len(dec.blocks)} blocks, {len(dec.tx_recs)} tx blocks, {len(dec.lr_recs)} LR units, {cycles} cycles")

@@ -34,6 +34,8 @@ module tile_syntax
     output logic              tx_done,
     output tx_rec_t           tx_rec,
     input  logic              tx_ack,
+    output logic              lr_done,
+    output lr_rec_t           lr_rec,
     input  logic [9:0]        q_addr,
     output logic signed [20:0] q_data
 );
@@ -158,7 +160,7 @@ module tile_syntax
     node_t top;
     assign top = stack[spi];
 
-    typedef enum logic [4:0] {T_IDLE, T_INIT, T_SB, T_SB_ROW_END, T_PUSH_ROOT, T_NODE, T_NB_W, T_PART_W, T_PEEK_W, T_BOOL_W, T_CHILD, T_BLK_W, T_DONE} t_t;
+    typedef enum logic [4:0] {T_IDLE, T_INIT, T_SB, T_LR_W, T_SB_ROW_END, T_PUSH_ROOT, T_NODE, T_NB_W, T_PART_W, T_PEEK_W, T_BOOL_W, T_CHILD, T_BLK_W, T_DONE} t_t;
     t_t st;
     logic [10:0] sb_r, sb_c;
     logic [5:0]  sb4;                          // 16 or 32
@@ -201,13 +203,19 @@ module tile_syntax
     end
     logic want_horz;                           // which bool we are decoding (1: split_or_horz, 0: split_or_vert)
 
-    // control sequencer mux: blk_syntax when a block is active, else the partition FSM
+    // loop-restoration unit syntax at superblock start
+    logic lr_start, lr_busy, lr_fin, lr_active;
+    logic lq_go; logic [CDF_AW-1:0] lq_addr; logic [3:0] lq_n; logic [1:0] lq_kind;
+    lr_syntax u_lr (.clk, .rst, .hdr, .tile_start, .start(lr_start), .r(sb_r), .c(sb_c), .sb128(hdr.sb128), .busy(lr_busy), .done(lr_fin),
+                    .lr_done, .lr_rec, .sq_go(lq_go), .sq_addr(lq_addr), .sq_n(lq_n), .sq_kind(lq_kind), .sq_done(k_done), .sq_sym(k_sym));
+
+    // control sequencer mux: blk_syntax when a block is active, lr_syntax at superblock start, else the partition FSM
     logic pq_go; logic [CDF_AW-1:0] pq_addr; logic [3:0] pq_n; logic [1:0] pq_kind;
     always_comb begin
-        k_go = blk_active ? bq_go : pq_go;
-        k_addr = blk_active ? bq_addr : pq_addr;
-        k_n = blk_active ? bq_n : pq_n;
-        k_kind = blk_active ? bq_kind : pq_kind;
+        k_go = blk_active ? bq_go : lr_active ? lq_go : pq_go;
+        k_addr = blk_active ? bq_addr : lr_active ? lq_addr : pq_addr;
+        k_n = blk_active ? bq_n : lr_active ? lq_n : pq_n;
+        k_kind = blk_active ? bq_kind : lr_active ? lq_kind : pq_kind;
         k_f = want_horz ? psum_h : psum_v;
     end
     // partition requests are issued from the FSM via registered strobes
@@ -282,14 +290,14 @@ module tile_syntax
     end
 
     assign tile_busy = (st != T_IDLE);
-    assign unsupported = b_unsup || hdr.lr_any;
+    assign unsupported = b_unsup;
     assign p_r = top.r; assign p_c = top.c; assign p_bs = top.bs;
 
     always_ff @(posedge clk) begin
         tile_done <= 1'b0; msac_init <= 1'b0; cdf_init <= 1'b0; clear_above <= 1'b0; clear_left <= 1'b0; sbrow_end <= 1'b0;
-        sb_start <= 1'b0; nb_req_p <= 1'b0; p_go_sym <= 1'b0; p_go_peek <= 1'b0; p_go_bool <= 1'b0; b_start <= 1'b0;
+        sb_start <= 1'b0; nb_req_p <= 1'b0; p_go_sym <= 1'b0; p_go_peek <= 1'b0; p_go_bool <= 1'b0; b_start <= 1'b0; lr_start <= 1'b0;
         if (rst) begin
-            st <= T_IDLE; sp <= 4'd0; blk_active <= 1'b0;
+            st <= T_IDLE; sp <= 4'd0; blk_active <= 1'b0; lr_active <= 1'b0;
         end else case (st)
             T_IDLE: if (tile_start) begin
                 cdf_init <= 1'b1; msac_init <= 1'b1; clear_above <= 1'b1; clear_left <= 1'b1;
@@ -298,12 +306,14 @@ module tile_syntax
             end
             T_INIT: if (!cdf_busy && !cdf_init) st <= T_SB;
             T_SB: begin
-                // superblock start: ReadDeltas, cdef flags (blk_syntax), (read_lr unsupported)
+                // superblock start: ReadDeltas, cdef flags (blk_syntax), read_lr, then decode_partition
                 sb_start <= 1'b1;
                 sp <= 4'd1;
                 stack[0].r <= sb_r; stack[0].c <= sb_c; stack[0].bs <= sb_size_bsize(hdr.sb128); stack[0].child <= 3'd0;
-                st <= T_NODE;
+                lr_start <= 1'b1; lr_active <= 1'b1;
+                st <= T_LR_W;
             end
+            T_LR_W: if (lr_fin) begin lr_active <= 1'b0; st <= T_NODE; end
             // ---- decode_partition(top)
             T_NODE: begin
                 if (top.r >= hdr.mi_rows || top.c >= hdr.mi_cols) begin
