@@ -256,7 +256,7 @@ static void trace_cfl(const int plane, const int x4, const int y4, const int w, 
     trace_edge(edge, w, h);
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++)
-            fprintf(dav1d_trace_fp, " %d", (int) ac[y * 16 + x]);
+            fprintf(dav1d_trace_fp, " %d", (int) ac[y * w + x]);   /* ac stride is the block width (cfl_pred: ac += width) */
     trace_pixels_tail(dst, stride, w, h);
 }
 '''

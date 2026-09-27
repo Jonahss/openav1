@@ -23,14 +23,32 @@ FLIP_UD = {tm.FLIPADST_DCT, tm.FLIPADST_ADST, tm.V_FLIPADST, tm.FLIPADST_FLIPADS
 FLIP_LR = {tm.DCT_FLIPADST, tm.ADST_FLIPADST, tm.H_FLIPADST, tm.FLIPADST_FLIPADST}
 
 
-def edges_from_dav1d(vals, w, h):
-    """vals = edge[-2h .. 2w] as dumped. Returns (above[0..w+h-1], left[0..w+h-1], topleft) per spec
-    replication: entries beyond dav1d's 2w / 2h copies repeat the last one (spec 7.11.2.1 Min(limit))."""
-    off = 2 * h  # index of edge[0]
-    tl = vals[off]
+def availability(m):
+    """dav1d's DSP mode index tells which edges were available (ipred_prepare: av1_mode_conv and the
+    Z1/Z3 -> VERT/HOR fallbacks). VERT_PRED(1)/TOP_DC(4)/DC_128(5): no left; HOR_PRED(2)/LEFT_DC(3)/DC_128(5): no top."""
+    have_left = 0 if m in (1, 4, 5) else 1
+    have_above = 0 if m in (2, 3, 5) else 1
+    return have_left, have_above
+
+
+def edges_from_dav1d(vals, w, h, have_left, have_above, bd):
+    """vals = edge[-2h .. 2w] as dumped. Returns (above[0..w+h-1], left[0..w+h-1], topleft).
+
+    dav1d fills 2w top / 2h left samples and leaves unused edges uninitialised, so: entries beyond
+    2w / 2h repeat the last one (spec 7.11.2.1 Min(limit)), and an unavailable edge is rebuilt from
+    the spec's replication rules instead of being read from the buffer."""
+    off = 2 * h
     above = [vals[off + 1 + min(i, 2 * w - 1)] for i in range(w + h)]
     left = [vals[off - 1 - min(i, 2 * h - 1)] for i in range(w + h)]
-    return above, left, tl
+    tl = vals[off]
+    if have_above and have_left:
+        return above, left, tl
+    if have_above:                        # no left: LeftCol = CurrFrame[y-1][x] = AboveRow[0]
+        return above, [above[0]] * (w + h), above[0]
+    if have_left:                         # no top: AboveRow = CurrFrame[y][x-1] = LeftCol[0]
+        return [left[0]] * (w + h), left, left[0]
+    base = 1 << (bd - 1)
+    return [base - 1] * (w + h), [base + 1] * (w + h), base
 
 
 def check_pred(f, bd, verbose):
@@ -40,13 +58,20 @@ def check_pred(f, bd, verbose):
     edge = f[11:11 + n_edge]
     pix = f[11 + n_edge:11 + n_edge + w * h]
     assert len(pix) == w * h, "short P line"
-    above, left, tl = edges_from_dav1d(edge, w, h)
     log2w, log2h = w.bit_length() - 1, h.bit_length() - 1
     p_angle = angle & 511
     is_sm = (angle >> 9) & 1
     edge_en = angle >> 10
-    have_left = 0 if m in (TOP_DC, DC_128) else 1
-    have_above = 0 if m in (LEFT_DC, DC_128) else 1
+    if mode == FILTER_PRED or im.is_directional(mode):
+        # Directional: dav1d falls back to VERT_PRED when angle < 90 without a top edge, and to
+        # HOR_PRED when angle > 180 without a left edge. The buffer then holds the spec's replicated
+        # constant edge already, so read it as-is; the flag only disables the spec's edge filtering.
+        have_left = 0 if (m == 2 and p_angle > 180) else 1
+        have_above = 0 if (m == 1 and p_angle < 90) else 1
+        above, left, tl = edges_from_dav1d(edge, w, h, 1, 1, bd)
+    else:
+        have_left, have_above = availability(m)
+        above, left, tl = edges_from_dav1d(edge, w, h, have_left, have_above, bd)
     kw = dict(have_left=have_left, have_above=have_above, filter_type=is_sm,
               enable_intra_edge_filter=edge_en, above_px=min(w, maxw), left_px=min(h, maxh))
     if mode == FILTER_PRED:
@@ -80,10 +105,9 @@ def check_cfl(f, bd, verbose):
     ac = f[8 + n_edge:8 + n_edge + w * h]
     pix = f[8 + n_edge + w * h:8 + n_edge + 2 * w * h]
     assert len(pix) == w * h, "short Q line"
-    above, left, tl = edges_from_dav1d(edge, w, h)
+    have_left, have_above = availability(m)
+    above, left, tl = edges_from_dav1d(edge, w, h, have_left, have_above, bd)
     log2w, log2h = w.bit_length() - 1, h.bit_length() - 1
-    have_left = 0 if m in (TOP_DC, DC_128) else 1
-    have_above = 0 if m in (LEFT_DC, DC_128) else 1
     dc = im.predict_intra(above, left, tl, im.DC_PRED, log2w, log2h, bd, have_left=have_left, have_above=have_above)
     exp = []
     for i in range(h):
