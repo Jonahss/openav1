@@ -14,6 +14,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tb"))
 import tile_model as tm     # noqa: E402
 import recon_model as rm    # noqa: E402
 import lf_model as lfm      # noqa: E402
+import cdef_model as cdm    # noqa: E402
+import av1_tables as T      # noqa: E402
+
+
+class FrameState:
+    """Per-4x4 arrays of a whole frame, merged from its tile decoders (each only fills its own region)."""
+
+    def __init__(self, hdr, decs):
+        self.h = hdr
+        R, C = hdr.MiRows, hdr.MiCols
+        self.Skips = [[0] * C for _ in range(R)]
+        self.MiSizes = [[0] * C for _ in range(R)]
+        self.YModes = [[0] * C for _ in range(R)]
+        self.SegmentIds = [[0] * C for _ in range(R)]
+        self.DeltaLFs = [[None] * C for _ in range(R)]
+        self.LoopfilterTxSizes = [[row[:] for row in d] for d in decs[0].LoopfilterTxSizes]
+        self.cdef_idx = {}
+        for d in decs:
+            th = d.h
+            for r in range(th.MiRowStart, min(th.MiRowEnd, R)):
+                for c in range(th.MiColStart, min(th.MiColEnd, C)):
+                    self.Skips[r][c] = d.Skips[r][c]
+                    self.MiSizes[r][c] = d.MiSizes[r][c]
+                    self.YModes[r][c] = d.YModes[r][c]
+                    self.SegmentIds[r][c] = d.SegmentIds[r][c]
+                    self.DeltaLFs[r][c] = d.DeltaLFs[r][c]
+            for plane in range(hdr.NumPlanes):
+                subX = hdr.subsampling_x if plane > 0 else 0
+                subY = hdr.subsampling_y if plane > 0 else 0
+                src, dst = d.LoopfilterTxSizes[plane], self.LoopfilterTxSizes[plane]
+                for r in range(th.MiRowStart >> subY, min((th.MiRowEnd + subY) >> subY, len(dst))):
+                    for c in range(th.MiColStart >> subX, min((th.MiColEnd + subX) >> subX, len(dst[0]))):
+                        dst[r][c] = src[r][c]
+            self.cdef_idx.update(d.cdef_idx)
+
+    def get_plane_residual_size(self, subsize, plane):
+        subx = self.h.subsampling_x if plane > 0 else 0
+        suby = self.h.subsampling_y if plane > 0 else 0
+        return T.Subsampled_Size[subsize][subx][suby]
 
 
 def read_ref_frames(path, hdr):
@@ -72,14 +111,18 @@ def main():
     total_bad = 0
     for fi, tl in enumerate(frames):
         frame = {}
-        dec = None
+        decs = []
         for hdr, data in tl:
             dec = rm.FrameRecon(hdr, data, frame)
             dec.decode_tile()
+            decs.append(dec)
         hdr = tl[0][0]
         planes = frame["planes"]
+        state = FrameState(hdr, decs)
         if stage in ("lf", "cdef", "lr"):
-            lfm.LoopFilter(hdr, dec, planes).apply()
+            lfm.LoopFilter(hdr, state, planes).apply()
+        if stage in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+            planes = cdm.Cdef(hdr, state, planes).apply()
         if fi >= len(refs):
             break
         for p, (w, h) in enumerate(sizes):

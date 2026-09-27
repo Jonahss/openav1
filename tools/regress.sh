@@ -21,7 +21,8 @@ for st in "$@"; do
   if [ -z "$tn" ] || [ "${tn% *}" != "${tn#* }" ]; then xr=1; x="$x$tl"; fi
   rc_=$(timeout 3600 python3 tools/xcheck_recon.py "$tr" 2>&1 | tail -1); [ "$rc_" = "OK" ] || { xr=1; x="$x recon:$rc_"; }
   fr_="n/a"
-  if [[ $name == *lf_only* ]]; then fr_=$(timeout 3600 python3 tools/xcheck_frame.py "$tr" refout/$name.yuv --stage lf 2>&1 | tail -1); [ "$fr_" = "OK" ] || { xr=1; x="$x frame:$fr_"; }; fi
+  stage_=""; [[ $name == *lf_only* ]] && stage_=lf; [[ $name == *lf_cdef_* && $name != *lf_cdef_lr* ]] && stage_=cdef
+  if [ -n "$stage_" ]; then fr_=$(timeout 3600 python3 tools/xcheck_frame.py "$tr" refout/$name.yuv --stage $stage_ 2>&1 | tail -1); [ "$fr_" = "OK" ] || { xr=1; x="$x frame:$fr_"; }; fi
   summary=$(grep -E "^(pred|cfl|itx):" <<<"$x" | sed 's/ checked, / chk /; s/ mismatches/ bad/' | paste -sd';'); summary="$summary; tile: $tl; recon: $rc_; frame: $fr_"
   m=$(MSAC_TRACE=$PWD/$tr timeout 3600 python tb/runner.py msac 2>&1)
   ms=$(grep -oE "OK: [0-9]+ symbols" <<<"$m" | head -1); [ -n "$ms" ] || { ms="msac FAIL"; xr=1; }
