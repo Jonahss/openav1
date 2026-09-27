@@ -119,13 +119,19 @@ def make_pick(rng, holder):
             sizes.append(T.Partition_Subsize[tm.PARTITION_SPLIT][b])
         return all(dec.get_plane_residual_size(sz, 1) != tm.BLOCK_INVALID for sz in sizes)
 
+    st = {"glen": 0}
+
     def pick(cdf, N, name):
         if name in ("coeff_base", "coeff_base_eob"):
             return min(N - 1, rng.choice([0, 0, 0, 1, 1, 2, 3]))
         if name == "coeff_br":
             return rng.choice([0, 0, 0, 1, 2, 3]) if rng.random() < 0.9 else rng.randint(0, N - 1)
-        if name == "golomb_length_bit":
-            return 1 if rng.random() < 0.7 else 0
+        if name == "golomb_length_bit":             # bound |coeff| (conformance: transform intermediates must fit)
+            st["glen"] += 1
+            if st["glen"] >= 4 or rng.random() < 0.7:
+                st["glen"] = 0
+                return 1
+            return 0
         if name.startswith("eob_pt"):
             return min(N - 1, rng.choice([0, 1, 2, 3, 4, rng.randint(0, N - 1)]))
         if name == "all_zero":

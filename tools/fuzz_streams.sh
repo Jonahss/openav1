@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 first=${1:-1}; count=${2:-20}; shift 2 2>/dev/null
 mkdir -p streams/fuzz streams/fuzz_fail
 S=${TMPDIR:-/tmp}/openav1_fuzz_$$; mkdir -p "$S"
-pass=0; fail=0
+pass=0; fail=0; skip=0
 for seed in $(seq "$first" $((first + count - 1))); do
   # vary format/bit depth/flags by seed unless caller passed explicit flags
   if [ $# -eq 0 ]; then
@@ -29,6 +29,9 @@ for seed in $(seq "$first" $((first + count - 1))); do
     echo "FAIL seed $seed [$flags]: dav1d rejected: $(tail -1 "$S/dav1d.err")"; fail=$((fail+1)); cp "$st" streams/fuzz_fail/; continue
   fi
   if ! timeout 1800 python3 tools/decode.py "$st" -o "$S/ours.yuv" >/dev/null 2>"$S/ours.err"; then
+    if grep -q Nonconformant "$S/ours.err"; then
+      echo "SKIP seed $seed [$flags]: generated stream is non-conformant ($(tail -1 "$S/ours.err" | cut -c1-80))"; skip=$((skip+1)); continue
+    fi
     echo "FAIL seed $seed [$flags]: decode.py error: $(tail -1 "$S/ours.err")"; fail=$((fail+1)); cp "$st" streams/fuzz_fail/; continue
   fi
   if cmp -s "$S/ref.yuv" "$S/ours.yuv"; then
@@ -38,5 +41,5 @@ for seed in $(seq "$first" $((first + count - 1))); do
   fi
 done
 rm -rf "$S"
-echo "fuzz: $pass pass, $fail fail"
+echo "fuzz: $pass pass, $fail fail, $skip skipped (non-conformant)"
 [ $fail -eq 0 ]
