@@ -340,6 +340,7 @@ class TileDecoder:
             while c < h.MiColEnd:
                 self.ReadDeltas = h.delta_q_present
                 self.clear_cdef(r, c)
+                self.clear_block_decoded_flags(r, c, sbSize4)
                 self.read_lr(r, c, sbSize)
                 self.decode_partition(r, c, sbSize)
                 c += sbSize4
@@ -973,14 +974,38 @@ class TileDecoder:
         startY = baseY + 4 * y
         subX = h.subsampling_x if plane > 0 else 0
         subY = h.subsampling_y if plane > 0 else 0
+        row = (startY << subY) >> 2
+        col = (startX << subX) >> 2
+        sbMask = 31 if h.use_128x128_superblock else 15
+        subBlockMiRow = row & sbMask
+        subBlockMiCol = col & sbMask
+        stepX = T.Tx_Width[txSz] >> 2
+        stepY = T.Tx_Height[txSz] >> 2
         maxX = (h.MiCols * MI_SIZE) >> subX
         maxY = (h.MiRows * MI_SIZE) >> subY
         if startX >= maxX or startY >= maxY:
             return
+        # prediction hook (reconstruction models override; the syntax model itself predicts nothing)
+        self.predict_block(plane, startX, startY, txSz, x, y, subX, subY, subBlockMiRow, subBlockMiCol, stepX, stepY)
         if not self.skip:
             eob = self.coeffs(plane, startX, startY, txSz)
             if eob > 0:
-                self.reconstruct_dequant(plane, startX, startY, txSz, eob)
+                rows = self.reconstruct_dequant(plane, startX, startY, txSz, eob)
+                self.reconstruct_block(plane, startX, startY, txSz, rows)
+        self.after_transform_block(plane, row, col, subX, subY, stepX, stepY, subBlockMiRow, subBlockMiCol)
+
+    # hooks for reconstruction models
+    def clear_block_decoded_flags(self, r, c, sbSize4):
+        pass
+
+    def predict_block(self, plane, startX, startY, txSz, x, y, subX, subY, sbMiRow, sbMiCol, stepX, stepY):
+        pass
+
+    def reconstruct_block(self, plane, startX, startY, txSz, dequant_rows):
+        pass
+
+    def after_transform_block(self, plane, row, col, subX, subY, stepX, stepY, sbMiRow, sbMiCol):
+        pass
 
     # ---- coefficients ---------------------------------------------------------------------------------
     def get_tx_set(self, txSz):
@@ -1297,6 +1322,7 @@ class TileDecoder:
             rows.append(row)
         # dav1d labels lossless blocks WHT_WHT (16); the spec keeps PlaneTxType and uses the Lossless flag
         self.events.append(("C", plane, x >> 2, y >> 2, txSz, 16 if self.Lossless else self.PlaneTxType, eob, rows))
+        return rows
 
     # ---- loop restoration units -----------------------------------------------------------------------
     def read_lr(self, r, c, bSize):

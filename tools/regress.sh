@@ -15,8 +15,11 @@ for st in "$@"; do
   tr=traces/$name.txt
   DAV1D_TRACE=$tr DAV1D_TRACE_MASK=15 prefix-trace/bin/dav1d -q -i "$st" -o /dev/null --muxer null --threads 1 >/dev/null 2>&1 || { echo "FAIL $name: dav1d"; rc=1; continue; }
   x=$(python3 tools/xcheck_trace.py "$tr" $bd 2>&1); xr=$?
-  tl=$(timeout 3600 python3 tools/xcheck_tile.py "$tr" 2>&1 | tail -1); grep -q "tiles bit-exact" <<<"$tl" && [[ $tl != 0/* ]] && [[ $tl == $(grep -oE "^[0-9]+" <<<"$tl")/$(grep -oE "^[0-9]+" <<<"$tl") * ]] || { xr=1; x="$x$tl"; }
-  summary=$(grep -E "^(pred|cfl|itx):" <<<"$x" | sed 's/ checked, / chk /; s/ mismatches/ bad/' | paste -sd';'); summary="$summary; tile: $tl"
+  tl=$(timeout 3600 python3 tools/xcheck_tile.py "$tr" 2>&1 | tail -1)
+  tn=$(sed -nE 's#^([0-9]+)/([0-9]+) tiles bit-exact.*#\1 \2#p' <<<"$tl")
+  if [ -z "$tn" ] || [ "${tn% *}" != "${tn#* }" ]; then xr=1; x="$x$tl"; fi
+  rc_=$(timeout 3600 python3 tools/xcheck_recon.py "$tr" 2>&1 | tail -1); [ "$rc_" = "OK" ] || { xr=1; x="$x recon:$rc_"; }
+  summary=$(grep -E "^(pred|cfl|itx):" <<<"$x" | sed 's/ checked, / chk /; s/ mismatches/ bad/' | paste -sd';'); summary="$summary; tile: $tl; recon: $rc_"
   m=$(MSAC_TRACE=$PWD/$tr timeout 3600 python tb/runner.py msac 2>&1)
   ms=$(grep -oE "OK: [0-9]+ symbols" <<<"$m" | head -1); [ -n "$ms" ] || { ms="msac FAIL"; xr=1; }
   ip=$(IPRED_TRACE=$PWD/$tr IPRED_BD=$bd timeout 3600 python tb/runner.py ipred test_ipred_trace 2>&1)
