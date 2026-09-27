@@ -69,8 +69,10 @@ def check_pred(f, bd, verbose):
         have_left = 0 if (m == 2 and p_angle > 180) else 1
         have_above = 0 if (m == 1 and p_angle < 90) else 1
         above, left, tl = edges_from_dav1d(edge, w, h, 1, 1, bd)
-        if not have_above: tl = above[0]     # spec: AboveRow[-1] = CurrFrame[y][x-1] = the replicated top value
-        if not have_left:  tl = left[0]      # dav1d leaves the corner uninitialised in these fallbacks
+        # In these fallbacks dav1d fills only the w top (or h left) samples; the spec replicates the
+        # whole AboveRow / LeftCol and the corner from that same value (7.11.2.1).
+        if not have_above: above = [above[0]] * (w + h); tl = above[0]
+        if not have_left:  left = [left[0]] * (w + h);   tl = left[0]
     else:
         have_left, have_above = availability(m)
         above, left, tl = edges_from_dav1d(edge, w, h, have_left, have_above, bd)
