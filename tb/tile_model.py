@@ -1295,7 +1295,8 @@ class TileDecoder:
                 dq2 = sign * ((abs(dq) & 0xFFFFFF) // dqDenom)
                 row.append(clip3(-lim, lim - 1, dq2))
             rows.append(row)
-        self.events.append(("C", plane, x >> 2, y >> 2, txSz, self.PlaneTxType, eob, rows))
+        # dav1d labels lossless blocks WHT_WHT (16); the spec keeps PlaneTxType and uses the Lossless flag
+        self.events.append(("C", plane, x >> 2, y >> 2, txSz, 16 if self.Lossless else self.PlaneTxType, eob, rows))
 
     # ---- loop restoration units -----------------------------------------------------------------------
     def read_lr(self, r, c, bSize):
