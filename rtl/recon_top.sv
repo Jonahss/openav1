@@ -41,6 +41,18 @@ module recon_top
     output logic [5:0]  pm_x, pm_y,
     input  logic [2:0]  pm_idx,
     output logic        busy,
+    // per-4x4 state for the in-loop filters (mi_store write ports)
+    output logic        mi_blk_we,
+    output logic [10:0] mi_blk_r, mi_blk_c,
+    output logic [5:0]  mi_blk_bw4, mi_blk_bh4,
+    output mi_lf_t      mi_blk_data,
+    input  logic        mi_blk_busy,
+    output logic        mi_tx_we,
+    output logic [1:0]  mi_tx_plane,
+    output logic [10:0] mi_tx_row, mi_tx_col,
+    output logic [4:0]  mi_tx_w4, mi_tx_h4,
+    output logic [4:0]  mi_tx_sz,
+    input  logic        mi_tx_busy,
     // frame buffer (single port, registered read)
     output logic        fb_re,
     output logic        fb_we,
@@ -135,8 +147,10 @@ module recon_top
         endcase
     end
 
+    assign mi_blk_r = b.r; assign mi_blk_c = b.c; assign mi_blk_bw4 = bw4; assign mi_blk_bh4 = bh4;
+    assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf};
     always_ff @(posedge clk) begin
-        mm_we <= 1'b0;
+        mm_we <= 1'b0; mi_blk_we <= 1'b0;
         if (rst) begin
             bst <= B_IDLE; blk_ready <= 1'b0;
         end else case (bst)
@@ -145,7 +159,7 @@ module recon_top
             end
             // four neighbour-mode reads (issued by the combinational mm_addr; captured in the following state):
             // above Y, left Y, above UV, left UV
-            B_FT0: bst <= B_FT1;
+            B_FT0: if (!mi_blk_busy && !mi_blk_we) begin mi_blk_we <= 1'b1; bst <= B_FT1; end   // per-4x4 LF state write
             B_FT1: begin nb_ay <= mm_rdata[8 * b.c[3:0] +: 8]; bst <= B_FT2; end
             B_FT2: begin nb_ly <= mm_rdata[8 * 4'(b.c - 11'd1) +: 8]; bst <= B_FT3; end
             B_FT3: begin nb_auv <= mm_rdata[8 * a_c_uv[3:0] +: 8]; bst <= B_FT4; end
@@ -302,7 +316,7 @@ module recon_top
         R_EDGE, R_IP_START, R_IP_W,
         R_CFL_L, R_CFL_D, R_CFL_START, R_CFL_W,
         R_RESID, R_DQ_A, R_DQ_B, R_ITX_START, R_ITX_W, R_ADD_A, R_ADD_B,
-        R_FIN
+        R_FIN, R_MIW
     } rst_t;
     rst_t rs;
     logic [6:0]  ci, cj;                                   // generic pixel / coefficient counters (row, col)
@@ -429,11 +443,14 @@ module recon_top
             default: ;
         endcase
     end
-    assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready;
+    assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
+    assign mi_tx_plane = t.plane; assign mi_tx_sz = t.txsz;
+    assign mi_tx_row = 11'(t.y >> 2); assign mi_tx_col = 11'(t.x >> 2);          // plane 4x4 units
+    assign mi_tx_w4 = step_x; assign mi_tx_h4 = step_y;
 
     // ---------------------------------------------------------------- sequential
     always_ff @(posedge clk) begin
-        tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0;
+        tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0; mi_tx_we <= 1'b0;
         if (rst) begin
             rs <= R_IDLE; max_luma_w <= 13'd0; max_luma_h <= 13'd0;
             for (int p = 0; p < 3; p++) for (int yy = 0; yy < 34; yy++) for (int xx = 0; xx < 34; xx++) bdf[p][yy][xx] <= 1'b0;
@@ -542,7 +559,10 @@ module recon_top
                             if (yy < int'(step_y) && xx < int'(step_x))
                                 bdf[t.plane][int'(sb_row_p) + yy + 1][int'(sb_col_p) + xx + 1] <= 1'b1;
                     if (t.plane == 2'd0) begin max_luma_w <= t.x + 13'(tw_px); max_luma_h <= t.y + 13'(th_px); end
-                    tx_ack <= 1'b1; rs <= R_IDLE;
+                    rs <= R_MIW;
+                end
+                R_MIW: if (!mi_tx_busy && !mi_tx_we) begin       // LoopfilterTxSizes over the transform block's area
+                    mi_tx_we <= 1'b1; tx_ack <= 1'b1; rs <= R_IDLE;
                 end
                 default: rs <= R_IDLE;
             endcase

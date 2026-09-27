@@ -51,8 +51,9 @@ separately.
 | Inverse transforms (7.13): DCT 4–64, ADST 4–16, identity, WHT, all 19 sizes | `tb/itx_model.py` | `rtl/itx1d.sv`, `rtl/itx2d.sv` (microcoded butterfly engine) | 5 k dav1d blocks + 1.7 k fuzz |
 | Intra prediction (7.11.2): 13 modes, edge filter/upsampling, filter-intra | `tb/intra_model.py` | `rtl/ipred.sv` | 25 k dav1d prediction blocks |
 | Chroma from luma (7.11.5) | `tb/intra_model.py` | `rtl/cfl.sv` | 264 dav1d blocks + fuzz |
-| Dequantisation, edge preparation, palette prediction, reconstruction, frame buffer | `tb/recon_model.py` | `rtl/recon_top.sv`, `rtl/frame_mem.sv` | whole frames == model (in progress: see git log) |
-| Deblocking loop filter (7.14), CDEF (7.15), loop restoration (7.17) | `tb/lf_model.py`, `tb/cdef_model.py`, `tb/lr_model.py` | not yet | model: output pictures == dav1d on the corpus |
+| Dequantisation, edge preparation, palette prediction, reconstruction, frame buffer | `tb/recon_model.py` | `rtl/recon_top.sv`, `rtl/frame_mem.sv` | whole frames == model: all 21 corpus streams (44 frames, 4.9 M pixels) + 18 generated frames |
+| Deblocking loop filter (7.14) | `tb/lf_model.py` | `rtl/lf_top.sv`, `rtl/mi_store.sv` | 6 real frames, 37 k filtered pixels == model; model == dav1d |
+| CDEF (7.15), loop restoration (7.17) | `tb/cdef_model.py`, `tb/lr_model.py` | not yet | model: output pictures == dav1d on the corpus |
 | Super-resolution, film grain | not yet | not yet | — |
 
 `rtl/dec_top.sv` is the integrated intra tile decoder: tile bytes + parsed headers in, pre-loop-filter

@@ -18,8 +18,13 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "tools"))
 import cdf_map as M                     # noqa: E402
+import lf_model as lfm                  # noqa: E402
 import recon_model as rm                # noqa: E402
+import test_lf_top as TL                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
+import xcheck_frame as xf               # noqa: E402
+
+STAGE = os.environ.get("TS_STAGE", "recon")      # recon | lf : how far the RTL and the model go before comparing
 
 REC_FIELDS = [  # syn_pkg::rec_hdr_t order (MSB first)
     ("enable_intra_edge_filter", 1), ("dq_ydc", 7), ("dq_udc", 7), ("dq_uac", 7), ("dq_vdc", 7), ("dq_vac", 7),
@@ -120,14 +125,54 @@ async def run_tile(dut, th, dec, data, tag, stats, debug):
         dut._log.info(f"{tag}: tile done, {blocks} blocks, {txb} tx blocks, {cycles} cycles")
 
 
+async def finish_frame(dut, hdr, decs, planes, tag, stats):
+    """After all tiles: optionally run the deblocking filter in both the model and the RTL."""
+    if STAGE == "lf":
+        state = xf.FrameState(hdr, decs)
+        lfm.LoopFilter(hdr, state, planes).apply()
+        dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
+        await Timer(1, "ns")
+        dut.lf_start.value = 1
+        await RisingEdge(dut.clk)
+        await Timer(1, "ns")
+        dut.lf_start.value = 0
+        cycles = 0
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            cycles += 1
+            if int(dut.lf_done.value):
+                break
+            assert cycles < 40_000_000, f"{tag}: loop filter did not finish"
+        stats["lf_cycles"] += cycles
+        await Timer(1, "ns")
+
+
+def dump_yuv(path, hdr, get_pixel):
+    """Write the visible picture (FrameWidth x FrameHeight, planar, 8-bit or 16-bit LE) using get_pixel(plane, x, y)."""
+    import struct
+    with open(path, "wb") as fh:
+        for plane in range(hdr.NumPlanes):
+            sx = hdr.subsampling_x if plane else 0
+            sy = hdr.subsampling_y if plane else 0
+            W = (hdr.FrameWidth + sx) >> sx
+            H = (hdr.FrameHeight + sy) >> sy
+            for y in range(H):
+                row = [get_pixel(plane, x, y) for x in range(W)]
+                fh.write(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
+
+
 async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all=()):
     await Timer(1, "ns")
+    dump_dir = os.environ.get("TS_DUMP")
+    rtl_planes = []
     for plane in range(hdr.NumPlanes):
         sx = hdr.subsampling_x if plane else 0
         sy = hdr.subsampling_y if plane else 0
         W = (hdr.MiCols * 4) >> sx
         H = (hdr.MiRows * 4) >> sy
         bad = []
+        got = [[0] * W for _ in range(H)]
         for y in range(H):
             for x in range(W):
                 dut.h_plane.value = plane
@@ -136,9 +181,18 @@ async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all
                 await RisingEdge(dut.clk)
                 await ReadOnly()
                 v = int(dut.h_rdata.value)
+                got[y][x] = v
                 if v != planes[plane][y][x]:
                     bad.append((y, x, v, planes[plane][y][x]))
                 await Timer(1, "ns")
+        rtl_planes.append(got)
+        if dump_dir and plane == hdr.NumPlanes - 1:
+            os.makedirs(dump_dir, exist_ok=True)
+            base = tag.replace(" ", "_").replace("/", "_")
+            dump_yuv(os.path.join(dump_dir, f"{base}.rtl.yuv"), hdr, lambda p, x, y: rtl_planes[p][y][x])
+            dump_yuv(os.path.join(dump_dir, f"{base}.model.yuv"), hdr, lambda p, x, y: planes[p][y][x])
+            with open(os.path.join(dump_dir, f"{base}.txt"), "w") as fh:
+                fh.write(f"{hdr.FrameWidth} {hdr.FrameHeight} {hdr.BitDepth} {hdr.subsampling_x} {hdr.subsampling_y} {hdr.NumPlanes}\n")
         stats["pixels"] += W * H
         if bad:
             # locate the first mismatches in the model's per-block events: prediction value vs final value
@@ -170,13 +224,13 @@ async def dec_vs_model(dut):
     H = int(os.environ.get("TS_H", "96"))
     debug = bool(os.environ.get("TD_DEBUG"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "h_plane", "h_x", "h_y"):
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "lf_start", "h_plane", "h_x", "h_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0)
+    stats = dict(frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, stage=STAGE)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:
         # real streams (aomenc / dav1d-verified corpus): every frame, every tile
@@ -189,17 +243,20 @@ async def dec_vs_model(dut):
                 events = []
                 blocks_all = []
                 hdr0 = None
+                decs = []
                 for ti in tile_idx:
                     th, data = d.tiles[ti]
                     tag = f"{Path(path).name} frame {fi} tile ({th.MiColStart},{th.MiRowStart})"
                     dec = RecFrame(th, data, frame)
                     dec.decode_tile()
+                    decs.append(dec)
                     hdr0 = th
                     events.extend(dec.pred_events)
                     events.extend(dec.recon_events)
                     blocks_all.extend(dec.blocks)
                     await run_tile(dut, th, dec, data, tag, stats, debug)
                     await ClockCycles(dut.clk, 4)
+                await finish_frame(dut, hdr0, decs, frame["planes"], f"{Path(path).name} frame {fi}", stats)
                 await compare_frame(dut, hdr0, frame["planes"], f"{Path(path).name} frame {fi}", stats, events, blocks_all)
                 stats["frames"] += 1
                 dut._log.info(f"{Path(path).name} frame {fi}: identical ({len(tile_idx)} tiles, {hdr0.MiCols * 4}x{hdr0.MiRows * 4} MI area, bd{hdr0.BitDepth})")
@@ -212,10 +269,12 @@ async def dec_vs_model(dut):
         hdr0 = None
         events = []
         blocks_all = []
+        decs = []
         for ti, (th, data) in enumerate(d.tiles):
             tag = f"seed {seed} {fmt} bd{args['bd']} tile {ti} ({th.MiColStart},{th.MiRowStart})"
             dec = RecFrame(th, data, frame)
             dec.decode_tile()
+            decs.append(dec)
             hdr0 = th
             events.extend(dec.pred_events)
             events.extend(dec.recon_events)
@@ -226,6 +285,7 @@ async def dec_vs_model(dut):
             for blk in blocks_all:
                 if blk["pal"] != (0, 0):
                     dut._log.info(f"PAL block r={blk['r']} c={blk['c']} size={blk['size']} model Y {blk['col_y']} U {blk['col_u']} | rtl {rtl_pal.get((blk['r'], blk['c']))}")
+        await finish_frame(dut, hdr0, decs, frame["planes"], f"seed {seed} {fmt} bd{args['bd']}", stats)
         await compare_frame(dut, hdr0, frame["planes"], f"seed {seed} {fmt} bd{args['bd']}", stats, events, blocks_all)
         stats["frames"] += 1
         dut._log.info(f"seed {seed} {fmt} bd{args['bd']} {W}x{H}: frame identical ({len(d.tiles)} tiles)")
