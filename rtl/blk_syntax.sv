@@ -19,6 +19,7 @@ module blk_syntax
     input  logic [10:0] r, c,
     input  logic [4:0]  bsize,
     output logic        busy,
+    output logic        blk_info,             // blk_rec valid: pulsed before the block's transform blocks
     output logic        blk_done,
     output blk_rec_t    blk_rec,
     output logic        unsupported,          // palette / intrabc path hit (sticky)
@@ -323,7 +324,7 @@ module blk_syntax
     // ---------------------------------------------------------------- main FSM
     always_ff @(posedge clk) begin
         blk_done <= 1'b0; nb_req <= 1'b0; ctx_we <= 1'b0; tx_req <= 1'b0; tx_we <= 1'b0; rbc_we <= 1'b0;
-        cf_start_a <= 1'b0; cf_start_b <= 1'b0; pal_clr <= 1'b0; pal_start_mi <= 1'b0; pal_start_tok <= 1'b0;
+        cf_start_a <= 1'b0; cf_start_b <= 1'b0; pal_clr <= 1'b0; pal_start_mi <= 1'b0; pal_start_tok <= 1'b0; blk_info <= 1'b0;
         if (rst) begin
             st <= S_IDLE; unsupported <= 1'b0; tx_done <= 1'b0; read_deltas <= 1'b0; cdef_flags <= '0;
         end else begin
@@ -551,6 +552,16 @@ module blk_syntax
                     st <= S_RBC;
                 end
                 S_RBC: begin
+                    // the block record is complete here (everything but the residual): publish it for the
+                    // reconstruction stage before the transform blocks stream out
+                    blk_rec.r <= br; blk_rec.c <= bc; blk_rec.bsize <= bs; blk_rec.skip <= skip; blk_rec.seg <= seg;
+                    blk_rec.lossless <= lossless; blk_rec.has_chroma <= hc; blk_rec.ymode <= ymode; blk_rec.uvmode <= uvmode;
+                    blk_rec.angle_y <= ang_y; blk_rec.angle_uv <= ang_uv; blk_rec.cfl_u <= cfl_u; blk_rec.cfl_v <= cfl_v;
+                    blk_rec.use_fi <= use_fi; blk_rec.fi_mode <= fi_mode; blk_rec.txsz <= txsz; blk_rec.qidx <= cur_qidx;
+                    blk_rec.delta_lf <= {dlf[3], dlf[2], dlf[1], dlf[0]};
+                    blk_rec.cdef_valid <= cdef_valid; blk_rec.cdef_idx <= cdef_val; blk_rec.cdef_units <= cdef_units;
+                    blk_rec.pal_y <= pal_y; blk_rec.pal_uv <= pal_uv; blk_rec.col_y <= col_y; blk_rec.col_u <= col_u; blk_rec.col_v <= col_v;
+                    blk_info <= 1'b1;
                     if (skip) rbc_we <= 1'b1;
                     // residual init
                     wchunks2 <= (bwp > 8'd64); hchunks2 <= (bhp > 8'd64);
@@ -624,16 +635,7 @@ module blk_syntax
                 end
                 // ---- block end
                 S_END: if (!ctx_wbusy) begin ctx_we <= 1'b1; st <= S_END_W; end
-                S_END_W: begin
-                    blk_rec.r <= br; blk_rec.c <= bc; blk_rec.bsize <= bs; blk_rec.skip <= skip; blk_rec.seg <= seg;
-                    blk_rec.lossless <= lossless; blk_rec.has_chroma <= hc; blk_rec.ymode <= ymode; blk_rec.uvmode <= uvmode;
-                    blk_rec.angle_y <= ang_y; blk_rec.angle_uv <= ang_uv; blk_rec.cfl_u <= cfl_u; blk_rec.cfl_v <= cfl_v;
-                    blk_rec.use_fi <= use_fi; blk_rec.fi_mode <= fi_mode; blk_rec.txsz <= txsz; blk_rec.qidx <= cur_qidx;
-                    blk_rec.delta_lf <= {dlf[3], dlf[2], dlf[1], dlf[0]};
-                    blk_rec.cdef_valid <= cdef_valid; blk_rec.cdef_idx <= cdef_val; blk_rec.cdef_units <= cdef_units;
-                    blk_rec.pal_y <= pal_y; blk_rec.pal_uv <= pal_uv; blk_rec.col_y <= col_y; blk_rec.col_u <= col_u; blk_rec.col_v <= col_v;
-                    st <= has_pal ? S_HOLD : S_DONE;
-                end
+                S_END_W: st <= has_pal ? S_HOLD : S_DONE;
                 S_HOLD: if (blk_ack) st <= S_DONE;          // colour map readable through pm_* meanwhile
                 S_DONE: begin blk_done <= 1'b1; st <= S_IDLE; end
                 // ---- literal reader: lit_n equiprobable bools, MSB first

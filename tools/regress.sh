@@ -5,7 +5,7 @@
 # Usage: tools/regress.sh [stream.ivf ...]   (default: streams/synth/*.ivf). Bit depth from the file name.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-export LD_LIBRARY_PATH=$PWD/prefix-trace/lib/aarch64-linux-gnu:$PWD/prefix-trace/lib
+source env.sh   # prefix-trace libs, venv
 source venv/bin/activate
 mkdir -p traces
 rc=0

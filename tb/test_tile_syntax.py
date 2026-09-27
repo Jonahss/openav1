@@ -26,6 +26,7 @@ import gen_stream as g          # noqa: E402
 import obu_parser as op         # noqa: E402
 import tile_model as tm         # noqa: E402
 
+ACK_DELAY = int(os.environ.get("TS_ACK_DELAY", "0"))
 HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
     ("mi_rows", 11), ("mi_cols", 11), ("mi_row_start", 11), ("mi_row_end", 11), ("mi_col_start", 11), ("mi_col_end", 11),
     ("ssx", 1), ("ssy", 1), ("mono", 1), ("sb128", 1), ("bit_depth", 4), ("seg_enabled", 1), ("seg_preskip", 1),
@@ -428,6 +429,9 @@ async def collect(dut, dec, tag0, stats):
                         assert not badq, f"{tag0} tx block {tx_i}: {len(badq)} Quant mismatches, first {badq[:6]}"
                         stats["coefs"] += sum(1 for v in q if v)
                     else:
+                        await Timer(1, "ns")
+                    if ACK_DELAY:
+                        await ClockCycles(dut.clk, ACK_DELAY)
                         await Timer(1, "ns")
                     dut.tx_ack.value = 1
                     await RisingEdge(dut.clk)

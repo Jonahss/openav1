@@ -30,6 +30,9 @@ module tile_syntax
     output logic              tile_done,
     output logic              unsupported,
     // records
+    output logic              sb_start_o,      // superblock start (for the reconstruction stage's BlockDecoded flags)
+    output logic [10:0]       sb_r_o, sb_c_o,
+    output logic              blk_info,        // blk_rec valid, before the block's transform blocks
     output logic              blk_done,
     output blk_rec_t          blk_rec,
     output logic              tx_done,
@@ -143,7 +146,7 @@ module tile_syntax
     logic b_start, b_busy, b_unsup, sb_start;
     logic bq_go; logic [CDF_AW-1:0] bq_addr; logic [3:0] bq_n; logic [1:0] bq_kind;
     blk_syntax u_blk (.clk, .rst, .hdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
-                      .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec, .tx_ack, .blk_ack, .pal_hold,
+                      .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec, .tx_ack, .blk_ack, .pal_hold,
                       .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u,
                       .pm_plane, .pm_x, .pm_y, .pm_idx,
                       .sq_go(bq_go), .sq_addr(bq_addr), .sq_n(bq_n), .sq_kind(bq_kind), .sq_done(k_done), .sq_sym(k_sym),
@@ -301,6 +304,7 @@ module tile_syntax
 
     assign tile_busy = (st != T_IDLE);
     assign unsupported = b_unsup;
+    assign sb_start_o = sb_start; assign sb_r_o = sb_r; assign sb_c_o = sb_c;
     assign p_r = top.r; assign p_c = top.c; assign p_bs = top.bs;
 
     always_ff @(posedge clk) begin

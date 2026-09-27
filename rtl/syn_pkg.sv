@@ -39,6 +39,20 @@ package syn_pkg;
         logic [12:0] upscaled_width;
     } hdr_t;
 
+    // Frame-level parameters only the reconstruction stage needs (software fills this in).
+    typedef struct packed {
+        logic        enable_intra_edge_filter;
+        logic signed [6:0] dq_ydc;             // DeltaQYDc, DeltaQUDc, DeltaQUAc, DeltaQVDc, DeltaQVAc
+        logic signed [6:0] dq_udc;
+        logic signed [6:0] dq_uac;
+        logic signed [6:0] dq_vdc;
+        logic signed [6:0] dq_vac;
+        logic [7:0]  seg_altq_en;              // FeatureEnabled[s][SEG_LVL_ALT_Q]
+        logic [71:0] seg_altq;                 // FeatureData[s][SEG_LVL_ALT_Q], 8 x signed 9 bits
+        logic        using_qmatrix;
+        logic [95:0] qm_level;                 // SegQMLevel[plane][seg] at [(plane*8+seg)*4 +: 4]
+    } rec_hdr_t;
+
     // Per loop-restoration-unit record (read_lr_unit).
     typedef struct packed {
         logic [1:0]  plane;

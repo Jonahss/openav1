@@ -1,7 +1,23 @@
+# environment built by bootstrap.sh
 venv/
-build/
-traces/
+toolchain/
 third_party/
-__pycache__/
+prefix/
+prefix-trace/
+logs/
+*.log
+
+# simulation / synthesis outputs
+build/
 sim_build/
 results.xml
+__pycache__/
+traces/
+refout/
+
+# large or generated stream sets (streams/synth and streams/synth2 are the checked-in corpus)
+streams/argon/
+streams/argon.tar.zst*
+streams/fuzz/
+streams/fuzz_fail/
+streams/gen/

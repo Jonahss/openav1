@@ -171,6 +171,8 @@ module blk_ctx
     logic        wj;                            // word half (0/1) for 32-wide blocks
     logic [REC_W-1:0] wrec;
     logic [2:0]  wseg;
+    logic [95:0] wcol_y, wcol_u;
+    logic        wpal;
     logic [CAW-1:0] cp_i;
     logic sbrow_pend;                          // sbrow_end arrived while a block write was in flight
     assign wbusy = (wst != W_IDLE) || blk_we || sbrow_end || sbrow_pend;
@@ -208,7 +210,10 @@ module blk_ctx
             W_IDLE: begin
                 if (sbrow_end) sbrow_pend <= 1'b1;
                 if (blk_we) begin
+                    // latch everything the multi-cycle write needs: the block FSM moves on to the next block
+                    // (and clears its palette state) while this write is still in flight
                     wrec <= {1'b0, w_pal_uv, w_pal_y, w_txsz, q_bs, w_skip, w_ymode};
+                    wcol_y <= w_col_y; wcol_u <= w_col_u; wpal <= (w_pal_y != 4'd0) || (w_pal_uv != 4'd0);
                     wr_r <= q_r; wr_c <= q_c; wr_bw4 <= q_bw4; wr_bh4 <= q_bh4; wseg <= w_seg;
                     wi <= 6'd0; wj <= 1'b0;
                     wst <= W_SEG;
@@ -239,19 +244,19 @@ module blk_ctx
                 if (sbrow_end) sbrow_pend <= 1'b1;
                 left_rec[wr_r[4] ^ wj] <= merge_rec(left_rec[wr_r[4] ^ wj], wj ? 4'd0 : wr_r[3:0], n_rows_word, wrec);
                 if (wr_bh4 > 6'd16 && !wj) wj <= 1'b1;
-                else begin wj <= 1'b0; wi <= 6'd0; wst <= (w_pal_y != 0 || w_pal_uv != 0) ? W_PALA : W_IDLE; end
+                else begin wj <= 1'b0; wi <= 6'd0; wst <= wpal ? W_PALA : W_IDLE; end
             end
             W_PALA: begin
                 if (sbrow_end) sbrow_pend <= 1'b1;                                  // palette blocks are <= 64 px: bw4, bh4 <= 16
-                a_pal[0][wcol4[4:0]] <= w_col_y;
-                a_pal[1][wcol4[4:0]] <= w_col_u;
+                a_pal[0][wcol4[4:0]] <= wcol_y;
+                a_pal[1][wcol4[4:0]] <= wcol_u;
                 if (wi + 6'd1 >= wr_bw4) begin wi <= 6'd0; wst <= W_PALL; end
                 else wi <= wi + 6'd1;
             end
             W_PALL: begin
                 if (sbrow_end) sbrow_pend <= 1'b1;
-                l_pal[0][wrow[4:0]] <= w_col_y;
-                l_pal[1][wrow[4:0]] <= w_col_u;
+                l_pal[0][wrow[4:0]] <= wcol_y;
+                l_pal[1][wrow[4:0]] <= wcol_u;
                 if (wi + 6'd1 >= wr_bh4) begin wi <= 6'd0; wst <= W_IDLE; end
                 else wi <= wi + 6'd1;
             end
