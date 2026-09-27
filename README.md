@@ -107,6 +107,6 @@ Every block is parameterised so throughput trades against area (butterfly slots,
 
 ## License
 
-Apache License 2.0 (see `LICENSE`). Copyright 2026 the openav1 authors. The AV1 specification
+Apache License 2.0 (see `LICENSE`). Copyright 2026 Jonah Stiennon and contributors. The AV1 specification
 is published by the Alliance for Open Media under its own terms; dav1d (BSD-2) and libaom (BSD-2 + AOM
 patent license) are used unmodified apart from the trace hooks in `tools/dav1d_trace_patch.py`.
