@@ -216,7 +216,8 @@ def edge_filter(buf, sz, strength):
 
 # ---- 7.11.2.4 directional ----------------------------------------------------------------------
 def pred_directional(above, left, w, h, mode, angle_delta, bd, have_left, have_above,
-                     enable_intra_edge_filter, filter_type, above_px=None, left_px=None):
+                     enable_intra_edge_filter, filter_type, above_px=None, left_px=None,
+                     corner_prefiltered=False):
     """above_px / left_px: Min(w, maxX - x + 1) and Min(h, maxY - y + 1) from the caller (default w, h).
     above/left are Edge objects and are MODIFIED (filtered / upsampled) like the spec's arrays."""
     if above_px is None: above_px = w
@@ -225,7 +226,7 @@ def pred_directional(above, left, w, h, mode, angle_delta, bd, have_left, have_a
     upsample_above = upsample_left = 0
     if enable_intra_edge_filter:
         if p_angle != 90 and p_angle != 180:
-            if 90 < p_angle < 180 and (w + h) >= 24:
+            if 90 < p_angle < 180 and (w + h) >= 24 and not corner_prefiltered:
                 c = filter_corner(above, left)
                 left[-1] = c
                 above[-1] = c
@@ -337,7 +338,7 @@ def pred_smooth(above, left, w, h, log2w, log2h, mode):
 # ---- 7.11.2.1 dispatcher -------------------------------------------------------------------------
 def predict_intra(above_vals, left_vals, topleft, mode, log2w, log2h, bd, *, have_left=1, have_above=1,
                   angle_delta=0, enable_intra_edge_filter=1, filter_type=0, use_filter_intra=False,
-                  filter_intra_mode=0, above_px=None, left_px=None):
+                  filter_intra_mode=0, above_px=None, left_px=None, corner_prefiltered=False):
     """above_vals / left_vals: the w+h edge samples (AboveRow[0..w+h-1], LeftCol[0..w+h-1])."""
     w, h = 1 << log2w, 1 << log2h
     above = Edge(above_vals, topleft)
@@ -346,7 +347,7 @@ def predict_intra(above_vals, left_vals, topleft, mode, log2w, log2h, bd, *, hav
         return pred_filter_intra(above, left, w, h, filter_intra_mode, bd)
     if is_directional(mode):
         return pred_directional(above, left, w, h, mode, angle_delta, bd, have_left, have_above,
-                                enable_intra_edge_filter, filter_type, above_px, left_px)
+                                enable_intra_edge_filter, filter_type, above_px, left_px, corner_prefiltered)
     if mode in (SMOOTH_PRED, SMOOTH_V_PRED, SMOOTH_H_PRED):
         return pred_smooth(above, left, w, h, log2w, log2h, mode)
     if mode == DC_PRED:

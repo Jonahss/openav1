@@ -116,23 +116,24 @@ module itx1d #(
     function automatic int perm_dct_idx(input int i, input int nn);
         int t;
         t = 0;
-        for (int b = 0; b < nn; b++) t |= ((i >> b) & 1) << (nn - 1 - b);
-        return (i < (1 << nn)) ? t : i;
+        for (int b = 0; b < nn; b++) t = t | (((i >> b) & 1) << (nn - 1 - b));
+        if (i < (1 << nn)) perm_dct_idx = t; else perm_dct_idx = i;
     endfunction
     function automatic int perm_adst_in_idx(input int i, input int nn);
         int n0;
         n0 = 1 << nn;
-        if (i >= n0) return i;
-        return ((i & 1) != 0) ? (i - 1) : (n0 - i - 1);
+        if (i >= n0)            perm_adst_in_idx = i;
+        else if ((i & 1) != 0)  perm_adst_in_idx = i - 1;
+        else                    perm_adst_in_idx = n0 - i - 1;
     endfunction
     function automatic int perm_adst_out_idx(input int i, input int nn);
         int a, b, c, d;
-        if (i >= (1 << nn)) return i;
         a = (i >> 3) & 1;
         b = ((i >> 2) & 1) ^ ((i >> 3) & 1);
         c = ((i >> 1) & 1) ^ ((i >> 2) & 1);
         d = (i & 1) ^ ((i >> 1) & 1);
-        return ((d << 3) | (c << 2) | (b << 1) | a) >> (4 - nn);
+        if (i >= (1 << nn)) perm_adst_out_idx = i;
+        else                perm_adst_out_idx = ((d << 3) | (c << 2) | (b << 1) | a) >> (4 - nn);
     endfunction
 
     // ------------------------------------------------------------------ whole-vector operations
