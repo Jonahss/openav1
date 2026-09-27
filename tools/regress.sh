@@ -22,7 +22,9 @@ for st in "$@"; do
   rc_=$(timeout 3600 python3 tools/xcheck_recon.py "$tr" 2>&1 | tail -1); [ "$rc_" = "OK" ] || { xr=1; x="$x recon:$rc_"; }
   fr_="n/a"
   fr_=$(timeout 3600 python3 tools/xcheck_frame.py "$tr" refout/$name.yuv --stage lr 2>&1 | tail -1); [ "$fr_" = "OK" ] || { xr=1; x="$x frame:$fr_"; }
-  summary=$(grep -E "^(pred|cfl|itx):" <<<"$x" | sed 's/ checked, / chk /; s/ mismatches/ bad/' | paste -sd';'); summary="$summary; tile: $tl; recon: $rc_; frame: $fr_"
+  hd_=$(timeout 600 python3 tools/xcheck_hdr.py "$st" "$tr" 2>&1 | tail -1); [ "$hd_" = "OK" ] || { xr=1; x="$x hdr:$hd_"; }
+  timeout 3600 python3 tools/decode.py "$st" -o /tmp/openav1_dec_$$.yuv 2>/dev/null; if cmp -s /tmp/openav1_dec_$$.yuv refout/$name.yuv; then dc_="identical"; else dc_="DIFFERS"; xr=1; fi; rm -f /tmp/openav1_dec_$$.yuv
+  summary=$(grep -E "^(pred|cfl|itx):" <<<"$x" | sed 's/ checked, / chk /; s/ mismatches/ bad/' | paste -sd';'); summary="$summary; tile: $tl; recon: $rc_; frame: $fr_; hdr: $hd_; standalone decode: $dc_"
   m=$(MSAC_TRACE=$PWD/$tr timeout 3600 python tb/runner.py msac 2>&1)
   ms=$(grep -oE "OK: [0-9]+ symbols" <<<"$m" | head -1); [ -n "$ms" ] || { ms="msac FAIL"; xr=1; }
   ip=$(IPRED_TRACE=$PWD/$tr IPRED_BD=$bd timeout 3600 python tb/runner.py ipred test_ipred_trace 2>&1)
