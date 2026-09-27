@@ -1,0 +1,10 @@
+openav1 - an open-source AV1 hardware decoder
+Copyright 2026 the openav1 authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project is developed from the AV1 Bitstream & Decoding Process Specification
+(Alliance for Open Media). Verification uses dav1d (VideoLAN, BSD-2-Clause) and
+libaom (Alliance for Open Media, BSD-2-Clause with the AOM patent license) as
+reference decoders; they are fetched by bootstrap.sh and are not part of this
+repository except for the trace hooks applied by tools/dav1d_trace_patch.py.
