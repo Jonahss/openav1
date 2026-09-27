@@ -213,6 +213,23 @@ class FrameHeader:
                     en = v != 0
                 self.FeatureEnabled[s][j] = 1 if en else 0
                 self.FeatureData[s][j] = v if en else 0
+        rest = list(it)
+        if len(rest) >= 32:
+            self.loop_filter_level = [rest[0], rest[1], rest[2], rest[3]]
+            self.loop_filter_sharpness = rest[4]
+            self.loop_filter_delta_enabled = rest[5]
+            self.loop_filter_ref_deltas = rest[6:14]
+            self.loop_filter_mode_deltas = rest[14:16]
+            self.cdef_y_strengths = rest[16:24]
+            self.cdef_uv_strengths = rest[24:32]
+        else:
+            self.loop_filter_level = [0, 0, 0, 0]
+            self.loop_filter_sharpness = 0
+            self.loop_filter_delta_enabled = 0
+            self.loop_filter_ref_deltas = [1, 0, 0, 0, -1, 0, -1, -1]
+            self.loop_filter_mode_deltas = [0, 0]
+            self.cdef_y_strengths = [0] * 8
+            self.cdef_uv_strengths = [0] * 8
         self.NumPlanes = 1 if self.layout == 0 else 3
         self.FrameIsIntra = self.frame_type in (0, 2)
         assert self.FrameIsIntra, "tile_model handles intra frames only"
@@ -263,6 +280,7 @@ class TileDecoder:
         self.PaletteSizes = [[[0] * Cc for _ in range(R)] for _ in range(2)]
         self.PaletteColors = [[[None] * Cc for _ in range(R)] for _ in range(2)]
         self.TxTypes = [[DCT_DCT] * Cc for _ in range(R)]
+        self.DeltaLFs = [[None] * Cc for _ in range(R)]
         self.AboveLevelContext = [[0] * Cc for _ in range(3)]
         self.AboveDcContext = [[0] * Cc for _ in range(3)]
         self.LeftLevelContext = [[0] * R for _ in range(3)]
@@ -279,6 +297,11 @@ class TileDecoder:
         self.blocks = []          # decoded block infos (for inspection)
         self.Quant = [0] * 1024
         self.Dequant = None
+        self.LoopfilterTxSizes = []
+        for plane in range(3):
+            subX = hdr.subsampling_x if plane > 0 else 0
+            subY = hdr.subsampling_y if plane > 0 else 0
+            self.LoopfilterTxSizes.append([[TX_4X4] * ((Cc + subX) >> subX) for _ in range((R + subY) >> subY)])
 
     # ---- helpers ------------------------------------------------------------------------------
     def sym(self, cdf, name):
@@ -475,6 +498,7 @@ class TileDecoder:
                     self.PaletteSizes[1][r + y][c + x] = self.PaletteSizeUV
                     self.PaletteColors[0][r + y][c + x] = list(self.palette_colors_y[:self.PaletteSizeY])
                     self.PaletteColors[1][r + y][c + x] = list(self.palette_colors_u[:self.PaletteSizeUV])
+                    self.DeltaLFs[r + y][c + x] = list(self.DeltaLF)
         self.blocks.append(dict(r=r, c=c, size=subSize, skip=self.skip, ymode=self.YMode, uvmode=self.UVMode,
                                 tx=self.TxSize, seg=self.segment_id, pal=(self.PaletteSizeY, self.PaletteSizeUV),
                                 fi=self.use_filter_intra, angle=(self.AngleDeltaY, self.AngleDeltaUV),
@@ -992,6 +1016,12 @@ class TileDecoder:
             if eob > 0:
                 rows = self.reconstruct_dequant(plane, startX, startY, txSz, eob)
                 self.reconstruct_block(plane, startX, startY, txSz, rows)
+        lts = self.LoopfilterTxSizes[plane]
+        for i in range(stepY):
+            for j in range(stepX):
+                rr, cc = (row >> subY) + i, (col >> subX) + j
+                if rr < len(lts) and cc < len(lts[0]):
+                    lts[rr][cc] = txSz
         self.after_transform_block(plane, row, col, subX, subY, stepX, stepY, subBlockMiRow, subBlockMiCol)
 
     # hooks for reconstruction models

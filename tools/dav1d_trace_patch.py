@@ -397,6 +397,15 @@ patch(src / "decode.c", [
                     h->segmentation.qidx[s], d->delta_q, d->delta_lf_y_v, d->delta_lf_y_h, d->delta_lf_u,
                     d->delta_lf_v, d->ref, d->skip, d->globalmv);
         }
+        /* loop filter: level_y[2] level_u level_v sharpness mode_ref_delta_enabled ref_delta[8] mode_delta[2] */
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d", h->loopfilter.level_y[0], h->loopfilter.level_y[1],
+                h->loopfilter.level_u, h->loopfilter.level_v, h->loopfilter.sharpness,
+                h->loopfilter.mode_ref_delta_enabled);
+        for (int i = 0; i < 8; i++) fprintf(dav1d_trace_fp, " %d", h->loopfilter.mode_ref_deltas.ref_delta[i]);
+        for (int i = 0; i < 2; i++) fprintf(dav1d_trace_fp, " %d", h->loopfilter.mode_ref_deltas.mode_delta[i]);
+        /* cdef strengths: y_strength[8] uv_strength[8] (only the first 1 << n_bits are meaningful) */
+        for (int i = 0; i < 8; i++) fprintf(dav1d_trace_fp, " %d", h->cdef.y_strength[i]);
+        for (int i = 0; i < 8; i++) fprintf(dav1d_trace_fp, " %d", h->cdef.uv_strength[i]);
         fputc('\n', dav1d_trace_fp);
     }
 '''),
