@@ -93,7 +93,8 @@ def sequence_header(p):
     w.f(1, 0); w.f(1, 0); w.f(1, 0); w.f(1, 0)     # interintra, masked, warped, dual_filter
     w.f(1, 0)                          # enable_order_hint
     if p["screen_content"] == 2:       # SELECT: per-frame allow_screen_content_tools bit
-        w.f(1, 1)                      # seq_choose_screen_content_tools (-> seq_force_integer_mv = SELECT)
+        w.f(1, 1)                      # seq_choose_screen_content_tools -> seq_force_screen_content_tools = SELECT (2 > 0)
+        w.f(1, 1)                      # seq_choose_integer_mv -> seq_force_integer_mv = SELECT (frame reads force_integer_mv)
     else:
         w.f(1, 0)                      # seq_choose_screen_content_tools = 0 -> explicit
         w.f(1, p["screen_content"])    # seq_force_screen_content_tools

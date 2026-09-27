@@ -13,47 +13,67 @@ KIND_ADAPT, KIND_BOOL, KIND_EQUI = 0, 1, 2
 def parse_trace(path):
     """Yield tiles one at a time as (data, disable_cdf_update, requests).
 
-    Streams the file so a million-symbol trace does not need gigabytes of RAM.
+    Streams the file so a million-symbol trace does not need gigabytes of RAM (single-tile frames are
+    yielded as soon as the next frame starts). dav1d decodes the tiles of a frame interleaved per
+    superblock row; a `D row col` line says which tile the following S/U lines belong to, so all tiles
+    of a frame are collected and yielded together when the next frame's first T line arrives.
     A request is the tuple (kind, n, cdf_tuple, cnt, exp_sym, exp_rng, post_tuple_or_None, postcnt_or_None).
     """
-    data = dis = None
-    reqs = []
-    pending = None  # an "S B" waiting to see whether a "U" line follows
+    frame = []          # tiles of the current frame, in T order: dict(data, dis, reqs, key)
+    pending = []        # tiles whose D has not been seen yet (H gives the key)
+    cur = None
+    hold = None         # an "S B" waiting to see whether a "U" line follows
+
+    def flush_hold():
+        nonlocal hold
+        if hold is not None:
+            cur["reqs"].append(hold); hold = None
+
     with open(path) as fh:
         for line in fh:
             if not line or line[0] == "#":
                 continue
             f = line.split()
-            if f[0] == "U":
-                if pending is not None:
-                    k, n, cdf, cnt, sym, rng, _, _ = pending
-                    pending = (KIND_ADAPT, 1, cdf, int(f[1]), sym, rng, (int(f[2]),), int(f[3]))
+            k = f[0]
+            if k == "U":
+                if hold is not None:
+                    kk, n, cdf, cnt, sym, rng, _, _ = hold
+                    hold = (KIND_ADAPT, 1, cdf, int(f[1]), sym, rng, (int(f[2]),), int(f[3]))
                 continue
-            if pending is not None:
-                reqs.append(pending); pending = None
-            if f[0] == "T":
-                if data is not None:
-                    yield data, dis, reqs
+            if hold is not None:
+                flush_hold()
+            if k == "T":
+                if frame and not pending:           # previous frame complete (all its tiles were entered)
+                    for t in frame:
+                        yield t["data"], t["dis"], t["reqs"]
+                    frame = []
                 data = bytes.fromhex(f[3]) if len(f) > 3 else b""
                 assert len(data) == int(f[1])
-                dis = int(f[2]); reqs = []
-            elif f[0] == "S":
-                assert data is not None, "S before T"
+                cur = dict(data=data, dis=int(f[2]), reqs=[], key=None)
+                frame.append(cur); pending.append(cur)
+            elif k == "H":
+                cur["key"] = (int(f[1]), int(f[2]))
+            elif k == "D":
+                pending = []
+                cur = next(t for t in frame if t["key"] == (int(f[1]), int(f[2])))
+            elif k == "S":
+                assert cur is not None, "S before T"
+                dis = cur["dis"]
                 if f[1] == "A":
                     n, sym, rng, cnt = int(f[2]), int(f[3]), int(f[4]), int(f[5])
                     pre = tuple(int(x) for x in f[6:6 + n])
                     post = postcnt = None
                     if not dis:
                         post = tuple(int(x) for x in f[6 + n:6 + 2 * n]); postcnt = int(f[6 + 2 * n])
-                    reqs.append((KIND_ADAPT, n, pre, cnt, sym, rng, post, postcnt))
+                    cur["reqs"].append((KIND_ADAPT, n, pre, cnt, sym, rng, post, postcnt))
                 elif f[1] == "B":
-                    pending = (KIND_BOOL, 1, (int(f[2]),), 0, int(f[3]), int(f[4]), None, None)
+                    hold = (KIND_BOOL, 1, (int(f[2]),), 0, int(f[3]), int(f[4]), None, None)
                 elif f[1] == "E":
-                    reqs.append((KIND_EQUI, 1, (), 0, int(f[2]), int(f[3]), None, None))
-    if pending is not None:
-        reqs.append(pending)
-    if data is not None:
-        yield data, dis, reqs
+                    cur["reqs"].append((KIND_EQUI, 1, (), 0, int(f[2]), int(f[3]), None, None))
+    if hold is not None:
+        flush_hold()
+    for t in frame:
+        yield t["data"], t["dis"], t["reqs"]
 
 
 async def feed_bytes(dut, data):

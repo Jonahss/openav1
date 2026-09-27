@@ -24,6 +24,7 @@ import tile_model as tm     # noqa: E402
 import msac_enc as me       # noqa: E402
 import obu_writer as ow     # noqa: E402
 import obu_parser as op     # noqa: E402
+import av1_tables as T      # noqa: E402
 
 
 def make_params(rng, args):
@@ -102,8 +103,22 @@ def make_params(rng, args):
     return seq, q
 
 
-def make_pick(rng):
-    """Random symbol choices, biased so coefficient magnitudes stay small (conformance ranges)."""
+def make_pick(rng, holder):
+    """Random symbol choices, biased so coefficient magnitudes stay small (conformance ranges), and
+    constrained where the spec puts a conformance requirement on the *decoded value*:
+      - partitions must not create a block whose chroma residual size is BLOCK_INVALID (4:2:2),
+      - segment_id must decode to 0..LastActiveSegId.
+    holder["dec"] is the TileDecoder being driven (set after construction)."""
+    def partition_ok(part):
+        dec = holder["dec"]
+        if dec.h.NumPlanes == 1:
+            return True
+        b = dec.part_bsize
+        sizes = [T.Partition_Subsize[part][b]]
+        if part in (tm.PARTITION_HORZ_A, tm.PARTITION_HORZ_B, tm.PARTITION_VERT_A, tm.PARTITION_VERT_B):
+            sizes.append(T.Partition_Subsize[tm.PARTITION_SPLIT][b])
+        return all(dec.get_plane_residual_size(sz, 1) != tm.BLOCK_INVALID for sz in sizes)
+
     def pick(cdf, N, name):
         if name in ("coeff_base", "coeff_base_eob"):
             return min(N - 1, rng.choice([0, 0, 0, 1, 1, 2, 3]))
@@ -121,6 +136,15 @@ def make_pick(rng):
             return 0
         if name in ("has_palette_y", "has_palette_uv"):
             return rng.choice([0, 0, 1])
+        if name == "partition":
+            return rng.choice([p for p in range(N) if partition_ok(p)])
+        if name == "split_or_vert":
+            return 1 if not partition_ok(tm.PARTITION_VERT) else rng.randint(0, 1)
+        if name == "segment_id":
+            dec = holder["dec"]
+            last = dec.h.LastActiveSegId
+            ok = [v for v in range(N) if 0 <= dec.neg_deinterleave(v, dec.seg_pred, last + 1) <= last]
+            return rng.choice(ok)
         return rng.randint(0, N - 1)
     return pick
 
@@ -145,9 +169,11 @@ def generate(seed, args):
         for tr in range(h.TileRows):
             for tc in range(h.TileCols):
                 th = d.tile_header(h, tr, tc)
-                rec = me.RecordingDecoder(make_pick(rng), th.disable_cdf_update)
+                holder = {}
+                rec = me.RecordingDecoder(make_pick(rng, holder), th.disable_cdf_update)
                 dec = tm.TileDecoder(th, b"", None)
                 dec.dec = rec
+                holder["dec"] = dec
                 dec.decode_tile()
                 tiles.append(me.encode_events(rec.events))
         tu = ow.temporal_delimiter() + (ow.obu(1, ow.sequence_header(seq)) if fi == 0 else b"") + ow.frame_obu(seq, q, tiles)

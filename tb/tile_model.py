@@ -393,6 +393,7 @@ class TileDecoder:
         quarterBlock4x4 = halfBlock4x4 >> 1
         hasRows = (r + halfBlock4x4) < h.MiRows
         hasCols = (c + halfBlock4x4) < h.MiCols
+        self.part_bsize = bSize           # (read by tools/gen_stream.py to keep generated partitions conformant)
         if bSize < BLOCK_8X8:
             partition = PARTITION_NONE
         elif hasRows and hasCols:
@@ -599,6 +600,7 @@ class TileDecoder:
                 ctx = 1
             else:
                 ctx = 0
+            self.seg_pred = pred          # (read by tools/gen_stream.py to keep generated ids conformant)
             sid = self.sym(self.cdf["Segment_Id"][ctx], "segment_id")
             self.segment_id = self.neg_deinterleave(sid, pred, self.h.LastActiveSegId + 1)
 
