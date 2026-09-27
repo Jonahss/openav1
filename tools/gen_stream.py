@@ -141,7 +141,10 @@ def make_pick(rng, holder):
         if name in ("delta_q_rem_bits", "delta_lf_rem_bits"):
             return 0
         if name in ("has_palette_y", "has_palette_uv"):
-            return rng.choice([0, 0, 1])
+            return rng.choice([0, 1, 1])
+        if name in ("intra_frame_y_mode", "uv_mode") and holder["dec"].h.allow_screen_content_tools:
+            # screen content: land on DC_PRED often so palette_mode_info gets exercised (incl. neighbour caches)
+            return 0 if rng.random() < 0.45 else rng.randint(0, N - 1)
         if name == "partition":
             return rng.choice([p for p in range(N) if partition_ok(p)])
         if name == "split_or_vert":

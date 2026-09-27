@@ -36,7 +36,8 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
 BLK_FIELDS = [
     ("r", 11), ("c", 11), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
-    ("delta_lf", 28), ("cdef_valid", 1), ("cdef_idx", 3), ("cdef_units", 4)]
+    ("delta_lf", 28), ("cdef_valid", 1), ("cdef_idx", 3), ("cdef_units", 4),
+    ("pal_y", 4), ("pal_uv", 4), ("col_y", 96), ("col_u", 96), ("col_v", 96)]
 TX_FIELDS = [("plane", 2), ("x", 13), ("y", 13), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1)]
 LR_FIELDS = [("plane", 2), ("unit_row", 8), ("unit_col", 8), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
@@ -93,6 +94,15 @@ class RecDecoder(tm.TileDecoder):
         self.symlog.append((name, "L%d" % n, v))
         return v
 
+    def NS(self, n, name):
+        # read_ns through L so the literal bits land in the symbol log (same bit sequence as the spec)
+        w = n.bit_length()
+        m = (1 << w) - n
+        v = self.L(w - 1, name)
+        if v < m:
+            return v
+        return (v << 1) - m + self.L(1, name)
+
     def predict_block(self, plane, startX, startY, txSz, x, y, subX, subY, sbMiRow, sbMiCol, stepX, stepY):
         self.tx_recs.append(dict(plane=plane, x=startX, y=startY, txsz=txSz, skip=self.skip, txtype=0, eob=0, quant=[],
                                  lossless=self.Lossless))
@@ -122,6 +132,13 @@ class RecDecoder(tm.TileDecoder):
         self.blocks[-1]["lossless"] = self.Lossless
         self.blocks[-1]["has_chroma"] = self.HasChroma
         self.blocks[-1]["fim"] = self.filter_intra_mode
+        b = self.blocks[-1]
+        b["col_y"] = list(self.palette_colors_y[:self.PaletteSizeY])
+        b["col_u"] = list(self.palette_colors_u[:self.PaletteSizeUV])
+        b["col_v"] = list(self.palette_colors_v[:self.PaletteSizeUV])
+        b["cmap_y"], b["cmap_uv"] = self.ColorMapY, self.ColorMapUV
+        h = self.h
+        b["os"] = (min(T.Block_Width[subSize], (h.MiCols - c) * 4), min(T.Block_Height[subSize], (h.MiRows - r) * 4))
 
 
 def hdr_vals(th, dec):
@@ -145,17 +162,17 @@ def hdr_vals(th, dec):
 
 async def monitor_syms(dut, log):
     """Every accepted msac request: (row addr of the active sequencer, n, kind) and its symbol."""
-    pend = None
+    # requests may be accepted in the same cycle the previous response arrives: keep a FIFO, respond first
+    pend = []
     while True:
         await RisingEdge(dut.clk)
         await ReadOnly()
+        if int(dut.resp_valid.value) and pend:
+            log.append(pend.pop(0) + (int(dut.resp_sym.value),))
         if int(dut.req_valid.value) and int(dut.req_ready.value):
             k = int(dut.sel_k.value)
             addr = int(dut.u_sq_k.l_addr.value) if k else int(dut.u_sq_c.l_addr.value)
-            pend = ("k" if k else "c", addr, int(dut.req_n.value), int(dut.req_kind.value))
-        if int(dut.resp_valid.value) and pend is not None:
-            log.append(pend + (int(dut.resp_sym.value),))
-            pend = None
+            pend.append(("k" if k else "c", addr, int(dut.req_n.value), int(dut.req_kind.value)))
 
 
 async def monitor_nb(dut, log):
@@ -190,8 +207,10 @@ async def feed_bytes(dut, data):
 
 def gen(seed, w, h, fmt):
     rng = random.Random(seed)
+    screen_env = os.environ.get("TS_SCREEN", "rand")      # 1 / 0 / rand
     args = dict(fmt=fmt, bd=rng.choice([8, 10, 12]), w=w, h=h, sb128=rng.random() < 0.3, tiles=rng.random() < 0.3,
-                screen=False, lossless=rng.random() < 0.15, nolr=bool(os.environ.get("TS_NOLR")), frames=1)
+                screen=(screen_env == "1") or (screen_env == "rand" and rng.random() < 0.5),
+                lossless=rng.random() < 0.15, nolr=bool(os.environ.get("TS_NOLR")), frames=1)
     if fmt == "422":
         args["bd"] = rng.choice([10, 12])
     data, info = g.generate(seed, args)
@@ -203,17 +222,17 @@ def gen(seed, w, h, fmt):
 @cocotb.test()
 async def tile_vs_model(dut):
     seeds_env = os.environ.get("TS_SEEDS", "1,2,3")
-    seeds = [int(x) for x in seeds_env.split(",")] if "," in seeds_env else list(range(1, int(seeds_env) + 1))
+    seeds = [int(x) for x in seeds_env.split(",") if x] if "," in seeds_env else list(range(1, int(seeds_env) + 1))
     W = int(os.environ.get("TS_W", "128"))
     H = int(os.environ.get("TS_H", "96"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "tx_ack", "q_addr", "hdr"):
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "tx_ack", "q_addr", "hdr", "blk_ack", "pm_plane", "pm_x", "pm_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(tiles=0, blocks=0, txblocks=0, coefs=0, lrunits=0)
+    stats = dict(tiles=0, blocks=0, txblocks=0, coefs=0, lrunits=0, palblocks=0, palpix=0)
     symlog = []
     debug = bool(os.environ.get("TS_DEBUG"))
     nblog = []
@@ -268,7 +287,6 @@ async def tile_vs_model(dut):
             dec = RecDecoder(th, data)
             dec.decode_tile()
             hv = hdr_vals(th, dec)
-            assert hv["allow_sct"] == 0
             dut.hdr.value = pack(HDR_FIELDS, hv)
             # defaults for base_q_idx
             for i, row in enumerate(M.default_rows(th.base_q_idx)):
@@ -277,6 +295,8 @@ async def tile_vs_model(dut):
                 dut.def_data.value = row
                 await RisingEdge(dut.clk)
             dut.def_we.value = 0
+            symlog.clear()
+            nblog.clear()
             dut.tile_start.value = 1
             await RisingEdge(dut.clk)
             await Timer(1, "ns")
@@ -313,6 +333,46 @@ async def collect(dut, dec, tag0, stats):
                 if int(dut.unsupported.value):
                     raise AssertionError(f"{tag0}: RTL flagged unsupported syntax")
                 done = int(dut.tile_done.value)
+                if int(dut.pal_hold.value):
+                    # palette block held: read the onscreen colour index map(s) through pm_*, compare, release
+                    idle = 0
+                    got = unpack(BLK_FIELDS, int(dut.blk_rec.value))
+                    assert blk_i < len(dec.blocks), f"{tag0}: RTL holds a palette block beyond the model's last block"
+                    m = dec.blocks[blk_i]
+                    await Timer(1, "ns")
+                    for plane, size_key, cmap_key in ((0, "pal_y", "cmap_y"), (1, "pal_uv", "cmap_uv")):
+                        if got[size_key] == 0:
+                            continue
+                        cm = m[cmap_key]
+                        assert cm is not None, f"{tag0} block {blk_i}: RTL has a {cmap_key} but the model has none"
+                        osw, osh = m["os"]
+                        if plane:
+                            osw >>= dec.h.subsampling_x
+                            osh >>= dec.h.subsampling_y
+                            if (T.Block_Width[m["size"]] >> dec.h.subsampling_x) < 4:
+                                osw += 2
+                            if (T.Block_Height[m["size"]] >> dec.h.subsampling_y) < 4:
+                                osh += 2
+                        bad = []
+                        for y in range(osh):
+                            for x in range(osw):
+                                dut.pm_plane.value = plane
+                                dut.pm_x.value = x
+                                dut.pm_y.value = y
+                                await RisingEdge(dut.clk)
+                                await ReadOnly()
+                                v = int(dut.pm_idx.value)
+                                if v != cm[y][x]:
+                                    bad.append((y, x, v, cm[y][x]))
+                                await Timer(1, "ns")
+                        assert not bad, f"{tag0} block {blk_i} at ({m['r']},{m['c']}) plane {plane}: {len(bad)} colour-map mismatches (y, x, rtl, model), first {bad[:8]}"
+                        stats["palpix"] += osw * osh
+                    stats["palblocks"] += 1
+                    dut.blk_ack.value = 1
+                    await RisingEdge(dut.clk)
+                    await Timer(1, "ns")
+                    dut.blk_ack.value = 0
+                    continue
                 if int(dut.blk_done.value):
                     idle = 0
                     got = unpack(BLK_FIELDS, int(dut.blk_rec.value))
@@ -321,10 +381,15 @@ async def collect(dut, dec, tag0, stats):
                     exp = dict(r=m["r"], c=m["c"], bsize=m["size"], skip=m["skip"], seg=m["seg"], lossless=m["lossless"],
                                has_chroma=m["has_chroma"], ymode=m["ymode"], uvmode=m["uvmode"], angle_y=m["angle"][0],
                                angle_uv=m["angle"][1], cfl_u=m["cfl"][0], cfl_v=m["cfl"][1], use_fi=m["fi"], fi_mode=m["fim"] if m["fi"] else 0,
-                               txsz=m["tx"], qidx=m["qidx"], dlf=m["dlf"])
+                               txsz=m["tx"], qidx=m["qidx"], dlf=m["dlf"],
+                               pal_y=m["pal"][0], pal_uv=m["pal"][1], col_y=m["col_y"], col_u=m["col_u"], col_v=m["col_v"])
+
+                    def cols(v, n):
+                        return [(v >> (12 * k)) & 0xFFF for k in range(n)]
                     gsigned = dict(got, angle_y=to_signed(got["angle_y"], 3), angle_uv=to_signed(got["angle_uv"], 3),
                                    cfl_u=to_signed(got["cfl_u"], 6), cfl_v=to_signed(got["cfl_v"], 6),
-                                   dlf=[to_signed((got["delta_lf"] >> (7 * i)) & 0x7F, 7) for i in range(4)])
+                                   dlf=[to_signed((got["delta_lf"] >> (7 * i)) & 0x7F, 7) for i in range(4)],
+                                   col_y=cols(got["col_y"], m["pal"][0]), col_u=cols(got["col_u"], m["pal"][1]), col_v=cols(got["col_v"], m["pal"][1]))
                     bad = {k: (gsigned[k], exp[k]) for k in exp if gsigned[k] != exp[k]}
                     assert not bad, f"{tag0} block {blk_i} at ({m['r']},{m['c']}) size {m['size']}: mismatches (rtl, model) {bad}"
                     blk_i += 1

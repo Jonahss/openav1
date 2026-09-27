@@ -1,6 +1,8 @@
 // decode_block( ) for intra frames (spec 5.11.5 .. 5.11.39 minus coeffs, which coef_rd owns):
-// intra_frame_mode_info -> (palette: unsupported) -> filter_intra -> tx size -> residual loop.
-// One symbol at a time through the shared symbol sequencer; neighbour contexts from blk_ctx.
+// intra_frame_mode_info -> palette_mode_info (pal_syntax) -> filter_intra -> palette_tokens (pal_syntax)
+// -> tx size -> residual loop. One symbol at a time through the shared symbol sequencer; neighbour
+// contexts from blk_ctx. A block with a palette is held (pal_hold) after its record is complete until
+// blk_ack, so the colour index map can be read through pm_* before the next block overwrites it.
 module blk_syntax
   import cdf_map_pkg::*;
   import blk_tables_pkg::*;
@@ -24,6 +26,16 @@ module blk_syntax
     output logic        tx_done,              // held until tx_ack
     output tx_rec_t     tx_rec,
     input  logic        tx_ack,
+    input  logic        blk_ack,              // releases a palette block held on pal_hold
+    output logic        pal_hold,
+    // palette: neighbour palettes in, this block's palette out (to blk_ctx), colour map read port
+    input  logic [3:0]  a_pal_y, l_pal_y, a_pal_uv, l_pal_uv,
+    input  logic [95:0] a_col_y, l_col_y, a_col_u, l_col_u,
+    output logic [3:0]  w_pal_y, w_pal_uv,
+    output logic [95:0] w_col_y, w_col_u,
+    input  logic        pm_plane,
+    input  logic [5:0]  pm_x, pm_y,
+    output logic [2:0]  pm_idx,
     // symbol sequencer master
     output logic              sq_go,
     output logic [CDF_AW-1:0] sq_addr,
@@ -88,6 +100,7 @@ module blk_syntax
         S_TXD, S_TXD_GO, S_TXD_W, S_RBC,
         S_RES_PLANE, S_RES_TX, S_TX_CTX_W, S_TX_A, S_TX_A_W, S_TXTYPE, S_TXTYPE_W, S_TX_B, S_TX_B_W, S_TX_UPD, S_TX_EMIT,
         S_RES_NEXT, S_END, S_END_W, S_DONE,
+        S_PAL, S_PAL_W, S_PTOK, S_PTOK_W, S_HOLD,
         S_LIT, S_LIT_W
     } st_t;
     st_t st, lit_ret;
@@ -216,6 +229,32 @@ module blk_syntax
     logic [1:0] cdef_unit;
     assign cdef_unit = {br[4] & hdr.sb128, bc[4] & hdr.sb128};
 
+    // ---------------------------------------------------------------- palette sub-decoder
+    logic        pal_clr, pal_start_mi, pal_start_tok, pal_done_mi, pal_done_tok;
+    logic [3:0]  pal_y, pal_uv;
+    logic [95:0] col_y, col_u, col_v;
+    logic        pq_go; logic [CDF_AW-1:0] pq_addr; logic [3:0] pq_n; logic [1:0] pq_kind;
+    logic [12:0] rem_w, rem_h;
+    logic [7:0]  os_w, os_h;                     // onscreen block dims (luma pixels)
+    always_comb begin
+        rem_w = (13'(hdr.mi_cols) - 13'(bc)) << 2;
+        rem_h = (13'(hdr.mi_rows) - 13'(br)) << 2;
+        os_w = (rem_w < 13'(bwp)) ? rem_w[7:0] : bwp;
+        os_h = (rem_h < 13'(bhp)) ? rem_h[7:0] : bhp;
+    end
+    pal_syntax u_pal (.clk, .rst, .hdr, .clr(pal_clr),
+                      .start_mi(pal_start_mi), .bs, .ymode, .uvmode, .hc, .avail_u, .avail_l, .br,
+                      .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .done_mi(pal_done_mi),
+                      .start_tok(pal_start_tok), .os_w, .os_h, .done_tok(pal_done_tok),
+                      .pal_y, .pal_uv, .col_y, .col_u, .col_v,
+                      .pm_plane, .pm_x, .pm_y, .pm_idx,
+                      .sq_go(pq_go), .sq_addr(pq_addr), .sq_n(pq_n), .sq_kind(pq_kind), .sq_done, .sq_sym);
+    assign w_pal_y = pal_y; assign w_pal_uv = pal_uv; assign w_col_y = col_y; assign w_col_u = col_u;
+    assign pal_hold = (st == S_HOLD);
+    logic pal_allowed, has_pal;
+    assign pal_allowed = (bs >= BLOCK_8X8) && (bwp <= 8'd64) && (bhp <= 8'd64) && hdr.allow_sct;
+    assign has_pal = (pal_y != 4'd0) || (pal_uv != 4'd0);
+
     // ---------------------------------------------------------------- symbol requests (combinational)
     always_comb begin
         sq_go = 1'b0; sq_addr = '0; sq_n = 4'd1; sq_kind = 2'd0;
@@ -250,6 +289,7 @@ module blk_syntax
                 else begin sq_addr = CDF_AW'(CDF_INTRA_TX_TYPE_SET2 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET2_S0 + int'(intra_dir)); sq_n = 4'd4; end
             end
             S_LIT:   if (lit_n != 4'd0) begin sq_go = 1'b1; sq_kind = 2'd2; end
+            S_PAL_W, S_PTOK_W: begin sq_go = pq_go; sq_addr = pq_addr; sq_n = pq_n; sq_kind = pq_kind; end
             default: ;
         endcase
     end
@@ -283,7 +323,7 @@ module blk_syntax
     // ---------------------------------------------------------------- main FSM
     always_ff @(posedge clk) begin
         blk_done <= 1'b0; nb_req <= 1'b0; ctx_we <= 1'b0; tx_req <= 1'b0; tx_we <= 1'b0; rbc_we <= 1'b0;
-        cf_start_a <= 1'b0; cf_start_b <= 1'b0;
+        cf_start_a <= 1'b0; cf_start_b <= 1'b0; pal_clr <= 1'b0; pal_start_mi <= 1'b0; pal_start_tok <= 1'b0;
         if (rst) begin
             st <= S_IDLE; unsupported <= 1'b0; tx_done <= 1'b0; read_deltas <= 1'b0; cdef_flags <= '0;
         end else begin
@@ -303,7 +343,7 @@ module blk_syntax
                     skip <= 1'b0; seg <= 3'd0; lossless <= hdr.lossless[0];
                     ymode <= DC_PRED; uvmode <= DC_PRED; ang_y <= 3'sd0; ang_uv <= 3'sd0; cfl_u <= 6'sd0; cfl_v <= 6'sd0;
                     use_fi <= 1'b0; fi_mode <= 3'd0; cdef_valid <= 1'b0; cdef_units <= 4'd0;
-                    nb_req <= 1'b1;
+                    nb_req <= 1'b1; pal_clr <= 1'b1;
                     st <= S_NB;
                 end
                 S_NB: if (nb_valid) begin
@@ -433,10 +473,10 @@ module blk_syntax
                 S_YMODE_W: if (sq_done) begin ymode <= sq_sym; st <= S_ANGY; end
                 S_ANGY: begin
                     if (bs >= BLOCK_8X8 && is_dir(ymode)) st <= S_ANGY_GO;
-                    else st <= hc ? S_UV : S_FI;
+                    else st <= hc ? S_UV : S_PAL;
                 end
                 S_ANGY_GO: st <= S_ANGY_W;
-                S_ANGY_W: if (sq_done) begin ang_y <= 3'(sq_sym - 4'd3); st <= hc ? S_UV : S_FI; end
+                S_ANGY_W: if (sq_done) begin ang_y <= 3'(sq_sym - 4'd3); st <= hc ? S_UV : S_PAL; end
                 S_UV: st <= S_UV_W;
                 S_UV_W: if (sq_done) begin
                     uvmode <= sq_sym;
@@ -471,20 +511,31 @@ module blk_syntax
                 end
                 S_ANGUV: begin
                     if (bs >= BLOCK_8X8 && is_dir(uvmode)) st <= S_ANGUV_GO;
-                    else st <= S_FI;
+                    else st <= S_PAL;
                 end
                 S_ANGUV_GO: st <= S_ANGUV_W;
-                S_ANGUV_W: if (sq_done) begin ang_uv <= 3'(sq_sym - 4'd3); st <= S_FI; end
-                // ---- palette (unsupported) / filter intra
+                S_ANGUV_W: if (sq_done) begin ang_uv <= 3'(sq_sym - 4'd3); st <= S_PAL; end
+                // ---- palette_mode_info (pal_syntax owns the symbols while in S_PAL_W)
+                S_PAL: begin
+                    if (pal_allowed) begin pal_start_mi <= 1'b1; st <= S_PAL_W; end
+                    else st <= S_FI;
+                end
+                S_PAL_W: if (pal_done_mi) st <= S_FI;
+                // ---- filter intra
                 S_FI: begin
-                    if (bs >= BLOCK_8X8 && bwp <= 8'd64 && bhp <= 8'd64 && hdr.allow_sct) unsupported <= 1'b1;
-                    if (hdr.enable_filter_intra && ymode == DC_PRED && bwp <= 8'd32 && bhp <= 8'd32) st <= S_FI_GO;
-                    else st <= S_TXD;
+                    if (hdr.enable_filter_intra && ymode == DC_PRED && pal_y == 4'd0 && bwp <= 8'd32 && bhp <= 8'd32) st <= S_FI_GO;
+                    else st <= S_PTOK;
                 end
                 S_FI_GO: st <= S_FI_W;
-                S_FI_W: if (sq_done) begin use_fi <= sq_sym[0]; st <= sq_sym[0] ? S_FIM : S_TXD; end
+                S_FI_W: if (sq_done) begin use_fi <= sq_sym[0]; st <= sq_sym[0] ? S_FIM : S_PTOK; end
                 S_FIM: st <= S_FIM_W;
-                S_FIM_W: if (sq_done) begin fi_mode <= sq_sym[2:0]; st <= S_TXD; end
+                S_FIM_W: if (sq_done) begin fi_mode <= sq_sym[2:0]; st <= S_PTOK; end
+                // ---- palette_tokens
+                S_PTOK: begin
+                    if (has_pal) begin pal_start_tok <= 1'b1; st <= S_PTOK_W; end
+                    else st <= S_TXD;
+                end
+                S_PTOK_W: if (pal_done_tok) st <= S_TXD;
                 // ---- tx size
                 S_TXD: begin
                     if (lossless) begin txsz <= TX_4X4; st <= S_RBC; end
@@ -580,8 +631,10 @@ module blk_syntax
                     blk_rec.use_fi <= use_fi; blk_rec.fi_mode <= fi_mode; blk_rec.txsz <= txsz; blk_rec.qidx <= cur_qidx;
                     blk_rec.delta_lf <= {dlf[3], dlf[2], dlf[1], dlf[0]};
                     blk_rec.cdef_valid <= cdef_valid; blk_rec.cdef_idx <= cdef_val; blk_rec.cdef_units <= cdef_units;
-                    st <= S_DONE;
+                    blk_rec.pal_y <= pal_y; blk_rec.pal_uv <= pal_uv; blk_rec.col_y <= col_y; blk_rec.col_u <= col_u; blk_rec.col_v <= col_v;
+                    st <= has_pal ? S_HOLD : S_DONE;
                 end
+                S_HOLD: if (blk_ack) st <= S_DONE;          // colour map readable through pm_* meanwhile
                 S_DONE: begin blk_done <= 1'b1; st <= S_IDLE; end
                 // ---- literal reader: lit_n equiprobable bools, MSB first
                 S_LIT: begin

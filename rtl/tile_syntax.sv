@@ -4,8 +4,9 @@
 // transform-block records stream out (Quant of the current transform block through q_addr/q_data while
 // tx_done is held, until tx_ack).
 //
-// Not yet supported (flagged on `unsupported`): palette (allow_screen_content_tools), intrabc,
-// loop-restoration unit syntax (read_lr: hdr.lr_any), inter frames.
+// Palette blocks are held after their record (pal_hold) until blk_ack, so the colour index map can be read
+// through pm_* (pm_plane/pm_x/pm_y -> pm_idx, 1-cycle latency) before the next block overwrites it.
+// Not yet supported (flagged on `unsupported`): intrabc, inter frames.
 module tile_syntax
   import cdf_map_pkg::*;
   import blk_tables_pkg::*;
@@ -37,7 +38,13 @@ module tile_syntax
     output logic              lr_done,
     output lr_rec_t           lr_rec,
     input  logic [9:0]        q_addr,
-    output logic signed [20:0] q_data
+    output logic signed [20:0] q_data,
+    // palette colour map of the block held on pal_hold
+    output logic              pal_hold,
+    input  logic              blk_ack,
+    input  logic              pm_plane,
+    input  logic [5:0]        pm_x, pm_y,
+    output logic [2:0]        pm_idx
 );
     localparam logic [4:0] BLOCK_8X8 = 5'd3, BLOCK_128X128 = 5'd15;
     localparam logic [3:0] P_NONE = 4'd0, P_HORZ = 4'd1, P_VERT = 4'd2, P_SPLIT = 4'd3, P_HORZ_A = 4'd4, P_HORZ_B = 4'd5,
@@ -107,6 +114,7 @@ module tile_syntax
     logic [3:0] a_pal_y, l_pal_y, a_pal_uv, l_pal_uv, seg_ul, seg_u, seg_l;
     logic [95:0] a_col_y, l_col_y, a_col_u, l_col_u;
     logic ctx_we, ctx_wbusy; logic [3:0] w_ymode; logic w_skip; logic [2:0] w_seg; logic [4:0] w_txsz;
+    logic [3:0] w_pal_y, w_pal_uv; logic [95:0] w_col_y, w_col_u;
     logic tx_req, tx_valid, tx_we, rbc_we, ctx_tbusy; logic [1:0] tx_plane; logic [10:0] tx_x4, tx_y4; logic [4:0] tx_sz, tx_bsize;
     logic [3:0] az_ctx; logic [1:0] dcs_ctx; logic [5:0] w_cul; logic [1:0] w_dccat;
     // block position for the ctx query: partition FSM (node) or blk_syntax (block)
@@ -126,7 +134,7 @@ module tile_syntax
                    .avail_u, .avail_l, .has_chroma, .avail_u_chroma, .avail_l_chroma,
                    .a_ymode, .l_ymode, .a_skip, .l_skip, .a_misize, .l_misize, .a_txsz, .l_txsz,
                    .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .seg_ul, .seg_u, .seg_l, .a_col_y, .l_col_y, .a_col_u, .l_col_u,
-                   .blk_we(ctx_we), .w_ymode, .w_skip, .w_seg, .w_txsz, .w_pal_y(4'd0), .w_pal_uv(4'd0), .w_col_y(96'd0), .w_col_u(96'd0), .wbusy(ctx_wbusy),
+                   .blk_we(ctx_we), .w_ymode, .w_skip, .w_seg, .w_txsz, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u, .wbusy(ctx_wbusy),
                    .tx_req, .tx_plane, .tx_x4, .tx_y4, .tx_sz, .tx_bsize, .tx_valid, .az_ctx, .dcs_ctx,
                    .tx_we, .w_cul, .w_dccat, .rbc_we);
     assign ctx_tbusy = 1'b0;   // blk_ctx's tx path is single-request; blk_syntax serialises its own use
@@ -135,7 +143,9 @@ module tile_syntax
     logic b_start, b_busy, b_unsup, sb_start;
     logic bq_go; logic [CDF_AW-1:0] bq_addr; logic [3:0] bq_n; logic [1:0] bq_kind;
     blk_syntax u_blk (.clk, .rst, .hdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
-                      .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec, .tx_ack,
+                      .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec, .tx_ack, .blk_ack, .pal_hold,
+                      .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u,
+                      .pm_plane, .pm_x, .pm_y, .pm_idx,
                       .sq_go(bq_go), .sq_addr(bq_addr), .sq_n(bq_n), .sq_kind(bq_kind), .sq_done(k_done), .sq_sym(k_sym),
                       .nb_req(nb_req_b), .nb_valid, .avail_u, .avail_l, .has_chroma, .a_ymode, .l_ymode, .a_skip, .l_skip, .a_txsz, .l_txsz,
                       .seg_ul, .seg_u, .seg_l, .ctx_we, .w_ymode, .w_skip, .w_seg, .w_txsz, .ctx_wbusy,

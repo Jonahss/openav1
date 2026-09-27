@@ -73,6 +73,11 @@ package syn_pkg;
         logic        cdef_valid;
         logic [2:0]  cdef_idx;
         logic [3:0]  cdef_units;               // 64x64 units of the superblock this cdef_idx applies to
+        logic [3:0]  pal_y;                    // palette sizes (0 = no palette)
+        logic [3:0]  pal_uv;
+        logic [95:0] col_y;                    // sorted palette colours, colour k at [12k +: 12]
+        logic [95:0] col_u;
+        logic [95:0] col_v;                    // (not sorted)
     } blk_rec_t;
 
     // Per-transform-block record; Quant is read through coef_rd's port while tx_done is held.

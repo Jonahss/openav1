@@ -314,6 +314,9 @@ class TileDecoder:
     def L(self, n, name):
         return self.dec.read_literal(n, name)
 
+    def NS(self, n, name):
+        return self.dec.read_ns(n, name)
+
     def is_inside(self, r, c):
         h = self.h
         return h.MiColStart <= c < h.MiColEnd and h.MiRowStart <= r < h.MiRowEnd
@@ -875,7 +878,7 @@ class TileDecoder:
 
     def _palette_map(self, blockWidth, blockHeight, onscreenWidth, onscreenHeight, n, tag):
         cmap = [[0] * blockWidth for _ in range(blockHeight)]
-        cmap[0][0] = self.dec.read_ns(n, "color_index_map_" + tag)
+        cmap[0][0] = self.NS(n, "color_index_map_" + tag)
         cdfs = self.cdf["Palette_Size_%d_%s_Color" % (n, "Y" if tag == "y" else "Uv")]
         for i in range(1, onscreenHeight + onscreenWidth - 1):
             j = min(i, onscreenWidth - 1)
