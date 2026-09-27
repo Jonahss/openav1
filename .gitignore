@@ -1,0 +1,7 @@
+venv/
+build/
+traces/
+third_party/
+__pycache__/
+sim_build/
+results.xml
