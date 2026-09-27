@@ -53,6 +53,27 @@ package syn_pkg;
         logic [95:0] qm_level;                 // SegQMLevel[plane][seg] at [(plane*8+seg)*4 +: 4]
     } rec_hdr_t;
 
+    // Frame-level parameters of the deblocking loop filter (spec 7.14; software fills this in).
+    typedef struct packed {
+        logic [12:0] frame_width;              // FrameWidth (pixels; edges at x >= FrameWidth are not filtered)
+        logic [12:0] frame_height;
+        logic [23:0] level;                    // loop_filter_level[0..3], 6 bits each at [6i +: 6]
+        logic [2:0]  sharpness;
+        logic        delta_enabled;            // loop_filter_delta_enabled
+        logic signed [6:0] ref_delta_intra;    // loop_filter_ref_deltas[INTRA_FRAME]
+        logic        delta_lf_multi;
+        logic [31:0] seg_lf_en;                // FeatureEnabled[seg][SEG_LVL_ALT_LF_Y_V + i] at [8i + seg]
+        logic [223:0] seg_lf_data;             // FeatureData[seg][SEG_LVL_ALT_LF_Y_V + i], signed 7 bits at [7 (8i + seg) +: 7]
+    } lf_hdr_t;
+
+    // Per-4x4 loop-filter state kept by mi_store (from the block records).
+    typedef struct packed {
+        logic [4:0]  bsize;
+        logic        skip;
+        logic [2:0]  seg;
+        logic [27:0] delta_lf;                 // 4 x signed 7 bits
+    } mi_lf_t;
+
     // Per loop-restoration-unit record (read_lr_unit).
     typedef struct packed {
         logic [1:0]  plane;
