@@ -14,7 +14,7 @@
 module itx1d
     import itx_ucode_pkg::*;
 #(
-    parameter int TW = 20                   // element width (bits); must cover the clamp range r
+    parameter int TW = 20                   // element width (bits): BitDepth + 10 covers every intermediate (20 for 8/10-bit, 22 for 12-bit)
 ) (
     input  logic                 clk,
     input  logic                 rst,
@@ -33,9 +33,14 @@ module itx1d
     // ------------------------------------------------------------------ state
     logic signed [TW-1:0] T [64];
     logic [7:0]           pc;
+    logic [2:0]           l_n;        // parameters latched at start
+    logic [4:0]           l_r;
+    logic [1:0]           l_wht;
 
     logic [ITX_ROW_W-1:0] row;
-    itx_ucode_rom u_rom (.addr(pc), .row(row));
+    logic [7:0]           prog_addr;
+    itx_ucode_rom  u_rom   (.addr(pc), .row(row));
+    itx_prog_start u_start (.pid(prog), .addr(prog_addr));
     wire [3:0] kind = row[3:0];
     localparam logic [3:0] K_OPS = 4'd1, K_PERM_DCT = 4'd2, K_PERM_ADST_IN = 4'd3, K_PERM_ADST_OUT = 4'd4,
                            K_ADST4 = 4'd5, K_IDENT = 4'd6, K_WHT = 4'd7, K_END = 4'd8;
@@ -62,8 +67,8 @@ module itx1d
     logic signed [TW-1:0] wv_a [NS];      // value written to index a (after flip handling)
     logic signed [TW-1:0] wv_b [NS];
     logic signed [TW-1:0] clip_lo, clip_hi;
-    assign clip_lo = -(TW'(1) <<< (r - 5'd1));
-    assign clip_hi =  (TW'(1) <<< (r - 5'd1)) - TW'(1);
+    assign clip_lo = -(TW'(1) <<< (l_r - 5'd1));
+    assign clip_hi =  (TW'(1) <<< (l_r - 5'd1)) - TW'(1);
 
     genvar gs;
     generate
@@ -116,7 +121,7 @@ module itx1d
     logic signed [TW-1:0] T_adst4 [4];
     logic signed [TW-1:0] T_wht   [4];
     logic [5:0]           N6;                         // 1 << n, as 6 bits (64 -> wraps; handled via n==6)
-    assign N6 = 6'(7'd1 << n);
+    assign N6 = 6'(7'd1 << l_n);
 
     always_comb begin
         // pair ops write-back
@@ -134,13 +139,13 @@ module itx1d
             logic [5:0] rev, idx_dct, idx_in, idx_out;
             logic pa, pb, pc_, pd;
             rev     = {i[0], i[1], i[2], i[3], i[4], i[5]};
-            idx_dct = rev >> (6 - n);
+            idx_dct = rev >> (6 - l_n);
             idx_in  = (i[0]) ? 6'(i - 1) : 6'(N6 - 6'(i) - 6'd1);
             pa  = i[3];
             pb  = i[2] ^ i[3];
             pc_ = i[1] ^ i[2];
             pd  = i[0] ^ i[1];
-            idx_out = 6'({pd, pc_, pb, pa} >> (4 - n));
+            idx_out = 6'({pd, pc_, pb, pa} >> (4 - l_n));
             case (kind)
                 K_PERM_DCT:      T_perm[i] = T[idx_dct];
                 K_PERM_ADST_IN:  T_perm[i] = T[idx_in];
@@ -153,7 +158,7 @@ module itx1d
             logic signed [TW+14:0] p1, p2;
             p1 = T[i] * 15'sd5793;
             p2 = T[i] * 15'sd11586;
-            case (n)
+            case (l_n)
                 3'd2:    T_ident[i] = TW'((p1 + (TW+15)'(2048)) >>> 12);
                 3'd3:    T_ident[i] = T[i] <<< 1;
                 3'd4:    T_ident[i] = TW'((p2 + (TW+15)'(2048)) >>> 12);
@@ -191,10 +196,10 @@ module itx1d
         // WHT (spec 7.13.2.10)
         begin
             logic signed [TW-1:0] a, b, c, d, e;
-            a = T[0] >>> wht_shift;
-            c = T[1] >>> wht_shift;
-            d = T[2] >>> wht_shift;
-            b = T[3] >>> wht_shift;
+            a = T[0] >>> l_wht;
+            c = T[1] >>> l_wht;
+            d = T[2] >>> l_wht;
+            b = T[3] >>> l_wht;
             a = a + c;
             d = d - b;
             e = (a - d) >>> 1;
@@ -215,8 +220,11 @@ module itx1d
         end else if (!busy) begin
             if (start) begin
                 for (int i = 0; i < 64; i++) T[i] <= in_vec[i*TW +: TW];
-                pc   <= ITX_PROG_START[prog];
-                busy <= 1'b1;
+                pc    <= prog_addr;
+                l_n   <= n;
+                l_r   <= r;
+                l_wht <= wht_shift;
+                busy  <= 1'b1;
             end
         end else begin
             pc <= pc + 8'd1;

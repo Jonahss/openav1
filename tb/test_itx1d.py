@@ -11,7 +11,7 @@ from cocotb.triggers import RisingEdge, ReadOnly, Timer, ClockCycles
 
 import itx_model as m
 
-TW = 20
+TW = int(os.environ.get("ITX_TW", "20"))
 MASK = (1 << TW) - 1
 
 PROGRAMS = [(pid, n, cls) for pid, (n, cls) in enumerate(

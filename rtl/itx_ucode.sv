@@ -8,8 +8,29 @@ package itx_ucode_pkg;
   localparam int ITX_NSLOTS = 4;
   localparam int ITX_ROWS = 151;
   localparam int ITX_ROW_W = 96;
-  localparam logic [7:0] ITX_PROG_START [13] = '{8'd0, 8'd4, 8'd10, 8'd23, 8'd51, 8'd115, 8'd117, 8'd125, 8'd141, 8'd143, 8'd145, 8'd147, 8'd149};
 endpackage
+
+// program id -> first ROM row
+module itx_prog_start (input logic [3:0] pid, output logic [7:0] addr);
+  always_comb begin
+    case (pid)
+      4'd0: addr = 8'd0;
+      4'd1: addr = 8'd4;
+      4'd2: addr = 8'd10;
+      4'd3: addr = 8'd23;
+      4'd4: addr = 8'd51;
+      4'd5: addr = 8'd115;
+      4'd6: addr = 8'd117;
+      4'd7: addr = 8'd125;
+      4'd8: addr = 8'd141;
+      4'd9: addr = 8'd143;
+      4'd10: addr = 8'd145;
+      4'd11: addr = 8'd147;
+      4'd12: addr = 8'd149;
+      default: addr = 8'd149;
+    endcase
+  end
+endmodule
 
 module itx_ucode_rom (input logic [7:0] addr, output logic [95:0] row);
   always_comb begin

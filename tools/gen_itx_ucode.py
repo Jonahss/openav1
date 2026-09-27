@@ -154,8 +154,18 @@ def main():
                  K_PERM_ADST_OUT: "perm_adst_out", K_ADST4: "adst4", K_IDENT: "identity", K_WHT: "wht",
                  K_END: "end"}[kind]))
             idx += 1
-    out.append("  localparam logic [7:0] ITX_PROG_START [13] = '{%s};" % ", ".join("8'd%d" % s for s in starts))
     out.append("endpackage")
+    out.append("")
+    out.append("// program id -> first ROM row")
+    out.append("module itx_prog_start (input logic [3:0] pid, output logic [7:0] addr);")
+    out.append("  always_comb begin")
+    out.append("    case (pid)")
+    for pid, st in enumerate(starts):
+        out.append("      4'd%d: addr = 8'd%d;" % (pid, st))
+    out.append("      default: addr = 8'd%d;" % starts[-1])
+    out.append("    endcase")
+    out.append("  end")
+    out.append("endmodule")
     out.append("")
     out.append("module itx_ucode_rom (input logic [7:0] addr, output logic [%d:0] row);" % (W - 1))
     out.append("  always_comb begin")
