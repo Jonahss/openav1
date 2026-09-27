@@ -13,21 +13,54 @@ import sys
 text = open(sys.argv[1], encoding="utf-8").read()
 lines = text.split("\n")
 
-# ---- constants -------------------------------------------------------------------------------
+# ---- constants: NAME / value (or expression over earlier constants) / description -----------------
 consts = {}
+def _try_eval(expr, env):
+    try:
+        return int(eval(expr, {}, env))
+    except Exception:
+        return None
 i = 0
 while i < len(lines) - 1:
     a = lines[i].strip()
     b = lines[i + 1].strip()
-    if re.fullmatch(r"[A-Z][A-Z0-9_]+", a) and re.fullmatch(r"-?\d+", b) and a not in consts:
-        # only accept within the definitions section (first 3000 lines) to avoid picking up enum tables
-        if i < 3000:
-            consts[a] = int(b)
-        i += 2
-        continue
+    if re.fullmatch(r"[A-Z][A-Z0-9_]+", a) and re.fullmatch(r"[-0-9A-Z_ <>+*()]+", b) and re.search(r"\d", b) and a not in consts:
+        v = _try_eval(b, consts)
+        if v is not None:
+            consts[a] = v
+            i += 2
+            continue
     i += 1
 
-# ---- tables ------------------------------------------------------------------------------------
+# ---- enumerations: runs of (value, NAME) line pairs starting at 0 --------------------------------
+enums = {}
+i = 0
+while i < len(lines) - 1:
+    def name_at(j):
+        # (value, NAME) or (value, other-number, NAME)
+        if j + 1 < len(lines) and re.fullmatch(r"[A-Z][A-Z0-9_]+", lines[j + 1].strip()):
+            return j + 1
+        if j + 2 < len(lines) and re.fullmatch(r"-?\d+", lines[j + 1].strip()) and re.fullmatch(r"[A-Z][A-Z0-9_]+", lines[j + 2].strip()):
+            return j + 2
+        return None
+    if lines[i].strip() == "0" and name_at(i) is not None:
+        j = i; expect = 0; run = []
+        while j < len(lines) - 1 and lines[j].strip() == str(expect) and name_at(j) is not None:
+            nj = name_at(j)
+            # value = the numeric column adjacent to the name (3-column tables list the coded index first)
+            run.append((int(lines[nj - 1].strip()), lines[nj].strip())); expect += 1
+            j = nj + 1
+            while j < len(lines) and lines[j].strip() == "":
+                j += 1
+        if len(run) >= 2:
+            for v, nme in run:
+                enums.setdefault(nme, v)
+        i = max(j, i + 1)
+    else:
+        i += 1
+symbols = dict(enums); symbols.update(consts)   # constants win
+
+# ---- tables --------------------------------------------------------------------------------------
 tables = {}
 order = []
 pat = re.compile(r"^([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*\{")
@@ -39,7 +72,6 @@ while i < len(lines):
         continue
     name, dims_txt = m.group(1), m.group(2)
     dims = re.findall(r"\[([^\]]*)\]", dims_txt)
-    # collect until braces balance
     buf = lines[i][lines[i].index("=") + 1:]
     depth = buf.count("{") - buf.count("}")
     j = i + 1
@@ -48,11 +80,25 @@ while i < len(lines):
         depth += lines[j].count("{") - lines[j].count("}")
         j += 1
     body = buf[:buf.rfind("}") + 1]
-    nums = [int(x) for x in re.findall(r"-?\d+", body)]
+    body = re.sub(r"//[^\n]*", "", body)                       # strip comments
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    elems = [e.strip() for e in re.split(r"[{},\n]+", body) if e.strip()]
+    nums = []
+    bad = None
+    for e in elems:
+        try:
+            nums.append(int(eval(e, {}, symbols)))
+        except Exception as ex:
+            bad = f"{e!r}: {ex}"
+            break
     try:
-        shape = [int(eval(d, {}, consts)) for d in dims]
-    except Exception as e:  # unknown symbol
+        shape = [int(eval(d, {}, symbols)) for d in dims]
+    except Exception as e:
         print(f"# skip {name}: dims {dims}: {e}", file=sys.stderr)
+        i = j
+        continue
+    if bad:
+        print(f"# skip {name}: element {bad} (line {i+1})", file=sys.stderr)
         i = j
         continue
     total = 1
@@ -81,9 +127,14 @@ print("CONST = {")
 for k in sorted(consts):
     print(f"    {k!r}: {consts[k]},")
 print("}")
+print("ENUM = {")
+for k in sorted(enums):
+    print(f"    {k!r}: {enums[k]},")
+print("}")
+print("globals().update(ENUM)")
 print("globals().update(CONST)")
 print()
 for name in order:
     shape, val = tables[name]
     print(f"{name} = {val!r}  # dims {shape}")
-print(f"\n# {len(consts)} constants, {len(tables)} tables", file=sys.stderr)
+print(f"\n# {len(consts)} constants, {len(enums)} enum names, {len(tables)} tables", file=sys.stderr)
