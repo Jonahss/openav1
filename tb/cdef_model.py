@@ -139,8 +139,9 @@ class Cdef:
         hh = 8 >> subY
         src = self.cur[plane]
         dst = self.out[plane]
-        H = len(src)
-        W = len(src[0])
+        # is_inside_filter_region: the MI-aligned frame (buffers may carry extra padding rows/cols)
+        H = (h.MiRows * MI_SIZE) >> subY
+        W = (h.MiCols * MI_SIZE) >> subX
         pt = PRI_TAPS[(priStr >> coeffShift) & 1]
         st = SEC_TAPS[(priStr >> coeffShift) & 1]
         for i in range(hh):

@@ -85,18 +85,26 @@ def main():
     max_tiles = int(sys.argv[sys.argv.index("--max-tiles") + 1]) if "--max-tiles" in sys.argv else None
     path = args[0]
     tiles = []
-    cur = None
+    cur = None          # tile receiving header fields (T/H come first for all tiles of a frame)
+    pending = []        # tiles of the frame being set up
+    active = {}         # (tile_row, tile_col) -> tile, for the frame being decoded (D routes events)
     with open(path) as fh:
         for line in fh:
             if not line or line[0] == "#":
                 continue
             f = line.split()
             k = f[0]
-            if k == "T":                       # a tile starts with T (msac init), then its H (header)
+            if k == "T":                       # msac init: T then H, for every tile, before decoding starts
                 cur = dict(hdr=None, data=bytes.fromhex(f[3]) if len(f) > 3 else b"", syms=[], coefs=[])
                 tiles.append(cur)
+                pending.append(cur)
             elif k == "H":
                 cur["hdr"] = [int(x) for x in f[1:]]
+            elif k == "D":                     # a tile's superblock row starts decoding
+                if pending:
+                    active = {(t["hdr"][0], t["hdr"][1]): t for t in pending}
+                    pending = []
+                cur = active[(int(f[1]), int(f[2]))]
             elif k == "S":
                 if f[1] == "A":
                     n = int(f[2])

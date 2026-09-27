@@ -19,17 +19,25 @@ def main():
     path = args[0]
     tiles = []
     cur = None
+    pending = []
+    active = {}
     with open(path) as fh:
         for line in fh:
-            if not line or line[0] in "#SU":
+            if not line or line[0] in "#SUC":
                 continue
             f = line.split()
             k = f[0]
             if k == "T":
                 cur = dict(hdr=None, data=bytes.fromhex(f[3]) if len(f) > 3 else b"", P={}, Q={}, R={})
                 tiles.append(cur)
+                pending.append(cur)
             elif k == "H":
                 cur["hdr"] = [int(x) for x in f[1:]]
+            elif k == "D":
+                if pending:
+                    active = {(t["hdr"][0], t["hdr"][1]): t for t in pending}
+                    pending = []
+                cur = active[(int(f[1]), int(f[2]))]
             elif k == "P":
                 v = [int(x) for x in f[1:]]
                 plane, x4, y4, w, h = v[:5]
@@ -48,7 +56,6 @@ def main():
                 cur["R"][(plane, x4, y4)] = (w, h, v[7:7 + w * h])
     stats = Counter()
     frame = None
-    prev_hdr = None
     bad = 0
     for ti, t in enumerate(tiles):
         hdr = tm.FrameHeader(t["hdr"])

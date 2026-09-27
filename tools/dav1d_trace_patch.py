@@ -7,6 +7,7 @@ Trace format v3 (one event per line, enabled by DAV1D_TRACE=<path|->, DAV1D_TRAC
 1 sym, 2 coef, 4 pred, 8 recon; --threads 1 and an asm-free build are required):
   H <tile_row> <tile_col> <col_start> <col_end> <row_start> <row_end> <frame header fields...>  (before each T; see setup_tile hook)
   T <tile_bytes> <disable_cdf_update> <hex tile bytes>
+  D <tile_row> <tile_col> <sby>   (a tile's superblock row starts decoding; with several tiles dav1d interleaves them)
   S A <n> <val> <rng> <cnt> <icdf[0..n-1]> [<icdf'[0..n-1]> <cnt'>]   (n = N-1; inverted CDFs)
   S B <f> <bit> <rng>        followed by  U <cnt> <f'> <cnt'>  when the bool was adaptive
   S E <bit> <rng>
@@ -363,6 +364,15 @@ patch(src / "ipred_prepare_tmpl.c", [
                             topleft_out[0] * 6 + 8) >> 4;'''),
 ], 1)
 patch(src / "decode.c", [
+    ('''    const int col_sb128_start = col_sb_start >> !f->seq_hdr->sb128;
+
+    if (IS_INTER_OR_SWITCH(f->frame_hdr) || f->frame_hdr->allow_intrabc) {''',
+     '''    const int col_sb128_start = col_sb_start >> !f->seq_hdr->sb128;
+
+    if (DAV1D_TRACE_ON(DAV1D_TRACE_SYM))   /* openav1: this tile's superblock row starts decoding (tiles interleave) */
+        fprintf(dav1d_trace_fp, "D %d %d %d\n", tile_row, tile_col, t->by >> f->sb_shift);
+
+    if (IS_INTER_OR_SWITCH(f->frame_hdr) || f->frame_hdr->allow_intrabc) {'''),
     ('#include "src/decode.h"\n', '#include "src/decode.h"\n#include "src/trace.h"\n'),
     ('''    dav1d_msac_init(&ts->msac, data, sz, f->frame_hdr->disable_cdf_update);
 ''',

@@ -9,7 +9,7 @@ export LD_LIBRARY_PATH=$PWD/prefix-trace/lib/aarch64-linux-gnu:$PWD/prefix-trace
 source venv/bin/activate
 mkdir -p traces
 rc=0
-[ $# -eq 0 ] && set -- streams/synth/*.ivf
+[ $# -eq 0 ] && set -- streams/synth/*.ivf streams/synth2/*.ivf
 for st in "$@"; do
   name=$(basename "$st" .ivf); bd=8; [[ $name == *10bit* ]] && bd=10; [[ $name == *12bit* ]] && bd=12
   tr=traces/$name.txt

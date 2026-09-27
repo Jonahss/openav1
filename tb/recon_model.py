@@ -31,8 +31,10 @@ class FrameRecon(tm.TileDecoder):
             for plane in range(h.NumPlanes):
                 subX = h.subsampling_x if plane > 0 else 0
                 subY = h.subsampling_y if plane > 0 else 0
-                W = (h.MiCols * 4) >> subX
-                H = (h.MiRows * 4) >> subY
+                # blocks may extend past the MI-aligned frame size (odd sizes, big blocks at the edge);
+                # CurrFrame is conceptually unbounded there, so allocate a margin of one 128x128 superblock
+                W = ((h.MiCols * 4) >> subX) + 128
+                H = ((h.MiRows * 4) >> subY) + 128
                 frame["planes"].append([[0] * W for _ in range(H)])
         self.planes = frame["planes"]
         self.pred_events = []     # ("P"/"Q", plane, x4, y4, w, h, pixels)
