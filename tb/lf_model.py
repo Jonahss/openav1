@@ -33,6 +33,9 @@ class LoopFilter:
 
     def apply(self):
         h = self.h
+        # decode_frame_wrapup: the loop filter process runs only if a luma level is non-zero
+        if h.loop_filter_level[0] == 0 and h.loop_filter_level[1] == 0:
+            return
         for plane in range(h.NumPlanes):
             if plane == 0 or h.loop_filter_level[1 + plane]:
                 for pss in range(2):
