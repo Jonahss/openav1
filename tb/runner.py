@@ -11,9 +11,11 @@ waves = os.environ.get("WAVES", "0") == "1"
 sys.path.insert(0, str(ROOT / "tb"))
 r = get_runner("verilator")
 EXTRA = {"itx1d": ["itx_ucode.sv", "cos128_lut.sv"], "itx2d": ["itx_ucode.sv", "cos128_lut.sv", "itx1d.sv"],
-         "coef_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv", "sym_seq.sv", "coef_rd.sv"]}
+         "coef_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv", "sym_seq.sv", "coef_rd.sv"],
+         "tile_syntax": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
+                         "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "blk_syntax.sv"]}
 sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{top}.sv"]
 r.build(sources=sources, hdl_toplevel=top,
-        build_dir=ROOT / "build" / top, build_args=["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL"] + (["--trace-fst"] if waves else []),
+        build_dir=ROOT / "build" / top, build_args=["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves else []),
         waves=waves)
 r.test(hdl_toplevel=top, test_module=mod, build_dir=ROOT / "build" / top, waves=waves)

@@ -3,8 +3,8 @@
 //
 //   go (with addr/n/kind)  ->  cycle+1: msac request (row read overlaps the go cycle)
 //                          ->  cycle+2 (if msac accepted at once): done=1, sym valid, row written back
-// kind: 0 adaptive symbol (row at addr), 1 fixed-probability bool (row at addr, no adaptation),
-//       2 equiprobable bool (no CDF access at all). n = N-1.
+// kind: 0 adaptive symbol (row at addr), 1 fixed-probability bool with probability f_in (no CDF access),
+//       2 equiprobable bool (no CDF access), 3 peek: return the row at addr on row_out, no msac. n = N-1.
 module sym_seq
   import cdf_map_pkg::*;
 (
@@ -14,9 +14,11 @@ module sym_seq
     input  logic [CDF_AW-1:0] addr,
     input  logic [3:0]        n,
     input  logic [1:0]        kind,
+    input  logic [15:0]       f_in,          // kind 1: the bool's inverted probability (icdf[0]); row entries ignored
     output logic              busy,
     output logic              done,
     output logic [3:0]        sym,
+    output logic [245:0]      row_out,       // kind 3 (peek): the row at addr, valid with done
     // cdf store
     output logic              cdf_rd_en,
     output logic [CDF_AW-1:0] cdf_rd_addr,
@@ -41,25 +43,27 @@ module sym_seq
     logic [CDF_AW-1:0] l_addr;
     logic [3:0]        l_n;
     logic [1:0]        l_kind;
+    logic [15:0]       l_f;
     logic [245:0]      row;           // CDF row captured for the request (held while waiting for ready)
 
-    assign cdf_rd_en   = go && kind != 2'd2;
+    assign cdf_rd_en   = go && (kind == 2'd0 || kind == 2'd3);
     assign cdf_rd_addr = addr;
 
     // a new `go` is accepted when idle or in the very cycle the previous symbol completes (back-to-back
     // symbols; the previous row's write-back and the new row's read happen together -- cdf_store forwards)
-    wire accept_go = go && (st == S_IDLE || (st == S_RESP && resp_valid));
+    wire accept_go = go && (st == S_IDLE || (st == S_RESP && resp_valid) || (st == S_REQ && l_kind == 2'd3));
 
     always_ff @(posedge clk) begin
         if (rst) begin
             st <= S_IDLE;
         end else begin
             if (accept_go) begin
-                l_addr <= addr; l_n <= n; l_kind <= kind;
+                l_addr <= addr; l_n <= n; l_kind <= kind; l_f <= f_in;
                 st <= S_REQ;
             end else begin
                 case (st)
-                    S_REQ:  if (req_ready) st <= S_RESP;
+                    S_REQ:  if (l_kind == 2'd3) st <= S_IDLE;
+                            else if (req_ready) st <= S_RESP;
                     S_RESP: if (resp_valid) st <= S_IDLE;
                     default: st <= S_IDLE;
                 endcase
@@ -73,14 +77,15 @@ module sym_seq
     always_ff @(posedge clk) if (first_req) row <= cdf_rd_data;
     wire [245:0] row_now = first_req ? cdf_rd_data : row;
 
-    assign req_valid = (st == S_REQ);
+    assign req_valid = (st == S_REQ) && (l_kind != 2'd3);
     assign req_kind  = l_kind;
     assign req_n     = l_n;
-    assign req_cdf   = row_now[239:0];
+    assign req_cdf   = (l_kind == 2'd1) ? {224'd0, l_f} : row_now[239:0];
     assign req_cnt   = row_now[245:240];
+    assign row_out   = row_now;
 
     assign busy = (st != S_IDLE);
-    assign done = (st == S_RESP) && resp_valid;
+    assign done = ((st == S_RESP) && resp_valid) || ((st == S_REQ) && l_kind == 2'd3);
     assign sym  = resp_sym;
 
     assign cdf_wb_we   = done && (l_kind == 2'd0);

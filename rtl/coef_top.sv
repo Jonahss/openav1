@@ -67,12 +67,12 @@ module coef_top
     logic sel_t;                       // 1: testbench sequencer owns msac/cdf
     assign sel_t = t_busy || tb_go;   // the block level never starts a symbol while coef_rd is active
 
-    sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .busy(c_busy), .done(c_done), .sym(c_sym),
+    sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(c_busy), .done(c_done), .sym(c_sym),
                     .cdf_rd_en(c_rd_en), .cdf_rd_addr(c_rd_addr), .cdf_rd_data(rd_data),
                     .cdf_wb_we(c_wb_we), .cdf_wb_addr(c_wb_addr), .cdf_wb_data(c_wb_data),
                     .req_valid(c_req_valid), .req_ready(req_ready && !sel_t), .req_kind(c_req_kind), .req_n(c_req_n), .req_cdf(c_req_cdf), .req_cnt(c_req_cnt),
                     .resp_valid(resp_valid && !sel_t), .resp_sym, .resp_cdf, .resp_cnt);
-    sym_seq u_sq_t (.clk, .rst, .go(tb_go), .addr(tb_addr), .n(tb_n), .kind(tb_kind), .busy(t_busy), .done(tb_done), .sym(tb_sym),
+    sym_seq u_sq_t (.clk, .rst, .go(tb_go), .addr(tb_addr), .n(tb_n), .kind(tb_kind), .f_in(16'd0), .row_out(), .busy(t_busy), .done(tb_done), .sym(tb_sym),
                     .cdf_rd_en(t_rd_en), .cdf_rd_addr(t_rd_addr), .cdf_rd_data(rd_data),
                     .cdf_wb_we(t_wb_we), .cdf_wb_addr(t_wb_addr), .cdf_wb_data(t_wb_data),
                     .req_valid(t_req_valid), .req_ready(req_ready && sel_t), .req_kind(t_req_kind), .req_n(t_req_n), .req_cdf(t_req_cdf), .req_cnt(t_req_cnt),

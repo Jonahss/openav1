@@ -95,7 +95,7 @@ def make_params(rng, args):
     q["cdef_y_sec"] = [rng.randint(0, 3) for _ in range(n)]
     q["cdef_uv_pri"] = [rng.randint(0, 15) for _ in range(n)]
     q["cdef_uv_sec"] = [rng.randint(0, 3) for _ in range(n)]
-    q["FrameRestorationType"] = [rng.choice([0, 1, 2, 3]) for _ in range(3)]
+    q["FrameRestorationType"] = [0, 0, 0] if args.get("nolr") else [rng.choice([0, 1, 2, 3]) for _ in range(3)]
     q["lr_unit_shift"] = rng.randint(1 if seq["sb128"] else 0, 2)
     q["lr_uv_shift"] = rng.randint(0, 1)
     q["TxMode"] = 0 if lossless else rng.choice([1, 2, 2])
@@ -206,7 +206,7 @@ def main():
     args["h"] = opt("--h", 96)
     args["bd"] = opt("--bd", 8)
     args["fmt"] = opt("--fmt", "420", str)
-    for flag in ("sb128", "tiles", "screen", "lossless"):
+    for flag in ("sb128", "tiles", "screen", "lossless", "nolr"):
         args[flag] = ("--" + flag) in argv
     data, info = generate(args["seed"], args)
     open(out, "wb").write(data)
