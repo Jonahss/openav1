@@ -293,6 +293,10 @@ class TileDecoder:
         self.ReadDeltas = 0
         self.RefLrWiener = [[[3, -7, 15] for _ in range(2)] for _ in range(3)]
         self.RefSgrXqd = [[-32, 31] for _ in range(3)]
+        self.LrType = {}       # (plane, unitRow, unitCol) -> restoration type
+        self.LrWiener = {}     # (plane, unitRow, unitCol) -> [[3 coefs pass 0], [3 coefs pass 1]]
+        self.LrSgrSet = {}     # (plane, unitRow, unitCol) -> set
+        self.LrSgrXqd = {}     # (plane, unitRow, unitCol) -> [w0, w1]
         self.events = []          # ("C", plane, x4, y4, txSz, txType, eob, dequant rows) etc.
         self.blocks = []          # decoded block infos (for inspection)
         self.Quant = [0] * 1024
@@ -1395,7 +1399,10 @@ class TileDecoder:
             restoration_type = RESTORE_SGRPROJ if self.sym(self.cdf["Use_Sgrproj"], "use_sgrproj") else RESTORE_NONE
         else:
             restoration_type = self.sym(self.cdf["Restoration_Type"], "restoration_type")
+        key = (plane, unitRow, unitCol)
+        self.LrType[key] = restoration_type
         if restoration_type == RESTORE_WIENER:
+            coefs = [[0, 0, 0], [0, 0, 0]]
             for pss in range(2):
                 firstCoeff = 1 if plane else 0
                 for j in range(firstCoeff, 3):
@@ -1403,9 +1410,13 @@ class TileDecoder:
                     mx = T.Wiener_Taps_Max[j]
                     k = T.Wiener_Taps_K[j]
                     v = self.decode_signed_subexp_with_ref_bool(mn, mx + 1, k, self.RefLrWiener[plane][pss][j])
+                    coefs[pss][j] = v
                     self.RefLrWiener[plane][pss][j] = v
+            self.LrWiener[key] = coefs
         elif restoration_type == RESTORE_SGRPROJ:
             lr_sgr_set = self.L(SGRPROJ_PARAMS_BITS, "lr_sgr_set")
+            self.LrSgrSet[key] = lr_sgr_set
+            xqd = [0, 0]
             for i in range(2):
                 radius = T.Sgr_Params[lr_sgr_set][i * 2]
                 mn = T.Sgrproj_Xqd_Min[i]
@@ -1416,7 +1427,9 @@ class TileDecoder:
                     v = 0
                     if i == 1:
                         v = clip3(mn, mx, (1 << SGRPROJ_PRJ_BITS) - self.RefSgrXqd[plane][0])
+                xqd[i] = v
                 self.RefSgrXqd[plane][i] = v
+            self.LrSgrXqd[key] = xqd
 
     def decode_signed_subexp_with_ref_bool(self, low, high, k, r):
         x = self.decode_unsigned_subexp_with_ref_bool(high - low, k, r - low)

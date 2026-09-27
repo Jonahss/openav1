@@ -15,6 +15,7 @@ import tile_model as tm     # noqa: E402
 import recon_model as rm    # noqa: E402
 import lf_model as lfm      # noqa: E402
 import cdef_model as cdm    # noqa: E402
+import lr_model as lrm      # noqa: E402
 import av1_tables as T      # noqa: E402
 
 
@@ -31,7 +32,10 @@ class FrameState:
         self.DeltaLFs = [[None] * C for _ in range(R)]
         self.LoopfilterTxSizes = [[row[:] for row in d] for d in decs[0].LoopfilterTxSizes]
         self.cdef_idx = {}
+        self.LrType, self.LrWiener, self.LrSgrSet, self.LrSgrXqd = {}, {}, {}, {}
         for d in decs:
+            self.LrType.update(d.LrType); self.LrWiener.update(d.LrWiener)
+            self.LrSgrSet.update(d.LrSgrSet); self.LrSgrXqd.update(d.LrSgrXqd)
             th = d.h
             for r in range(th.MiRowStart, min(th.MiRowEnd, R)):
                 for c in range(th.MiColStart, min(th.MiColEnd, C)):
@@ -121,8 +125,11 @@ def main():
         state = FrameState(hdr, decs)
         if stage in ("lf", "cdef", "lr"):
             lfm.LoopFilter(hdr, state, planes).apply()
+        deblocked = planes
         if stage in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             planes = cdm.Cdef(hdr, state, planes).apply()
+        if stage == "lr":
+            planes = lrm.LoopRestoration(hdr, state, deblocked, planes).apply()
         if fi >= len(refs):
             break
         for p, (w, h) in enumerate(sizes):
