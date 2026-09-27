@@ -63,16 +63,25 @@ symbols = dict(enums); symbols.update(consts)   # constants win
 # ---- tables --------------------------------------------------------------------------------------
 tables = {}
 order = []
-pat = re.compile(r"^([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*\{")
+pat = re.compile(r"^([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*(\{)?\s*$|^([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*\{")
 i = 0
 while i < len(lines):
     m = pat.match(lines[i])
     if not m:
         i += 1
         continue
-    name, dims_txt = m.group(1), m.group(2)
+    if m.group(1):
+        name, dims_txt = m.group(1), m.group(2)
+        if not m.group(3) and not (i + 1 < len(lines) and lines[i + 1].strip().startswith("{")):
+            i += 1
+            continue
+    else:
+        name, dims_txt = m.group(4), m.group(5)
     dims = re.findall(r"\[([^\]]*)\]", dims_txt)
     buf = lines[i][lines[i].index("=") + 1:]
+    if "{" not in buf:                      # opening brace on the next line
+        i += 1
+        buf = lines[i]
     depth = buf.count("{") - buf.count("}")
     j = i + 1
     while depth > 0 and j < len(lines):
@@ -137,4 +146,7 @@ print()
 for name in order:
     shape, val = tables[name]
     print(f"{name} = {val!r}  # dims {shape}")
+print("# tables the spec defines by formula rather than by listing")
+print("Block_Width = [4 * x for x in Num_4x4_Blocks_Wide]")
+print("Block_Height = [4 * x for x in Num_4x4_Blocks_High]")
 print(f"\n# {len(consts)} constants, {len(enums)} enum names, {len(tables)} tables", file=sys.stderr)

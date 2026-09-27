@@ -5,6 +5,7 @@ Idempotent: refuses to run twice. Usage: tools/dav1d_trace_patch.py third_party/
 
 Trace format v3 (one event per line, enabled by DAV1D_TRACE=<path|->, DAV1D_TRACE_MASK bits
 1 sym, 2 coef, 4 pred, 8 recon; --threads 1 and an asm-free build are required):
+  H <tile_row> <tile_col> <col_start> <col_end> <row_start> <row_end> <frame header fields...>  (before each T; see setup_tile hook)
   T <tile_bytes> <disable_cdf_update> <hex tile bytes>
   S A <n> <val> <rng> <cnt> <icdf[0..n-1]> [<icdf'[0..n-1]> <cnt'>]   (n = N-1; inverted CDFs)
   S B <f> <bit> <rng>        followed by  U <cnt> <f'> <cnt'>  when the bool was adaptive
@@ -360,5 +361,44 @@ patch(src / "ipred_prepare_tmpl.c", [
         if (mode == Z2_PRED && tw + th >= 6 && filter_edge)
             *topleft_out = ((topleft_out[-1] + topleft_out[1]) * 5 +
                             topleft_out[0] * 6 + 8) >> 4;'''),
+], 1)
+patch(src / "decode.c", [
+    ('#include "src/decode.h"\n', '#include "src/decode.h"\n#include "src/trace.h"\n'),
+    ('''    dav1d_msac_init(&ts->msac, data, sz, f->frame_hdr->disable_cdf_update);
+''',
+     '''    dav1d_msac_init(&ts->msac, data, sz, f->frame_hdr->disable_cdf_update);
+
+    if (DAV1D_TRACE_ON(DAV1D_TRACE_SYM)) {
+        /* openav1: frame header fields the tile syntax depends on, plus this tile's bounds (4x4 units) */
+        const Dav1dFrameHeader *const h = f->frame_hdr;
+        const Dav1dSequenceHeader *const sh = f->seq_hdr;
+        fprintf(dav1d_trace_fp, "H %d %d %d %d %d %d", tile_row, tile_col,
+                col_sb_start << sb_shift, imin(col_sb_end << sb_shift, f->bw),
+                row_sb_start << sb_shift, imin(row_sb_end << sb_shift, f->bh));
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d %d %d %d %d", f->bw, f->bh, f->cur.p.bpc, (int) f->cur.p.layout,
+                sh->sb128, (int) h->frame_type, h->primary_ref_frame, (int) h->txfm_mode, h->reduced_txtp_set,
+                h->disable_cdf_update);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d %d %d %d %d", h->quant.yac, h->quant.ydc_delta, h->quant.udc_delta,
+                h->quant.uac_delta, h->quant.vdc_delta, h->quant.vac_delta, h->quant.qm, h->quant.qm_y, h->quant.qm_u,
+                h->quant.qm_v);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d", h->delta.q.present, h->delta.q.res_log2, h->delta.lf.present,
+                h->delta.lf.res_log2, h->delta.lf.multi);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d %d %d", h->allow_screen_content_tools, h->allow_intrabc,
+                sh->filter_intra, sh->intra_edge_filter, sh->cdef, h->cdef.damping, h->cdef.n_bits, h->all_lossless);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d", (int) h->restoration.type[0], (int) h->restoration.type[1],
+                (int) h->restoration.type[2], h->restoration.unit_size[0], h->restoration.unit_size[1]);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d %d", h->width[0], h->width[1], h->height, h->super_res.enabled,
+                h->super_res.width_scale_denominator, sh->ss_hor, sh->ss_ver);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d", h->segmentation.enabled, h->segmentation.update_map,
+                h->segmentation.temporal, h->segmentation.seg_data.preskip, h->segmentation.seg_data.last_active_segid);
+        for (int s = 0; s < 8; s++) {
+            const Dav1dSegmentationData *const d = &h->segmentation.seg_data.d[s];
+            fprintf(dav1d_trace_fp, " %d %d %d %d %d %d %d %d %d %d", h->segmentation.lossless[s],
+                    h->segmentation.qidx[s], d->delta_q, d->delta_lf_y_v, d->delta_lf_y_h, d->delta_lf_u,
+                    d->delta_lf_v, d->ref, d->skip, d->globalmv);
+        }
+        fputc('\n', dav1d_trace_fp);
+    }
+'''),
 ], 1)
 print("patched", root)
