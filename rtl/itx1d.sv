@@ -112,14 +112,35 @@ module itx1d #(
     end
     /* verilator lint_on UNUSEDSIGNAL */
 
+    // ------------------------------------------------------------------ permutation index functions (spec 7.13.2.2 / .4 / .5)
+    function automatic int perm_dct_idx(input int i, input int nn);
+        int t;
+        t = 0;
+        for (int b = 0; b < nn; b++) t |= ((i >> b) & 1) << (nn - 1 - b);
+        return (i < (1 << nn)) ? t : i;
+    endfunction
+    function automatic int perm_adst_in_idx(input int i, input int nn);
+        int n0;
+        n0 = 1 << nn;
+        if (i >= n0) return i;
+        return ((i & 1) != 0) ? (i - 1) : (n0 - i - 1);
+    endfunction
+    function automatic int perm_adst_out_idx(input int i, input int nn);
+        int a, b, c, d;
+        if (i >= (1 << nn)) return i;
+        a = (i >> 3) & 1;
+        b = ((i >> 2) & 1) ^ ((i >> 3) & 1);
+        c = ((i >> 1) & 1) ^ ((i >> 2) & 1);
+        d = (i & 1) ^ ((i >> 1) & 1);
+        return ((d << 3) | (c << 2) | (b << 1) | a) >> (4 - nn);
+    endfunction
+
     // ------------------------------------------------------------------ whole-vector operations
     logic signed [TW-1:0] T_ops   [64];
     logic signed [TW-1:0] T_perm  [64];
     logic signed [TW-1:0] T_ident [64];
     logic signed [TW-1:0] T_adst4 [4];
     logic signed [TW-1:0] T_wht   [4];
-    logic [5:0]           N6;                         // 1 << n, as 6 bits (64 -> wraps; handled via n==6)
-    assign N6 = 6'(7'd1 << l_n);
 
     always_comb begin
         // pair ops write-back
@@ -132,34 +153,38 @@ module itx1d #(
                 end
             end
         end
-        // permutations (lanes >= 1<<n are don't-care; we leave them)
+        // permutations. The source index depends only on the lane and on l_n (5 values), so each
+        // lane is a 5:1 mux of fixed registers, not a 64:1 crossbar. Lanes >= 1<<n are don't-care.
         for (int i = 0; i < 64; i++) begin
-            logic [5:0] rev, idx_dct, idx_in, idx_out;
-            logic pa, pb, pc_, pd;
-            rev     = {i[0], i[1], i[2], i[3], i[4], i[5]};
-            idx_dct = rev >> (6 - l_n);
-            idx_in  = (i[0]) ? 6'(i - 1) : 6'(N6 - 6'(i) - 6'd1);
-            pa  = i[3];
-            pb  = i[2] ^ i[3];
-            pc_ = i[1] ^ i[2];
-            pd  = i[0] ^ i[1];
-            idx_out = 6'({pd, pc_, pb, pa} >> (4 - l_n));
+            T_perm[i] = T[i];
             case (kind)
-                K_PERM_DCT:      T_perm[i] = T[idx_dct];
-                K_PERM_ADST_IN:  T_perm[i] = T[idx_in];
-                K_PERM_ADST_OUT: T_perm[i] = i[0] ? -T[idx_out] : T[idx_out];
-                default:         T_perm[i] = T[i];
+                K_PERM_DCT: case (l_n)
+                    3'd2: T_perm[i] = T[perm_dct_idx(i, 2)];
+                    3'd3: T_perm[i] = T[perm_dct_idx(i, 3)];
+                    3'd4: T_perm[i] = T[perm_dct_idx(i, 4)];
+                    3'd5: T_perm[i] = T[perm_dct_idx(i, 5)];
+                    default: T_perm[i] = T[perm_dct_idx(i, 6)];
+                endcase
+                K_PERM_ADST_IN: case (l_n)
+                    3'd3: T_perm[i] = T[perm_adst_in_idx(i, 3)];
+                    default: T_perm[i] = T[perm_adst_in_idx(i, 4)];
+                endcase
+                K_PERM_ADST_OUT: case (l_n)
+                    3'd3: T_perm[i] = ((i & 1) != 0) ? -T[perm_adst_out_idx(i, 3)] : T[perm_adst_out_idx(i, 3)];
+                    default: T_perm[i] = ((i & 1) != 0) ? -T[perm_adst_out_idx(i, 4)] : T[perm_adst_out_idx(i, 4)];
+                endcase
+                default: ;
             endcase
         end
-        // identity (size-dependent scaling)
+        // identity (size-dependent scaling): 4: Round2(T*5793,12)  8: T*2  16: Round2(T*11586,12) = Round2(T*5793,11)  32: T*4
         for (int i = 0; i < 64; i++) begin
-            logic signed [TW+14:0] p1, p2;
-            p1 = T[i] * 15'sd5793;
-            p2 = T[i] * 15'sd11586;
+            logic signed [TW+13:0] p1;
+            p1 = T[i] * 14'sd5793;          // signed; a ternary with '0 would turn it unsigned
+            if (i >= 32) p1 = '0;
             case (l_n)
-                3'd2:    T_ident[i] = TW'((p1 + (TW+15)'(2048)) >>> 12);
+                3'd2:    T_ident[i] = TW'((p1 + (TW+14)'(2048)) >>> 12);
                 3'd3:    T_ident[i] = T[i] <<< 1;
-                3'd4:    T_ident[i] = TW'((p2 + (TW+15)'(2048)) >>> 12);
+                3'd4:    T_ident[i] = TW'((p1 + (TW+14)'(1024)) >>> 11);
                 default: T_ident[i] = T[i] <<< 2;
             endcase
         end
