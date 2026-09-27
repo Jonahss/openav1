@@ -343,7 +343,7 @@ module ipred #(
         if (i == 1)     d2 = up_save1;
         if (i + 1 == 1 && n - 1 >= 1) d3 = up_save1;
         s = -int'(d0) + 9 * int'(d1) + 9 * int'(d2) - int'(d3);
-        s = (s + 8) >> 4;
+        s = (s + 8) >>> 4;                 // arithmetic: s may be negative (then Clip1 -> 0)
         up_s  = clip1i(s, pix_max);
         up_d2 = d2;
     end
@@ -372,8 +372,8 @@ module ipred #(
             S_IDLE: begin
                 if (edge_we) begin
                     case (edge_side)
-                        2'd0: A[ai(int'(edge_idx))] <= edge_data;
-                        2'd1: L[ai(int'(edge_idx))] <= edge_data;
+                        2'd0: A[EOFF + (int'(edge_idx))] <= edge_data;
+                        2'd1: L[EOFF + (int'(edge_idx))] <= edge_data;
                         default: TL_in <= edge_data;
                     endcase
                 end
@@ -387,7 +387,7 @@ module ipred #(
                     l_apx <= above_px; l_lpx <= left_px;
                     p_angle <= mode_to_angle(mode) + 9'(signed'({{6{angle_delta[2]}}, angle_delta}) * 3);
                     up_a <= 1'b0; up_l <= 1'b0;
-                    A[ai(-1)] <= TL_in; L[ai(-1)] <= TL_in;
+                    A[EOFF + (-1)] <= TL_in; L[ai(-1)] <= TL_in;
                     busy  <= 1'b1;
                     state <= S_SETUP;
                 end
@@ -407,8 +407,8 @@ module ipred #(
             end
             S_CORNER: begin
                 if (p_angle > 90 && p_angle < 180 && wh >= 24) begin
-                    A[ai(-1)] <= PW'((int'(L[ai(0)]) * 5 + int'(A[ai(-1)]) * 6 + int'(A[ai(0)]) * 5 + 8) >> 4);
-                    L[ai(-1)] <= PW'((int'(L[ai(0)]) * 5 + int'(A[ai(-1)]) * 6 + int'(A[ai(0)]) * 5 + 8) >> 4);
+                    A[EOFF + (-1)] <= PW'((int'(L[ai(0)]) * 5 + int'(A[ai(-1)]) * 6 + int'(A[ai(0)]) * 5 + 8) >> 4);
+                    L[EOFF + (-1)] <= PW'((int'(L[ai(0)]) * 5 + int'(A[ai(-1)]) * 6 + int'(A[ai(0)]) * 5 + 8) >> 4);
                 end
                 // set up the above-edge filter pass (or the left one if there is no above)
                 if (l_ha) begin
@@ -420,7 +420,7 @@ module ipred #(
                     ef_str  <= edge_strength(wh, l_ft, abs_diff(p_angle, 9'd180));
                     ef_sz   <= 9'(l_lpx) + (p_angle > 180 ? 9'(w) : 9'd0) + 9'd1;
                 end
-                k <= 9'd1;
+                k <= (l_ha || l_hl) ? 9'd1 : 9'd0;      // S_UP_A expects k == 0 on entry
                 state <= (l_ha || l_hl) ? S_EF : S_UP_A;
             end
             S_EF: begin
@@ -435,8 +435,8 @@ module ipred #(
                     end
                 end else begin
                     // side[k-1] (= edge[k]) <- filtered; remember its original for the next two steps
-                    if (ef_side) L[ai(int'(k) - 1)] <= ef_out;
-                    else         A[ai(int'(k) - 1)] <= ef_out;
+                    if (ef_side) L[EOFF + (int'(k) - 1)] <= ef_out;
+                    else         A[EOFF + (int'(k) - 1)] <= ef_out;
                     o0 <= o1;
                     o1 <= ef_side ? L[ai(int'(k) - 1)] : A[ai(int'(k) - 1)];
                     k  <= k + 9'd1;
@@ -455,10 +455,10 @@ module ipred #(
                 end else begin
                     int i;
                     i = int'(k) - 1;
-                    A[ai(2 * i - 1)] <= up_s;
-                    A[ai(2 * i)]     <= up_d2;
+                    A[EOFF + (2 * i - 1)] <= up_s;
+                    A[EOFF + (2 * i)]     <= up_d2;
                     if (i == 0) begin
-                        A[ai(-2)] <= A[ai(-1)];
+                        A[EOFF + (-2)] <= A[ai(-1)];
                         state <= S_UP_L; k <= 0;
                     end else k <= k - 9'd1;
                 end
@@ -476,10 +476,10 @@ module ipred #(
                 end else begin
                     int i;
                     i = int'(k) - 1;
-                    L[ai(2 * i - 1)] <= up_s;
-                    L[ai(2 * i)]     <= up_d2;
+                    L[EOFF + (2 * i - 1)] <= up_s;
+                    L[EOFF + (2 * i)]     <= up_d2;
                     if (i == 0) begin
-                        L[ai(-2)] <= L[ai(-1)];
+                        L[EOFF + (-2)] <= L[ai(-1)];
                         state <= S_PIX;
                     end else k <= k - 9'd1;
                 end

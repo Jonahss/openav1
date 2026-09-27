@@ -16,8 +16,11 @@ for st in "$@"; do
   DAV1D_TRACE=$tr DAV1D_TRACE_MASK=15 prefix-trace/bin/dav1d -q -i "$st" -o /dev/null --muxer null --threads 1 >/dev/null 2>&1 || { echo "FAIL $name: dav1d"; rc=1; continue; }
   x=$(python3 tools/xcheck_trace.py "$tr" $bd 2>&1); xr=$?
   summary=$(grep -E "^(pred|cfl|itx):" <<<"$x" | sed 's/ checked, / chk /; s/ mismatches/ bad/' | paste -sd';')
-  m=$(MSAC_TRACE=$PWD/$tr timeout 3600 python tb/runner.py msac 2>&1); 
+  m=$(MSAC_TRACE=$PWD/$tr timeout 3600 python tb/runner.py msac 2>&1)
   ms=$(grep -oE "OK: [0-9]+ symbols" <<<"$m" | head -1); [ -n "$ms" ] || { ms="msac FAIL"; xr=1; }
+  ip=$(IPRED_TRACE=$PWD/$tr IPRED_BD=$bd timeout 3600 python tb/runner.py ipred test_ipred_trace 2>&1)
+  ips=$(grep -oE "OK: [0-9]+ prediction blocks" <<<"$ip" | head -1); [ -n "$ips" ] || { ips="ipred FAIL"; xr=1; }
+  ms="$ms; ipred $ips"; m="$m$ip"
   if [ $xr -eq 0 ]; then echo "PASS $name ($bd-bit): $summary; $ms"; else echo "FAIL $name ($bd-bit): $summary; $ms"; grep -m3 "MISMATCH\|BAD\|Assertion" <<<"$x$m"; rc=1; fi
 done
 exit $rc

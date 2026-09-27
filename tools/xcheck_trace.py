@@ -53,10 +53,11 @@ def edges_from_dav1d(vals, w, h, have_left, have_above, bd):
 
 def check_pred(f, bd, verbose):
     plane, x4, y4, w, h = f[1:6]
-    mode, m, angle, maxw, maxh = f[6:11]
+    mode, m, angle, maxw, maxh, rawtl = f[6:12]
     n_edge = 2 * h + 2 * w + 1
-    edge = f[11:11 + n_edge]
-    pix = f[11 + n_edge:11 + n_edge + w * h]
+    edge = list(f[12:12 + n_edge])
+    edge[2 * h] = rawtl                      # top-left before dav1d's in-preparation corner filter
+    pix = f[12 + n_edge:12 + n_edge + w * h]
     assert len(pix) == w * h, "short P line"
     log2w, log2h = w.bit_length() - 1, h.bit_length() - 1
     p_angle = angle & 511
@@ -84,10 +85,7 @@ def check_pred(f, bd, verbose):
         tag = "filter%d" % p_angle
     elif im.is_directional(mode):
         delta = (p_angle - im.MODE_TO_ANGLE[mode]) // im.ANGLE_STEP
-        # dav1d pre-filters the Z2 corner inside edge preparation; the dumped corner is already filtered
-        corner_done = (m == Z2 and (w + h) >= 24 and edge_en)
-        exp = im.predict_intra(above, left, tl, mode, log2w, log2h, bd, angle_delta=delta,
-                               corner_prefiltered=corner_done, **kw)
+        exp = im.predict_intra(above, left, tl, mode, log2w, log2h, bd, angle_delta=delta, **kw)
         tag = "dir%d/%+d" % (mode, delta)
     else:
         exp = im.predict_intra(above, left, tl, mode, log2w, log2h, bd, **kw)

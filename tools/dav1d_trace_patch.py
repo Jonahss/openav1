@@ -10,7 +10,8 @@ Trace format v3 (one event per line, enabled by DAV1D_TRACE=<path|->, DAV1D_TRAC
   S B <f> <bit> <rng>        followed by  U <cnt> <f'> <cnt'>  when the bool was adaptive
   S E <bit> <rng>
   C <plane> <x4> <y4> <tx> <txtp> <eob> <w> <h> <Dequant row-major, min(w,32) x min(h,32)>
-  P <plane> <x4> <y4> <w> <h> <mode> <m> <angle> <maxw> <maxh> <edge[-2h..2w]> <w*h pred pixels>
+  P <plane> <x4> <y4> <w> <h> <mode> <m> <angle> <maxw> <maxh> <rawtl> <edge[-2h..2w]> <w*h pred pixels>
+      (rawtl = top-left BEFORE dav1d's in-preparation Z2 corner filter; edge[0] may already be filtered)
   Q <plane> <x4> <y4> <w> <h> <m> <alpha> <edge[-2h..2w]> <w*h ac> <w*h pred pixels>   (CfL)
   R <plane> <x4> <y4> <w> <h> <tx> <txtp> <w*h pixels after inverse transform, before filters>
 x4/y4 are in 4x4 units of the plane. mode = bitstream intra mode (FILTER_PRED=13 means filter
@@ -57,6 +58,7 @@ enum {
 
 extern FILE *dav1d_trace_fp;
 extern unsigned dav1d_trace_mask;
+extern int dav1d_trace_corner_raw;   /* top-left before the Z2 corner filter (set by ipred_prepare) */
 
 void dav1d_trace_init(void);
 
@@ -74,6 +76,7 @@ void dav1d_trace_init(void);
 
 FILE *dav1d_trace_fp = NULL;
 unsigned dav1d_trace_mask = 0;
+int dav1d_trace_corner_raw = 0;
 
 void dav1d_trace_init(void) {
     static int done = 0;
@@ -242,7 +245,8 @@ static void trace_pred(const int plane, const int x4, const int y4, const int w,
                        const pixel *const edge, const pixel *const dst, const ptrdiff_t stride)
 {
     if (!DAV1D_TRACE_ON(DAV1D_TRACE_PRED)) return;
-    fprintf(dav1d_trace_fp, "P %d %d %d %d %d %d %d %d %d %d", plane, x4, y4, w, h, mode, m, angle, maxw, maxh);
+    fprintf(dav1d_trace_fp, "P %d %d %d %d %d %d %d %d %d %d %d", plane, x4, y4, w, h, mode, m, angle, maxw, maxh,
+            dav1d_trace_corner_raw);
     trace_edge(edge, w, h);
     trace_pixels_tail(dst, stride, w, h);
 }
@@ -347,4 +351,14 @@ patch(src / "recon_tmpl.c", [
                                 trace_recon(1 + pl, t->bx >> ss_hor, t->by >> ss_ver, uv_t_dim->w * 4, uv_t_dim->h * 4, b->uvtx, txtp, dst, stride);
 '''),
 ])
+patch(src / "ipred_prepare_tmpl.c", [
+    ('#include "src/ipred_prepare.h"\n', '#include "src/ipred_prepare.h"\n#include "src/trace.h"\n'),
+    ('''        if (mode == Z2_PRED && tw + th >= 6 && filter_edge)
+            *topleft_out = ((topleft_out[-1] + topleft_out[1]) * 5 +
+                            topleft_out[0] * 6 + 8) >> 4;''',
+     '''        dav1d_trace_corner_raw = *topleft_out;
+        if (mode == Z2_PRED && tw + th >= 6 && filter_edge)
+            *topleft_out = ((topleft_out[-1] + topleft_out[1]) * 5 +
+                            topleft_out[0] * 6 + 8) >> 4;'''),
+], 1)
 print("patched", root)
