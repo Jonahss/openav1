@@ -59,10 +59,18 @@ separately.
 | Super-resolution (7.16) | `tb/superres_model.py` | `rtl/sr_top.sv` (in-place row upscaler) | model == dav1d on 4 Argon upscaling frames; full RTL picture == dav1d on test60 (60->67), test5644 (255->447), test7463 (1260->2048 with CDEF + self-guided restoration) |
 | Film grain synthesis (7.18.3) | not planned for the core: conformance references are grain-free (Argon md5_no_film_grain) | — | — |
 
-`rtl/dec_top.sv` is the integrated intra decoder: tile bytes + parsed headers in, then the in-loop filters
-(deblocking, CDEF, loop restoration) run over the finished frame on request; the output picture is read
-from the frame buffer the last stage wrote. It is slow-and-correct (one pixel or coefficient per cycle or two, no overlap between
-stages); throughput work starts once the pipeline is complete and the numbers are measured.
+`rtl/dec_top.sv` is the integrated intra decoder: tile bytes + parsed headers in; the in-loop filters
+(deblocking, CDEF, super-resolution, loop restoration) either run over the finished frame on request
+(host-driven mode) or, with `pipe_en`, trail the tile decoder by superblock rows under a frame sequencer so
+that a frame takes as long as its slowest stage rather than the sum (`TS_PIPE=1` in the testbench). The output
+picture is read from the frame buffer the last stage wrote.
+
+Throughput (2026-09-28, simulated cycles for a 640x360 8-bit corpus frame, bit-exact with dav1d throughout):
+~16 M on 09-27 (one sample per cycle everywhere, stages one after another) → ~1.1 M now (tile decoder 0.56 M,
+filters overlapped; per stage on real frames: deblock 1.2, CDEF 1.4, loop restoration 0.7 cycles per pixel).
+The steps and the per-stage profiles are in the commit history; the frame buffer's 4-sample-wide ports stand in
+for a picture memory banked by x mod 4. The tile decoder is the current constraint (coefficient reading ~15
+cycles per coefficient, prediction edge gather, transforms); synthesis figures come next.
 
 Reference oracle: the Argon conformance suite (2,763 streams) decodes identically with dav1d and against
 its reference checksums on our setup (`results/`), so dav1d is a trustworthy judge. Argon runs through the RTL
