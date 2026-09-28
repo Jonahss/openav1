@@ -1,7 +1,7 @@
 // CDEF (spec 7.15), frame-level, window version: for every 8x8 luma block (raster order) read the deblocked
 // frame (src), write CdefFrame (dst). Blocks whose 64x64 unit has no cdef_idx or whose four 4x4s are all
 // skipped are copied unfiltered. Otherwise, per plane, the block plus a 2-sample border is loaded once into
-// a 12x12 window register file (one read per clock; samples outside the MI-aligned frame are marked absent:
+// a 12x12 window register file (one aligned group of 4 samples per clock; samples outside the MI-aligned frame are marked absent:
 // is_inside_filter_region), the direction search (7.15.2: 8 x 15 partial sums, the 64 cost terms with
 // Div_Table, argmax, variance) is evaluated from the luma window in one cycle, and the constrained
 // directional filter (7.15.3) produces one output sample per clock from the window. Chroma uses the chroma
@@ -31,11 +31,17 @@ module cdef_top
     output logic [FBX-1:0] src_x,
     output logic [FBY-1:0] src_y,
     input  logic [11:0] src_rdata,
+    input  logic [47:0] src_rdata4,      // aligned group of 4 samples containing src_x (window loads, block copies)
     output logic        dst_we,
     output logic [1:0]  dst_plane,
     output logic [FBX-1:0] dst_x,
     output logic [FBY-1:0] dst_y,
-    output logic [11:0] dst_wdata
+    output logic [11:0] dst_wdata,
+    output logic        dst4_we,         // 4-wide write (block copies), aligned at dst4_x
+    output logic [1:0]  dst4_plane,
+    output logic [FBX-1:0] dst4_x,
+    output logic [FBY-1:0] dst4_y,
+    output logic [47:0] dst4_wdata
 );
     typedef enum logic [3:0] {
         C_IDLE, C_BLK, C_RD_IDX, C_RD_S0, C_RD_S1, C_RD_S2, C_RD_S3, C_DECIDE,
@@ -79,14 +85,16 @@ module cdef_top
     // ---------------------------------------------------------------- window: block + 2-sample border, [row][col] at +2
     logic [11:0] win [0:11][0:11];
     logic        win_ok [0:11][0:11];
-    logic [3:0]  wr, wc;                                // load position 0 .. ph+3 / pw+3
-    logic        wpend; logic [3:0] wpr, wpc; logic wp_ok;
+    logic [3:0]  wr;                                    // load row 0 .. ph+3
+    logic [1:0]  wg, wg_last;                           // aligned group of 4 within the row: x = px0 - 4 + 4 wg
+    logic        wpend; logic [3:0] wpr; logic [1:0] wpg; logic wp_rowok; logic signed [14:0] wpx;
     logic signed [14:0] wy, wx;
-    logic        w_in;
+    logic        w_row_in;
     always_comb begin
         wy = 15'(signed'({2'b0, py0})) + 15'(signed'({11'b0, wr})) - 15'sd2;
-        wx = 15'(signed'({2'b0, px0})) + 15'(signed'({11'b0, wc})) - 15'sd2;
-        w_in = (wy >= 0) && (wy < 15'(signed'({2'b0, fh}))) && (wx >= 0) && (wx < 15'(signed'({2'b0, fw})));
+        wx = 15'(signed'({2'b0, px0})) + 15'(signed'({13'b0, wg}) << 2) - 15'sd4;
+        w_row_in = (wy >= 0) && (wy < 15'(signed'({2'b0, fh})));
+        wg_last = (pw == 4'd8) ? 2'd3 : 2'd2;           // 12 window columns span 4 groups, 8 span 3
     end
 
     // ---------------------------------------------------------------- 7.15.2 direction search from the luma window
@@ -204,11 +212,12 @@ module cdef_top
     always_comb begin
         src_re = 1'b0; src_plane = fplane; src_x = FBX'(wx); src_y = FBY'(wy);
         dst_we = 1'b0; dst_plane = fplane; dst_x = FBX'(px0 + 13'(pj)); dst_y = FBY'(py0 + 13'(pi)); dst_wdata = out_pix;
+        dst4_we = 1'b0; dst4_plane = fplane; dst4_x = FBX'(px0 + 13'(cpi[2:0])); dst4_y = FBY'(py0 + 13'(cpi[5:3])); dst4_wdata = src_rdata4;
         case (st)
-            C_WIN: src_re = w_in;
+            C_WIN: src_re = w_row_in;                    // absent columns of a present row are masked at landing
             C_PIX: dst_we = 1'b1;
             C_COPY_RD: begin src_re = 1'b1; src_x = FBX'(px0 + 13'(cpi[2:0])); src_y = FBY'(py0 + 13'(cpi[5:3])); end
-            C_COPY_WR: begin dst_we = 1'b1; dst_x = FBX'(px0 + 13'(cpi[2:0])); dst_y = FBY'(py0 + 13'(cpi[5:3])); dst_wdata = src_rdata; end
+            C_COPY_WR: dst4_we = 1'b1;
             default: ;
         endcase
     end
@@ -217,7 +226,15 @@ module cdef_top
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        if (wpend) begin win[wpr][wpc] <= src_rdata; win_ok[wpr][wpc] <= wp_ok; end
+        if (wpend)                                       // the group issued last cycle lands: lane l -> column 4 wpg - 2 + l
+            for (int l = 0; l < 4; l++) begin
+                int col;
+                col = 4 * int'(wpg) - 2 + l;
+                if (col >= 0 && col < int'(pw) + 4) begin
+                    win[wpr][col] <= src_rdata4[l * 12 +: 12];
+                    win_ok[wpr][col] <= wp_rowok && (wpx + 15'(l) >= 0) && (wpx + 15'(l) < 15'(signed'({2'b0, fw})));
+                end
+            end
         wpend <= 1'b0;
         if (rst) st <= C_IDLE;
         else case (st)
@@ -235,12 +252,12 @@ module cdef_top
                 else st <= C_PLANE;
             end
             // ---- per plane: load the window (one read per clock, lands next cycle)
-            C_PLANE: begin wr <= 4'd0; wc <= 4'd0; st <= C_WIN; end
+            C_PLANE: begin wr <= 4'd0; wg <= 2'd0; st <= C_WIN; end
             C_WIN: begin
-                wpend <= 1'b1; wpr <= wr; wpc <= wc; wp_ok <= w_in;   // absent samples get win_ok = 0 (value unused)
-                if (wc + 4'd1 < pw + 4'd4) wc <= wc + 4'd1;
+                wpend <= 1'b1; wpr <= wr; wpg <= wg; wp_rowok <= w_row_in; wpx <= wx;
+                if (wg != wg_last) wg <= wg + 2'd1;
                 else begin
-                    wc <= 4'd0;
+                    wg <= 2'd0;
                     if (wr + 4'd1 < ph + 4'd4) wr <= wr + 4'd1;
                     else st <= C_WIN_LAST;
                 end
@@ -290,7 +307,7 @@ module cdef_top
             // ---- unfiltered block: copy src -> dst for all planes
             C_COPY_RD: st <= C_COPY_WR;
             C_COPY_WR: begin
-                if (4'(cpi[2:0]) + 4'd1 < pw) begin cpi <= cpi + 6'd1; st <= C_COPY_RD; end
+                if (4'(cpi[2:0]) + 4'd4 < pw) begin cpi <= cpi + 6'd4; st <= C_COPY_RD; end
                 else if (4'(cpi[5:3]) + 4'd1 < ph) begin cpi <= {cpi[5:3] + 3'd1, 3'd0}; st <= C_COPY_RD; end
                 else begin
                     cpi <= 6'd0;

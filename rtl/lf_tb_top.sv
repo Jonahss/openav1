@@ -39,12 +39,13 @@ module lf_tb_top
                    .cd_clr(1'b0), .cd_we(1'b0), .cd_row64(7'd0), .cd_col64(7'd0), .cd_sb128(1'b0), .cd_mask(4'd0), .cd_idx(3'd0),
                    .cdr_row64(7'd0), .cdr_col64(7'd0), .cdr_val(),
                    .lr_we(1'b0), .lr_rec('0), .lrr_plane(2'd0), .lrr_row(6'd0), .lrr_col(6'd0), .lrr_rec());
-    logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
+    logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata; logic [47:0] fb_rdata4, fb4_wdata; logic fb4_we; logic [FBX-1:0] fb4_x; logic [FBY-1:0] fb4_y;
     lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start, .busy, .done,
                                          .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
-                                         .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata);
+                                         .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata,
+                                         .fb_rdata4, .fb4_we, .fb4_x, .fb4_y, .fb4_wdata);
     // frame buffer: the filter owns the port while busy, the host otherwise
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .w4_we(1'b0), .w4_plane(2'd0), .w4_x('0), .w4_y('0), .w4_wdata('0), .rdata4(), .re(fb_re), .we(busy ? fb_we : h_we), .plane(busy ? fb_plane : h_plane),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .w4_we(busy && fb4_we), .w4_plane(fb_plane), .w4_x(fb4_x), .w4_y(fb4_y), .w4_wdata(fb4_wdata), .rdata4(fb_rdata4), .re(fb_re), .we(busy ? fb_we : h_we), .plane(busy ? fb_plane : h_plane),
                                                      .x(busy ? fb_x : h_x), .y(busy ? fb_y : h_y), .wdata(busy ? fb_wdata : h_wdata), .rdata(fb_rdata),
                                                      .h_plane, .h_x, .h_y, .h_rdata);
 endmodule

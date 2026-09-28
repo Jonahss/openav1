@@ -100,15 +100,19 @@ module dec_top
                    .cdr_row64, .cdr_col64, .cdr_val,
                    .lr_we(lr_done), .lr_rec, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec);
     logic lf_re, lf_we; logic [1:0] lf_plane; logic [FBX-1:0] lf_x; logic [FBY-1:0] lf_y; logic [11:0] lf_wdata;
+    logic lf4_we; logic [FBX-1:0] lf4_x; logic [FBY-1:0] lf4_y; logic [47:0] lf4_wdata;
     lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start(lf_start), .busy(lf_busy), .done(lf_done),
                                          .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
-                                         .fb_re(lf_re), .fb_we(lf_we), .fb_plane(lf_plane), .fb_x(lf_x), .fb_y(lf_y), .fb_wdata(lf_wdata), .fb_rdata);
+                                         .fb_re(lf_re), .fb_we(lf_we), .fb_plane(lf_plane), .fb_x(lf_x), .fb_y(lf_y), .fb_wdata(lf_wdata), .fb_rdata,
+                                         .fb_rdata4, .fb4_we(lf4_we), .fb4_x(lf4_x), .fb4_y(lf4_y), .fb4_wdata(lf4_wdata));
     // CDEF: reads the deblocked frame (fb0, shared port while cdef_busy), writes CdefFrame (fb1)
     logic [10:0] cd_rd_row, cd_rd_col; logic [6:0] cdr_row64, cdr_col64; logic [3:0] cdr_val;
     logic cd_re, cd_we; logic [1:0] cd_plane, cd_dplane; logic [FBX-1:0] cd_x, cd_dx; logic [FBY-1:0] cd_y, cd_dy; logic [11:0] cd_wdata;
+    logic cd4_we; logic [1:0] cd4_plane; logic [FBX-1:0] cd4_x; logic [FBY-1:0] cd4_y; logic [47:0] cd4_wdata;
     cdef_top #(.FBX(FBX), .FBY(FBY)) u_cdef (.clk, .rst, .hdr, .ch, .start(cdef_start), .busy(cdef_busy), .done(cdef_done),
                                              .rd_row(cd_rd_row), .rd_col(cd_rd_col), .rd_info, .cdr_row64, .cdr_col64, .cdr_val,
-                                             .src_re(cd_re), .src_plane(cd_plane), .src_x(cd_x), .src_y(cd_y), .src_rdata(fb_rdata),
+                                             .src_re(cd_re), .src_plane(cd_plane), .src_x(cd_x), .src_y(cd_y), .src_rdata(fb_rdata), .src_rdata4(fb_rdata4),
+                                             .dst4_we(cd4_we), .dst4_plane(cd4_plane), .dst4_x(cd4_x), .dst4_y(cd4_y), .dst4_wdata(cd4_wdata),
                                              .dst_we(cd_we), .dst_plane(cd_dplane), .dst_x(cd_dx), .dst_y(cd_dy), .dst_wdata(cd_wdata));
     logic [10:0] mi_rd_row, mi_rd_col;
     assign mi_rd_row = cdef_busy ? cd_rd_row : rd_row;
@@ -138,9 +142,10 @@ module dec_top
                                                      .y(lf_busy ? lf_y : cdef_busy ? cd_y : sr0 ? (sr_we ? sr_dy : sr_sy) : lr_busy ? lr_sy : fb_y),
                                                      .wdata(lf_busy ? lf_wdata : sr0 ? sr_wdata : fb_wdata), .rdata(fb_rdata),
                                                      .w2_we(fb2_we && !lf_busy && !cdef_busy && !sr_busy && !lr_busy), .w2_plane(fb2_plane), .w2_x(fb2_x), .w2_y(fb2_y), .w2_wdata(fb2_wdata),
-                                                     .w4_we(fb4_we && !lf_busy && !cdef_busy && !sr_busy && !lr_busy), .w4_plane(fb4_plane), .w4_x(fb4_x), .w4_y(fb4_y), .w4_wdata(fb4_wdata), .rdata4(fb_rdata4),
+                                                     .w4_we(lf_busy ? lf4_we : (fb4_we && !cdef_busy && !sr_busy && !lr_busy)), .w4_plane(lf_busy ? lf_plane : fb4_plane),
+                                                     .w4_x(lf_busy ? lf4_x : fb4_x), .w4_y(lf_busy ? lf4_y : fb4_y), .w4_wdata(lf_busy ? lf4_wdata : fb4_wdata), .rdata4(fb_rdata4),
                                                      .h_plane, .h_x, .h_y, .h_rdata(h_rdata0));
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .w4_we(1'b0), .w4_plane(2'd0), .w4_x('0), .w4_y('0), .w4_wdata('0), .rdata4(), .re(sr1 ? sr_re : lr_busy ? (lr_s1_re && !lr_from_deblocked) : 1'b0), .we(cdef_busy ? cd_we : sr1 ? sr_we : 1'b0),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .w4_we(cdef_busy && cd4_we), .w4_plane(cd4_plane), .w4_x(cd4_x), .w4_y(cd4_y), .w4_wdata(cd4_wdata), .rdata4(), .re(sr1 ? sr_re : lr_busy ? (lr_s1_re && !lr_from_deblocked) : 1'b0), .we(cdef_busy ? cd_we : sr1 ? sr_we : 1'b0),
                                                       .plane(sr1 ? sr_plane : lr_busy ? lr_splane : cd_dplane),
                                                       .x(sr1 ? (sr_we ? sr_dx : sr_sx) : lr_busy ? lr_sx : cd_dx), .y(sr1 ? (sr_we ? sr_dy : sr_sy) : lr_busy ? lr_sy : cd_dy),
                                                       .wdata(sr1 ? sr_wdata : cd_wdata), .rdata(fb1_rdata),

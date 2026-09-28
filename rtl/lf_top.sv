@@ -33,7 +33,12 @@ module lf_top
     output logic [FBX-1:0] fb_x,
     output logic [FBY-1:0] fb_y,
     output logic [11:0] fb_wdata,
-    input  logic [11:0] fb_rdata
+    input  logic [11:0] fb_rdata,
+    input  logic [47:0] fb_rdata4,       // aligned group of 4 samples containing fb_x (vertical edges read groups)
+    output logic        fb4_we,          // 4-wide write (vertical edges write back whole groups), aligned at fb4_x
+    output logic [FBX-1:0] fb4_x,
+    output logic [FBY-1:0] fb4_y,
+    output logic [47:0] fb4_wdata
 );
     localparam int MAX_LOOP_FILTER = 63;
 
@@ -57,6 +62,13 @@ module lf_top
     logic [3:0]  kk, n_rd;                              // read counter / count
     logic        rd_pend;
     logic [3:0]  rd_slot;
+    // vertical edges (pss = 0): the n_rd samples k = -n_rd/2 .. n_rd/2-1 lie in n_rg aligned groups of 4 starting
+    // at k = rbase (sx is a multiple of 4); every lane of those groups is kept so the groups can be written back whole
+    logic [1:0]  rd_g, n_rg;
+    logic signed [4:0] rbase;
+    logic [11:0] pix_m8, pix_p7;                        // k = -8 and k = 7 (read with a 16-sample span, never modified)
+    assign n_rg  = (n_rd == 4'd14) ? 2'd3 : 2'd1;      // groups - 1: 4 groups for a 16-wide filter, else 2
+    assign rbase = (n_rd == 4'd14) ? -5'sd8 : -5'sd4;
     logic signed [4:0] wk;                              // write position k
     logic signed [4:0] w_lo, w_hi;
     logic [12:0] sx, sy;                                // sample position
@@ -240,25 +252,39 @@ module lf_top
             default:  begin f_lo = 5'sd0; f_hi = 5'sd0; end
         endcase
     end
-    always_comb begin
-        out_pix = 12'd0; out_valid = 1'b0;
+    function automatic logic [12:0] lf_out(input logic signed [4:0] k);   // {modified, value} of position k
+        logic [11:0] o; logic v;
+        o = 12'd0; v = 1'b0;
         case (fmode)
             F_NARROW: begin
-                case (wk)
-                    5'sd0:  begin out_pix = nq0; out_valid = 1'b1; end
-                    -5'sd1: begin out_pix = np0; out_valid = 1'b1; end
-                    5'sd1:  begin out_pix = nq1; out_valid = !hev; end
-                    -5'sd2: begin out_pix = np1; out_valid = !hev; end
+                case (k)
+                    5'sd0:  begin o = nq0; v = 1'b1; end
+                    -5'sd1: begin o = np0; v = 1'b1; end
+                    5'sd1:  begin o = nq1; v = !hev; end
+                    -5'sd2: begin o = np1; v = !hev; end
                     default: ;
                 endcase
             end
             F_WIDE8: begin
-                if (plane == 2'd0) begin out_valid = (wk >= -5'sd3) && (wk <= 5'sd2); out_pix = w8[int'(wk) + 3]; end
-                else begin out_valid = (wk >= -5'sd2) && (wk <= 5'sd1); out_pix = w6[int'(wk) + 2]; end
+                if (plane == 2'd0) begin v = (k >= -5'sd3) && (k <= 5'sd2); o = w8[int'(k) + 3]; end
+                else begin v = (k >= -5'sd2) && (k <= 5'sd1); o = w6[int'(k) + 2]; end
             end
-            F_WIDE16: begin out_valid = (wk >= -5'sd6) && (wk <= 5'sd5); out_pix = w16[int'(wk) + 6]; end
+            F_WIDE16: begin v = (k >= -5'sd6) && (k <= 5'sd5); o = w16[int'(k) + 6]; end
             default: ;
         endcase
+        return {v, o};
+    endfunction
+    always_comb {out_valid, out_pix} = lf_out(wk);
+    // vertical edges: the group rd_g written back whole, modified lanes replaced
+    logic [47:0] grp_out;
+    always_comb begin
+        for (int l = 0; l < 4; l++) begin
+            logic signed [4:0] k; logic [12:0] r; logic [11:0] orig;
+            k = rbase + 5'(4 * int'(rd_g)) + 5'(l);
+            r = lf_out(k);
+            orig = (k == -5'sd8) ? pix_m8 : (k == 5'sd7) ? pix_p7 : pix[7 + int'(k)];
+            grp_out[l * 12 +: 12] = r[12] ? r[11:0] : orig;
+        end
     end
 
     // ---------------------------------------------------------------- memory / frame buffer addressing
@@ -271,21 +297,35 @@ module lf_top
         txr_row = ((st == L_EDGE) ? rowa : prow) >> sub_y;
         txr_col = ((st == L_EDGE) ? cola : pcol) >> sub_x;
         fb_re = 1'b0; fb_we = 1'b0; fb_plane = plane; fb_x = '0; fb_y = '0; fb_wdata = out_pix;
-        if (st == L_S_RD && kk < n_rd) begin
+        fb4_we = 1'b0; fb4_x = FBX'(13'(signed'(sx) + 13'(rbase) + 13'(4 * int'(rd_g)))); fb4_y = FBY'(sy); fb4_wdata = grp_out;
+        if (st == L_S_RD && !pss && kk <= 4'(n_rg)) begin        // group kk of the vertical-edge span
             fb_re = 1'b1;
-            fb_x = FBX'(pss ? sx : sx + 13'(rk)); fb_y = FBY'(pss ? sy + 13'(rk) : sy);
+            fb_x = FBX'(13'(signed'(sx) + 13'(rbase) + 13'(4 * int'(kk)))); fb_y = FBY'(sy);
         end
-        if (st == L_S_WR && out_valid) begin
+        if (st == L_S_RD && pss && kk < n_rd) begin
+            fb_re = 1'b1;
+            fb_x = FBX'(sx); fb_y = FBY'(sy + 13'(rk));
+        end
+        if (st == L_S_WR && pss && out_valid) begin
             fb_we = 1'b1;
-            fb_x = FBX'(pss ? sx : sx + 13'(wk)); fb_y = FBY'(pss ? sy + 13'(wk) : sy);
+            fb_x = FBX'(sx); fb_y = FBY'(sy + 13'(wk));
         end
+        if (st == L_S_WR && !pss) fb4_we = 1'b1;
     end
     assign busy = (st != L_IDLE);
 
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        if (rd_pend) pix[rd_slot] <= fb_rdata;         // read issued last cycle lands now
+        if (rd_pend && pss) pix[rd_slot] <= fb_rdata;  // read issued last cycle lands now
+        if (rd_pend && !pss)                             // group rd_slot[1:0]: lane l is position rbase + 4 g + l
+            for (int l = 0; l < 4; l++) begin
+                int k;
+                k = int'(rbase) + 4 * int'(rd_slot[1:0]) + l;
+                if (k == -8) pix_m8 <= fb_rdata4[l * 12 +: 12];
+                else if (k == 7) pix_p7 <= fb_rdata4[l * 12 +: 12];
+                else if (k >= -7 && k <= 6) pix[7 + k] <= fb_rdata4[l * 12 +: 12];
+            end
         rd_pend <= 1'b0;
         if (rst) st <= L_IDLE;
         else case (st)
@@ -315,10 +355,10 @@ module lf_top
             end
             // ---- one sample: read n_rd pixels (k = -n_rd/2 .. n_rd/2-1), compute, write back the modified ones
             L_S_RD: begin
-                if (kk < n_rd) begin
-                    rd_pend <= 1'b1; rd_slot <= 4'(7 + int'(rk)); kk <= kk + 4'd1;
+                if (pss ? (kk < n_rd) : (kk <= 4'(n_rg))) begin
+                    rd_pend <= 1'b1; rd_slot <= pss ? 4'(7 + int'(rk)) : 4'(kk); kk <= kk + 4'd1;
                 end else if (!rd_pend) begin
-                    wk <= -5'sd7; st <= L_S_CALC;
+                    wk <= -5'sd7; rd_g <= 2'd0; st <= L_S_CALC;
                 end
             end
             L_S_CALC: begin                              // pix[] settled: decide, then write only the modified positions
@@ -328,12 +368,12 @@ module lf_top
                     else begin i4 <= i4 + 2'd1; st <= L_S_RD; end
                 end else begin wk <= f_lo; w_hi <= f_hi; st <= L_S_WR; end
             end
-            L_S_WR: begin
-                if (wk == w_hi) begin
+            L_S_WR: begin                                // horizontal edges: one modified position per cycle (wk); vertical: one group per cycle (rd_g)
+                if (pss ? (wk == w_hi) : (rd_g == n_rg)) begin
                     kk <= 4'd0;
                     if (i4 == 2'd3) st <= L_NEXT;
                     else begin i4 <= i4 + 2'd1; st <= L_S_RD; end
-                end else wk <= wk + 5'sd1;
+                end else begin wk <= wk + 5'sd1; rd_g <= rd_g + 2'd1; end
             end
             // ---- next edge position: col, row, pass, plane
             L_NEXT: begin
