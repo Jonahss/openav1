@@ -231,6 +231,15 @@ module lf_top
     end
     logic [11:0] out_pix;
     logic        out_valid;                             // this k is modified
+    logic signed [4:0] f_lo, f_hi;                      // range of modified positions for the decided filter
+    always_comb begin
+        case (fmode)
+            F_NARROW: begin f_lo = -5'sd2; f_hi = 5'sd1; end
+            F_WIDE8:  begin f_lo = (plane == 2'd0) ? -5'sd3 : -5'sd2; f_hi = (plane == 2'd0) ? 5'sd2 : 5'sd1; end
+            F_WIDE16: begin f_lo = -5'sd6; f_hi = 5'sd5; end
+            default:  begin f_lo = 5'sd0; f_hi = 5'sd0; end
+        endcase
+    end
     always_comb begin
         out_pix = 12'd0; out_valid = 1'b0;
         case (fmode)
@@ -312,9 +321,15 @@ module lf_top
                     wk <= -5'sd7; st <= L_S_CALC;
                 end
             end
-            L_S_CALC: st <= L_S_WR;                      // one cycle for pix[] to settle after the last landing read
+            L_S_CALC: begin                              // pix[] settled: decide, then write only the modified positions
+                if (fmode == F_NONE) begin
+                    kk <= 4'd0;
+                    if (i4 == 2'd3) st <= L_NEXT;
+                    else begin i4 <= i4 + 2'd1; st <= L_S_RD; end
+                end else begin wk <= f_lo; w_hi <= f_hi; st <= L_S_WR; end
+            end
             L_S_WR: begin
-                if (wk == 5'sd6) begin
+                if (wk == w_hi) begin
                     kk <= 4'd0;
                     if (i4 == 2'd3) st <= L_NEXT;
                     else begin i4 <= i4 + 2'd1; st <= L_S_RD; end
