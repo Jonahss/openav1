@@ -42,6 +42,16 @@ fn1("tx_type_inter_inv_set2", 4, T.Tx_Type_Inter_Inv_Set2, 4, "Tx_Type_Inter_Inv
 fn1("tx_type_inter_inv_set3", 4, T.Tx_Type_Inter_Inv_Set3, 1, "Tx_Type_Inter_Inv_Set3[v]")
 fn1("sb_size_bsize", 5, [T.ENUM["BLOCK_64X64"], T.ENUM["BLOCK_128X128"]], 1, "superblock block size by use_128x128")
 
+# Upscale_Filter[subpel][tap] (7.16 super-resolution), signed 9 bits (taps -20 .. 128)
+out.append("  function automatic logic signed [8:0] upscale_filter(input logic [5:0] i, input logic [2:0] k);  // Upscale_Filter[i][k]")
+out.append("    case ({i, k})")
+for i in range(64):
+    for k in range(8):
+        v = T.Upscale_Filter[i][k]
+        out.append(f"      {{6'd{i}, 3'd{k}}}: upscale_filter = {'-' if v < 0 else ''}9'sd{abs(v)};")
+out.append("      default: upscale_filter = 9'sd0;")
+out.append("    endcase")
+out.append("  endfunction")
 # 2D: Partition_Subsize[partition][bsize]
 out.append("  function automatic logic [4:0] partition_subsize(input logic [3:0] p, input logic [4:0] b);  // Partition_Subsize[p][b]")
 out.append("    case ({p, b})")

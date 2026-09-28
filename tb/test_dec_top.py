@@ -236,7 +236,7 @@ def ref_frame(path, hdr, fi, offset=None):
     for plane in range(hdr.NumPlanes):
         sx = hdr.subsampling_x if plane else 0
         sy = hdr.subsampling_y if plane else 0
-        sizes.append(((hdr.FrameWidth + sx) >> sx, (hdr.FrameHeight + sy) >> sy))
+        sizes.append(((hdr.UpscaledWidth + sx) >> sx, (hdr.FrameHeight + sy) >> sy))
     bps = 1 if hdr.BitDepth == 8 else 2
     frame_bytes = sum(w * h for w, h in sizes) * bps
     with open(path, "rb") as fh:
@@ -314,7 +314,7 @@ async def rtl_only_stream(dut, path, stats):
         for k in shown:
             h_k = d.tiles[d.frames[k][0]][0]
             pic_offset.append(off)
-            off += sum(((h_k.FrameWidth + (h_k.subsampling_x if p_ else 0)) >> (h_k.subsampling_x if p_ else 0)) *
+            off += sum(((h_k.UpscaledWidth + (h_k.subsampling_x if p_ else 0)) >> (h_k.subsampling_x if p_ else 0)) *
                        ((h_k.FrameHeight + (h_k.subsampling_y if p_ else 0)) >> (h_k.subsampling_y if p_ else 0))
                        for p_ in range(h_k.NumPlanes)) * (1 if h_k.BitDepth == 8 else 2)
         pictures = {}                                      # decoded frame -> read-back planes (md5 mode)
@@ -342,6 +342,12 @@ async def rtl_only_stream(dut, path, stats):
                 stats["cdef_cycles"] += c
                 dut._log.info(f"{tag}: cdef ~{c} cycles")
                 buf = 1
+            if hdr.use_superres:                                   # 7.16: upscale the LR inputs in place
+                for sb in ([0, 1] if buf == 1 else [0]):
+                    dut.sr_buf.value = sb
+                    c = await pulse_and_wait(dut, dut.sr_start, dut.sr_done, tag, busy_sig=dut.sr_busy)
+                    stats["sr_cycles"] = stats.get("sr_cycles", 0) + c
+                dut._log.info(f"{tag}: superres {hdr.FrameWidth} -> {hdr.UpscaledWidth}")
             if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
                 dut.lr_from_deblocked.value = 0 if buf == 1 else 1
                 c = await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000, busy_sig=dut.lr_busy)
@@ -351,7 +357,7 @@ async def rtl_only_stream(dut, path, stats):
             dut.h_buf.value = buf
             await Timer(1, "ns")
             outs = [o for o, k in enumerate(shown) if k == fi]
-            sizes = [(((hdr.FrameWidth + (hdr.subsampling_x if p_ else 0)) >> (hdr.subsampling_x if p_ else 0)),
+            sizes = [(((hdr.UpscaledWidth + (hdr.subsampling_x if p_ else 0)) >> (hdr.subsampling_x if p_ else 0)),
                       ((hdr.FrameHeight + (hdr.subsampling_y if p_ else 0)) >> (hdr.subsampling_y if p_ else 0))) for p_ in range(hdr.NumPlanes)]
             if md5_ref is None and outs:
                 ref, _ = ref_frame(ref_path, hdr, fi, pic_offset[outs[0]])

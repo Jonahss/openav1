@@ -37,6 +37,10 @@ module dec_top
     input  logic              cdef_start,          // after lf_done (when enable_cdef && !CodedLossless && !allow_intrabc)
     output logic              cdef_busy,
     output logic              cdef_done,
+    input  logic              sr_start,            // super-resolution (7.16) of buffer sr_buf in place, before lr_start
+    input  logic              sr_buf,              // 0: fb0 (deblocked frame), 1: fb1 (CDEF frame)
+    output logic              sr_busy,
+    output logic              sr_done,
     input  logic              lr_start,            // after cdef_done (or lf_done when CDEF is off); reads fb0 + fb1, writes fb2
     input  logic              lr_from_deblocked,   // 1 when CDEF did not run this frame: CdefFrame == deblocked frame, read fb0 for both
     output logic              lr_busy,
@@ -106,17 +110,25 @@ module dec_top
                                          .s1_rdata(lr_from_deblocked ? fb_rdata : fb1_rdata),
                                          .d_we(lr_we2), .d_plane(lr_dplane), .d_x(lr_dx), .d_y(lr_dy), .d_wdata(lr_wdata));
 
+    logic sr_re, sr_we; logic [1:0] sr_plane; logic [FBX-1:0] sr_sx, sr_dx; logic [FBY-1:0] sr_sy, sr_dy; logic [11:0] sr_wdata;
+    logic sr0, sr1;
+    assign sr0 = sr_busy && !sr_buf;
+    assign sr1 = sr_busy && sr_buf;
+    sr_top #(.FBX(FBX), .FBY(FBY)) u_sr (.clk, .rst, .hdr, .lh, .start(sr_start), .busy(sr_busy), .done(sr_done),
+                                         .s_re(sr_re), .plane(sr_plane), .s_x(sr_sx), .s_y(sr_sy), .s_rdata(sr_buf ? fb1_rdata : fb_rdata),
+                                         .d_we(sr_we), .d_x(sr_dx), .d_y(sr_dy), .d_wdata(sr_wdata));
     logic [11:0] h_rdata0, h_rdata1, h_rdata2;
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .re(lf_busy ? lf_re : cdef_busy ? cd_re : lr_busy ? (lr_s0_re || (lr_from_deblocked && lr_s1_re)) : fb_re),
-                                                     .we(lf_busy ? lf_we : (cdef_busy || lr_busy) ? 1'b0 : fb_we),
-                                                     .plane(lf_busy ? lf_plane : cdef_busy ? cd_plane : lr_busy ? lr_splane : fb_plane),
-                                                     .x(lf_busy ? lf_x : cdef_busy ? cd_x : lr_busy ? lr_sx : fb_x),
-                                                     .y(lf_busy ? lf_y : cdef_busy ? cd_y : lr_busy ? lr_sy : fb_y),
-                                                     .wdata(lf_busy ? lf_wdata : fb_wdata), .rdata(fb_rdata),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .re(lf_busy ? lf_re : cdef_busy ? cd_re : sr0 ? sr_re : lr_busy ? (lr_s0_re || (lr_from_deblocked && lr_s1_re)) : fb_re),
+                                                     .we(lf_busy ? lf_we : sr0 ? sr_we : (cdef_busy || lr_busy || sr1) ? 1'b0 : fb_we),
+                                                     .plane(lf_busy ? lf_plane : cdef_busy ? cd_plane : sr0 ? sr_plane : lr_busy ? lr_splane : fb_plane),
+                                                     .x(lf_busy ? lf_x : cdef_busy ? cd_x : sr0 ? (sr_we ? sr_dx : sr_sx) : lr_busy ? lr_sx : fb_x),
+                                                     .y(lf_busy ? lf_y : cdef_busy ? cd_y : sr0 ? (sr_we ? sr_dy : sr_sy) : lr_busy ? lr_sy : fb_y),
+                                                     .wdata(lf_busy ? lf_wdata : sr0 ? sr_wdata : fb_wdata), .rdata(fb_rdata),
                                                      .h_plane, .h_x, .h_y, .h_rdata(h_rdata0));
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .re(lr_busy ? (lr_s1_re && !lr_from_deblocked) : 1'b0), .we(cdef_busy ? cd_we : 1'b0),
-                                                      .plane(lr_busy ? lr_splane : cd_dplane), .x(lr_busy ? lr_sx : cd_dx), .y(lr_busy ? lr_sy : cd_dy),
-                                                      .wdata(cd_wdata), .rdata(fb1_rdata),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .re(sr1 ? sr_re : lr_busy ? (lr_s1_re && !lr_from_deblocked) : 1'b0), .we(cdef_busy ? cd_we : sr1 ? sr_we : 1'b0),
+                                                      .plane(sr1 ? sr_plane : lr_busy ? lr_splane : cd_dplane),
+                                                      .x(sr1 ? (sr_we ? sr_dx : sr_sx) : lr_busy ? lr_sx : cd_dx), .y(sr1 ? (sr_we ? sr_dy : sr_sy) : lr_busy ? lr_sy : cd_dy),
+                                                      .wdata(sr1 ? sr_wdata : cd_wdata), .rdata(fb1_rdata),
                                                       .h_plane, .h_x, .h_y, .h_rdata(h_rdata1));
     logic [11:0] unused_r2;
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb2 (.clk, .re(1'b0), .we(lr_we2), .plane(lr_dplane), .x(lr_dx), .y(lr_dy), .wdata(lr_wdata), .rdata(unused_r2),
