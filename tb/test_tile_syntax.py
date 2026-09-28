@@ -86,8 +86,9 @@ class RecDecoder(tm.TileDecoder):
             walk(self.cdf[name], 0, [])
 
     def sym(self, cdf, name):
+        pre = list(cdf)
         v = super().sym(cdf, name)
-        self.symlog.append((name, self.idmap.get(id(cdf), ("?", len(cdf) - 1)), v))
+        self.symlog.append((name, self.idmap.get(id(cdf), ("?", len(cdf) - 1)), v, pre))
         return v
 
     def L(self, n, name):
@@ -246,7 +247,10 @@ async def tile_vs_model(dut):
             return
         # normalise both logs to (kind, addr, n, value) and show the first divergence with context
         mnorm = []
-        for name, where, v in dec.symlog:
+        mcdf = {}
+        for i_, entry in enumerate(dec.symlog):
+            pass
+        for name, where, v, *rest in dec.symlog:
             if isinstance(where, str) and where.startswith("L"):
                 n = int(where[1:])
                 for i in range(n - 1, -1, -1):
@@ -255,6 +259,8 @@ async def tile_vs_model(dut):
                 mnorm.append(("F", 0, 1, v, name))
             else:
                 mnorm.append(("S", where[0], where[1] - 1, v, name))
+                if rest and where[0] not in mcdf:
+                    mcdf[where[0]] = rest[0]          # the model's CDF row content at its first use
         rnorm = []
         for master, addr, n, kind, sym in symlog:
             rnorm.append(("B" if kind == 2 else "F" if kind == 1 else "S", addr if kind == 0 else 0, n if kind == 0 else 1, sym, master))
@@ -280,6 +286,12 @@ async def tile_vs_model(dut):
             m = mnorm[i] if i < len(mnorm) else None
             r = rnorm[i] if i < len(rnorm) else None
             dut._log.info(f"  {i:5d} {'!!' if (m is None or r is None or m[:4] != r[:4]) else '  '} model {m}  rtl {r}")
+        # CDF rows at the divergence: the model's row as first used vs the RTL's default row for this frame
+        if first < len(mnorm) and mnorm[first][0] == "S":
+            addr = mnorm[first][1]
+            n = mnorm[first][2] + 1
+            rtl_def = int(dut.u_cdf.def_mem[addr].value)
+            dut._log.info(f"  CDF row {addr}: model first-use {mcdf.get(addr)}; RTL def_mem {M.unpack_row(rtl_def, n)}")
     # real streams (TS_IVF=a.ivf,b.obu): every tile of every frame, records compared like the generated ones
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     jobs = []
