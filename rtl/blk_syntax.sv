@@ -753,16 +753,18 @@ module blk_syntax
                         else st <= S_RBC;
                         nd_tx[0] <= max_rect;
                     end else begin                                             // next child of the parent, raster order
-                        logic [1:0] pd, k;
+                        logic [1:0] pd;
+                        logic [2:0] k, nch;
                         logic [4:0] sub;
                         logic [5:0] ci, cj;
                         pd = vt_d - 2'd1;
-                        k = nd_ch[pd] + 2'd1;
+                        k = 3'(nd_ch[pd]) + 3'd1;                                     // next child (0..3), full width
+                        nch = 3'((nd_two_c[pd] ? 2 : 1) * (nd_two_r[pd] ? 2 : 1));
                         sub = split_tx_size(nd_tx[pd]);
-                        if (nd_two_c[pd]) begin ci = 6'(k >> 1); cj = 6'(k & 2'd1); end
+                        if (nd_two_c[pd]) begin ci = 6'(k >> 1); cj = 6'(k & 3'd1); end
                         else begin ci = 6'(k); cj = 6'd0; end
-                        if (k < 2'((nd_two_c[pd] ? 2 : 1) * (nd_two_r[pd] ? 2 : 1))) begin
-                            nd_ch[pd] <= k;
+                        if (k < nch) begin
+                            nd_ch[pd] <= k[1:0];
                             nd_r[vt_d] <= nd_r[pd] + 6'(ci * 6'(tx_height(sub) >> 2));
                             nd_c[vt_d] <= nd_c[pd] + 6'(cj * 6'(tx_width(sub) >> 2));
                             nd_tx[vt_d] <= sub;

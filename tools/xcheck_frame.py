@@ -18,6 +18,7 @@ import recon_model as rm    # noqa: E402
 import lf_model as lfm      # noqa: E402
 import cdef_model as cdm    # noqa: E402
 import lr_model as lrm      # noqa: E402
+import superres_model as srm  # noqa: E402
 import av1_tables as T      # noqa: E402
 
 
@@ -148,6 +149,9 @@ def main():
         deblocked = planes
         if stage in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             planes = cdm.Cdef(hdr, state, planes).apply()
+        if stage in ("cdef", "lr") and hdr.use_superres:          # 7.16: both LR inputs are upscaled
+            deblocked = srm.upscale(hdr, deblocked)
+            planes = srm.upscale(hdr, planes) if planes is not deblocked else deblocked
         if stage == "lr":
             planes = lrm.LoopRestoration(hdr, state, deblocked, planes).apply()
         outs = [o for o, k in enumerate(shown) if k == fi and o < len(refs)]

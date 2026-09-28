@@ -1,6 +1,6 @@
 """Spec-literal model of loop restoration (spec 7.17): Wiener and self-guided filters, applied per 4x4
 block with the 64-row stripe rule (samples outside the current stripe come from the deblocked but
-not CDEF-filtered picture). No superres yet (UpscaledCurrFrame == CurrFrame).
+not CDEF-filtered picture), both already upscaled by superres_model when use_superres is set (7.16).
 """
 import sys
 from pathlib import Path
@@ -37,7 +37,6 @@ class LoopRestoration:
         self.s = state
         self.cur = cur_planes
         self.cdef = cdef_planes
-        assert not hdr.use_superres, "superres not modelled"
 
     def apply(self):
         h = self.h
