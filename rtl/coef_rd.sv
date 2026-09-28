@@ -33,6 +33,8 @@ module coef_rd
     output logic [1:0]        dc_category,
     output logic              nonconformant, // Golomb length overflow (sticky until next start)
     // coefficient read port (registered, 1 cycle)
+    input  logic [2:0]        w_slot,       // coefficient slot this block's Quant is written to
+    input  logic [2:0]        q_slot,       // slot read through q_addr
     input  logic [9:0]        q_addr,
     output logic signed [20:0] q_data,
     // symbol sequencer master port
@@ -88,8 +90,8 @@ module coef_rd
 
     // ---------------------------------------------------------------- level scratch and outputs
     logic [3:0]  lev [0:1023];
-    logic [1023:0] nz;
-    logic signed [20:0] quant_mem [0:1023];
+    logic [1023:0] nz [0:7];
+    logic signed [20:0] quant_mem [0:8*1024-1];
 
     // scan ROM (default zig-zag scans); Mrow/Mcol are arithmetic
     logic [SCAN_ROM_AW-1:0] scan_addr;
@@ -225,7 +227,8 @@ module coef_rd
     always_ff @(posedge clk) begin
         done_a <= 1'b0; done_b <= 1'b0;
         if (rst) begin
-            st <= S_IDLE; nz <= '0; nonconformant <= 1'b0;
+            st <= S_IDLE; nonconformant <= 1'b0;
+            for (int s = 0; s < 8; s++) nz[s] <= '0;
         end else begin
             case (st)
                 S_IDLE: begin
@@ -235,7 +238,7 @@ module coef_rd
                     end else if (start_b) begin
                         st <= B_EOBPT;
                         for (int i = 0; i < 1024; i++) lev[i] <= 4'd0;
-                        nz <= '0; cul <= 6'd0; dccat <= 2'd0; eob <= 11'd0;
+                        nz[w_slot] <= '0; cul <= 6'd0; dccat <= 2'd0; eob <= 11'd0;
                     end
                 end
                 A_W: if (sq_done) begin
@@ -315,8 +318,8 @@ module coef_rd
                 end
                 P_STORE: begin
                     if (lev[pos] != 4'd0) begin
-                        quant_mem[pos] <= sign ? -21'(val20) : 21'(val20);
-                        nz[pos] <= 1'b1;
+                        quant_mem[{w_slot, pos}] <= sign ? -21'(val20) : 21'(val20);
+                        nz[w_slot][pos] <= 1'b1;
                         cul <= cul_sum > 7'd63 ? 6'd63 : cul_sum[5:0];
                         if (pos == 10'd0 && val20 != 20'd0) dccat <= sign ? 2'd1 : 2'd2;
                     end
@@ -342,5 +345,5 @@ module coef_rd
     assign dc_category = dccat;
 
     always_ff @(posedge clk)
-        q_data <= nz[q_addr] ? quant_mem[q_addr] : 21'sd0;
+        q_data <= nz[q_slot][q_addr] ? quant_mem[{q_slot, q_addr}] : 21'sd0;
 endmodule

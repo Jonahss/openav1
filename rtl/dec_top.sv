@@ -30,6 +30,8 @@ module dec_top
     output logic              tile_done,           // syntax finished and every block reconstructed (1-cycle pulse)
     output logic              tile_done_lvl,       // same, held until the next tile_start (for slow pollers)
     output logic              unsupported,
+    output logic [31:0]       perf_syn_stall,      // tile cycles the syntax decoder held a transform block waiting for reconstruction
+    output logic [31:0]       perf_rec_idle,       // tile cycles reconstruction had nothing to do (syntax-bound)
     // in-loop filters, run by software after all tiles of the frame: deblocking (7.14)
     input  logic              lf_start,
     output logic              lf_busy,
@@ -59,20 +61,27 @@ module dec_top
     input  logic [FBY-1:0]    h_y,
     output logic [11:0]       h_rdata
 );
-    logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane; logic [10:0] sb_r, sb_c;
-    logic [9:0] q_addr; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
+    logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane, blk_ack; logic [10:0] sb_r, sb_c;
+    logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
     tile_syntax #(.ML2R(FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported,
                       .sb_start_o(sb_start), .sb_r_o(sb_r), .sb_c_o(sb_c), .blk_info, .blk_done, .blk_rec,
-                      .tx_done, .tx_rec, .tx_ack, .lr_done, .lr_rec, .q_addr, .q_data,
-                      .pal_hold, .blk_ack(pal_hold), .pm_plane, .pm_x, .pm_y, .pm_idx);
+                      .tx_done, .tx_rec, .tx_ack, .lr_done, .lr_rec, .q_slot_w, .q_slot_r, .q_addr, .q_data,
+                      .pal_hold, .blk_ack, .pm_plane, .pm_x, .pm_y, .pm_idx);
+    // event queue: the syntax decoder runs ahead of reconstruction; a palette block is released (blk_ack) only
+    // once reconstruction has drained the queue, because its colour map lives in the syntax stage
+    logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [10:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
+    rec_fifo u_q (.clk, .rst, .flush(tile_start), .sb_start, .sb_r, .sb_c, .blk_info, .blk_rec, .tx_done, .tx_rec, .tx_ack, .w_slot(q_slot_w),
+                  .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight);
+    assign blk_ack = pal_hold && !ev_valid && !rc_busy;
 
     logic fb_re, fb_we, rc_busy; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [10:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [6:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
-    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FBY - 2), .ML2C(FBX - 2)) u_rc (.clk, .rst, .hdr, .rh, .sb_start, .sb_r, .sb_c, .blk_info, .blk_rec,
-                                            .tx_done, .tx_rec, .tx_ack, .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
+    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FBY - 2), .ML2C(FBX - 2)) u_rc (.clk, .rst, .hdr, .rh,
+                                            .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
+                                            .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
                                             .mi_tx_we, .mi_tx_plane, .mi_tx_row, .mi_tx_col, .mi_tx_w4, .mi_tx_h4, .mi_tx_sz, .mi_tx_busy,
                                             .mi_cd_clr, .mi_cd_we, .mi_cd_row64, .mi_cd_col64, .mi_cd_mask, .mi_cd_idx,
@@ -139,11 +148,15 @@ module dec_top
     logic done_pend;
     always_ff @(posedge clk) begin
         tile_done <= 1'b0;
-        if (rst) begin done_pend <= 1'b0; tile_done_lvl <= 1'b0; end
+        if (rst) begin done_pend <= 1'b0; tile_done_lvl <= 1'b0; perf_syn_stall <= 32'd0; perf_rec_idle <= 32'd0; end
         else begin
-            if (tile_start) tile_done_lvl <= 1'b0;
+            if (tile_start) begin tile_done_lvl <= 1'b0; perf_syn_stall <= 32'd0; perf_rec_idle <= 32'd0; end
+            else begin
+                if (tx_done && !tx_ack) perf_syn_stall <= perf_syn_stall + 32'd1;          // queue full
+                if (tile_busy && !ev_valid && !rc_busy) perf_rec_idle <= perf_rec_idle + 32'd1;   // nothing queued
+            end
             if (ts_done) done_pend <= 1'b1;
-            if ((done_pend || ts_done) && !rc_busy) begin done_pend <= 1'b0; tile_done <= 1'b1; tile_done_lvl <= 1'b1; end
+            if ((done_pend || ts_done) && !rc_busy && !ev_valid) begin done_pend <= 1'b0; tile_done <= 1'b1; tile_done_lvl <= 1'b1; end
         end
     end
 endmodule

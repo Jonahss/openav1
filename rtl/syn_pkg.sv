@@ -148,5 +148,6 @@ package syn_pkg;
         logic [10:0] eob;
         logic        skip;                     // block skip: no coefficients
         logic        lossless;
+        logic [2:0]  slot;                     // coefficient slot in coef_rd (rec_fifo)
     } tx_rec_t;
 endpackage

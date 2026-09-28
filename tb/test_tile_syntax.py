@@ -41,7 +41,7 @@ BLK_FIELDS = [
     ("delta_lf", 28), ("cdef_valid", 1), ("cdef_idx", 3), ("cdef_units", 4),
     ("pal_y", 4), ("pal_uv", 4), ("col_y", 96), ("col_u", 96), ("col_v", 96),
     ("is_inter", 1), ("mv_row", 18), ("mv_col", 18)]
-TX_FIELDS = [("plane", 2), ("x", 13), ("y", 13), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1)]
+TX_FIELDS = [("plane", 2), ("x", 13), ("y", 13), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1), ("slot", 3)]
 LR_FIELDS = [("plane", 2), ("unit_row", 8), ("unit_col", 8), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
 
@@ -254,7 +254,7 @@ async def tile_vs_model(dut):
     W = int(os.environ.get("TS_W", "128"))
     H = int(os.environ.get("TS_H", "96"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "tx_ack", "q_addr", "hdr", "blk_ack", "pm_plane", "pm_x", "pm_y"):
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "blk_ack", "pm_plane", "pm_x", "pm_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)

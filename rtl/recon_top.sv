@@ -5,8 +5,8 @@
 //     prediction = palette (7.11.4) | edge preparation (7.11.2.1, reads the frame buffer) + ipred (7.11.2)
 //                  [+ CfL (7.11.5): load the reconstructed luma region and the DC prediction, run cfl]
 // Slow-and-correct first version: one pixel (or one coefficient) per cycle or two, no overlap between stages.
-// tx_ack is only raised once the block is fully written, which keeps the syntax decoder (which stalls on
-// tx_done) from running into the next superblock before this stage is done with the current one.
+// Events arrive through rec_fifo in decode order (superblock start, block record, transform blocks); a
+// transform block is popped only once it is fully written, so its coefficient slot stays valid until then.
 //
 // State kept here: BlockDecoded flags per plane for the current superblock (cleared on sb_start, 5.11.3),
 // MaxLumaW/H, and a per-4x4 map of {uvmode, ymode} for the tile (get_filter_type needs the neighbours'
@@ -27,14 +27,14 @@ module recon_top
     input  logic        rst,
     input  hdr_t        hdr,
     input  rec_hdr_t    rh,
-    // from tile_syntax
-    input  logic        sb_start,
-    input  logic [10:0] sb_r, sb_c,
-    input  logic        blk_info,
-    input  blk_rec_t    blk_rec,
-    input  logic        tx_done,
-    input  tx_rec_t     tx_rec,
-    output logic        tx_ack,
+    // from the event queue (rec_fifo): head event, popped when consumed
+    input  logic        ev_valid,
+    input  logic [1:0]  ev_kind,              // 0 transform block, 1 block record, 2 superblock start
+    input  logic [10:0] ev_sb_r, ev_sb_c,
+    input  blk_rec_t    ev_blk,
+    input  tx_rec_t     ev_tx,
+    output logic        ev_pop,
+    output logic [2:0]  q_slot,
     output logic [9:0]  q_addr,
     input  logic signed [20:0] q_data,
     output logic        pm_plane,
@@ -126,6 +126,8 @@ module recon_top
     typedef enum logic [3:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
                               B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR} bst_t;
     bst_t bst;
+    // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
+    // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
     // ---- intra block copy (7.11.3 with refIdx = -1): the block is predicted whole from the pre-filter current
     // frame before its transform blocks add residuals. someUseIntra is always 1 for an intrabc block (its own
     // RefFrames[0] is INTRA_FRAME), so each plane is one prediction of the plane residual size with this
@@ -209,8 +211,8 @@ module recon_top
         if (rst) begin
             bst <= B_IDLE; blk_ready <= 1'b0;
         end else case (bst)
-            B_IDLE: if (blk_info) begin
-                b <= blk_rec; blk_ready <= 1'b0; bst <= B_FT0;
+            B_IDLE: if (blk_take) begin
+                b <= ev_blk; blk_ready <= 1'b0; bst <= B_FT0;
             end
             // four neighbour-mode reads (issued by the combinational mm_addr; captured in the following state):
             // above Y, left Y, above UV, left UV
@@ -404,6 +406,16 @@ module recon_top
         R_FIN, R_MIW
     } rst_t;
     rst_t rs;
+    logic tx_ack;                                          // registered: the transform block was fully written (R_MIW)
+    logic sb_start, blk_take, tx_take, tx_pop;
+    logic [10:0] sb_r, sb_c;
+    assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
+    assign sb_r = ev_sb_r; assign sb_c = ev_sb_c;
+    assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE);
+    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready && !tx_ack;
+    assign tx_pop = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;
+    assign ev_pop = sb_start || blk_take || tx_pop;
+    assign q_slot = t.slot;
     logic [6:0]  ci, cj;                                   // generic pixel / coefficient counters (row, col)
     logic [8:0]  ek, n_edges;                              // edge entry counter: 0..2(w+h)
     logic        ep_valid, ep_const;                       // edge pipeline register
@@ -573,8 +585,8 @@ module recon_top
                 end
             end
             case (rs)
-                R_IDLE: if (tx_done && blk_ready && !tx_ack) begin
-                    t <= tx_rec; rs <= R_SETUP;
+                R_IDLE: if (tx_take) begin
+                    t <= ev_tx; rs <= R_SETUP;
                 end
                 R_SETUP: begin
                     ci <= 7'd0; cj <= 7'd0; px_valid <= 1'b0; ek <= 9'd0; ep_valid <= 1'b0;

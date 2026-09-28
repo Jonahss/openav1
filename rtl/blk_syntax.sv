@@ -864,6 +864,7 @@ module blk_syntax
                         tx_done <= 1'b1;
                         tx_rec.plane <= plane; tx_rec.x <= start_x; tx_rec.y <= start_y; tx_rec.txsz <= p_txsz;
                         tx_rec.txtype <= p_txtype; tx_rec.eob <= t_eob; tx_rec.skip <= skip; tx_rec.lossless <= lossless;
+                        tx_rec.slot <= 3'd0;                                   // filled in by tile_syntax (rec_fifo slot)
                     end else if (tx_ack) begin
                         tx_done <= 1'b0; st <= S_RES_NEXT;
                     end

@@ -43,6 +43,8 @@ module tile_syntax
     input  logic              tx_ack,
     output logic              lr_done,
     output lr_rec_t           lr_rec,
+    input  logic [2:0]        q_slot_w,        // coef_rd slot for the next transform block (rec_fifo w_slot; 0 without a queue)
+    input  logic [2:0]        q_slot_r,
     input  logic [9:0]        q_addr,
     output logic signed [20:0] q_data,
     // palette colour map of the block held on pal_hold
@@ -108,7 +110,7 @@ module tile_syntax
     logic cf_nonconf;
     coef_rd u_coef (.clk, .rst, .cfg_tx(cf_tx), .cfg_ptype(cf_ptype), .start_a(cf_start_a), .az_ctx(cf_az_ctx), .done_a(cf_done_a), .all_zero(cf_all_zero),
                     .start_b(cf_start_b), .tx_type(cf_tx_type), .dcs_ctx(cf_dcs_ctx), .done_b(cf_done_b), .eob_o(cf_eob), .cul_level(cf_cul), .dc_category(cf_dccat),
-                    .nonconformant(cf_nonconf), .q_addr, .q_data,
+                    .nonconformant(cf_nonconf), .w_slot(q_slot_w), .q_slot(q_slot_r), .q_addr, .q_data,
                     .sq_go(c_go), .sq_addr(c_addr), .sq_n(c_n), .sq_kind(c_kind), .sq_done(c_done), .sq_sym(c_sym));
 
     // ------------------------------------------------------------------ blk_ctx
@@ -154,8 +156,10 @@ module tile_syntax
                                               .w_data(mvm_data), .busy(mvm_busy), .clr(mvm_clr), .clr_row(sb_r), .clr_n(sb4),
                                               .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
+    tx_rec_t b_tx;
+    always_comb begin tx_rec = b_tx; tx_rec.slot = q_slot_w; end
     blk_syntax u_blk (.clk, .rst, .hdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
-                      .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec, .tx_ack, .blk_ack, .pal_hold,
+                      .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec(b_tx), .tx_ack, .blk_ack, .pal_hold,
                       .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u,
                       .pm_plane, .pm_x, .pm_y, .pm_idx,
                       .sq_go(bq_go), .sq_addr(bq_addr), .sq_n(bq_n), .sq_kind(bq_kind), .sq_done(k_done), .sq_sym(k_sym),

@@ -111,7 +111,7 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0):
         await Timer(1, "ns")
         stats["tiles"] += 1
         stats["cycles"] += cycles
-        dut._log.info(f"{tag}: tile done in ~{cycles} cycles")
+        dut._log.info(f"{tag}: tile done in ~{cycles} cycles (syntax stalled on recon {int(dut.perf_syn_stall.value)}, recon idle {int(dut.perf_rec_idle.value)})")
         return
     while True:
         await RisingEdge(dut.clk)
@@ -126,7 +126,7 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0):
                 rtl_pal[(got["r"], got["c"])] = ([(got["col_y"] >> (12 * k)) & 0xFFF for k in range(got["pal_y"])],
                                                  [(got["col_u"] >> (12 * k)) & 0xFFF for k in range(got["pal_uv"])],
                                                  [(got["col_v"] >> (12 * k)) & 0xFFF for k in range(got["pal_uv"])])
-        if int(dut.tx_done.value) and int(dut.u_ts.tx_ack.value):
+        if int(dut.tx_done.value) and int(dut.u_q.tx_ack.value):
             txb += 1
             idle = 0
             if debug:
