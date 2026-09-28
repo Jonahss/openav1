@@ -185,6 +185,89 @@ def dump_yuv(path, hdr, get_pixel):
                 fh.write(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
 
 
+def ref_frame(path, hdr, fi):
+    """Frame fi of a dav1d raw-yuv output (planar, visible size, 8-bit bytes or 16-bit LE) as plane arrays."""
+    import struct
+    sizes = []
+    for plane in range(hdr.NumPlanes):
+        sx = hdr.subsampling_x if plane else 0
+        sy = hdr.subsampling_y if plane else 0
+        sizes.append(((hdr.FrameWidth + sx) >> sx, (hdr.FrameHeight + sy) >> sy))
+    bps = 1 if hdr.BitDepth == 8 else 2
+    frame_bytes = sum(w * h for w, h in sizes) * bps
+    with open(path, "rb") as fh:
+        fh.seek(frame_bytes * fi)
+        data = fh.read(frame_bytes)
+    assert len(data) == frame_bytes, f"{path}: frame {fi} missing (file too short)"
+    planes = []
+    pos = 0
+    for (w, h) in sizes:
+        n = w * h
+        vals = list(data[pos:pos + n]) if bps == 1 else list(struct.unpack("<%dH" % n, data[pos:pos + n * 2]))
+        pos += n * bps
+        planes.append([vals[y * w:(y + 1) * w] for y in range(h)])
+    return planes, sizes
+
+
+async def rtl_only(dut, ivfs, stats):
+    import obu_parser as op
+    import tile_model as tm
+    ref_dir = os.environ.get("TS_REF_DIR", str(HERE.parent / "refout"))
+    for path in ivfs:
+        d = op.Decoder()
+        raw = open(path, "rb").read()
+        if path.endswith(".obu"):
+            d.feed_annexb(raw)                 # Argon conformance streams (Annex B)
+        else:
+            d.feed_ivf(raw)
+        ref_path = os.path.join(ref_dir, Path(path).stem + ".yuv")
+        for fi, tile_idx in enumerate(d.frames):
+            hdr0 = None
+            for ti in tile_idx:
+                th, data = d.tiles[ti]
+                dec = tm.TileDecoder(th, data, None)          # header helper only (get_qindex); nothing is decoded
+                dec.recon_events = []
+                dec.pred_events = []
+                hdr0 = th
+                await run_tile(dut, th, dec, data, f"{Path(path).name} frame {fi} tile ({th.MiColStart},{th.MiRowStart})", stats, False)
+                await ClockCycles(dut.clk, 4)
+            hdr = hdr0
+            tag = f"{Path(path).name} frame {fi}"
+            # in-loop filters, driven by the frame header alone
+            buf = 0
+            dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
+            stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)
+            if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+                dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
+                stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
+                buf = 1
+            if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
+                dut.lr_from_deblocked.value = 0 if buf == 1 else 1
+                stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000)
+                buf = 2
+            dut.h_buf.value = buf
+            await Timer(1, "ns")
+            ref, sizes = ref_frame(ref_path, hdr, fi)
+            for plane in range(hdr.NumPlanes):
+                W, H = sizes[plane]
+                bad = []
+                for y in range(H):
+                    for x in range(W):
+                        dut.h_plane.value = plane
+                        dut.h_x.value = x
+                        dut.h_y.value = y
+                        await RisingEdge(dut.clk)
+                        await ReadOnly()
+                        v = int(dut.h_rdata.value)
+                        if v != ref[plane][y][x]:
+                            bad.append((y, x, v, ref[plane][y][x]))
+                        await Timer(1, "ns")
+                stats["pixels"] += W * H
+                assert not bad, f"{tag} plane {plane}: {len(bad)} / {W * H} pixels differ from dav1d (y, x, rtl, dav1d), first {bad[:10]}"
+            stats["frames"] += 1
+            dut._log.info(f"{tag}: identical to dav1d ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]})")
+
+
 async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all=()):
     await Timer(1, "ns")
     dump_dir = os.environ.get("TS_DUMP")
@@ -255,6 +338,12 @@ async def dec_vs_model(dut):
     await RisingEdge(dut.clk)
     stats = dict(frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, cdef_cycles=0, lr_cycles=0, stage=STAGE)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
+    if ivfs and os.environ.get("TS_NOMODEL"):
+        # model-free: the RTL runs every stage on its own and the output picture is compared with dav1d's decoded
+        # frames (refout/<stream>.yuv, or TS_REF_DIR), so this scales to the conformance sets
+        await rtl_only(dut, ivfs, stats)
+        dut._log.info(f"OK: {stats}")
+        return
     if ivfs:
         # real streams (aomenc / dav1d-verified corpus): every frame, every tile
         import obu_parser as op
