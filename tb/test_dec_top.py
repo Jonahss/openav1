@@ -97,6 +97,7 @@ async def run_tile(dut, th, dec, data, tag, stats, debug):
         await Timer(1, "ns")
         stats["tiles"] += 1
         stats["cycles"] += cycles
+        dut._log.info(f"{tag}: tile done in ~{cycles} cycles")
         return
     while True:
         await RisingEdge(dut.clk)
@@ -278,14 +279,20 @@ async def rtl_only(dut, ivfs, stats):
             # in-loop filters, driven by the frame header alone
             buf = 0
             dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
-            stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag, busy_sig=dut.lf_busy)
+            c = await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag, busy_sig=dut.lf_busy)
+            stats["lf_cycles"] += c
+            dut._log.info(f"{tag}: deblock ~{c} cycles")
             if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
                 dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
-                stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag, busy_sig=dut.cdef_busy)
+                c = await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag, busy_sig=dut.cdef_busy)
+                stats["cdef_cycles"] += c
+                dut._log.info(f"{tag}: cdef ~{c} cycles")
                 buf = 1
             if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
                 dut.lr_from_deblocked.value = 0 if buf == 1 else 1
-                stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000, busy_sig=dut.lr_busy)
+                c = await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000, busy_sig=dut.lr_busy)
+                stats["lr_cycles"] += c
+                dut._log.info(f"{tag}: restoration ~{c} cycles")
                 buf = 2
             dut.h_buf.value = buf
             await Timer(1, "ns")

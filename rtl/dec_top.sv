@@ -27,7 +27,8 @@ module dec_top
     // control
     input  logic              tile_start,
     output logic              tile_busy,
-    output logic              tile_done,           // syntax finished and every block reconstructed
+    output logic              tile_done,           // syntax finished and every block reconstructed (1-cycle pulse)
+    output logic              tile_done_lvl,       // same, held until the next tile_start (for slow pollers)
     output logic              unsupported,
     // in-loop filters, run by software after all tiles of the frame: deblocking (7.14)
     input  logic              lf_start,
@@ -126,10 +127,11 @@ module dec_top
     logic done_pend;
     always_ff @(posedge clk) begin
         tile_done <= 1'b0;
-        if (rst) done_pend <= 1'b0;
+        if (rst) begin done_pend <= 1'b0; tile_done_lvl <= 1'b0; end
         else begin
+            if (tile_start) tile_done_lvl <= 1'b0;
             if (ts_done) done_pend <= 1'b1;
-            if ((done_pend || ts_done) && !rc_busy) begin done_pend <= 1'b0; tile_done <= 1'b1; end
+            if ((done_pend || ts_done) && !rc_busy) begin done_pend <= 1'b0; tile_done <= 1'b1; tile_done_lvl <= 1'b1; end
         end
     end
 endmodule

@@ -27,7 +27,12 @@ sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{to
 params = {}
 if top in ("dec_top", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.get("FBX"):
     params = {"FBX": int(os.environ["FBX"]), "FBY": int(os.environ.get("FBY", os.environ["FBX"]))}
+# SIM_FAST=1: optimise for simulation speed (Verilator -O3, compiler -O2, N threads); default is Verilator's -Os,
+# which compiles fastest. SIM_THREADS overrides the thread count (default: all cores).
+build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves else [])
+if os.environ.get("SIM_FAST", "0") == "1":
+    threads = int(os.environ.get("SIM_THREADS", str(os.cpu_count() or 1)))
+    build_args += ["-O3", "--x-assign", "fast", "--x-initial", "fast", "-CFLAGS", "-O2", "--threads", str(threads), "-Wno-UNOPTTHREADS"]
 r.build(sources=sources, hdl_toplevel=top, parameters=params,
-        build_dir=ROOT / "build" / top, build_args=["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves else []),
-        waves=waves)
+        build_dir=ROOT / "build" / top, build_args=build_args, waves=waves)
 r.test(hdl_toplevel=top, test_module=mod, build_dir=ROOT / "build" / top, waves=waves)
