@@ -66,12 +66,19 @@ module recon_top
     output logic [FBY-1:0] fb_y,
     output logic [11:0] fb_wdata,
     input  logic [11:0] fb_rdata,
+    input  logic [47:0] fb_rdata4,            // aligned group of 4 samples containing fb_x (with fb_re)
     // frame buffer write port (all of this stage's writes; fb_we stays 0)
     output logic        fb2_we,
     output logic [1:0]  fb2_plane,
     output logic [FBX-1:0] fb2_x,
     output logic [FBY-1:0] fb2_y,
-    output logic [11:0] fb2_wdata
+    output logic [11:0] fb2_wdata,
+    // frame buffer 4-wide write port (prediction and residual-add output, aligned groups of 4)
+    output logic        fb4_we,
+    output logic [1:0]  fb4_plane,
+    output logic [FBX-1:0] fb4_x,
+    output logic [FBY-1:0] fb4_y,
+    output logic [47:0] fb4_wdata
 );
     localparam logic [3:0] DC_PRED = 4'd0, UV_CFL_PRED = 4'd13, SMOOTH_PRED = 4'd9, SMOOTH_H_PRED = 4'd11;
     localparam logic [3:0] IDTX = 4'd9;
@@ -374,12 +381,12 @@ module recon_top
 
     // ================================================================ sub-blocks
     // itx2d
-    logic itx_we, itx_clr, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data;
+    logic itx_we, itx_clr, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data; logic [4*TW-1:0] res_data4;
     itx2d #(.TW(TW)) u_itx (.clk, .rst, .coef_clr(itx_clr), .coef_we(itx_we), .coef_addr(itx_addr), .coef_data(itx_data),
                             .start(itx_start), .tx_sz(t.txsz), .tx_type(t.lossless ? 4'd0 : t.txtype), .bit_depth(hdr.bit_depth), .lossless(t.lossless),
-                            .busy(itx_busy), .done(itx_done), .res_addr, .res_data);
+                            .busy(itx_busy), .done(itx_done), .res_addr, .res_data, .res_data4);
     // ipred
-    logic edge_we, ip_start, ip_busy, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data, ip_pix; logic [5:0] ip_ox, ip_oy;
+    logic edge_we, ip_start, ip_busy, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data; logic [47:0] ip_pix4; logic [5:0] ip_ox, ip_oy;
     logic ft_sel;
     assign ft_sel = (is_dir(mode) && !((t.plane == 2'd0) && b.use_fi)) ? ((t.plane == 2'd0) ? ft_y : ft_uv) : 1'b0;
     ipred #(.PW(12)) u_ip (.clk, .rst, .edge_we, .edge_side, .edge_idx, .edge_data,
@@ -387,7 +394,7 @@ module recon_top
                            .angle_delta((t.plane == 2'd0) ? b.angle_y : b.angle_uv), .log2w(l2w), .log2h(l2h), .bit_depth(hdr.bit_depth),
                            .have_left(have_l), .have_above(have_a), .filter_type(ft_sel), .edge_filter_en(rh.enable_intra_edge_filter),
                            .above_px, .left_px, .busy(ip_busy), .done(ip_done),
-                           .out_valid(ip_ov), .out_x(ip_ox), .out_y(ip_oy), .out_pix(ip_pix));
+                           .out_valid(ip_ov), .out_x(ip_ox), .out_y(ip_oy), .out_pix4(ip_pix4));
     // cfl
     logic cl_lwe, cl_dwe, cl_start, cl_busy, cl_done, cl_ov; logic [9:0] cl_laddr, cl_daddr; logic [11:0] cl_ldata, cl_ddata, cl_pix; logic [4:0] cl_ox, cl_oy;
     logic [12:0] lx0, ly0;
@@ -535,23 +542,29 @@ module recon_top
             else dq_out = TW'(v);
         end
     end
-    // recon add datapath (R_ADD_B)
-    logic [6:0]  add_xx, add_yy, padd_xx, padd_yy;           // read position (ci, cj) and write position (pci, pcj)
-    assign add_xx = flip_lr ? 7'(tw_px - 7'd1 - cj) : cj;
-    assign add_yy = flip_ud ? 7'(th_px - 7'd1 - ci) : ci;
-    assign padd_xx = flip_lr ? 7'(tw_px - 7'd1 - pcj) : pcj;
+    // recon add datapath: residual columns cj .. cj+3 of row ci map to the aligned picture group starting at
+    // add_xx (reversed when flip_lr); (ci, cj) is the group being read, (pci, pcj) the one being added and written
+    logic [6:0]  add_xx, add_yy, padd_xx, padd_yy;
+    assign padd_xx = flip_lr ? 7'(tw_px - 7'd4 - pcj) : pcj;
     assign padd_yy = flip_ud ? 7'(th_px - 7'd1 - pci) : pci;
-    logic signed [TW:0] add_sum;
-    logic [11:0] add_out;
+    assign add_xx = flip_lr ? 7'(tw_px - 7'd4 - cj) : cj;
+    assign add_yy = flip_ud ? 7'(th_px - 7'd1 - ci) : ci;
+    logic [47:0] add_out4;
     always_comb begin
-        add_sum = $signed({1'b0, (TW - 12)'(0), fb_rdata}) + $signed({res_data[TW-1], res_data});
-        add_out = (add_sum < 0) ? 12'd0 : (add_sum > $signed({1'b0, (TW - 12)'(0), pix_max})) ? pix_max : 12'(add_sum);
+        for (int m = 0; m < 4; m++) begin
+            logic signed [TW:0] sum;
+            logic [TW-1:0] r;
+            r = res_data4[(flip_lr ? 3 - m : m) * TW +: TW];
+            sum = $signed({1'b0, (TW - 12)'(0), fb_rdata4[m*12 +: 12]}) + $signed({r[TW-1], r});
+            add_out4[m*12 +: 12] = (sum < 0) ? 12'd0 : (sum > $signed({1'b0, (TW - 12)'(0), pix_max})) ? pix_max : 12'(sum);
+        end
     end
 
     // ---------------------------------------------------------------- combinational outputs
     always_comb begin
         fb_re = 1'b0; fb_we = 1'b0; fb_plane = t.plane; fb_x = '0; fb_y = '0; fb_wdata = 12'd0;
         fb2_we = 1'b0; fb2_plane = t.plane; fb2_x = '0; fb2_y = '0; fb2_wdata = 12'd0;
+        fb4_we = 1'b0; fb4_plane = t.plane; fb4_x = '0; fb4_y = '0; fb4_wdata = 48'd0;
         edge_we = 1'b0; edge_side = ep_side; edge_idx = ep_idx; edge_data = ep_const ? ep_val : fb_rdata;
         itx_we = 1'b0; itx_addr = 10'd0; itx_data = '0;
         cl_lwe = 1'b0; cl_dwe = 1'b0; cl_laddr = 10'd0; cl_ldata = fb_rdata; cl_daddr = 10'd0; cl_ddata = fb_rdata;
@@ -572,7 +585,7 @@ module recon_top
                 if (ek <= n_edges && !e_const) begin fb_re = 1'b1; fb_x = FBX'(e_rx); fb_y = FBY'(e_ry); end
                 if (ep_valid) edge_we = 1'b1;
             end
-            R_IP_W: if (ip_ov) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + 13'(ip_ox)); fb2_y = FBY'(t.y + 13'(ip_oy)); fb2_wdata = ip_pix; end
+            R_IP_W: if (ip_ov) begin fb4_we = 1'b1; fb4_x = FBX'(t.x + 13'(ip_ox)); fb4_y = FBY'(t.y + 13'(ip_oy)); fb4_wdata = ip_pix4; end
             R_CFL_L: begin
                 // read luma (plane 0) at (lx0 + cj, ly0 + ci); write the previously read pixel into cfl
                 fb_plane = 2'd0;
@@ -586,10 +599,10 @@ module recon_top
             R_CFL_W: if (cl_ov) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + 13'(cl_ox)); fb2_y = FBY'(t.y + 13'(cl_oy)); fb2_wdata = cl_pix; end
             // dequant: one coefficient per clock (address (ci, cj) out, the previous position's data in)
             R_DQ, R_DQ_LAST: if (p_valid) begin itx_we = 1'b1; itx_addr = {pci[4:0], pcj[4:0]}; itx_data = dq_out; end
-            // residual add: read (ci, cj) through port 1, write the previous position through port 2
+            // residual add: read the group at (ci, cj) through port 1, write the previous group through port 4
             R_ADD, R_ADD_LAST: begin
                 if (rs == R_ADD) begin fb_re = 1'b1; fb_x = FBX'(t.x + 13'(add_xx)); fb_y = FBY'(t.y + 13'(add_yy)); end
-                if (p_valid) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + 13'(padd_xx)); fb2_y = FBY'(t.y + 13'(padd_yy)); fb2_wdata = add_out; end
+                if (p_valid) begin fb4_we = 1'b1; fb4_x = FBX'(t.x + 13'(padd_xx)); fb4_y = FBY'(t.y + 13'(padd_yy)); fb4_wdata = add_out4; end
             end
             default: ;
         endcase
@@ -709,9 +722,9 @@ module recon_top
                 end
                 R_DQ_LAST: begin p_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; itx_start <= 1'b1; rs <= R_ITX_W; end
                 R_ITX_W: if (itx_done) begin p_valid <= 1'b0; rs <= R_ADD; end
-                R_ADD: begin                             // read (ci, cj); the previous pixel is added and written this cycle
+                R_ADD: begin                             // read group (ci, cj..cj+3); the previous group is added and written this cycle
                     p_valid <= 1'b1; pci <= ci; pcj <= cj;
-                    if (cj + 7'd1 < tw_px) cj <= cj + 7'd1;
+                    if (cj + 7'd4 < tw_px) cj <= cj + 7'd4;
                     else if (ci + 7'd1 < th_px) begin cj <= 7'd0; ci <= ci + 7'd1; end
                     else rs <= R_ADD_LAST;
                 end

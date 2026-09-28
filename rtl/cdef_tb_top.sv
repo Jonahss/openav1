@@ -44,10 +44,10 @@ module cdef_tb_top
                                              .rd_row, .rd_col, .rd_info, .cdr_row64, .cdr_col64, .cdr_val,
                                              .src_re, .src_plane, .src_x, .src_y, .src_rdata, .dst_we, .dst_plane, .dst_x, .dst_y, .dst_wdata);
     logic [11:0] unused_h0;
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_src (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .re(busy ? src_re : 1'b0), .we(busy ? 1'b0 : h_we), .plane(busy ? src_plane : h_plane),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_src (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .w4_we(1'b0), .w4_plane(2'd0), .w4_x('0), .w4_y('0), .w4_wdata('0), .rdata4(), .re(busy ? src_re : 1'b0), .we(busy ? 1'b0 : h_we), .plane(busy ? src_plane : h_plane),
                                                       .x(busy ? src_x : h_x), .y(busy ? src_y : h_y), .wdata(h_wdata), .rdata(src_rdata),
                                                       .h_plane(2'd0), .h_x('0), .h_y('0), .h_rdata(unused_h0));
     logic [11:0] unused_r1;
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_dst (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .re(1'b0), .we(dst_we), .plane(dst_plane), .x(dst_x), .y(dst_y), .wdata(dst_wdata), .rdata(unused_r1),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_dst (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .w4_we(1'b0), .w4_plane(2'd0), .w4_x('0), .w4_y('0), .w4_wdata('0), .rdata4(), .re(1'b0), .we(dst_we), .plane(dst_plane), .x(dst_x), .y(dst_y), .wdata(dst_wdata), .rdata(unused_r1),
                                                       .h_plane, .h_x, .h_y, .h_rdata);
 endmodule

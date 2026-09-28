@@ -41,8 +41,10 @@ async def run_block(dut, params, w, h):
         await ReadOnly()
         if int(dut.out_valid.value):
             x, y = int(dut.out_x.value), int(dut.out_y.value)
-            got[y][x] = int(dut.out_pix.value)
-            n += 1
+            v4 = int(dut.out_pix4.value)
+            for l in range(4):
+                got[y][x + l] = (v4 >> (l * 12)) & 0xFFF
+            n += 4
         if int(dut.done.value):
             break
         await Timer(1, "ns")

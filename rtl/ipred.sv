@@ -1,11 +1,12 @@
-// openav1 — intra predictor (AV1 spec 7.11.2), one pixel per clock.
+// openav1 — intra predictor (AV1 spec 7.11.2), four pixels per clock.
 //
 // The caller loads the prepared edges (AboveRow[0..w+h-1], LeftCol[0..w+h-1], top-left) through
 // the edge write port, sets the parameters and pulses start. The block then
 //   1. runs the spec's edge preparation passes in place for directional modes
 //      (filter corner, intra edge filter per side, 2x upsampling per side),
-//   2. for DC, sums the available edges and divides with a restoring divider,
-//   3. emits pred[i][j] in raster order, one pixel per clock, with (x, y) alongside.
+//   2. for DC, sums the available edges eight per clock and divides in one cycle,
+//   3. emits pred[i][j] in raster order, four pixels per clock (an aligned group of columns), with (x, y) of
+//      the group's first pixel alongside.
 //
 // Edge storage: A[] = AboveRow, L[] = LeftCol, indexed -2 .. 257 (index -1 holds the top-left
 // sample of that side, exactly like the spec's two arrays; upsampling may rewrite it).
@@ -44,7 +45,7 @@ module ipred #(
     output logic          out_valid,
     output logic [5:0]    out_x,
     output logic [5:0]    out_y,
-    output logic [PW-1:0] out_pix
+    output logic [4*PW-1:0] out_pix4       // pixels (out_x .. out_x+3, out_y), lane l at [l*PW +: PW]
 );
     localparam int EOFF = 2;                 // edge index k is stored at k + EOFF
     localparam int ESZ  = 260;               // -2 .. 257
@@ -172,7 +173,7 @@ module ipred #(
 
     // ------------------------------------------------------------------ control state
     typedef enum logic [3:0] {
-        S_IDLE, S_SETUP, S_CORNER, S_EF, S_UP_A, S_UP_L, S_DC_SUM, S_DC_DIV, S_PIX, S_DONE
+        S_IDLE, S_SETUP, S_CORNER, S_EF, S_UP_A, S_UP_L, S_DC_SUM, S_PIX, S_DONE
     } state_t;
     state_t state;
 
@@ -183,9 +184,9 @@ module ipred #(
     logic [PW-1:0] o0, o1;            // originals of edge[k-2], edge[k-1] during the edge filter
     logic [PW-1:0] up_save1;          // original buf[1] across the descending upsample pass
 
-    logic [19:0]   dc_sum, div_rem;
-    logic [PW-1:0] div_q, dc_val;
-    logic [4:0]    div_i;
+    logic [19:0]   dc_sum, dc_part;   // running sum and the sum of the next (up to) 8 edge samples
+    logic [8:0]    dc_n;              // number of edge samples summed
+    logic [PW-1:0] dc_val;
 
     logic [5:0]    px, py;
 
@@ -196,11 +197,10 @@ module ipred #(
         fi_rd = fi_buf[((r >> 1) & 15) * 8 + ((c >> 2) & 7)][((r & 1) * 4 + (c & 3)) * PW +: PW];
     endfunction
 
-    // ------------------------------------------------------------------ pixel datapath
-    logic [PW-1:0] pix_val;
-    always_comb begin
-        int i, j, tl, base, pl, pt, ptl, wy, wx, s, idx, shift, maxb, idx2, base2, shift2;
-        i = int'(py); j = int'(px);
+    // ------------------------------------------------------------------ pixel datapath: pred[i][j]
+    function automatic logic [PW-1:0] pred_pix(input int i, input int j);
+        int tl, base, pl, pt, ptl, wy, wx, s, idx, shift, maxb, idx2, base2, shift2;
+        logic [PW-1:0] pix_val;
         tl = 0; base = 0; pl = 0; pt = 0; ptl = 0; wy = 0; wx = 0; s = 0; idx = 0; shift = 0; maxb = 0;
         idx2 = 0; base2 = 0; shift2 = 0;
         pix_val = '0;
@@ -262,7 +262,10 @@ module ipred #(
             shift = ((idx << int'(up_l)) >> 1) & 31;
             pix_val = PW'((int'(L[ai(base)]) * (32 - shift) + int'(L[ai(base + 1)]) * shift + 16) >> 5);
         end
-    end
+        return pix_val;
+    endfunction
+    logic [PW-1:0] pix4 [4];
+    always_comb for (int l = 0; l < 4; l++) pix4[l] = pred_pix(int'(py), int'(px) + l);
 
     // filter-intra: the 4x2 patch at (i2 = py>>1, j4 = px>>2), from edges and already-predicted pixels
     logic [PW-1:0] fi_next [2][4];
@@ -348,17 +351,22 @@ module ipred #(
         up_d2 = d2;
     end
 
-    // divider step and filter-intra patch start (combinational helpers for the sequencer)
-    logic [27:0]   div_t;
-    logic [19:0]   div_rem_n;
-    logic [PW-1:0] div_q_n;
-    logic          first_of_patch;
+    // DC: the edge samples in order LeftCol[0..h-1] (if have_left) then AboveRow[0..w-1] (if have_above);
+    // dc_part sums the 8 of them at k .. k+7 (masked past the end)
     always_comb begin
-        div_t = 28'(wh) << div_i;
-        if (28'(div_rem) >= div_t) begin div_rem_n = div_rem - 20'(div_t); div_q_n = div_q | (PW'(1) << div_i); end
-        else                        begin div_rem_n = div_rem;             div_q_n = div_q; end
-        first_of_patch = l_fi && (py[0] == 1'b0) && (px[1:0] == 2'b00);
+        dc_n = (l_hl ? 9'(h) : 9'd0) + (l_ha ? 9'(w) : 9'd0);
+        dc_part = 20'd0;
+        for (int l = 0; l < 8; l++) begin
+            int kk;
+            kk = int'(k) + l;
+            if (kk < int'(dc_n)) begin
+                if (l_hl && kk < int'(h)) dc_part += 20'(L[ai(kk)]);
+                else                      dc_part += 20'(A[ai(kk - (l_hl ? int'(h) : 0))]);
+            end
+        end
     end
+    logic first_of_patch;           // filter-intra: an even row emits the freshly computed 4x2 patch's top row
+    assign first_of_patch = l_fi && (py[0] == 1'b0);
 
     // ------------------------------------------------------------------ sequencer
     always_ff @(posedge clk) begin
@@ -485,37 +493,26 @@ module ipred #(
                 end
             end
             S_DC_SUM: begin
-                if (l_hl && k < 9'(h))                  begin dc_sum <= dc_sum + 20'(L[ai(int'(k))]); k <= k + 9'd1; end
-                else if (l_ha && k < 9'(h) * 9'(l_hl) + 9'(w)) begin dc_sum <= dc_sum + 20'(A[ai(int'(k) - (l_hl ? int'(h) : 0))]); k <= k + 9'd1; end
-                else if (l_hl && l_ha) begin
-                    div_rem <= dc_sum + 20'(wh >> 1);
-                    div_q <= '0; div_i <= 5'd19;
-                    state <= S_DC_DIV;
-                end else if (l_hl) begin
-                    dc_val <= PW'((dc_sum + 20'(h >> 1)) >> l_log2h);
-                    state <= S_PIX;
-                end else begin
-                    dc_val <= PW'((dc_sum + 20'(w >> 1)) >> l_log2w);
+                if (k < dc_n) begin dc_sum <= dc_sum + dc_part; k <= k + 9'd8; end
+                else begin
+                    // both edges: (sum + (w+h)/2) / (w+h), an exact integer division by one of 12 possible sizes
+                    if (l_hl && l_ha) dc_val <= PW'((dc_sum + 20'(wh >> 1)) / 20'(wh));
+                    else if (l_hl)    dc_val <= PW'((dc_sum + 20'(h >> 1)) >> l_log2h);
+                    else              dc_val <= PW'((dc_sum + 20'(w >> 1)) >> l_log2w);
                     state <= S_PIX;
                 end
-            end
-            S_DC_DIV: begin
-                // restoring division: try subtracting wh << i for i = 19..0
-                div_rem <= div_rem_n; div_q <= div_q_n;
-                if (div_i == 0) begin dc_val <= div_q_n; state <= S_PIX; end
-                else div_i <= div_i - 5'd1;
             end
             S_PIX: begin
                 if (first_of_patch)
                     fi_buf[(int'(py) >> 1) * 8 + (int'(px) >> 2)] <= fi_next_packed;
-                out_pix   <= first_of_patch ? fi_next[0][0] : pix_val;
+                for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= first_of_patch ? fi_next[0][l] : pix4[l];
                 out_valid <= 1'b1;
                 out_x <= px; out_y <= py;
-                if (px + 7'd1 == w) begin
+                if (px + 7'd4 >= w) begin
                     px <= 0;
                     if (py + 7'd1 == h) state <= S_DONE;
                     else py <= py + 6'd1;
-                end else px <= px + 6'd1;
+                end else px <= px + 6'd4;
             end
             S_DONE: begin
                 done  <= 1'b1;

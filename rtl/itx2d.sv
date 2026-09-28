@@ -45,7 +45,8 @@ module itx2d #(
 
     // residual read port (valid after done): addr = i*64 + j
     input  logic [11:0]   res_addr,
-    output logic [TW-1:0] res_data
+    output logic [TW-1:0] res_data,
+    output logic [4*TW-1:0] res_data4       // the aligned group of 4 columns containing res_addr
 );
     // ---------------------------------------------------------------- tables (spec)
     logic [2:0] log2w, log2h;
@@ -107,6 +108,7 @@ module itx2d #(
         else if (coef_we && !busy) coef[coef_addr[9:5]][coef_addr[4:0]] <= coef_data;
     end
     assign res_data = res[res_addr[11:6]][res_addr[5:0]];
+    always_comb for (int l = 0; l < 4; l++) res_data4[l*TW +: TW] = res[res_addr[11:6]][{res_addr[5:2], 2'(l)}];
 
     // ---------------------------------------------------------------- latched parameters
     logic [3:0] l_bd;
