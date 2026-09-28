@@ -38,7 +38,6 @@ package syn_pkg;
         logic [5:0]  lr_size;                  // log2(LoopRestorationSize[p]) - 6 at [2p+1:2p]
         logic [12:0] frame_height;
         logic [12:0] upscaled_width;
-        logic        frame_parity;             // toggles per frame: mv_mem entries of this frame
         logic        use_superres;             // 7.16 upscaling: LR unit columns scale by SuperresDenom / SUPERRES_NUM
         logic [4:0]  superres_denom;           // SuperresDenom (9..16)
     } hdr_t;
@@ -131,9 +130,8 @@ package syn_pkg;
     } blk_rec_t;
 
     // Per-4x4 motion information of the current frame (spec IsInters / RefFrames / Mvs / MiSizes as the MV
-    // stack needs them): parity = frame parity of the write, so "written this frame" = (parity == current)
+    // stack needs them); "written this frame" is a separate bitmap in mv_mem, cleared per superblock row
     typedef struct packed {
-        logic        parity;
         logic        is_intrabc;
         logic [4:0]  bsize;
         logic signed [17:0] mv_row;

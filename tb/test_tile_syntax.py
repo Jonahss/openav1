@@ -34,7 +34,7 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
     ("reduced_tx_set", 1), ("allow_sct", 1), ("allow_intrabc", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
     ("coded_lossless", 1), ("delta_q_present", 1), ("delta_q_res", 2), ("delta_lf_present", 1), ("delta_lf_res", 2),
     ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", 13), ("upscaled_width", 13),
-    ("frame_parity", 1), ("use_superres", 1), ("superres_denom", 5)]
+    ("use_superres", 1), ("superres_denom", 5)]
 BLK_FIELDS = [
     ("r", 11), ("c", 11), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
@@ -169,7 +169,7 @@ def hdr_vals(th, dec, frame_parity=0):
              delta_lf_multi=th.delta_lf_multi, disable_cdf_update=th.disable_cdf_update,
              lr_type=sum(th.FrameRestorationType[p] << (2 * p) for p in range(3)),
              lr_size=sum((th.LoopRestorationSize[p].bit_length() - 1 - 6) << (2 * p) for p in range(3)),
-             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth, frame_parity=frame_parity & 1,
+             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth,
              use_superres=th.use_superres, superres_denom=th.SuperresDenom if th.use_superres else 8)
     return v
 

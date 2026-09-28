@@ -13,16 +13,16 @@ module mv_stack
     input  logic        clk,
     input  logic        rst,
     input  hdr_t        hdr,
-    input  logic        parity,               // frame parity of entries written this frame
     input  logic        start,
     input  logic [10:0] r, c,                 // MiRow, MiCol
     input  logic [4:0]  bs,                   // MiSize
     output logic        busy,
     output logic        done,                 // 1-cycle pulse; pred_* valid from then on
     output logic signed [17:0] pred_row, pred_col,
-    // mv_info read port (entry valid the cycle after the address)
+    // mv_info read port (entry and its written-this-frame bit valid the cycle after the address)
     output logic [10:0] rd_row, rd_col,
-    input  mv_ent_t     rd_ent
+    input  mv_ent_t     rd_ent,
+    input  logic        rd_written
 );
     localparam int REF_CAT_LEVEL = 640;
     localparam int MV_BORDER = 128;
@@ -86,7 +86,7 @@ module mv_stack
         if (!is_point && far && cand_len < 6'd2) cand_len = 6'd2;
         if (!is_point && step16 && cand_len < 6'd4) cand_len = 6'd4;
         cand_w = is_point ? 16'd4 : 16'(cand_len) * 16'd2;
-        cand_ok = rd_ent.is_intrabc && (rd_ent.parity == parity);     // IsInters && RefFrames[0] == INTRA_FRAME, written this frame
+        cand_ok = rd_written && rd_ent.is_intrabc;                      // written this frame, IsInters && RefFrames[0] == INTRA_FRAME
         cand_row = lower_int(rd_ent.mv_row);
         cand_col = lower_int(rd_ent.mv_col);
         for (int k = 0; k < 8; k++)

@@ -100,7 +100,8 @@ module blk_syntax
     output mv_ent_t     mvm_data,
     input  logic        mvm_busy,
     output logic [10:0] mvr_row, mvr_col,
-    input  mv_ent_t     mvr_ent
+    input  mv_ent_t     mvr_ent,
+    input  logic        mvr_written
 );
     localparam logic [4:0] BLOCK_4X4 = 5'd0, BLOCK_8X8 = 5'd3, BLOCK_64X64 = 5'd12;
     localparam logic [3:0] DC_PRED = 4'd0, UV_CFL_PRED = 4'd13;
@@ -309,10 +310,10 @@ module blk_syntax
     assign has_pal = (pal_y != 4'd0) || (pal_uv != 4'd0);
 
     // ---------------------------------------------------------------- MV stack (7.10.2) for intra block copy
-    mv_stack u_mvs (.clk, .rst, .hdr, .parity(hdr.frame_parity), .start(mvs_start), .r(br), .c(bc), .bs,
-                    .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent));
+    mv_stack u_mvs (.clk, .rst, .hdr, .start(mvs_start), .r(br), .c(bc), .bs,
+                    .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
     assign mvm_r = br; assign mvm_c = bc; assign mvm_bw4 = bw4; assign mvm_bh4 = bh4;
-    assign mvm_data = '{parity: hdr.frame_parity, is_intrabc: use_ibc, bsize: bs, mv_row: mv_row, mv_col: mv_col};
+    assign mvm_data = '{is_intrabc: use_ibc, bsize: bs, mv_row: mv_row, mv_col: mv_col};
 
     // txfm_split context of the current node (8.3.2): above / left transform widths against the node's size
     logic [4:0]  vt_tx;

@@ -149,9 +149,10 @@ module tile_syntax
     logic b_start, b_busy, b_unsup, sb_start;
     logic bq_go; logic [CDF_AW-1:0] bq_addr; logic [3:0] bq_n; logic [1:0] bq_kind;
     // motion info of the frame (intra block copy)
-    logic mvm_we, mvm_busy; logic [10:0] mvm_r, mvm_c, mvr_row, mvr_col; logic [5:0] mvm_bw4, mvm_bh4; mv_ent_t mvm_data, mvr_ent;
+    logic mvm_we, mvm_busy, mvm_clr, mvr_written; logic [10:0] mvm_r, mvm_c, mvr_row, mvr_col; logic [5:0] mvm_bw4, mvm_bh4; mv_ent_t mvm_data, mvr_ent;
     mv_mem #(.ML2R(ML2R), .ML2C(ML2C)) u_mvm (.clk, .rst, .we(mvm_we), .w_r(mvm_r), .w_c(mvm_c), .w_bw4(mvm_bw4), .w_bh4(mvm_bh4),
-                                              .w_data(mvm_data), .busy(mvm_busy), .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent));
+                                              .w_data(mvm_data), .busy(mvm_busy), .clr(mvm_clr), .clr_row(sb_r), .clr_n(sb4),
+                                              .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     blk_syntax u_blk (.clk, .rst, .hdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
                       .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec, .tx_ack, .blk_ack, .pal_hold,
@@ -163,7 +164,7 @@ module tile_syntax
                       .seg_ul, .seg_u, .seg_l, .ctx_we, .w_ymode, .w_skip, .w_seg, .w_txsz, .w_is_inter, .w_vartx, .w_txsz_col, .w_txsz_row, .ctx_wbusy,
                       .tx_req, .tx_plane, .tx_x4, .tx_y4, .tx_sz_o(tx_sz), .tx_bsize, .tx_valid, .az_ctx, .dcs_ctx, .tx_we, .w_cul, .w_dccat, .rbc_we, .ctx_tbusy,
                       .cf_tx, .cf_ptype, .cf_start_a, .cf_az_ctx, .cf_done_a, .cf_all_zero, .cf_start_b, .cf_tx_type, .cf_dcs_ctx, .cf_done_b, .cf_eob, .cf_cul, .cf_dccat,
-                      .mvm_we, .mvm_r, .mvm_c, .mvm_bw4, .mvm_bh4, .mvm_data, .mvm_busy, .mvr_row, .mvr_col, .mvr_ent);
+                      .mvm_we, .mvm_r, .mvm_c, .mvm_bw4, .mvm_bh4, .mvm_data, .mvm_busy, .mvr_row, .mvr_col, .mvr_ent, .mvr_written);
 
     // ------------------------------------------------------------------ partition / superblock FSM
     typedef struct packed {
@@ -318,7 +319,7 @@ module tile_syntax
     assign p_r = top.r; assign p_c = top.c; assign p_bs = top.bs;
 
     always_ff @(posedge clk) begin
-        tile_done <= 1'b0; msac_init <= 1'b0; cdf_init <= 1'b0; clear_above <= 1'b0; clear_left <= 1'b0; sbrow_end <= 1'b0;
+        tile_done <= 1'b0; msac_init <= 1'b0; cdf_init <= 1'b0; clear_above <= 1'b0; clear_left <= 1'b0; sbrow_end <= 1'b0; mvm_clr <= 1'b0;
         sb_start <= 1'b0; nb_req_p <= 1'b0; p_go_sym <= 1'b0; p_go_peek <= 1'b0; p_go_bool <= 1'b0; b_start <= 1'b0; lr_start <= 1'b0;
         if (rst) begin
             st <= T_IDLE; sp <= 4'd0; blk_active <= 1'b0; lr_active <= 1'b0;
@@ -332,6 +333,7 @@ module tile_syntax
             T_SB: begin
                 // superblock start: ReadDeltas, cdef flags (blk_syntax), read_lr, then decode_partition
                 sb_start <= 1'b1;
+                if (sb_c == hdr.mi_col_start) mvm_clr <= 1'b1;          // new superblock row: its motion-info rows are unwritten
                 sp <= 4'd1;
                 stack[0].r <= sb_r; stack[0].c <= sb_c; stack[0].bs <= sb_size_bsize(hdr.sb128); stack[0].child <= 3'd0;
                 lr_start <= 1'b1; lr_active <= 1'b1;
