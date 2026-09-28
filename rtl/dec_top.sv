@@ -132,11 +132,12 @@ module dec_top
 
     // loop restoration: reads fb0 (deblocked) and fb1 (CdefFrame) while lr_busy, writes fb2 (LrFrame)
     logic [1:0] lrr_plane; logic [5:0] lrr_row, lrr_col; lr_rec_t lrr_rec;
-    logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata;
+    logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata; logic lr_we4; logic [3:0] lr_be4; logic [47:0] lr_wdata4, lr0_rdata4, lr1_rdata4;
     lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start(lr_start_i), .ly_first(lr_ly_first), .ly_last(lr_ly_last), .busy(lr_busy), .done(lr_done_o),
                                          .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
-                                         .s0_re(lr_s0_re), .s1_re(lr_s1_re), .s_plane(lr_splane), .s_x(lr_sx), .s_y(lr_sy), .s0_rdata(lr0_rdata),
-                                         .s1_rdata(lr_from_deblocked_i ? lr0_rdata : lr1_rdata),
+                                         .s0_re(lr_s0_re), .s1_re(lr_s1_re), .s_plane(lr_splane), .s_x(lr_sx), .s_y(lr_sy), .s0_rdata(lr0_rdata), .s0_rdata4(lr0_rdata4),
+                                         .s1_rdata(lr_from_deblocked_i ? lr0_rdata : lr1_rdata), .s1_rdata4(lr_from_deblocked_i ? lr0_rdata4 : lr1_rdata4),
+                                         .d4_we(lr_we4), .d4_be(lr_be4), .d4_wdata(lr_wdata4),
                                          .d_we(lr_we2), .d_plane(lr_dplane), .d_x(lr_dx), .d_y(lr_dy), .d_wdata(lr_wdata));
 
     logic sr_re, sr_we; logic [1:0] sr_plane; logic [FBX-1:0] sr_sx, sr_dx; logic [FBY-1:0] sr_sy, sr_dy; logic [11:0] sr_wdata;
@@ -154,13 +155,13 @@ module dec_top
     logic [11:0] lf_rdata, cd_rdata, lr0_rdata, sr0_rdata, lr1_rdata, sr1_rdata; logic [47:0] lf_rdata4, cd_rdata4;
     logic [4:0] fb0_re; logic [9:0] fb0_rplane; logic [5*FBX-1:0] fb0_rx; logic [5*FBY-1:0] fb0_ry; logic [59:0] fb0_rdata; logic [239:0] fb0_rdata4;
     logic [2:0] fb0_we; logic [11:0] fb0_be; logic [5:0] fb0_wplane; logic [3*FBX-1:0] fb0_wx; logic [3*FBY-1:0] fb0_wy; logic [143:0] fb0_wdata;
-    logic [95:0] unused_rd4;
+    logic [47:0] unused_rd4;
     assign fb0_re = {sr0 && sr_re, lr_s0_re || (lr_from_deblocked_i && lr_s1_re), cd_re, lf_re, fb_re};
     assign fb0_rplane = {sr_plane, lr_splane, cd_plane, lf_plane, fb_plane};
     assign fb0_rx = {sr_sx, lr_sx, cd_x, lf_x, fb_x};
     assign fb0_ry = {sr_sy, lr_sy, cd_y, lf_y, fb_y};
     assign {sr0_rdata, lr0_rdata, cd_rdata, lf_rdata, fb_rdata} = fb0_rdata;
-    assign {unused_rd4, cd_rdata4, lf_rdata4, fb_rdata4} = fb0_rdata4;
+    assign {unused_rd4, lr0_rdata4, cd_rdata4, lf_rdata4, fb_rdata4} = fb0_rdata4;
     logic w_rc_we, w_lf_we, w_sr0_we; logic [3:0] w_rc_be, w_lf_be, w_sr0_be; logic [1:0] w_rc_pl, w_lf_pl, w_sr0_pl;
     logic [FBX-1:0] w_rc_x, w_lf_x, w_sr0_x; logic [FBY-1:0] w_rc_y, w_lf_y, w_sr0_y; logic [47:0] w_rc_d, w_lf_d, w_sr0_d;
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_rc (.we1(fb_we || fb2_we), .plane1(fb2_we ? fb2_plane : fb_plane), .x1(fb2_we ? fb2_x : fb_x), .y1(fb2_we ? fb2_y : fb_y), .d1(fb2_we ? fb2_wdata : fb_wdata),
@@ -183,6 +184,7 @@ module dec_top
     assign fb1_re = {sr1 && sr_re, lr_s1_re && !lr_from_deblocked_i};
     assign fb1_rplane = {sr_plane, lr_splane}; assign fb1_rx = {sr_sx, lr_sx}; assign fb1_ry = {sr_sy, lr_sy};
     assign {sr1_rdata, lr1_rdata} = fb1_rdata;
+    assign lr1_rdata4 = fb1_rdata4[47:0];
     logic w_cd_we, w_sr1_we; logic [3:0] w_cd_be, w_sr1_be; logic [1:0] w_cd_pl, w_sr1_pl; logic [FBX-1:0] w_cd_x, w_sr1_x; logic [FBY-1:0] w_cd_y, w_sr1_y; logic [47:0] w_cd_d, w_sr1_d;
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_cd (.we1(cd_we), .plane1(cd_dplane), .x1(cd_dx), .y1(cd_dy), .d1(cd_wdata),
                                                 .we4(cd4_we), .plane4(cd4_plane), .x4(cd4_x), .y4(cd4_y), .d4(cd4_wdata),
@@ -198,9 +200,7 @@ module dec_top
     // fb2 = LrFrame. writes: LR
     logic [11:0] fb2_rdata_u; logic [47:0] fb2_rdata4_u;
     logic w_lr_we; logic [3:0] w_lr_be; logic [1:0] w_lr_pl; logic [FBX-1:0] w_lr_x; logic [FBY-1:0] w_lr_y; logic [47:0] w_lr_d;
-    frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_lr (.we1(lr_we2), .plane1(lr_dplane), .x1(lr_dx), .y1(lr_dy), .d1(lr_wdata),
-                                                .we4(1'b0), .plane4(2'd0), .x4('0), .y4('0), .d4('0),
-                                                .we(w_lr_we), .be(w_lr_be), .plane(w_lr_pl), .x(w_lr_x), .y(w_lr_y), .data(w_lr_d));
+    assign w_lr_we = lr_we4; assign w_lr_be = lr_be4; assign w_lr_pl = lr_dplane; assign w_lr_x = lr_dx; assign w_lr_y = lr_dy; assign w_lr_d = lr_wdata4;
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(fb2_rdata_u), .rdata4(fb2_rdata4_u),
                                                                         .we(w_lr_we), .w_be(w_lr_be), .w_plane(w_lr_pl), .w_x(w_lr_x), .w_y(w_lr_y), .w_data(w_lr_d),
                                                                         .h_plane, .h_x, .h_y, .h_rdata(h_rdata2));

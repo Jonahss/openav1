@@ -32,11 +32,15 @@ module lr_top
     output logic [FBX-1:0] s_x,
     output logic [FBY-1:0] s_y,
     input  logic [11:0] s0_rdata, s1_rdata,
+    input  logic [47:0] s0_rdata4, s1_rdata4,           // aligned groups of 4 containing s_x
     output logic        d_we,
     output logic [1:0]  d_plane,
     output logic [FBX-1:0] d_x,
     output logic [FBY-1:0] d_y,
-    output logic [11:0] d_wdata
+    output logic [11:0] d_wdata,
+    output logic        d4_we,                          // 4-wide write of (d_x .. d_x+3, d_y) with lane enables d4_be
+    output logic [3:0]  d4_be,
+    output logic [47:0] d4_wdata
 );
     localparam logic [1:0] RESTORE_NONE = 2'd0, RESTORE_WIENER = 2'd1, RESTORE_SGRPROJ = 2'd2;
     localparam int RING = 16;
@@ -157,8 +161,10 @@ module lr_top
         w_offset = 21'sd1 <<< (bd + 4'd7 - round0 - 4'd1);
         w_limit = (21'sd1 <<< (bd + 4'd8 - round0)) - 21'sd1;
     end
-    logic [11:0] wien_out;
-    always_comb begin
+    // Wiener output at column xx of output row i (7.17.4)
+    function automatic logic [11:0] wien_at(input logic [12:0] xx);
+        logic [11:0] wien_out;
+
         logic signed [30:0] vmac;
         vmac = 31'sd0;
         for (int r = 0; r < 7; r++) begin
@@ -168,7 +174,7 @@ module lr_top
             hmac = 31'sd0;
             sl = slot_of(4'(int'(i) + r));
             for (int t = 0; t < 7; t++)
-                hmac = hmac + 31'(hf[t]) * 31'(signed'({19'b0, ring[sl][FBX'(clampx(15'(signed'({2'b0, x})) - 15'sd3 + 15'(t)))]}));
+                hmac = hmac + 31'(hf[t]) * 31'(signed'({19'b0, ring[sl][FBX'(clampx(15'(signed'({2'b0, xx})) - 15'sd3 + 15'(t)))]}));
             v = (hmac + (31'sd1 <<< (round0 - 4'd1))) >>> round0;
             hv = (v < -31'(w_offset)) ? -w_offset : (v > 31'(w_limit) - 31'(w_offset)) ? 21'(w_limit - w_offset) : 21'(v);
             vmac = vmac + 31'(vf[r]) * 31'(hv);
@@ -178,8 +184,8 @@ module lr_top
             v = (vmac + (31'sd1 <<< (round1 - 4'd1))) >>> round1;
             wien_out = (v < 0) ? 12'd0 : (v > 31'(signed'({19'b0, 12'((13'd1 << bd) - 13'd1)}))) ? 12'((13'd1 << bd) - 13'd1) : 12'(v);
         end
-    end
-
+            return wien_out;
+    endfunction
     // ---------------------------------------------------------------- self-guided: a2 / b2 per box position, then F + blend
     logic        pss;
     logic [1:0]  r_p; logic [6:0] e_p;
@@ -249,30 +255,43 @@ module lr_top
         v = 41'(fa) * 41'(pix) + 41'(fb);
         f_of = 24'((v + (41'd1 << (4'd8 + shift - 4'd4 - 4'd1))) >> (4'd8 + shift - 4'd4));
     endfunction
-    logic [11:0] cur_pix;                               // source sample of output (i, x): window row i + 3
-    assign cur_pix = ring[slot_of(4'(int'(i) + 3))][x[FBX-1:0]];
-    logic [11:0] sgr_out;
-    always_comb begin
+    function automatic logic [11:0] src_at(input logic [12:0] xx);   // source sample of output (i, xx): window row i + 3
+        return ring[slot_of(4'(int'(i) + 3))][xx[FBX-1:0]];
+    endfunction
+    function automatic logic [11:0] sgr_at(input logic [12:0] xx);   // self-guided blend at column xx (7.17.3)
+        logic [11:0] cur_pix, sgr_out;
         logic signed [8:0] w0, w1; logic signed [9:0] w2; logic signed [35:0] v; logic [16:0] u; logic signed [35:0] sv;
+        cur_pix = src_at(xx);
         w0 = 9'(signed'(rec.xqd[7:0])); w1 = 9'(signed'(rec.xqd[15:8])); w2 = 10'sd128 - 10'(w0) - 10'(w1);
         u = 17'(cur_pix) << 4;
         v = 36'(w1) * 36'(signed'({19'b0, u}));
-        v = v + 36'(w0) * ((sp[15:14] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b0, i, x, cur_pix)})) : 36'(signed'({19'b0, u})));
-        v = v + 36'(w2) * ((sp[6:5] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b1, i, x, cur_pix)})) : 36'(signed'({19'b0, u})));
+        v = v + 36'(w0) * ((sp[15:14] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b0, i, xx, cur_pix)})) : 36'(signed'({19'b0, u})));
+        v = v + 36'(w2) * ((sp[6:5] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b1, i, xx, cur_pix)})) : 36'(signed'({19'b0, u})));
         sv = (v + 36'sd1024) >>> 11;
         sgr_out = (sv < 0) ? 12'd0 : (sv > 36'(signed'({24'b0, 12'((13'd1 << bd) - 13'd1)}))) ? 12'((13'd1 << bd) - 13'd1) : 12'(sv);
+        return sgr_out;
+    endfunction
+    // the 4 output samples x .. x+3 of row i (lanes past the segment end are not written)
+    logic [47:0] out4; logic [3:0] out_be;
+    always_comb begin
+        for (int l = 0; l < 4; l++) begin
+            logic [12:0] xx;
+            xx = x + 13'(l);
+            out_be[l] = (xx <= seg_x1);
+            out4[l * 12 +: 12] = (st == L_COPY) ? src_at(xx) : (st == L_WIEN) ? wien_at(xx) : sgr_at(xx);
+        end
     end
 
     // ---------------------------------------------------------------- memory ports
     logic ld_pend;                                      // a load read is in flight (lands this cycle)
+    logic [12:0] ld_x;                                  // its x (aligned group of 4)
     always_comb begin
         s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule[13:0]);
         d_we = 1'b0; d_plane = plane; d_x = FBX'(x); d_y = FBY'(y0 + 13'(i)); d_wdata = 12'd0;
+        d4_we = 1'b0; d4_be = out_be; d4_wdata = out4;
         case (st)
             L_LOAD: begin s0_re = k_rule[14]; s1_re = !k_rule[14]; end
-            L_COPY: begin d_we = 1'b1; d_wdata = cur_pix; end
-            L_WIEN: begin d_we = 1'b1; d_wdata = wien_out; end
-            L_BLEND: begin d_we = 1'b1; d_wdata = sgr_out; end
+            L_COPY, L_WIEN, L_BLEND: d4_we = 1'b1;
             default: ;
         endcase
     end
@@ -281,7 +300,10 @@ module lr_top
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        if (ld_pend) ring[k_slot][lx[FBX-1:0] - FBX'(1)] <= k_rule[14] ? s0_rdata : s1_rdata;
+        if (ld_pend)                                                      // the group issued last cycle lands
+            for (int l = 0; l < 4; l++)
+                if (ld_x + 13'(l) <= plane_end_x)
+                    ring[k_slot][ld_x[FBX-1:0] + FBX'(l)] <= k_rule[14] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
         ld_pend <= 1'b0;
         if (rst) begin
             st <= L_IDLE;
@@ -299,13 +321,12 @@ module lr_top
                 else if (k_hit) k <= k + 4'd1;
                 else begin lx <= 13'd0; st <= L_LOAD; end
             end
-            L_LOAD: begin                                                     // one read per clock, lands next cycle
-                ld_pend <= (lx < plane_end_x);                                // (the last sample is stored by L_LOAD_LAST)
-                if (lx < plane_end_x) lx <= lx + 13'd1;
+            L_LOAD: begin                                                     // one aligned group of 4 per clock, lands next cycle
+                ld_pend <= 1'b1; ld_x <= lx;
+                if (lx + 13'd4 <= plane_end_x) lx <= lx + 13'd4;
                 else st <= L_LOAD_LAST;
             end
-            L_LOAD_LAST: begin
-                ring[k_slot][plane_end_x[FBX-1:0]] <= k_rule[14] ? s0_rdata : s1_rdata;
+            L_LOAD_LAST: begin                                                // the last group lands this cycle
                 ring_row[k_slot] <= k_rule[13:0]; ring_src[k_slot] <= k_rule[14]; ring_ok[k_slot] <= 1'b1;
                 k <= k + 4'd1; st <= L_ROWS;
             end
@@ -323,8 +344,8 @@ module lr_top
                     else st <= L_BLEND;
                 end
             end
-            L_COPY, L_WIEN, L_BLEND: begin                                    // one output sample per clock
-                if (x < seg_x1) x <= x + 13'd1;
+            L_COPY, L_WIEN, L_BLEND: begin                                    // four output samples per clock
+                if (x + 13'd4 <= seg_x1) x <= x + 13'd4;
                 else begin
                     x <= seg_x0;
                     if (i + 3'd1 < hh) i <= i + 3'd1;

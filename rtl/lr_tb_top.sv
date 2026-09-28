@@ -32,13 +32,13 @@ module lr_tb_top
                    .lr_we, .lr_rec, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec);
     logic s0_re, s1_re, d_we; logic [1:0] s_plane, d_plane; logic [FBX-1:0] s_x, d_x; logic [FBY-1:0] s_y, d_y; logic [11:0] s0_rdata, s1_rdata, d_wdata;
     lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start, .ly_first(13'd0), .ly_last(hdr.frame_height - 13'd1), .busy, .done, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
-                                         .s0_re, .s1_re, .s_plane, .s_x, .s_y, .s0_rdata, .s1_rdata, .d_we, .d_plane, .d_x, .d_y, .d_wdata);
+                                         .s0_re, .s1_re, .s_plane, .s_x, .s_y, .s0_rdata, .s1_rdata, .s0_rdata4(u0_4), .s1_rdata4(u1_4), .d4_we, .d4_be, .d4_wdata, .d_we, .d_plane, .d_x, .d_y, .d_wdata);
     logic [11:0] u0, u1, u2;
     logic w_h0_we; logic [3:0] w_h0_be; logic [1:0] w_h0_pl; logic [FBX-1:0] w_h0_x; logic [FBY-1:0] w_h0_y; logic [47:0] w_h0_d;
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_h0 (.we1(!busy && h_we && !h_buf), .plane1(h_plane), .x1(h_x), .y1(h_y), .d1(h_wdata),
                                                 .we4(1'b0), .plane4(2'd0), .x4('0), .y4('0), .d4('0),
                                                 .we(w_h0_we), .be(w_h0_be), .plane(w_h0_pl), .x(w_h0_x), .y(w_h0_y), .data(w_h0_d));
-    logic [47:0] u0_4, u1_4, u2_4;
+    logic [47:0] u0_4, u1_4, u2_4, d4_wdata; logic d4_we; logic [3:0] d4_be;
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb0 (.clk, .re(busy && s0_re), .r_plane(s_plane), .r_x(s_x), .r_y(s_y), .rdata(s0_rdata), .rdata4(u0_4),
                                                                         .we(w_h0_we), .w_be(w_h0_be), .w_plane(w_h0_pl), .w_x(w_h0_x), .w_y(w_h0_y), .w_data(w_h0_d),
                                                                         .h_plane(2'd0), .h_x('0), .h_y('0), .h_rdata(u0));
@@ -50,9 +50,7 @@ module lr_tb_top
                                                                         .we(w_h1_we), .w_be(w_h1_be), .w_plane(w_h1_pl), .w_x(w_h1_x), .w_y(w_h1_y), .w_data(w_h1_d),
                                                                         .h_plane(2'd0), .h_x('0), .h_y('0), .h_rdata(u1));
     logic w_d_we; logic [3:0] w_d_be; logic [1:0] w_d_pl; logic [FBX-1:0] w_d_x; logic [FBY-1:0] w_d_y; logic [47:0] w_d_d;
-    frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_d (.we1(d_we), .plane1(d_plane), .x1(d_x), .y1(d_y), .d1(d_wdata),
-                                               .we4(1'b0), .plane4(2'd0), .x4('0), .y4('0), .d4('0),
-                                               .we(w_d_we), .be(w_d_be), .plane(w_d_pl), .x(w_d_x), .y(w_d_y), .data(w_d_d));
+    assign w_d_we = d4_we; assign w_d_be = d4_be; assign w_d_pl = d_plane; assign w_d_x = d_x; assign w_d_y = d_y; assign w_d_d = d4_wdata;
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(u2), .rdata4(u2_4),
                                                                         .we(w_d_we), .w_be(w_d_be), .w_plane(w_d_pl), .w_x(w_d_x), .w_y(w_d_y), .w_data(w_d_d),
                                                                         .h_plane, .h_x, .h_y, .h_rdata);
