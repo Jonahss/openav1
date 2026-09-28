@@ -125,6 +125,13 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0):
             tot = sum(d_rs.values()) or 1
             dut._log.info(f"{tag}: recon tx-FSM cycles " + ", ".join(f"{n} {v} ({100 * v // tot}%)" for n, v in d_rs.items() if v))
             dut._log.info(f"{tag}: recon blk-FSM cycles " + ", ".join(f"{n} {v}" for n, v in d_b.items() if v))
+            if stats.get("tx_hist"):
+                names_sz = ["4x4","8x8","16x16","32x32","64x64","4x8","8x4","8x16","16x8","16x32","32x16","32x64","64x32","4x16","16x4","8x32","32x8","16x64","64x16"]
+                names_ty = ["DCT_DCT","ADST_DCT","DCT_ADST","ADST_ADST","FLIPADST_DCT","DCT_FLIPADST","FLIPADST_FLIPADST","ADST_FLIPADST","FLIPADST_ADST","IDTX","V_DCT","H_DCT","V_ADST","H_ADST","V_FLIPADST","H_FLIPADST"]
+                h = stats.pop("tx_hist")
+                top = sorted(h.items(), key=lambda kv: -kv[1])[:16]
+                dut._log.info(f"{tag}: tx blocks {sum(h.values())} by (chroma, size, type, no-residual): " +
+                              ", ".join(f"{'uv' if c else 'y'} {names_sz[sz]} {names_ty[ty]}{' skip' if sk else ''} {n}" for (c, sz, ty, sk), n in top))
             # syntax side: tile FSM, block FSM and coefficient reader, state names parsed from the RTL enums
             import re as _re
             def enum_names(fname, tname):
@@ -158,6 +165,11 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0):
         if int(dut.tx_done.value) and int(dut.u_q.tx_ack.value):
             txb += 1
             idle = 0
+            if os.environ.get("TS_PERF"):                  # transform size x type histogram (what the profile's ITX_W state ran)
+                tr = TT.unpack(TT.TX_FIELDS, int(dut.tx_rec.value))
+                h = stats.setdefault("tx_hist", {})
+                k = (tr["plane"] != 0, tr["txsz"], tr["txtype"], bool(tr["skip"]) or tr["eob"] == 0)
+                h[k] = h.get(k, 0) + 1
             if debug:
                 bb = TT.unpack(TT.BLK_FIELDS, int(dut.u_rc.b.value))
                 key = (bb["r"], bb["c"])
@@ -602,6 +614,13 @@ async def dec_vs_model(dut):
                 dut.h_buf.value = buf
                 await compare_frame(dut, hdr0, planes_cmp, f"{Path(path).name} frame {fi}", stats, events, blocks_all)
                 stats["frames"] += 1
+                if stats.get("tx_hist"):
+                    names_sz = ["4x4","8x8","16x16","32x32","64x64","4x8","8x4","8x16","16x8","16x32","32x16","32x64","64x32","4x16","16x4","8x32","32x8","16x64","64x16"]
+                    names_ty = ["DCT_DCT","ADST_DCT","DCT_ADST","ADST_ADST","FLIPADST_DCT","DCT_FLIPADST","FLIPADST_FLIPADST","ADST_FLIPADST","FLIPADST_ADST","IDTX","V_DCT","H_DCT","V_ADST","H_ADST","V_FLIPADST","H_FLIPADST"]
+                    h = stats.pop("tx_hist")
+                    top = sorted(h.items(), key=lambda kv: -kv[1])[:16]
+                    dut._log.info(f"{Path(path).name} frame {fi}: tx blocks {sum(h.values())} by (chroma, size, type, no-residual): " +
+                                  ", ".join(f"{'uv' if c else 'y'} {names_sz[sz]} {names_ty[ty]}{' skip' if sk else ''} {n}" for (c, sz, ty, sk), n in top))
                 dut._log.info(f"{Path(path).name} frame {fi}: identical ({len(tile_idx)} tiles, {hdr0.MiCols * 4}x{hdr0.MiRows * 4} MI area, bd{hdr0.BitDepth})")
         dut._log.info(f"OK: {stats}")
         return
