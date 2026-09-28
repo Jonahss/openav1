@@ -28,6 +28,12 @@ run dec_top_small      TS_SEEDS=12 python tb/runner.py dec_top
 run dec_top_large      TS_SEEDS=101,102,103,104,105,106 TS_W=256 TS_H=160 python tb/runner.py dec_top
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
 run corpus_full_rtl    TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
+# Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
+ARGON=$PWD/streams/argon/profile0_core/streams
+if [ -d "$ARGON" ]; then
+  AIVFS=$(for s in 4592 8304 5297 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
+  run argon_features     TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
+fi
 echo "DONE rc=$rc $(date -Is)" >> "$out"
 cat "$out"
 exit $rc
