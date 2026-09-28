@@ -159,8 +159,10 @@ class Decoder:
         ext = br.f(1)
         has_size = br.f(1)
         br.f(1)
+        self.temporal_id = 0
+        self.spatial_id = 0
         if ext:
-            br.f(3); br.f(2); br.f(3)
+            self.temporal_id = br.f(3); self.spatial_id = br.f(2); br.f(3)
         if has_size:
             obu_size = br.leb128()
         else:
@@ -406,8 +408,10 @@ class Decoder:
                 for op in range(s.operating_points_cnt_minus_1 + 1):
                     if s.decoder_model_present_for_this_op[op]:
                         idc = s.operating_point_idc[op]
-                        if idc == 0 or True:          # temporal/spatial id 0 in our streams
-                            br.f(s.buffer_removal_time_length_minus_1 + 1)
+                        in_temporal = (idc >> self.temporal_id) & 1
+                        in_spatial = (idc >> (self.spatial_id + 8)) & 1
+                        if idc == 0 or (in_temporal and in_spatial):
+                            br.f(s.buffer_removal_time_length_minus_1 + 1)   # buffer_removal_time[opNum]
         h.allow_high_precision_mv = 0
         h.use_ref_frame_mvs = 0
         h.allow_intrabc = 0
