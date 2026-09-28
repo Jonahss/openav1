@@ -286,12 +286,17 @@ async def tile_vs_model(dut):
             m = mnorm[i] if i < len(mnorm) else None
             r = rnorm[i] if i < len(rnorm) else None
             dut._log.info(f"  {i:5d} {'!!' if (m is None or r is None or m[:4] != r[:4]) else '  '} model {m}  rtl {r}")
-        # CDF rows at the divergence: the model's row as first used vs the RTL's default row for this frame
-        if first < len(mnorm) and mnorm[first][0] == "S":
-            addr = mnorm[first][1]
-            n = mnorm[first][2] + 1
-            rtl_def = int(dut.u_cdf.def_mem[addr].value)
-            dut._log.info(f"  CDF row {addr}: model first-use {mcdf.get(addr)}; RTL def_mem {M.unpack_row(rtl_def, n)}")
+        # CDF rows used up to and including the divergence: the model's row as first used vs the RTL's defaults
+        seen = set()
+        for i in range(0, min(first + 1, len(mnorm))):
+            if mnorm[i][0] != "S" or mnorm[i][1] in seen:
+                continue
+            seen.add(mnorm[i][1])
+            addr = mnorm[i][1]
+            n = mnorm[i][2] + 1
+            rtl_def = M.unpack_row(int(dut.u_cdf.def_mem[addr].value), n)
+            same = "same" if list(mcdf.get(addr, [])) == list(rtl_def) else "DIFFERENT"
+            dut._log.info(f"  CDF row {addr} ({mnorm[i][4]}): {same}; model first-use {mcdf.get(addr)}; RTL def_mem {rtl_def}")
     # real streams (TS_IVF=a.ivf,b.obu): every tile of every frame, records compared like the generated ones
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     jobs = []
