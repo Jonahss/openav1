@@ -18,6 +18,7 @@ module cdef_top
     input  hdr_t        hdr,
     input  cdef_hdr_t   ch,
     input  logic        start,
+    input  logic [10:0] row_first, row_last,  // mi rows of the 8x8 blocks to filter (inclusive; multiples of 2)
     output logic        busy,
     output logic        done,
     // mi_store: skips (lf_info) and cdef_idx
@@ -238,7 +239,7 @@ module cdef_top
         wpend <= 1'b0;
         if (rst) st <= C_IDLE;
         else case (st)
-            C_IDLE: if (start) begin r <= 11'd0; c <= 11'd0; st <= C_BLK; end
+            C_IDLE: if (start) begin r <= row_first; c <= 11'd0; st <= C_BLK; end
             C_BLK: st <= C_RD_IDX;                       // cdr_* addressed; value lands next cycle
             C_RD_IDX: begin cidx <= cdr_val; st <= C_RD_S0; end
             C_RD_S0: st <= C_RD_S1;
@@ -320,7 +321,7 @@ module cdef_top
                 if (c + 11'd2 < hdr.mi_cols) begin c <= c + 11'd2; st <= C_BLK; end
                 else begin
                     c <= 11'd0;
-                    if (r + 11'd2 < hdr.mi_rows) begin r <= r + 11'd2; st <= C_BLK; end
+                    if (r + 11'd2 <= row_last && r + 11'd2 < hdr.mi_rows) begin r <= r + 11'd2; st <= C_BLK; end
                     else begin done <= 1'b1; st <= C_IDLE; end
                 end
             end

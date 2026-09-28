@@ -19,6 +19,7 @@ module lr_top
     input  logic        rst,
     input  hdr_t        hdr,
     input  logic        start,
+    input  logic [12:0] ly_first, ly_last,    // luma rows to restore (inclusive; multiples of 4): a stripe, or the whole frame
     output logic        busy,
     output logic        done,
     // mi_store: unit records
@@ -287,8 +288,8 @@ module lr_top
             for (int s = 0; s < RING; s++) ring_ok[s] <= 1'b0;
         end else case (st)
             L_IDLE: if (start) begin
-                plane <= 2'd0; ly <= 13'd0;
-                for (int s = 0; s < RING; s++) ring_ok[s] <= 1'b0;           // a new frame: nothing cached
+                plane <= 2'd0; ly <= ly_first;
+                for (int s = 0; s < RING; s++) ring_ok[s] <= 1'b0;           // a new start: nothing cached (tags are rows, not planes)
                 st <= L_BAND;
             end
             // ---- a band: make every window row present in the ring
@@ -349,9 +350,9 @@ module lr_top
             end
             // ---- next band (luma rows +4), then next plane
             L_BAND_NEXT: begin
-                if (ly + 13'd4 < hdr.frame_height) begin ly <= ly + 13'd4; st <= L_BAND; end
+                if (ly + 13'd4 <= ly_last && ly + 13'd4 < hdr.frame_height) begin ly <= ly + 13'd4; st <= L_BAND; end
                 else if (plane + 2'd1 < (hdr.mono ? 2'd1 : 2'd3)) begin
-                    plane <= plane + 2'd1; ly <= 13'd0;
+                    plane <= plane + 2'd1; ly <= ly_first;
                     for (int s = 0; s < RING; s++) ring_ok[s] <= 1'b0;       // rows of another plane
                     st <= L_BAND;
                 end else st <= L_DONE;

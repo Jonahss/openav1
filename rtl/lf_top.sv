@@ -18,6 +18,7 @@ module lf_top
     input  hdr_t        hdr,
     input  lf_hdr_t     lh,
     input  logic        start,
+    input  logic [10:0] row_first, row_last,  // mi rows to filter (inclusive): a superblock-row band, or the whole frame
     output logic        busy,
     output logic        done,
     // mi_store reads (registered, 1 cycle)
@@ -330,7 +331,7 @@ module lf_top
         if (rst) st <= L_IDLE;
         else case (st)
             L_IDLE: if (start) begin
-                plane <= 2'd0; pss <= 1'b0; row <= 11'd0; col <= 11'd0;
+                plane <= 2'd0; pss <= 1'b0; row <= row_first; col <= 11'd0;
                 st <= (lh.level[5:0] == 6'd0 && lh.level[11:6] == 6'd0) ? L_DONE : L_EDGE;
             end
             L_EDGE: begin
@@ -380,9 +381,9 @@ module lf_top
                 if (col + (11'd1 << sub_x) < hdr.mi_cols) begin col <= col + (11'd1 << sub_x); st <= L_EDGE; end
                 else begin
                     col <= 11'd0;
-                    if (row + (11'd1 << sub_y) < hdr.mi_rows) begin row <= row + (11'd1 << sub_y); st <= L_EDGE; end
+                    if (row + (11'd1 << sub_y) <= row_last && row + (11'd1 << sub_y) < hdr.mi_rows) begin row <= row + (11'd1 << sub_y); st <= L_EDGE; end
                     else begin
-                        row <= 11'd0;
+                        row <= row_first;
                         if (!pss) begin pss <= 1'b1; st <= L_EDGE; end
                         else begin
                             pss <= 1'b0;

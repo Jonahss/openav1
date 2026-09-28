@@ -348,8 +348,20 @@ async def rtl_only_stream(dut, path, stats):
                        ((h_k.FrameHeight + (h_k.subsampling_y if p_ else 0)) >> (h_k.subsampling_y if p_ else 0))
                        for p_ in range(h_k.NumPlanes)) * (1 if h_k.BitDepth == 8 else 2)
         pictures = {}                                      # decoded frame -> read-back planes (md5 mode)
+        PIPE = bool(os.environ.get("TS_PIPE"))
         for fi, tile_idx in enumerate(d.frames):
             hdr0 = None
+            if PIPE:
+                # the sequencer needs the filter headers before the first row completes, and the tile-column count
+                th0 = d.tiles[tile_idx[0]][0]
+                dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(th0))
+                dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(th0))
+                dut.n_tile_cols.value = len({d.tiles[ti][0].MiColStart for ti in tile_idx})
+                dut.pipe_en.value = 1
+                dut.frame_start.value = 1
+                await RisingEdge(dut.clk)
+                await Timer(1, "ns")
+                dut.frame_start.value = 0
             for ti in tile_idx:
                 th, data = d.tiles[ti]
                 dec = tm.TileDecoder(th, data, None)          # header helper only (get_qindex); nothing is decoded
@@ -360,25 +372,41 @@ async def rtl_only_stream(dut, path, stats):
                 await ClockCycles(dut.clk, 4)
             hdr = hdr0
             tag = f"{Path(path).name} frame {fi}"
-            # in-loop filters, driven by the frame header alone
             buf = 0
-            dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
-            c = await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag, busy_sig=dut.lf_busy)
-            stats["lf_cycles"] += c
-            dut._log.info(f"{tag}: deblock ~{c} cycles")
-            if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+            if PIPE:
+                # wait for the sequencer: the filters have been running behind the tiles
+                cycles = 0
+                while not int(dut.frame_done_lvl.value):
+                    await ClockCycles(dut.clk, 64)
+                    cycles += 64
+                    assert cycles < 120_000_000, f"{tag}: frame did not finish (lf {int(dut.lf_next.value)} cd {int(dut.cd_next.value)} sr {int(dut.sr_next.value)} lr {int(dut.lr_next.value)} rows {int(dut.n_rows.value)})"
+                await Timer(1, "ns")
+                stats["pipe_tail_cycles"] = stats.get("pipe_tail_cycles", 0) + cycles
+                dut._log.info(f"{tag}: pipelined filters finished ~{cycles} cycles after the last tile")
+                if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+                    buf = 1
+                if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
+                    buf = 2
+                dut.pipe_en.value = 0
+            # in-loop filters, driven by the frame header alone (host-driven mode)
+            if not PIPE:
+              dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
+              c = await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag, busy_sig=dut.lf_busy)
+              stats["lf_cycles"] += c
+              dut._log.info(f"{tag}: deblock ~{c} cycles")
+            if not PIPE and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
                 dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
                 c = await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag, busy_sig=dut.cdef_busy)
                 stats["cdef_cycles"] += c
                 dut._log.info(f"{tag}: cdef ~{c} cycles")
                 buf = 1
-            if hdr.use_superres:                                   # 7.16: upscale the LR inputs in place
+            if not PIPE and hdr.use_superres:                      # 7.16: upscale the LR inputs in place
                 for sb in ([0, 1] if buf == 1 else [0]):
                     dut.sr_buf.value = sb
                     c = await pulse_and_wait(dut, dut.sr_start, dut.sr_done, tag, busy_sig=dut.sr_busy)
                     stats["sr_cycles"] = stats.get("sr_cycles", 0) + c
                 dut._log.info(f"{tag}: superres {hdr.FrameWidth} -> {hdr.UpscaledWidth}")
-            if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
+            if not PIPE and any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
                 dut.lr_from_deblocked.value = 0 if buf == 1 else 1
                 c = await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000, busy_sig=dut.lr_busy)
                 stats["lr_cycles"] += c
@@ -523,7 +551,7 @@ async def dec_vs_model(dut):
     H = int(os.environ.get("TS_H", "96"))
     debug = bool(os.environ.get("TD_DEBUG"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y"):
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start", "pipe_en", "frame_start", "n_tile_cols", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     run_tile._perf_prev = None  # counters reset with the DUT

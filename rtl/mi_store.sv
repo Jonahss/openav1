@@ -28,6 +28,8 @@ module mi_store
     // reads (registered)
     input  logic [10:0] rd_row, rd_col,
     output mi_lf_t      rd_info,
+    input  logic [10:0] rd2_row, rd2_col,     // second read port (CDEF, concurrent with the deblocking filter)
+    output mi_lf_t      rd2_info,
     input  logic [1:0]  txr_plane,
     input  logic [10:0] txr_row, txr_col,
     output logic [4:0]  txr_sz,
@@ -140,6 +142,7 @@ module mi_store
     // ---- reads
     always_ff @(posedge clk) begin
         rd_info <= lf_info[idx(rd_row, rd_col)];
+        rd2_info <= lf_info[idx(rd2_row, rd2_col)];
         case (txr_plane)
             2'd0: txr_sz <= lf_tx0[idx(txr_row, txr_col)];
             2'd1: txr_sz <= lf_tx1[idx(txr_row, txr_col)];

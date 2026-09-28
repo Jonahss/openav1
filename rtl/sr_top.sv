@@ -16,6 +16,7 @@ module sr_top
     input  hdr_t        hdr,
     input  lf_hdr_t     lh,                   // frame_width (FrameWidth before upscaling)
     input  logic        start,
+    input  logic [12:0] ly_first, ly_last,    // luma rows to upscale (inclusive); chroma rows follow by subsampling
     output logic        busy,
     output logic        done,
     // the buffer being upscaled (same plane for reads and writes)
@@ -99,7 +100,7 @@ module sr_top
             S_PLANE: begin
                 up_w <= g_up; plane_h <= g_h; max_x <= g_maxx; step_x <= g_step;
                 init_subpel <= g_init & 32'sd16383;
-                y <= 13'd0; x <= 13'd0;
+                y <= ly_first >> sub_y; x <= 13'd0;
                 st <= S_RD;
             end
             // copy row y into the line buffer (the read lands one cycle after its address): all MiCols * 4
@@ -123,7 +124,7 @@ module sr_top
             end
             S_NEXT: begin
                 x <= 13'd0;
-                if (y + 13'd1 < plane_h) begin y <= y + 13'd1; st <= S_RD; end
+                if (y + 13'd1 < plane_h && y + 13'd1 <= (ly_last >> sub_y)) begin y <= y + 13'd1; st <= S_RD; end
                 else if (plane + 2'd1 < (hdr.mono ? 2'd1 : 2'd3)) begin plane <= plane + 2'd1; st <= S_PLANE; end
                 else st <= S_DONE;
             end
