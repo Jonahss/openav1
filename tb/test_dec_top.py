@@ -259,6 +259,7 @@ async def rtl_only(dut, ivfs, stats):
     failures = []
     for path in ivfs:
         # every stream starts from reset (a real decoder gets one per sequence too)
+        await Timer(1, "ns")
         dut.rst.value = 1
         await ClockCycles(dut.clk, 4)
         dut.rst.value = 0
@@ -269,11 +270,13 @@ async def rtl_only(dut, ivfs, stats):
             failures.append(str(e)[:300])
             stats["failed"] = stats.get("failed", 0) + 1
             dut._log.error(f"FAIL {Path(path).name}: {str(e)[:300]}")
-            # the decoder may be mid-frame: reset it before the next stream
-            dut.rst.value = 1
-            await ClockCycles(dut.clk, 4)
-            dut.rst.value = 0
+            # the assertion may fire in the ReadOnly phase: move to a writable phase before touching signals;
+            # the per-stream reset at the top of the loop cleans the decoder up
             await RisingEdge(dut.clk)
+            await Timer(1, "ns")
+            if _feed_task[0] is not None and not _feed_task[0].done():
+                _feed_task[0].cancel()
+            dut.in_valid.value = 0
     dut._log.info(f"streams: {len(ivfs)}, failed: {len(failures)}")
     assert not failures, f"{len(failures)} / {len(ivfs)} streams failed: " + " | ".join(failures)
 
