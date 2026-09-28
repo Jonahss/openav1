@@ -88,7 +88,7 @@ class RecDecoder(tm.TileDecoder):
     def sym(self, cdf, name):
         pre = list(cdf)
         v = super().sym(cdf, name)
-        self.symlog.append((name, self.idmap.get(id(cdf), ("?", len(cdf) - 1)), v, pre))
+        self.symlog.append((name, self.idmap.get(id(cdf), ("?", len(cdf) - 1)), v, pre, self.dec.range))
         return v
 
     def L(self, n, name):
@@ -170,7 +170,7 @@ async def monitor_syms(dut, log):
         await RisingEdge(dut.clk)
         await ReadOnly()
         if int(dut.resp_valid.value) and pend:
-            log.append(pend.pop(0) + (int(dut.resp_sym.value),))
+            log.append(pend.pop(0) + (int(dut.resp_sym.value), int(dut.resp_rng.value)))
         if int(dut.req_valid.value) and int(dut.req_ready.value):
             k = int(dut.sel_k.value)
             addr = int(dut.u_sq_k.l_addr.value) if k else int(dut.u_sq_c.l_addr.value)
@@ -262,8 +262,16 @@ async def tile_vs_model(dut):
                 if rest and where[0] not in mcdf:
                     mcdf[where[0]] = rest[0]          # the model's CDF row content at its first use
         rnorm = []
-        for master, addr, n, kind, sym in symlog:
+        rrng = []
+        for master, addr, n, kind, sym, rng in symlog:
             rnorm.append(("B" if kind == 2 else "F" if kind == 1 else "S", addr if kind == 0 else 0, n if kind == 0 else 1, sym, master))
+            rrng.append(rng)
+        mrng = []
+        for name, where, v, *rest in dec.symlog:
+            if isinstance(where, str) and where.startswith("L"):
+                mrng.extend([None] * int(where[1:]))
+            else:
+                mrng.append(rest[1] if len(rest) > 1 else None)
         first = None
         for i in range(min(len(mnorm), len(rnorm))):
             if mnorm[i][:4] != rnorm[i][:4]:
@@ -285,7 +293,9 @@ async def tile_vs_model(dut):
         for i in range(max(0, first - 20), min(first + 8, max(len(mnorm), len(rnorm)))):
             m = mnorm[i] if i < len(mnorm) else None
             r = rnorm[i] if i < len(rnorm) else None
-            dut._log.info(f"  {i:5d} {'!!' if (m is None or r is None or m[:4] != r[:4]) else '  '} model {m}  rtl {r}")
+            mr = mrng[i] if i < len(mrng) else None
+            rr = rrng[i] if i < len(rrng) else None
+            dut._log.info(f"  {i:5d} {'!!' if (m is None or r is None or m[:4] != r[:4]) else '  '} model {m}  rtl {r}  range model/rtl {mr}/{rr}{' <-- RANGE DIFFERS' if (mr is not None and rr is not None and mr != rr) else ''}")
         # CDF rows used up to and including the divergence: the model's row as first used vs the RTL's defaults
         seen = set()
         for i in range(0, min(first + 1, len(mnorm))):
