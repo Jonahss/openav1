@@ -66,6 +66,14 @@ package syn_pkg;
         logic [223:0] seg_lf_data;             // FeatureData[seg][SEG_LVL_ALT_LF_Y_V + i], signed 7 bits at [7 (8i + seg) +: 7]
     } lf_hdr_t;
 
+    // Frame-level CDEF parameters (spec 7.15; software fills this in; only run when enable_cdef && !CodedLossless && !allow_intrabc).
+    typedef struct packed {
+        logic [2:0]  damping;                  // cdef_damping (3..6)
+        logic [1:0]  bits;                     // cdef_bits
+        logic [47:0] y_str;                    // cdef_y_strengths[i] = (pri << 2) | sec at [6i +: 6]
+        logic [47:0] uv_str;
+    } cdef_hdr_t;
+
     // Per-4x4 loop-filter state kept by mi_store (from the block records).
     typedef struct packed {
         logic [4:0]  bsize;

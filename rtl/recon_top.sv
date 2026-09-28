@@ -53,6 +53,11 @@ module recon_top
     output logic [4:0]  mi_tx_w4, mi_tx_h4,
     output logic [4:0]  mi_tx_sz,
     input  logic        mi_tx_busy,
+    output logic        mi_cd_clr,             // superblock start: clear the superblock's cdef_idx unit(s)
+    output logic        mi_cd_we,              // block with a coded cdef_idx: set the covered unit(s)
+    output logic [6:0]  mi_cd_row64, mi_cd_col64,
+    output logic [3:0]  mi_cd_mask,
+    output logic [2:0]  mi_cd_idx,
     // frame buffer (single port, registered read)
     output logic        fb_re,
     output logic        fb_we,
@@ -148,9 +153,17 @@ module recon_top
     end
 
     assign mi_blk_r = b.r; assign mi_blk_c = b.c; assign mi_blk_bw4 = bw4; assign mi_blk_bh4 = bh4;
+    // cdef_idx bookkeeping: clear on sb_start (uses sb_r/sb_c), set with the block record (superblock-relative units)
+    logic [10:0] sb_mask;
+    assign sb_mask = hdr.sb128 ? ~11'd31 : ~11'd15;
+    assign mi_cd_clr = sb_start;
+    assign mi_cd_row64 = sb_start ? 7'(sb_r >> 4) : 7'((b.r & sb_mask) >> 4);
+    assign mi_cd_col64 = sb_start ? 7'(sb_c >> 4) : 7'((b.c & sb_mask) >> 4);
+    assign mi_cd_mask = hdr.sb128 ? b.cdef_units : 4'b0001;
+    assign mi_cd_idx = b.cdef_idx;
     assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf};
     always_ff @(posedge clk) begin
-        mm_we <= 1'b0; mi_blk_we <= 1'b0;
+        mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0;
         if (rst) begin
             bst <= B_IDLE; blk_ready <= 1'b0;
         end else case (bst)
@@ -159,7 +172,7 @@ module recon_top
             end
             // four neighbour-mode reads (issued by the combinational mm_addr; captured in the following state):
             // above Y, left Y, above UV, left UV
-            B_FT0: if (!mi_blk_busy && !mi_blk_we) begin mi_blk_we <= 1'b1; bst <= B_FT1; end   // per-4x4 LF state write
+            B_FT0: if (!mi_blk_busy && !mi_blk_we) begin mi_blk_we <= 1'b1; mi_cd_we <= b.cdef_valid; bst <= B_FT1; end   // per-4x4 LF state + cdef_idx
             B_FT1: begin nb_ay <= mm_rdata[8 * b.c[3:0] +: 8]; bst <= B_FT2; end
             B_FT2: begin nb_ly <= mm_rdata[8 * 4'(b.c - 11'd1) +: 8]; bst <= B_FT3; end
             B_FT3: begin nb_auv <= mm_rdata[8 * a_c_uv[3:0] +: 8]; bst <= B_FT4; end

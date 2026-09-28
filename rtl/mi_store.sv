@@ -30,7 +30,23 @@ module mi_store
     output mi_lf_t      rd_info,
     input  logic [1:0]  txr_plane,
     input  logic [10:0] txr_row, txr_col,
-    output logic [4:0]  txr_sz
+    output logic [4:0]  txr_sz,
+    // cdef_idx per 64x64 unit: cleared per superblock (cd_clr: 1 or 4 units from the superblock's top-left
+    // unit), set per block (cd_we: units of the mask, relative to the superblock's top-left unit), read (registered)
+    input  logic        cd_clr,
+    input  logic        cd_we,
+    input  logic [6:0]  cd_row64, cd_col64,   // superblock top-left unit
+    input  logic        cd_sb128,
+    input  logic [3:0]  cd_mask,              // units (i*2+j) covered; ignored (unit 0) when !cd_sb128
+    input  logic [2:0]  cd_idx,
+    input  logic [6:0]  cdr_row64, cdr_col64,
+    output logic [3:0]  cdr_val,              // {valid, idx}
+    // loop-restoration unit records (from tile_syntax lr_done / lr_rec); read registered
+    input  logic        lr_we,
+    input  lr_rec_t     lr_rec,
+    input  logic [1:0]  lrr_plane,
+    input  logic [5:0]  lrr_row, lrr_col,
+    output lr_rec_t     lrr_rec
 );
     localparam int N = 1 << (ML2R + ML2C);
     mi_lf_t     lf_info [0:N-1];
@@ -92,6 +108,33 @@ module mi_store
                 else tx_busy <= 1'b0;
             end
         end
+    end
+
+    // ---- cdef_idx per 64x64 unit (flops: up to 4 units written per cycle)
+    localparam int NU = 1 << (ML2R - 4 + ML2C - 4);
+    logic [3:0] cdef_arr [0:NU-1];
+    function automatic logic [ML2R+ML2C-9:0] uidx(input logic [6:0] r64, input logic [6:0] c64);
+        uidx = {r64[ML2R-5:0], c64[ML2C-5:0]};
+    endfunction
+    always_ff @(posedge clk) begin
+        if (cd_clr || cd_we) begin
+            for (int i = 0; i < 2; i++)
+                for (int j = 0; j < 2; j++)
+                    if ((i == 0 && j == 0) || cd_sb128) begin
+                        logic [ML2R+ML2C-9:0] u;
+                        u = uidx(cd_row64 + 7'(i), cd_col64 + 7'(j));
+                        if (cd_clr) cdef_arr[u] <= 4'd0;
+                        else if (!cd_sb128 || cd_mask[i * 2 + j]) cdef_arr[u] <= {1'b1, cd_idx};
+                    end
+        end
+        cdr_val <= cdef_arr[uidx(cdr_row64, cdr_col64)];
+    end
+
+    // ---- loop-restoration units: [plane][unitRow][unitCol], up to 64 x 64 units per plane
+    lr_rec_t lr_units [0:3 * 4096 - 1];
+    always_ff @(posedge clk) begin
+        if (lr_we) lr_units[{lr_rec.plane, lr_rec.unit_row[5:0], lr_rec.unit_col[5:0]}] <= lr_rec;
+        lrr_rec <= lr_units[{lrr_plane, lrr_row, lrr_col}];
     end
 
     // ---- reads

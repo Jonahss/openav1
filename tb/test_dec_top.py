@@ -18,13 +18,15 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "tools"))
 import cdf_map as M                     # noqa: E402
+import cdef_model as cdm                # noqa: E402
 import lf_model as lfm                  # noqa: E402
+import test_cdef_top as TC              # noqa: E402
 import recon_model as rm                # noqa: E402
 import test_lf_top as TL                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 
-STAGE = os.environ.get("TS_STAGE", "recon")      # recon | lf : how far the RTL and the model go before comparing
+STAGE = os.environ.get("TS_STAGE", "recon")      # recon | lf | cdef : how far the RTL and the model go before comparing
 
 REC_FIELDS = [  # syn_pkg::rec_hdr_t order (MSB first)
     ("enable_intra_edge_filter", 1), ("dq_ydc", 7), ("dq_udc", 7), ("dq_uac", 7), ("dq_vdc", 7), ("dq_vac", 7),
@@ -125,27 +127,38 @@ async def run_tile(dut, th, dec, data, tag, stats, debug):
         dut._log.info(f"{tag}: tile done, {blocks} blocks, {txb} tx blocks, {cycles} cycles")
 
 
+async def pulse_and_wait(dut, start_sig, done_sig, tag, limit=60_000_000):
+    await Timer(1, "ns")
+    start_sig.value = 1
+    await RisingEdge(dut.clk)
+    await Timer(1, "ns")
+    start_sig.value = 0
+    cycles = 0
+    while True:
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        cycles += 1
+        if int(done_sig.value):
+            break
+        assert cycles < limit, f"{tag}: stage did not finish"
+    await Timer(1, "ns")
+    return cycles
+
+
 async def finish_frame(dut, hdr, decs, planes, tag, stats):
-    """After all tiles: optionally run the deblocking filter in both the model and the RTL."""
-    if STAGE == "lf":
+    """After all tiles: run the in-loop filters up to STAGE in both the model and the RTL. Returns the planes to
+    compare and which frame buffer holds the RTL result (0 = deblocked frame, 1 = CdefFrame)."""
+    if STAGE in ("lf", "cdef"):
         state = xf.FrameState(hdr, decs)
         lfm.LoopFilter(hdr, state, planes).apply()
         dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
-        await Timer(1, "ns")
-        dut.lf_start.value = 1
-        await RisingEdge(dut.clk)
-        await Timer(1, "ns")
-        dut.lf_start.value = 0
-        cycles = 0
-        while True:
-            await RisingEdge(dut.clk)
-            await ReadOnly()
-            cycles += 1
-            if int(dut.lf_done.value):
-                break
-            assert cycles < 40_000_000, f"{tag}: loop filter did not finish"
-        stats["lf_cycles"] += cycles
-        await Timer(1, "ns")
+        stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)
+        if STAGE == "cdef" and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+            planes = cdm.Cdef(hdr, state, planes).apply()
+            dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
+            stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
+            return planes, 1
+    return planes, 0
 
 
 def dump_yuv(path, hdr, get_pixel):
@@ -224,13 +237,13 @@ async def dec_vs_model(dut):
     H = int(os.environ.get("TS_H", "96"))
     debug = bool(os.environ.get("TD_DEBUG"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "lf_start", "h_plane", "h_x", "h_y"):
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "lf_start", "cdef_start", "h_buf", "h_plane", "h_x", "h_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, stage=STAGE)
+    stats = dict(frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, cdef_cycles=0, stage=STAGE)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:
         # real streams (aomenc / dav1d-verified corpus): every frame, every tile
@@ -256,8 +269,9 @@ async def dec_vs_model(dut):
                     blocks_all.extend(dec.blocks)
                     await run_tile(dut, th, dec, data, tag, stats, debug)
                     await ClockCycles(dut.clk, 4)
-                await finish_frame(dut, hdr0, decs, frame["planes"], f"{Path(path).name} frame {fi}", stats)
-                await compare_frame(dut, hdr0, frame["planes"], f"{Path(path).name} frame {fi}", stats, events, blocks_all)
+                planes_cmp, buf = await finish_frame(dut, hdr0, decs, frame["planes"], f"{Path(path).name} frame {fi}", stats)
+                dut.h_buf.value = buf
+                await compare_frame(dut, hdr0, planes_cmp, f"{Path(path).name} frame {fi}", stats, events, blocks_all)
                 stats["frames"] += 1
                 dut._log.info(f"{Path(path).name} frame {fi}: identical ({len(tile_idx)} tiles, {hdr0.MiCols * 4}x{hdr0.MiRows * 4} MI area, bd{hdr0.BitDepth})")
         dut._log.info(f"OK: {stats}")
@@ -285,8 +299,9 @@ async def dec_vs_model(dut):
             for blk in blocks_all:
                 if blk["pal"] != (0, 0):
                     dut._log.info(f"PAL block r={blk['r']} c={blk['c']} size={blk['size']} model Y {blk['col_y']} U {blk['col_u']} | rtl {rtl_pal.get((blk['r'], blk['c']))}")
-        await finish_frame(dut, hdr0, decs, frame["planes"], f"seed {seed} {fmt} bd{args['bd']}", stats)
-        await compare_frame(dut, hdr0, frame["planes"], f"seed {seed} {fmt} bd{args['bd']}", stats, events, blocks_all)
+        planes_cmp, buf = await finish_frame(dut, hdr0, decs, frame["planes"], f"seed {seed} {fmt} bd{args['bd']}", stats)
+        dut.h_buf.value = buf
+        await compare_frame(dut, hdr0, planes_cmp, f"seed {seed} {fmt} bd{args['bd']}", stats, events, blocks_all)
         stats["frames"] += 1
         dut._log.info(f"seed {seed} {fmt} bd{args['bd']} {W}x{H}: frame identical ({len(d.tiles)} tiles)")
     dut._log.info(f"OK: {stats}")

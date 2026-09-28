@@ -37,7 +37,8 @@ module lf_tb_top
                    .tx_we, .tx_plane, .tx_row, .tx_col, .tx_w4, .tx_h4, .tx_sz, .tx_busy,
                    .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
                    .cd_clr(1'b0), .cd_we(1'b0), .cd_row64(7'd0), .cd_col64(7'd0), .cd_sb128(1'b0), .cd_mask(4'd0), .cd_idx(3'd0),
-                   .cdr_row64(7'd0), .cdr_col64(7'd0), .cdr_val());
+                   .cdr_row64(7'd0), .cdr_col64(7'd0), .cdr_val(),
+                   .lr_we(1'b0), .lr_rec('0), .lrr_plane(2'd0), .lrr_row(6'd0), .lrr_col(6'd0), .lrr_rec());
     logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
     lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start, .busy, .done,
                                          .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
