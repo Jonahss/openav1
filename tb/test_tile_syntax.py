@@ -162,6 +162,20 @@ def hdr_vals(th, dec):
     return v
 
 
+
+_feed_task = [None]
+
+
+def start_feed(dut, coro):
+    """Start a byte feeder for a tile, cancelling the previous tile's feeder first: a tile may carry trailing
+    bytes the decoder never fetches (Argon streams do), which would leave the old feeder blocked and its bytes
+    interleaving with the next tile's."""
+    if _feed_task[0] is not None and not _feed_task[0].done():
+        _feed_task[0].cancel()
+    dut.in_valid.value = 0
+    _feed_task[0] = cocotb.start_soon(coro)
+    return _feed_task[0]
+
 async def monitor_syms(dut, log):
     """Every accepted msac request: (row addr of the active sequencer, n, kind) and its symbol."""
     # requests may be accepted in the same cycle the previous response arrives: keep a FIFO, respond first
@@ -344,7 +358,7 @@ async def tile_vs_model(dut):
             await RisingEdge(dut.clk)
             await Timer(1, "ns")
             dut.tile_start.value = 0
-            cocotb.start_soon(feed_bytes(dut, data))
+            feeder = start_feed(dut, feed_bytes(dut, data))
             symlog.clear()
             try:
                 await collect(dut, dec, tag0, stats)

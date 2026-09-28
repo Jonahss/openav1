@@ -67,6 +67,20 @@ class RecFrame(rm.FrameRecon):
         b["qidx"] = self.CurrentQIndex
 
 
+
+_feed_task = [None]
+
+
+def start_feed(dut, coro):
+    """Start a byte feeder for a tile, cancelling the previous tile's feeder first: a tile may carry trailing
+    bytes the decoder never fetches (Argon streams do), which would leave the old feeder blocked and its bytes
+    interleaving with the next tile's."""
+    if _feed_task[0] is not None and not _feed_task[0].done():
+        _feed_task[0].cancel()
+    dut.in_valid.value = 0
+    _feed_task[0] = cocotb.start_soon(coro)
+    return _feed_task[0]
+
 async def run_tile(dut, th, dec, data, tag, stats, debug):
     dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec))
     dut.rh.value = TT.pack(REC_FIELDS, rec_vals(th))
@@ -80,7 +94,7 @@ async def run_tile(dut, th, dec, data, tag, stats, debug):
     await RisingEdge(dut.clk)
     await Timer(1, "ns")
     dut.tile_start.value = 0
-    cocotb.start_soon(TT.feed_bytes(dut, data))
+    feeder = start_feed(dut, TT.feed_bytes(dut, data))
     cycles = 0
     idle = 0
     blocks = txb = 0
