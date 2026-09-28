@@ -221,6 +221,18 @@ async def rtl_only(dut, ivfs, stats):
         else:
             d.feed_ivf(raw)
         ref_path = os.path.join(ref_dir, Path(path).stem + ".yuv")
+        # Argon layout: <set>/streams/<name>.obu with <set>/md5_ref/<name>.md5 (and md5_no_film_grain); no yuv
+        md5_ref = None
+        if not os.path.exists(ref_path):
+            import hashlib
+            setdir = Path(path).resolve().parent.parent
+            for sub in ("md5_no_film_grain", "md5_ref"):
+                mf = setdir / sub / (Path(path).stem + ".md5")
+                if mf.exists():
+                    md5_ref = mf.read_text().split()[0]
+                    break
+            assert md5_ref, f"{path}: no reference yuv ({ref_path}) and no md5 file"
+            md5 = hashlib.md5()
         for fi, tile_idx in enumerate(d.frames):
             hdr0 = None
             for ti in tile_idx:
@@ -247,11 +259,18 @@ async def rtl_only(dut, ivfs, stats):
                 buf = 2
             dut.h_buf.value = buf
             await Timer(1, "ns")
-            ref, sizes = ref_frame(ref_path, hdr, fi)
+            if md5_ref is None:
+                ref, sizes = ref_frame(ref_path, hdr, fi)
+            else:
+                ref = None
+                sizes = [(((hdr.FrameWidth + (hdr.subsampling_x if p_ else 0)) >> (hdr.subsampling_x if p_ else 0)),
+                          ((hdr.FrameHeight + (hdr.subsampling_y if p_ else 0)) >> (hdr.subsampling_y if p_ else 0))) for p_ in range(hdr.NumPlanes)]
+            import struct
             for plane in range(hdr.NumPlanes):
                 W, H = sizes[plane]
                 bad = []
                 for y in range(H):
+                    row = []
                     for x in range(W):
                         dut.h_plane.value = plane
                         dut.h_x.value = x
@@ -259,13 +278,24 @@ async def rtl_only(dut, ivfs, stats):
                         await RisingEdge(dut.clk)
                         await ReadOnly()
                         v = int(dut.h_rdata.value)
-                        if v != ref[plane][y][x]:
+                        row.append(v)
+                        if ref is not None and v != ref[plane][y][x]:
                             bad.append((y, x, v, ref[plane][y][x]))
                         await Timer(1, "ns")
+                    if md5_ref is not None:
+                        md5.update(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
                 stats["pixels"] += W * H
                 assert not bad, f"{tag} plane {plane}: {len(bad)} / {W * H} pixels differ from dav1d (y, x, rtl, dav1d), first {bad[:10]}"
             stats["frames"] += 1
-            dut._log.info(f"{tag}: identical to dav1d ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]})")
+            if md5_ref is None:
+                dut._log.info(f"{tag}: identical to dav1d ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]})")
+            else:
+                dut._log.info(f"{tag}: decoded ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]}); md5 pending")
+        if md5_ref is not None:
+            got = md5.hexdigest()
+            assert got == md5_ref, f"{Path(path).name}: md5 {got} != reference {md5_ref}"
+            stats["md5_ok"] = stats.get("md5_ok", 0) + 1
+            dut._log.info(f"{Path(path).name}: all {len(d.frames)} frames, md5 == reference")
 
 
 async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all=()):

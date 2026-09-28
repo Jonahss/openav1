@@ -22,7 +22,12 @@ EXTRA = {"itx1d": ["itx_ucode.sv", "cos128_lut.sv"], "itx2d": ["itx_ucode.sv", "
          "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "mi_store.sv", "lr_top.sv"],
          "cdef_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "cdef_pkg.sv", "frame_mem.sv", "mi_store.sv", "cdef_top.sv"]}
 sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{top}.sv"]
-r.build(sources=sources, hdl_toplevel=top,
+# frame-buffer / per-4x4 state capacity for the frame-level tops (dec_top, *_tb_top): FBX/FBY = log2 pixels,
+# ML2 = log2 4x4 units (FBX-2 / FBY-2 covers the same picture). Defaults fit 1024x512; Argon needs more.
+params = {}
+if top in ("dec_top", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.get("FBX"):
+    params = {"FBX": int(os.environ["FBX"]), "FBY": int(os.environ.get("FBY", os.environ["FBX"]))}
+r.build(sources=sources, hdl_toplevel=top, parameters=params,
         build_dir=ROOT / "build" / top, build_args=["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves else []),
         waves=waves)
 r.test(hdl_toplevel=top, test_module=mod, build_dir=ROOT / "build" / top, waves=waves)
