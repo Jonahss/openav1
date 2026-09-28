@@ -258,6 +258,11 @@ async def rtl_only(dut, ivfs, stats):
     the others' results in a conformance batch)."""
     failures = []
     for path in ivfs:
+        # every stream starts from reset (a real decoder gets one per sequence too)
+        dut.rst.value = 1
+        await ClockCycles(dut.clk, 4)
+        dut.rst.value = 0
+        await RisingEdge(dut.clk)
         try:
             await rtl_only_stream(dut, path, stats)
         except AssertionError as e:
