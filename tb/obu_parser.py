@@ -163,6 +163,18 @@ class Decoder:
         self.spatial_id = 0
         if ext:
             self.temporal_id = br.f(3); self.spatial_id = br.f(2); br.f(3)
+        # drop OBUs outside the selected operating point (spec 5.3.1 / 7.1: op 0 unless chosen otherwise)
+        opidc = getattr(self.seq, "OperatingPointIdc", 0) if getattr(self, "seq", None) is not None else 0
+        if ext and opidc != 0 and obu_type not in (OBU_SEQUENCE_HEADER, OBU_TEMPORAL_DELIMITER):
+            in_temporal = (opidc >> self.temporal_id) & 1
+            in_spatial = (opidc >> (self.spatial_id + 8)) & 1
+            if not in_temporal or not in_spatial:
+                # consume the header the same way and skip the payload
+                if has_size:
+                    obu_size = br.leb128()
+                else:
+                    obu_size = len(data) - 1 - ext
+                return br.byte_pos() + obu_size
         if has_size:
             obu_size = br.leb128()
         else:
