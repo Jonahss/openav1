@@ -63,7 +63,10 @@ from the frame buffer the last stage wrote. It is slow-and-correct (one pixel or
 stages); throughput work starts once the pipeline is complete and the numbers are measured.
 
 Reference oracle: the Argon conformance suite (2,763 streams) decodes identically with dav1d and against
-its reference checksums on our setup (`results/`), so dav1d is a trustworthy judge.
+its reference checksums on our setup (`results/`), so dav1d is a trustworthy judge. Argon runs through the RTL
+started 2026-09-27 (profile0_core intra-only, non-superres subset: 52 streams); the parser follows the
+decoder's operating-point rules (OBUs of other temporal/spatial layers are dropped) and film grain is
+compared with grain disabled (`md5_no_film_grain`).
 
 ## Layout
 
@@ -85,6 +88,9 @@ source env.sh
 tools/regress.sh        # trace every corpus stream with dav1d and run all model + RTL cross-checks
 python tb/runner.py dec_top                   # RTL vs model, whole frames, generated streams (TS_SEEDS=..., TS_W/TS_H)
 TS_IVF=streams/synth/synth_8bit.ivf python tb/runner.py dec_top    # same on a real stream
+TS_NOMODEL=1 TS_STAGE=lr TS_IVF=... python tb/runner.py dec_top      # model-free: RTL runs every stage from the headers,
+                                                                     # output compared with dav1d's pictures (refout/) or Argon md5s
+SIM_FAST=1 FBX=12 FBY=9 ...                                          # faster Verilator build; frame-buffer capacity (log2 px)
 python tb/runner.py tile_syntax               # syntax decoder vs model (TS_SCREEN=1 for palettes, TS_DEBUG=1 for symbol dumps)
 python tb/runner.py itx2d | ipred | cfl | msac | coef_top           # per-block tests
 tools/fuzz_streams.sh 40                      # generated streams: dav1d vs the Python decoder
