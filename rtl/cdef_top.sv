@@ -150,7 +150,7 @@ module cdef_top
     logic [2:0]  ydir;
     logic [31:0] var_;
 
-    // ---------------------------------------------------------------- filter (7.15.3): one sample per clock from the window
+    // ---------------------------------------------------------------- filter (7.15.3): four samples per clock from the window
     logic [11:0] pri_str, sec_str;
     logic [4:0]  damping;
     logic [2:0]  dr;
@@ -175,11 +175,13 @@ module cdef_top
     endfunction
     logic pri_odd;
     assign pri_odd = pri_str[cs];                       // (priStr >> coeffShift) & 1
-    logic [11:0] out_pix;
-    always_comb begin
+    // the filtered sample at (pi_, pj_) of the block, from the window (7.15.3)
+    function automatic logic [11:0] cdef_out(input logic [2:0] pi_, input logic [2:0] pj_);
+        logic [11:0] out_pix;
+
         logic signed [17:0] total;
         logic [11:0] mn, mx, ctr;
-        ctr = win[int'(pi) + 2][int'(pj) + 2];
+        ctr = win[int'(pi_) + 2][int'(pj_) + 2];
         total = 18'sd0; mn = ctr; mx = ctr;
         // taps: kind 0 primary direction, 1 dir - 2, 2 dir + 2; k 0..1; sign -/+
         for (int kind = 0; kind < 3; kind++)
@@ -189,7 +191,7 @@ module cdef_top
                     tdir = (kind == 0) ? dr : (kind == 1) ? dr - 3'd2 : dr + 3'd2;
                     dy = (sg == 1) ? 4'(cdef_dy(tdir, 1'(k))) : -4'(cdef_dy(tdir, 1'(k)));
                     dx = (sg == 1) ? 4'(cdef_dx(tdir, 1'(k))) : -4'(cdef_dx(tdir, 1'(k)));
-                    ry = 4'(int'(pi) + 2 + int'(dy)); rx = 4'(int'(pj) + 2 + int'(dx));
+                    ry = 4'(int'(pi_) + 2 + int'(dy)); rx = 4'(int'(pj_) + 2 + int'(dx));
                     t = win[ry][rx];
                     if (win_ok[ry][rx]) begin
                         total = total + ((kind == 0) ? 18'(pri_tap(pri_odd, 1'(k))) * 18'(constrain(13'(signed'({1'b0, t})) - 13'(signed'({1'b0, ctr})), pri_str, damping))
@@ -201,22 +203,24 @@ module cdef_top
         begin
             logic signed [18:0] v;
             v = 19'(signed'({7'b0, ctr})) + ((19'sd8 + 19'(total) - (total < 0 ? 19'sd1 : 19'sd0)) >>> 4);
-            if (v < 19'(signed'({7'b0, mn}))) out_pix = mn;
-            else if (v > 19'(signed'({7'b0, mx}))) out_pix = mx;
-            else out_pix = 12'(v);
+            if (v < 19'(signed'({7'b0, mn}))) cdef_out = mn;
+            else if (v > 19'(signed'({7'b0, mx}))) cdef_out = mx;
+            else cdef_out = 12'(v);
         end
-    end
+        endfunction
+    logic [47:0] out4;                                 // samples (pi, pj .. pj+3)
+    always_comb for (int l = 0; l < 4; l++) out4[l * 12 +: 12] = cdef_out(pi, pj + 3'(l));
     // copy path
     logic [5:0] cpi;
 
     // ---------------------------------------------------------------- memory ports
     always_comb begin
         src_re = 1'b0; src_plane = fplane; src_x = FBX'(wx); src_y = FBY'(wy);
-        dst_we = 1'b0; dst_plane = fplane; dst_x = FBX'(px0 + 13'(pj)); dst_y = FBY'(py0 + 13'(pi)); dst_wdata = out_pix;
+        dst_we = 1'b0; dst_plane = fplane; dst_x = FBX'(px0 + 13'(pj)); dst_y = FBY'(py0 + 13'(pi)); dst_wdata = 12'd0;
         dst4_we = 1'b0; dst4_plane = fplane; dst4_x = FBX'(px0 + 13'(cpi[2:0])); dst4_y = FBY'(py0 + 13'(cpi[5:3])); dst4_wdata = src_rdata4;
         case (st)
             C_WIN: src_re = w_row_in;                    // absent columns of a present row are masked at landing
-            C_PIX: dst_we = 1'b1;
+            C_PIX: begin dst4_we = 1'b1; dst4_x = FBX'(px0 + 13'(pj)); dst4_y = FBY'(py0 + 13'(pi)); dst4_wdata = out4; end
             C_COPY_RD: begin src_re = 1'b1; src_x = FBX'(px0 + 13'(cpi[2:0])); src_y = FBY'(py0 + 13'(cpi[5:3])); end
             C_COPY_WR: dst4_we = 1'b1;
             default: ;
@@ -293,8 +297,8 @@ module cdef_top
                 st <= C_PIX;
             end
             // ---- one filtered sample per clock
-            C_PIX: begin
-                if (4'(pj) + 4'd1 < pw) pj <= pj + 3'd1;
+            C_PIX: begin                                 // four filtered samples per clock (an aligned group of the row)
+                if (4'(pj) + 4'd4 < pw) pj <= pj + 3'd4;
                 else begin
                     pj <= 3'd0;
                     if (4'(pi) + 4'd1 < ph) pi <= pi + 3'd1;
