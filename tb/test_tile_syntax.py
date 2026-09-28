@@ -34,7 +34,7 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
     ("reduced_tx_set", 1), ("allow_sct", 1), ("allow_intrabc", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
     ("coded_lossless", 1), ("delta_q_present", 1), ("delta_q_res", 2), ("delta_lf_present", 1), ("delta_lf_res", 2),
     ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", 13), ("upscaled_width", 13),
-    ("frame_parity", 1)]
+    ("frame_parity", 1), ("use_superres", 1), ("superres_denom", 5)]
 BLK_FIELDS = [
     ("r", 11), ("c", 11), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
@@ -99,6 +99,15 @@ class RecDecoder(tm.TileDecoder):
         return v
 
     def NS(self, n, name):
+        # same bit consumption as SymbolDecoder.read_ns, through L() so every bool lands in the symbol log
+        w = tm.floor_log2(n) + 1
+        m = (1 << w) - n
+        v = self.L(w - 1, name)
+        if v < m:
+            return v
+        return (v << 1) - m + self.L(1, name)
+
+    def NS(self, n, name):
         # read_ns through L so the literal bits land in the symbol log (same bit sequence as the spec)
         w = n.bit_length()
         m = (1 << w) - n
@@ -160,7 +169,8 @@ def hdr_vals(th, dec, frame_parity=0):
              delta_lf_multi=th.delta_lf_multi, disable_cdf_update=th.disable_cdf_update,
              lr_type=sum(th.FrameRestorationType[p] << (2 * p) for p in range(3)),
              lr_size=sum((th.LoopRestorationSize[p].bit_length() - 1 - 6) << (2 * p) for p in range(3)),
-             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth, frame_parity=frame_parity & 1)
+             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth, frame_parity=frame_parity & 1,
+             use_superres=th.use_superres, superres_denom=th.SuperresDenom if th.use_superres else 8)
     return v
 
 
@@ -479,6 +489,9 @@ async def collect(dut, dec, tag0, stats):
                     m = dec.tx_recs[tx_i]
                     exp = dict(plane=m["plane"], x=m["x"], y=m["y"], txsz=m["txsz"], txtype=m["txtype"], eob=m["eob"], skip=m["skip"], lossless=m["lossless"])
                     bad = {k: (got[k], exp[k]) for k in exp if got[k] != exp[k]}
+                    if bad:
+                        br_ = unpack(BLK_FIELDS, int(dut.blk_rec.value))
+                        bad["rtl_blk_rec"] = {k: br_[k] for k in ("r", "c", "bsize", "skip", "txsz", "is_inter", "seg", "lossless")}
                     assert not bad, f"{tag0} tx block {tx_i} (block {blk_i - 1}): mismatches (rtl, model) {bad}"
                     if not m["skip"] and m["eob"] > 0:
                         q = m["quant"]

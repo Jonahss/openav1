@@ -151,8 +151,23 @@ module lr_syntax
                         ucols = count_units(lg, round2(hdr.upscaled_width, sx));
                         urs = ceil_div_pow2(16'(r) * (16'd4 >> sy), lg);
                         ure = ceil_div_pow2((16'(r) + 16'(sb4)) * (16'd4 >> sy), lg);
-                        ucs = ceil_div_pow2(16'(c) * (16'd4 >> sx), lg);
-                        uce = ceil_div_pow2((16'(c) + 16'(sb4)) * (16'd4 >> sx), lg);
+                        // unit columns: with superres the superblock's columns scale by SuperresDenom / SUPERRES_NUM
+                        // (numerator = (MI_SIZE >> subX) * SuperresDenom, denominator = unitSize * 8)
+                        begin
+                            logic [19:0] ns, ne;
+                            logic [4:0] dl;
+                            if (hdr.use_superres) begin
+                                ns = 20'(c) * 20'(4 >> sx) * 20'(hdr.superres_denom);
+                                ne = (20'(c) + 20'(sb4)) * 20'(4 >> sx) * 20'(hdr.superres_denom);
+                                dl = 5'(lg) + 5'd3;
+                            end else begin
+                                ns = 20'(c) * 20'(4 >> sx);
+                                ne = (20'(c) + 20'(sb4)) * 20'(4 >> sx);
+                                dl = 5'(lg);
+                            end
+                            ucs = 8'((ns + (20'd1 << dl) - 20'd1) >> dl);
+                            uce = 8'((ne + (20'd1 << dl) - 20'd1) >> dl);
+                        end
                         frt <= hdr.lr_type[2*plane +: 2]; usz_log2 <= lg; sub_x <= sx; sub_y <= sy;
                         unit_rows <= urows; unit_cols <= ucols;
                         ur_start <= urs; ur_end <= (ure < urows) ? ure : urows;

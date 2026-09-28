@@ -39,6 +39,8 @@ package syn_pkg;
         logic [12:0] frame_height;
         logic [12:0] upscaled_width;
         logic        frame_parity;             // toggles per frame: mv_mem entries of this frame
+        logic        use_superres;             // 7.16 upscaling: LR unit columns scale by SuperresDenom / SUPERRES_NUM
+        logic [4:0]  superres_denom;           // SuperresDenom (9..16)
     } hdr_t;
 
     // Frame-level parameters only the reconstruction stage needs (software fills this in).

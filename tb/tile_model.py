@@ -1916,7 +1916,7 @@ class TileDecoder:
             b2 = k + i - 1 if i else k
             a = 1 << b2
             if numSyms <= mk + 3 * a:
-                return self.dec.read_ns(numSyms - mk, "subexp_unif_bools") + mk
+                return self.NS(numSyms - mk, "subexp_unif_bools") + mk
             if self.L(1, "subexp_more_bools"):
                 i += 1
                 mk += a

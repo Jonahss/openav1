@@ -385,6 +385,30 @@ async def rtl_only_stream(dut, path, stats):
                     rows.append(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
                 planes_rb.append(rows)
                 stats["pixels"] += W * H
+                if bad and os.environ.get("TS_DUMP"):
+                    # every frame buffer (0 deblocked, 1 CDEF, 2 restored; upscaled in place when superres) for
+                    # stage-by-stage comparison with tools/model_stages.py
+                    ddir = os.environ["TS_DUMP"]
+                    os.makedirs(ddir, exist_ok=True)
+                    for fb in range(3):
+                        dut.h_buf.value = fb
+                        await Timer(1, "ns")
+                        with open(os.path.join(ddir, f"{Path(path).stem}_frame{fi}_fb{fb}.yuv"), "wb") as dfh:
+                            for p_ in range(hdr.NumPlanes):
+                                Wp, Hp = sizes[p_]
+                                for yy in range(Hp):
+                                    rowv = []
+                                    for xx in range(Wp):
+                                        dut.h_plane.value = p_
+                                        dut.h_x.value = xx
+                                        dut.h_y.value = yy
+                                        await RisingEdge(dut.clk)
+                                        await ReadOnly()
+                                        rowv.append(int(dut.h_rdata.value))
+                                        await Timer(1, "ns")
+                                    dfh.write(bytes(rowv) if hdr.BitDepth == 8 else struct.pack("<%dH" % Wp, *rowv))
+                    dut.h_buf.value = buf
+                    dut._log.info(f"{tag}: frame buffers dumped to {ddir}")
                 assert not bad, f"{tag} plane {plane}: {len(bad)} / {W * H} pixels differ from dav1d (y, x, rtl, dav1d), first {bad[:10]}"
             stats["frames"] += 1
             if md5_ref is not None:
