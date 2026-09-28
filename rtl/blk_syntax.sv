@@ -125,6 +125,12 @@ module blk_syntax
         S_LIT, S_LIT_W
     } st_t;
     st_t st, lit_ret;
+    // cycle counter per state (simulation profiling; read through the hierarchy by the testbench)
+    logic [31:0] perf_st [0:127];
+    always_ff @(posedge clk) begin
+        if (rst) perf_st <= '{default: 32'd0};
+        else perf_st[st] <= perf_st[st] + 32'd1;
+    end
 
     // ---------------------------------------------------------------- block registers
     logic [10:0] br, bc;

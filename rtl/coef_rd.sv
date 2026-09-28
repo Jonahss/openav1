@@ -71,6 +71,12 @@ module coef_rd
         P_SCAN, P_POS, P_POS2, P_CHK, P_SIGN_W, P_GLEN, P_GLEN_W, P_GDATA, P_GDATA_W, P_STORE, S_DONE
     } st_t;
     st_t st;
+    // cycle counter per state (simulation profiling; read through the hierarchy by the testbench)
+    logic [31:0] perf_st [0:31];
+    always_ff @(posedge clk) begin
+        if (rst) perf_st <= '{default: 32'd0};
+        else perf_st[st] <= perf_st[st] + 32'd1;
+    end
 
     logic [10:0] eob, c;                     // eob 0..1024; c: coefficient index
     logic [3:0]  eob_pt;

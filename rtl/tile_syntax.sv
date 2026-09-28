@@ -190,6 +190,12 @@ module tile_syntax
 
     typedef enum logic [4:0] {T_IDLE, T_INIT, T_SB, T_LR_W, T_SB_ROW_END, T_PUSH_ROOT, T_NODE, T_NB_W, T_PART_W, T_PEEK_W, T_BOOL_W, T_CHILD, T_BLK_W, T_DONE} t_t;
     t_t st;
+    // cycle counter per state (simulation profiling; read through the hierarchy by the testbench)
+    logic [31:0] perf_st [0:31];
+    always_ff @(posedge clk) begin
+        if (rst) perf_st <= '{default: 32'd0};
+        else perf_st[st] <= perf_st[st] + 32'd1;
+    end
     logic [10:0] sb_r, sb_c;
     logic [5:0]  sb4;                          // 16 or 32
     assign sb4 = hdr.sb128 ? 6'd32 : 6'd16;
