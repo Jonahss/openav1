@@ -44,7 +44,7 @@ module lf_tb_top
                                          .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
                                          .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata);
     // frame buffer: the filter owns the port while busy, the host otherwise
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .re(fb_re), .we(busy ? fb_we : h_we), .plane(busy ? fb_plane : h_plane),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .re(fb_re), .we(busy ? fb_we : h_we), .plane(busy ? fb_plane : h_plane),
                                                      .x(busy ? fb_x : h_x), .y(busy ? fb_y : h_y), .wdata(busy ? fb_wdata : h_wdata), .rdata(fb_rdata),
                                                      .h_plane, .h_x, .h_y, .h_rdata);
 endmodule

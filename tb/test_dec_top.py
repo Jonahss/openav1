@@ -112,6 +112,19 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0):
         stats["tiles"] += 1
         stats["cycles"] += cycles
         dut._log.info(f"{tag}: tile done in ~{cycles} cycles (syntax stalled on recon {int(dut.perf_syn_stall.value)}, recon idle {int(dut.perf_rec_idle.value)})")
+        if os.environ.get("TS_PERF"):
+            rs_names = ["IDLE", "SETUP", "PAL", "PAL_LAST", "EDGE", "IP_START", "IP_W", "CFL_L", "CFL_D", "CFL_START", "CFL_W",
+                        "RESID", "DQ", "DQ_LAST", "ITX_START", "ITX_W", "ADD", "ADD_LAST", "FIN", "MIW"]
+            bst_names = ["IDLE", "FT0", "FT1", "FT2", "FT3", "FT4", "WR", "WR_W", "IBC_INIT", "IBC_PL", "IBC_R0", "IBC_R1", "IBC_R2", "IBC_R3", "IBC_WR"]
+            prev = getattr(run_tile, "_perf_prev", None) or ({}, {})
+            cur_rs = {n: int(dut.u_rc.perf_rs[i].value) for i, n in enumerate(rs_names)}
+            cur_b = {n: int(dut.u_rc.perf_bst[i].value) for i, n in enumerate(bst_names)}
+            d_rs = {n: cur_rs[n] - prev[0].get(n, 0) for n in rs_names}
+            d_b = {n: cur_b[n] - prev[1].get(n, 0) for n in bst_names}
+            run_tile._perf_prev = (cur_rs, cur_b)
+            tot = sum(d_rs.values()) or 1
+            dut._log.info(f"{tag}: recon tx-FSM cycles " + ", ".join(f"{n} {v} ({100 * v // tot}%)" for n, v in d_rs.items() if v))
+            dut._log.info(f"{tag}: recon blk-FSM cycles " + ", ".join(f"{n} {v}" for n, v in d_b.items() if v))
         return
     while True:
         await RisingEdge(dut.clk)
@@ -261,6 +274,7 @@ async def rtl_only(dut, ivfs, stats):
         # every stream starts from reset (a real decoder gets one per sequence too)
         await Timer(1, "ns")
         dut.rst.value = 1
+        run_tile._perf_prev = None  # counters reset with the DUT
         await ClockCycles(dut.clk, 4)
         dut.rst.value = 0
         await RisingEdge(dut.clk)
@@ -496,6 +510,7 @@ async def dec_vs_model(dut):
     for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
+    run_tile._perf_prev = None  # counters reset with the DUT
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)

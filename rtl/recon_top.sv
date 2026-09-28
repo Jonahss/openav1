@@ -65,7 +65,13 @@ module recon_top
     output logic [FBX-1:0] fb_x,
     output logic [FBY-1:0] fb_y,
     output logic [11:0] fb_wdata,
-    input  logic [11:0] fb_rdata
+    input  logic [11:0] fb_rdata,
+    // frame buffer write port (all of this stage's writes; fb_we stays 0)
+    output logic        fb2_we,
+    output logic [1:0]  fb2_plane,
+    output logic [FBX-1:0] fb2_x,
+    output logic [FBY-1:0] fb2_y,
+    output logic [11:0] fb2_wdata
 );
     localparam logic [3:0] DC_PRED = 4'd0, UV_CFL_PRED = 4'd13, SMOOTH_PRED = 4'd9, SMOOTH_H_PRED = 4'd11;
     localparam logic [3:0] IDTX = 4'd9;
@@ -402,11 +408,24 @@ module recon_top
         R_PAL, R_PAL_LAST,
         R_EDGE, R_IP_START, R_IP_W,
         R_CFL_L, R_CFL_D, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ_A, R_DQ_B, R_ITX_START, R_ITX_W, R_ADD_A, R_ADD_B,
+        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST,
         R_FIN, R_MIW
     } rst_t;
     rst_t rs;
     logic tx_ack;                                          // registered: the transform block was fully written (R_MIW)
+    // cycle counters per transform-FSM state and per block-FSM state (simulation profiling; read through the
+    // hierarchy by the testbench, never reset except by rst)
+    logic [31:0] perf_rs [0:31];
+    logic [31:0] perf_bst [0:15];
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            for (int i = 0; i < 32; i++) perf_rs[i] <= 32'd0;
+            for (int i = 0; i < 16; i++) perf_bst[i] <= 32'd0;
+        end else begin
+            perf_rs[rs] <= perf_rs[rs] + 32'd1;
+            perf_bst[bst] <= perf_bst[bst] + 32'd1;
+        end
+    end
     logic sb_start, blk_take, tx_take, tx_pop;
     logic [10:0] sb_r, sb_c;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
@@ -422,6 +441,8 @@ module recon_top
     logic [1:0]  ep_side; logic [7:0] ep_idx; logic [11:0] ep_val;
     logic        px_valid;                                 // generic 1-deep read pipeline
     logic [6:0]  px_i, px_j;
+    logic        p_valid;                                  // dequant / add pipelines: previous position issued
+    logic [6:0]  pci, pcj;
     logic        pal_first;
     logic [12:0] cur_x, cur_y;
     logic [11:0] mid_m1, mid_p1, mid;
@@ -473,7 +494,7 @@ module recon_top
         begin
             logic [14:0] qv;
             logic [22:0] prod;
-            qv = (ci == 7'd0 && cj == 7'd0) ? dc_q : ac_q;
+            qv = (pci == 7'd0 && pcj == 7'd0) ? dc_q : ac_q;      // dequant of the position issued last cycle
             prod = 23'(qv) * 23'(qm_data);
             q_eff = use_qm ? 18'((prod + 23'd16) >> 5) : 18'(qv);
         end
@@ -490,9 +511,11 @@ module recon_top
         end
     end
     // recon add datapath (R_ADD_B)
-    logic [6:0]  add_xx, add_yy;
+    logic [6:0]  add_xx, add_yy, padd_xx, padd_yy;           // read position (ci, cj) and write position (pci, pcj)
     assign add_xx = flip_lr ? 7'(tw_px - 7'd1 - cj) : cj;
     assign add_yy = flip_ud ? 7'(th_px - 7'd1 - ci) : ci;
+    assign padd_xx = flip_lr ? 7'(tw_px - 7'd1 - pcj) : pcj;
+    assign padd_yy = flip_ud ? 7'(th_px - 7'd1 - pci) : pci;
     logic signed [TW:0] add_sum;
     logic [11:0] add_out;
     always_comb begin
@@ -503,10 +526,11 @@ module recon_top
     // ---------------------------------------------------------------- combinational outputs
     always_comb begin
         fb_re = 1'b0; fb_we = 1'b0; fb_plane = t.plane; fb_x = '0; fb_y = '0; fb_wdata = 12'd0;
+        fb2_we = 1'b0; fb2_plane = t.plane; fb2_x = '0; fb2_y = '0; fb2_wdata = 12'd0;
         edge_we = 1'b0; edge_side = ep_side; edge_idx = ep_idx; edge_data = ep_const ? ep_val : fb_rdata;
         itx_we = 1'b0; itx_addr = 10'd0; itx_data = '0;
         cl_lwe = 1'b0; cl_dwe = 1'b0; cl_laddr = 10'd0; cl_ldata = fb_rdata; cl_daddr = 10'd0; cl_ddata = fb_rdata;
-        res_addr = 12'({ci[5:0], cj[5:0]});
+        res_addr = 12'({pci[5:0], pcj[5:0]});                 // residual of the position read last cycle
         pm_plane = (t.plane != 2'd0); pm_x = 6'(t.x - base_x + 13'(cj)); pm_y = 6'(t.y - base_y + 13'(ci));
         q_addr = 10'(ci) * 10'(tw_c) + 10'(cj);          // registered read in coef_rd: data valid in R_DQ_B
         qm_addr = 17'(int'(qm_lvl) * QM_LEVEL_STRIDE + ((t.plane != 2'd0) ? QM_PLANE_STRIDE : 0)) + 17'(qm_offset(t.txsz)) + 17'(ci) * 17'(tw_c) + 17'(cj);
@@ -514,15 +538,15 @@ module recon_top
             R_PAL, R_PAL_LAST: begin
                 // pm_idx holds the index for (px_i, px_j) issued last cycle
                 if (px_valid) begin
-                    fb_we = 1'b1; fb_x = FBX'(t.x + 13'(px_j)); fb_y = FBY'(t.y + 13'(px_i));
-                    fb_wdata = pal_cols[12 * pm_idx +: 12];
+                    fb2_we = 1'b1; fb2_x = FBX'(t.x + 13'(px_j)); fb2_y = FBY'(t.y + 13'(px_i));
+                    fb2_wdata = pal_cols[12 * pm_idx +: 12];
                 end
             end
             R_EDGE: begin
                 if (ek <= n_edges && !e_const) begin fb_re = 1'b1; fb_x = FBX'(e_rx); fb_y = FBY'(e_ry); end
                 if (ep_valid) edge_we = 1'b1;
             end
-            R_IP_W: if (ip_ov) begin fb_we = 1'b1; fb_x = FBX'(t.x + 13'(ip_ox)); fb_y = FBY'(t.y + 13'(ip_oy)); fb_wdata = ip_pix; end
+            R_IP_W: if (ip_ov) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + 13'(ip_ox)); fb2_y = FBY'(t.y + 13'(ip_oy)); fb2_wdata = ip_pix; end
             R_CFL_L: begin
                 // read luma (plane 0) at (lx0 + cj, ly0 + ci); write the previously read pixel into cfl
                 fb_plane = 2'd0;
@@ -533,10 +557,14 @@ module recon_top
                 if (ci < 7'(th_px)) begin fb_re = 1'b1; fb_x = FBX'(t.x + 13'(cj)); fb_y = FBY'(t.y + 13'(ci)); end
                 if (px_valid) begin cl_dwe = 1'b1; cl_daddr = {px_i[4:0], px_j[4:0]}; end
             end
-            R_CFL_W: if (cl_ov) begin fb_we = 1'b1; fb_x = FBX'(t.x + 13'(cl_ox)); fb_y = FBY'(t.y + 13'(cl_oy)); fb_wdata = cl_pix; end
-            R_DQ_B: begin itx_we = 1'b1; itx_addr = {ci[4:0], cj[4:0]}; itx_data = dq_out; end
-            R_ADD_A: begin fb_re = 1'b1; fb_x = FBX'(t.x + 13'(add_xx)); fb_y = FBY'(t.y + 13'(add_yy)); end
-            R_ADD_B: begin fb_we = 1'b1; fb_x = FBX'(t.x + 13'(add_xx)); fb_y = FBY'(t.y + 13'(add_yy)); fb_wdata = add_out; end
+            R_CFL_W: if (cl_ov) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + 13'(cl_ox)); fb2_y = FBY'(t.y + 13'(cl_oy)); fb2_wdata = cl_pix; end
+            // dequant: one coefficient per clock (address (ci, cj) out, the previous position's data in)
+            R_DQ, R_DQ_LAST: if (p_valid) begin itx_we = 1'b1; itx_addr = {pci[4:0], pcj[4:0]}; itx_data = dq_out; end
+            // residual add: read (ci, cj) through port 1, write the previous position through port 2
+            R_ADD, R_ADD_LAST: begin
+                if (rs == R_ADD) begin fb_re = 1'b1; fb_x = FBX'(t.x + 13'(add_xx)); fb_y = FBY'(t.y + 13'(add_yy)); end
+                if (p_valid) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + 13'(padd_xx)); fb2_y = FBY'(t.y + 13'(padd_yy)); fb2_wdata = add_out; end
+            end
             default: ;
         endcase
         // intra block copy: the block FSM owns the frame-buffer ports while the transform FSM is idle
@@ -545,7 +573,7 @@ module recon_top
             B_IBC_R1: begin fb_re = ib_fx[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry0); end
             B_IBC_R2: begin fb_re = ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry1); end
             B_IBC_R3: begin fb_re = ib_fx[3] && ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry1); end
-            B_IBC_WR: begin fb_we = 1'b1; fb_plane = ib_pl; fb_x = FBX'(ib_bx + 13'(ib_j)); fb_y = FBY'(ib_by + 13'(ib_i)); fb_wdata = ib_out; end
+            B_IBC_WR: begin fb2_we = 1'b1; fb2_plane = ib_pl; fb2_x = FBX'(ib_bx + 13'(ib_j)); fb2_y = FBY'(ib_by + 13'(ib_i)); fb2_wdata = ib_out; end
             default: ;
         endcase
     end
@@ -643,22 +671,25 @@ module recon_top
                 // ---- residual
                 R_RESID: begin
                     ci <= 7'd0; cj <= 7'd0;
-                    if (!t.skip && t.eob != 11'd0) rs <= R_DQ_A;
+                    p_valid <= 1'b0;
+                    if (!t.skip && t.eob != 11'd0) rs <= R_DQ;
                     else rs <= R_FIN;
                 end
-                R_DQ_A: rs <= R_DQ_B;                    // q_addr / qm_addr for (ci, cj) presented; data valid next cycle
-                R_DQ_B: begin
-                    if (cj + 7'd1 < 7'(tw_c)) begin cj <= cj + 7'd1; rs <= R_DQ_A; end
-                    else if (ci + 7'd1 < 7'(th_c)) begin cj <= 7'd0; ci <= ci + 7'd1; rs <= R_DQ_A; end
-                    else begin ci <= 7'd0; cj <= 7'd0; itx_start <= 1'b1; rs <= R_ITX_W; end
+                R_DQ: begin                              // q_addr / qm_addr for (ci, cj) presented; the previous lands now
+                    p_valid <= 1'b1; pci <= ci; pcj <= cj;
+                    if (cj + 7'd1 < 7'(tw_c)) cj <= cj + 7'd1;
+                    else if (ci + 7'd1 < 7'(th_c)) begin cj <= 7'd0; ci <= ci + 7'd1; end
+                    else rs <= R_DQ_LAST;
                 end
-                R_ITX_W: if (itx_done) rs <= R_ADD_A;
-                R_ADD_A: rs <= R_ADD_B;
-                R_ADD_B: begin
-                    if (cj + 7'd1 < tw_px) begin cj <= cj + 7'd1; rs <= R_ADD_A; end
-                    else if (ci + 7'd1 < th_px) begin cj <= 7'd0; ci <= ci + 7'd1; rs <= R_ADD_A; end
-                    else rs <= R_FIN;
+                R_DQ_LAST: begin p_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; itx_start <= 1'b1; rs <= R_ITX_W; end
+                R_ITX_W: if (itx_done) begin p_valid <= 1'b0; rs <= R_ADD; end
+                R_ADD: begin                             // read (ci, cj); the previous pixel is added and written this cycle
+                    p_valid <= 1'b1; pci <= ci; pcj <= cj;
+                    if (cj + 7'd1 < tw_px) cj <= cj + 7'd1;
+                    else if (ci + 7'd1 < th_px) begin cj <= 7'd0; ci <= ci + 7'd1; end
+                    else rs <= R_ADD_LAST;
                 end
+                R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_FIN; end
                 // ---- bookkeeping + ack
                 R_FIN: begin
                     for (int yy = 0; yy < 16; yy++)

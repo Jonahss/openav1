@@ -15,6 +15,12 @@ module frame_mem #(
     input  logic [FBY-1:0] y,
     input  logic [PW-1:0] wdata,
     output logic [PW-1:0] rdata,
+    // second write port (reconstruction writes while it reads through the first port)
+    input  logic          w2_we,
+    input  logic [1:0]    w2_plane,
+    input  logic [FBX-1:0] w2_x,
+    input  logic [FBY-1:0] w2_y,
+    input  logic [PW-1:0] w2_wdata,
     // host read port
     input  logic [1:0]    h_plane,
     input  logic [FBX-1:0] h_x,
@@ -32,6 +38,13 @@ module frame_mem #(
                 2'd0: mem0[{y, x}] <= wdata;
                 2'd1: mem1[{y, x}] <= wdata;
                 default: mem2[{y, x}] <= wdata;
+            endcase
+        end
+        if (w2_we) begin
+            case (w2_plane)
+                2'd0: mem0[{w2_y, w2_x}] <= w2_wdata;
+                2'd1: mem1[{w2_y, w2_x}] <= w2_wdata;
+                default: mem2[{w2_y, w2_x}] <= w2_wdata;
             endcase
         end
         if (re) begin

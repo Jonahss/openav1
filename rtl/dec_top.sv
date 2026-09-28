@@ -76,6 +76,7 @@ module dec_top
     assign blk_ack = pal_hold && !ev_valid && !rc_busy;
 
     logic fb_re, fb_we, rc_busy; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
+    logic fb2_we; logic [1:0] fb2_plane; logic [FBX-1:0] fb2_x; logic [FBY-1:0] fb2_y; logic [11:0] fb2_wdata;
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [10:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [6:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
@@ -85,7 +86,8 @@ module dec_top
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
                                             .mi_tx_we, .mi_tx_plane, .mi_tx_row, .mi_tx_col, .mi_tx_w4, .mi_tx_h4, .mi_tx_sz, .mi_tx_busy,
                                             .mi_cd_clr, .mi_cd_we, .mi_cd_row64, .mi_cd_col64, .mi_cd_mask, .mi_cd_idx,
-                                            .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata);
+                                            .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata,
+                                            .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata);
 
     // per-4x4 state + deblocking filter; the filter owns the frame buffer port while it runs
     logic [10:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
@@ -133,14 +135,15 @@ module dec_top
                                                      .x(lf_busy ? lf_x : cdef_busy ? cd_x : sr0 ? (sr_we ? sr_dx : sr_sx) : lr_busy ? lr_sx : fb_x),
                                                      .y(lf_busy ? lf_y : cdef_busy ? cd_y : sr0 ? (sr_we ? sr_dy : sr_sy) : lr_busy ? lr_sy : fb_y),
                                                      .wdata(lf_busy ? lf_wdata : sr0 ? sr_wdata : fb_wdata), .rdata(fb_rdata),
+                                                     .w2_we(fb2_we && !lf_busy && !cdef_busy && !sr_busy && !lr_busy), .w2_plane(fb2_plane), .w2_x(fb2_x), .w2_y(fb2_y), .w2_wdata(fb2_wdata),
                                                      .h_plane, .h_x, .h_y, .h_rdata(h_rdata0));
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .re(sr1 ? sr_re : lr_busy ? (lr_s1_re && !lr_from_deblocked) : 1'b0), .we(cdef_busy ? cd_we : sr1 ? sr_we : 1'b0),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .re(sr1 ? sr_re : lr_busy ? (lr_s1_re && !lr_from_deblocked) : 1'b0), .we(cdef_busy ? cd_we : sr1 ? sr_we : 1'b0),
                                                       .plane(sr1 ? sr_plane : lr_busy ? lr_splane : cd_dplane),
                                                       .x(sr1 ? (sr_we ? sr_dx : sr_sx) : lr_busy ? lr_sx : cd_dx), .y(sr1 ? (sr_we ? sr_dy : sr_sy) : lr_busy ? lr_sy : cd_dy),
                                                       .wdata(sr1 ? sr_wdata : cd_wdata), .rdata(fb1_rdata),
                                                       .h_plane, .h_x, .h_y, .h_rdata(h_rdata1));
     logic [11:0] unused_r2;
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb2 (.clk, .re(1'b0), .we(lr_we2), .plane(lr_dplane), .x(lr_dx), .y(lr_dy), .wdata(lr_wdata), .rdata(unused_r2),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb2 (.clk, .w2_we(1'b0), .w2_plane(2'd0), .w2_x('0), .w2_y('0), .w2_wdata('0), .re(1'b0), .we(lr_we2), .plane(lr_dplane), .x(lr_dx), .y(lr_dy), .wdata(lr_wdata), .rdata(unused_r2),
                                                       .h_plane, .h_x, .h_y, .h_rdata(h_rdata2));
     assign h_rdata = (h_buf == 2'd2) ? h_rdata2 : (h_buf == 2'd1) ? h_rdata1 : h_rdata0;
 
