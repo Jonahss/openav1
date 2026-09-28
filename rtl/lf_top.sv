@@ -72,6 +72,14 @@ module lf_top
     assign rbase = (n_rd == 4'd14) ? -5'sd8 : -5'sd4;
     logic signed [4:0] wk;                              // write position k
     logic signed [4:0] w_lo, w_hi;
+    // horizontal edges: the 4 columns of the position at once. pixc[c][7 + k] = column c's sample k rows from the
+    // edge; cc = column being decided; colout[c][k + 6] = {modified, value} for k = -6..5 of column c
+    logic [11:0] pixc [0:3][0:13];
+    logic [1:0]  cc;
+    logic [12:0] colout [0:3][0:11];
+    logic        any_mod;
+    logic signed [4:0] f_lo_all, f_hi_all;                // union of the columns' modified ranges
+    logic [11:0] pix_a [0:13];                            // samples the filter datapath works on
     logic [12:0] sx, sy;                                // sample position
 
     always_comb begin
@@ -154,7 +162,8 @@ module lf_top
     assign bd8 = hdr.bit_depth - 4'd8;
     logic [12:0] p [0:6];
     logic [12:0] q [0:6];
-    always_comb for (int j = 0; j < 7; j++) begin p[j] = 13'(pix[6 - j]); q[j] = 13'(pix[7 + j]); end
+    always_comb for (int m = 0; m < 14; m++) pix_a[m] = pss ? pixc[cc][m] : pix[m];
+    always_comb for (int j = 0; j < 7; j++) begin p[j] = 13'(pix_a[6 - j]); q[j] = 13'(pix_a[7 + j]); end
     function automatic logic [12:0] adiff(input logic [12:0] a, input logic [12:0] b);
         adiff = (a > b) ? a - b : b - a;
     endfunction
@@ -220,7 +229,7 @@ module lf_top
                 pidx = i + j;
                 if (pidx < -(n + 1)) pidx = -(n + 1);
                 if (pidx > n) pidx = n;
-                t = t + (((j < 0 ? -j : j) <= n2) ? 18'(pix[7 + pidx]) * 18'd2 : 18'(pix[7 + pidx]));
+                t = t + (((j < 0 ? -j : j) <= n2) ? 18'(pix_a[7 + pidx]) * 18'd2 : 18'(pix_a[7 + pidx]));
             end
         end
         wide_val = 12'((t + (18'd1 << (log2sz - 1))) >> log2sz);
@@ -277,7 +286,14 @@ module lf_top
     endfunction
     always_comb {out_valid, out_pix} = lf_out(wk);
     // vertical edges: the group rd_g written back whole, modified lanes replaced
-    logic [47:0] grp_out;
+    logic [47:0] grp_out, grp_h;
+    always_comb begin                                    // horizontal edges: row wk of the 4 columns
+        for (int l = 0; l < 4; l++) begin
+            logic [12:0] r;
+            r = (wk >= -5'sd6 && wk <= 5'sd5) ? colout[l][int'(wk) + 6] : 13'd0;
+            grp_h[l * 12 +: 12] = r[12] ? r[11:0] : pixc[l][7 + int'(wk)];
+        end
+    end
     always_comb begin
         for (int l = 0; l < 4; l++) begin
             logic signed [4:0] k; logic [12:0] r; logic [11:0] orig;
@@ -303,13 +319,12 @@ module lf_top
             fb_re = 1'b1;
             fb_x = FBX'(13'(signed'(sx) + 13'(rbase) + 13'(4 * int'(kk)))); fb_y = FBY'(sy);
         end
-        if (st == L_S_RD && pss && kk < n_rd) begin
+        if (st == L_S_RD && pss && kk < n_rd) begin        // the group of 4 columns at row sy + rk
             fb_re = 1'b1;
             fb_x = FBX'(sx); fb_y = FBY'(sy + 13'(rk));
         end
-        if (st == L_S_WR && pss && out_valid) begin
-            fb_we = 1'b1;
-            fb_x = FBX'(sx); fb_y = FBY'(sy + 13'(wk));
+        if (st == L_S_WR && pss) begin                     // row sy + wk of the 4 columns, modified lanes replaced
+            fb4_we = 1'b1; fb4_x = FBX'(sx); fb4_y = FBY'(sy + 13'(wk)); fb4_wdata = grp_h;
         end
         if (st == L_S_WR && !pss) fb4_we = 1'b1;
     end
@@ -318,7 +333,7 @@ module lf_top
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        if (rd_pend && pss) pix[rd_slot] <= fb_rdata;  // read issued last cycle lands now
+        if (rd_pend && pss) for (int l = 0; l < 4; l++) pixc[l][rd_slot] <= fb_rdata4[l * 12 +: 12];   // read issued last cycle lands now
         if (rd_pend && !pss)                             // group rd_slot[1:0]: lane l is position rbase + 4 g + l
             for (int l = 0; l < 4; l++) begin
                 int k;
@@ -359,11 +374,25 @@ module lf_top
                 if (pss ? (kk < n_rd) : (kk <= 4'(n_rg))) begin
                     rd_pend <= 1'b1; rd_slot <= pss ? 4'(7 + int'(rk)) : 4'(kk); kk <= kk + 4'd1;
                 end else if (!rd_pend) begin
-                    wk <= -5'sd7; rd_g <= 2'd0; st <= L_S_CALC;
+                    wk <= -5'sd7; rd_g <= 2'd0; cc <= 2'd0; any_mod <= 1'b0; f_lo_all <= 5'sd6; f_hi_all <= -5'sd7;
+                    st <= L_S_CALC;
                 end
             end
-            L_S_CALC: begin                              // pix[] settled: decide, then write only the modified positions
-                if (fmode == F_NONE) begin
+            L_S_CALC: begin                              // samples settled: decide, then write only the modified positions
+                if (pss) begin                           // one column per cycle; then the union of modified rows
+                    for (int k = -6; k <= 5; k++) colout[cc][k + 6] <= lf_out(5'(k));
+                    if (fmode != F_NONE) begin
+                        any_mod <= 1'b1;
+                        if (f_lo < f_lo_all) f_lo_all <= f_lo;
+                        if (f_hi > f_hi_all) f_hi_all <= f_hi;
+                    end
+                    if (cc != 2'd3) cc <= cc + 2'd1;
+                    else if (any_mod || fmode != F_NONE) begin
+                        wk <= (fmode != F_NONE && f_lo < f_lo_all) ? f_lo : f_lo_all;
+                        w_hi <= (fmode != F_NONE && f_hi > f_hi_all) ? f_hi : f_hi_all;
+                        st <= L_S_WR;
+                    end else begin kk <= 4'd0; st <= L_NEXT; end
+                end else if (fmode == F_NONE) begin
                     kk <= 4'd0;
                     if (i4 == 2'd3) st <= L_NEXT;
                     else begin i4 <= i4 + 2'd1; st <= L_S_RD; end
@@ -372,7 +401,7 @@ module lf_top
             L_S_WR: begin                                // horizontal edges: one modified position per cycle (wk); vertical: one group per cycle (rd_g)
                 if (pss ? (wk == w_hi) : (rd_g == n_rg)) begin
                     kk <= 4'd0;
-                    if (i4 == 2'd3) st <= L_NEXT;
+                    if (i4 == 2'd3 || pss) st <= L_NEXT;    // a horizontal position's 4 columns were done together
                     else begin i4 <= i4 + 2'd1; st <= L_S_RD; end
                 end else begin wk <= wk + 5'sd1; rd_g <= rd_g + 2'd1; end
             end
