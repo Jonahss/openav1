@@ -374,8 +374,8 @@ module recon_top
 
     // ================================================================ sub-blocks
     // itx2d
-    logic itx_we, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data;
-    itx2d #(.TW(TW)) u_itx (.clk, .rst, .coef_we(itx_we), .coef_addr(itx_addr), .coef_data(itx_data),
+    logic itx_we, itx_clr, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data;
+    itx2d #(.TW(TW)) u_itx (.clk, .rst, .coef_clr(itx_clr), .coef_we(itx_we), .coef_addr(itx_addr), .coef_data(itx_data),
                             .start(itx_start), .tx_sz(t.txsz), .tx_type(t.lossless ? 4'd0 : t.txtype), .bit_depth(hdr.bit_depth), .lossless(t.lossless),
                             .busy(itx_busy), .done(itx_done), .res_addr, .res_data);
     // ipred
@@ -443,6 +443,31 @@ module recon_top
     logic [6:0]  px_i, px_j;
     logic        p_valid;                                  // dequant / add pipelines: previous position issued
     logic [6:0]  pci, pcj;
+    // dequant walks the coded coefficients in scan order (k = 0 .. eob-1) instead of every position of the
+    // block: scan ROM (registered) -> position -> Quant read (registered) -> dequant -> itx coefficient write
+    logic [10:0] sk;                                       // next scan index to issue
+    logic        sd_valid;                                 // scan index issued last cycle (its position lands now)
+    logic [10:0] sd_k;
+    logic [2:0]  s_bwl, s_hlog;                            // adjusted transform size (spec Adjusted_Tx_Size)
+    logic [1:0]  s_cls;                                    // 0 2D (default scan), 1 Mrow (V_*), 2 Mcol (H_*)
+    logic [9:0]  s_pos;                                    // position of sd_k in the adjusted grid
+    logic [6:0]  sc_ci, sc_cj;                             // its coefficient row / column
+    logic [11:0] scan_addr; logic [9:0] scan_data;
+    scan_rom u_scan (.clk(clk), .addr(scan_addr), .data(scan_data));
+    always_comb begin
+        s_bwl  = tx_w_log2(tx_adj(t.txsz));
+        s_hlog = tx_h_log2(tx_adj(t.txsz));
+        s_cls  = (t.txtype == 4'd10 || t.txtype == 4'd12 || t.txtype == 4'd14) ? 2'd1 :
+                 (t.txtype == 4'd11 || t.txtype == 4'd13 || t.txtype == 4'd15) ? 2'd2 : 2'd0;
+        scan_addr = scan_base(t.txsz) + 12'(sk);
+        case (t.lossless ? 2'd0 : s_cls)
+            2'd1:    s_pos = sd_k[9:0];                                                                      // Mrow: row-major
+            2'd2:    s_pos = ((sd_k[9:0] & ((10'd1 << s_hlog) - 10'd1)) << s_bwl) | (sd_k[9:0] >> s_hlog);   // Mcol
+            default: s_pos = scan_data;
+        endcase
+        sc_ci = 7'(s_pos >> s_bwl);
+        sc_cj = 7'(s_pos & ((10'd1 << s_bwl) - 10'd1));
+    end
     logic        pal_first;
     logic [12:0] cur_x, cur_y;
     logic [11:0] mid_m1, mid_p1, mid;
@@ -532,8 +557,9 @@ module recon_top
         cl_lwe = 1'b0; cl_dwe = 1'b0; cl_laddr = 10'd0; cl_ldata = fb_rdata; cl_daddr = 10'd0; cl_ddata = fb_rdata;
         res_addr = 12'({pci[5:0], pcj[5:0]});                 // residual of the position read last cycle
         pm_plane = (t.plane != 2'd0); pm_x = 6'(t.x - base_x + 13'(cj)); pm_y = 6'(t.y - base_y + 13'(ci));
-        q_addr = 10'(ci) * 10'(tw_c) + 10'(cj);          // registered read in coef_rd: data valid in R_DQ_B
-        qm_addr = 17'(int'(qm_lvl) * QM_LEVEL_STRIDE + ((t.plane != 2'd0) ? QM_PLANE_STRIDE : 0)) + 17'(qm_offset(t.txsz)) + 17'(ci) * 17'(tw_c) + 17'(cj);
+        q_addr = 10'(sc_ci) * 10'(tw_c) + 10'(sc_cj);    // registered read in coef_rd: data lands the next cycle
+        qm_addr = 17'(int'(qm_lvl) * QM_LEVEL_STRIDE + ((t.plane != 2'd0) ? QM_PLANE_STRIDE : 0)) + 17'(qm_offset(t.txsz)) + 17'(sc_ci) * 17'(tw_c) + 17'(sc_cj);
+        itx_clr = (rs == R_RESID);
         case (rs)
             R_PAL, R_PAL_LAST: begin
                 // pm_idx holds the index for (px_i, px_j) issued last cycle
@@ -669,17 +695,17 @@ module recon_top
                 end
                 R_CFL_W: if (cl_done) begin ci <= 7'd0; cj <= 7'd0; rs <= R_RESID; end
                 // ---- residual
-                R_RESID: begin
+                R_RESID: begin                           // itx coefficient array cleared this cycle (itx_clr)
                     ci <= 7'd0; cj <= 7'd0;
-                    p_valid <= 1'b0;
+                    p_valid <= 1'b0; sd_valid <= 1'b0; sk <= 11'd0;
                     if (!t.skip && t.eob != 11'd0) rs <= R_DQ;
                     else rs <= R_FIN;
                 end
-                R_DQ: begin                              // q_addr / qm_addr for (ci, cj) presented; the previous lands now
-                    p_valid <= 1'b1; pci <= ci; pcj <= cj;
-                    if (cj + 7'd1 < 7'(tw_c)) cj <= cj + 7'd1;
-                    else if (ci + 7'd1 < 7'(th_c)) begin cj <= 7'd0; ci <= ci + 7'd1; end
-                    else rs <= R_DQ_LAST;
+                R_DQ: begin                              // issue scan index sk; sd_k's position reads Quant; the previous Quant is dequantized
+                    sd_valid <= (sk < t.eob); sd_k <= sk;
+                    if (sk < t.eob) sk <= sk + 11'd1;
+                    p_valid <= sd_valid; pci <= sc_ci; pcj <= sc_cj;
+                    if (sk >= t.eob && !sd_valid) rs <= R_DQ_LAST;
                 end
                 R_DQ_LAST: begin p_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; itx_start <= 1'b1; rs <= R_ITX_W; end
                 R_ITX_W: if (itx_done) begin p_valid <= 1'b0; rs <= R_ADD; end
