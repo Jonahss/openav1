@@ -22,7 +22,8 @@ package syn_pkg;
         logic [7:0]  base_q_idx;
         logic [1:0]  tx_mode;                  // 0 ONLY_4X4, 1 LARGEST, 2 SELECT
         logic        reduced_tx_set;
-        logic        allow_sct;                // allow_screen_content_tools (palette: not yet supported)
+        logic        allow_sct;                // allow_screen_content_tools
+        logic        allow_intrabc;            // use_intrabc is read per block (intrabc itself: unsupported flag)
         logic        enable_filter_intra;
         logic        enable_cdef;
         logic [1:0]  cdef_bits;

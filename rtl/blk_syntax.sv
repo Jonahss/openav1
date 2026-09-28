@@ -101,7 +101,7 @@ module blk_syntax
         S_TXD, S_TXD_GO, S_TXD_W, S_RBC,
         S_RES_PLANE, S_RES_TX, S_TX_CTX_W, S_TX_A, S_TX_A_W, S_TXTYPE, S_TXTYPE_W, S_TX_B, S_TX_B_W, S_TX_UPD, S_TX_EMIT,
         S_RES_NEXT, S_END, S_END_W, S_DONE,
-        S_PAL, S_PAL_W, S_PTOK, S_PTOK_W, S_HOLD,
+        S_PAL, S_PAL_W, S_PTOK, S_PTOK_W, S_HOLD, S_IBC, S_IBC_GO, S_IBC_W,
         S_LIT, S_LIT_W
     } st_t;
     st_t st, lit_ret;
@@ -263,6 +263,7 @@ module blk_syntax
             S_SEG_A, S_SEG_B_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SEGMENT_ID + int'(seg_ctx)); sq_n = 4'd7; end
             S_SKIP_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SKIP + ((avail_u && a_skip) ? 1 : 0) + ((avail_l && l_skip) ? 1 : 0)); sq_n = 4'd1; end
             S_DQ_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_DELTA_Q); sq_n = 4'd3; end
+            S_IBC_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTRABC); sq_n = 4'd1; end
             S_DLF_GO: begin sq_go = 1'b1; sq_addr = hdr.delta_lf_multi ? CDF_AW'(CDF_DELTA_LF_MULTI + int'(dlf_i)) : CDF_AW'(CDF_DELTA_LF); sq_n = 4'd3; end
             S_YMODE: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTRA_FRAME_Y_MODE + int'(intra_mode_ctx(avail_u ? a_ymode : DC_PRED)) * CDF_INTRA_FRAME_Y_MODE_S0
                                                           + int'(intra_mode_ctx(avail_l ? l_ymode : DC_PRED))); sq_n = 4'd12; end
@@ -384,7 +385,7 @@ module blk_syntax
                 end
                 // ---- cdef idx
                 S_CDEF: begin
-                    if (skip || hdr.coded_lossless || !hdr.enable_cdef || cdef_flags[cdef_unit]) st <= S_DQ;
+                    if (skip || hdr.coded_lossless || !hdr.enable_cdef || hdr.allow_intrabc || cdef_flags[cdef_unit]) st <= S_DQ;
                     else begin
                         lit_n <= 4'(hdr.cdef_bits); lit_val <= '0; lit_ret <= S_CDEF_W; st <= S_LIT;
                     end
@@ -438,7 +439,7 @@ module blk_syntax
                 S_DLF: begin
                     dlf_i <= 2'd0;
                     dlf_cnt <= hdr.delta_lf_multi ? (hdr.mono ? 2'd1 : 2'd3) : 2'd0;     // count-1
-                    if ((bs == sb_bs && skip) || !read_deltas || !hdr.delta_lf_present) st <= S_YMODE;
+                    if ((bs == sb_bs && skip) || !read_deltas || !hdr.delta_lf_present) st <= S_IBC;
                     else st <= S_DLF_GO;
                 end
                 S_DLF_GO: begin st <= S_DLF_W;
@@ -466,9 +467,13 @@ module blk_syntax
                     st <= S_DLF_NEXT;
                 end
                 S_DLF_NEXT: begin
-                    if (dlf_i == dlf_cnt) st <= S_YMODE;
+                    if (dlf_i == dlf_cnt) st <= S_IBC;
                     else begin dlf_i <= dlf_i + 2'd1; st <= S_DLF_GO; end
                 end
+                // ---- use_intrabc (only when allow_intrabc; a set flag means an intrabc block, which is not implemented)
+                S_IBC: st <= hdr.allow_intrabc ? S_IBC_GO : S_YMODE;
+                S_IBC_GO: st <= S_IBC_W;
+                S_IBC_W: if (sq_done) begin if (sq_sym[0]) unsupported <= 1'b1; st <= S_YMODE; end
                 // ---- modes  (ReadDeltas cleared here: after delta syntax, before anything else)
                 S_YMODE: begin read_deltas <= 1'b0; st <= S_YMODE_W; end
                 S_YMODE_W: if (sq_done) begin ymode <= sq_sym; st <= S_ANGY; end

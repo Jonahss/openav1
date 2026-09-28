@@ -31,7 +31,7 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
     ("mi_rows", 11), ("mi_cols", 11), ("mi_row_start", 11), ("mi_row_end", 11), ("mi_col_start", 11), ("mi_col_end", 11),
     ("ssx", 1), ("ssy", 1), ("mono", 1), ("sb128", 1), ("bit_depth", 4), ("seg_enabled", 1), ("seg_preskip", 1),
     ("last_active_segid", 3), ("seg_skip_en", 8), ("lossless", 8), ("seg_qidx", 64), ("base_q_idx", 8), ("tx_mode", 2),
-    ("reduced_tx_set", 1), ("allow_sct", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
+    ("reduced_tx_set", 1), ("allow_sct", 1), ("allow_intrabc", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
     ("coded_lossless", 1), ("delta_q_present", 1), ("delta_q_res", 2), ("delta_lf_present", 1), ("delta_lf_res", 2),
     ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", 13), ("upscaled_width", 13)]
 BLK_FIELDS = [
@@ -151,7 +151,7 @@ def hdr_vals(th, dec):
              lossless=sum((th.LosslessArray[s] & 1) << s for s in range(8)),
              seg_qidx=sum((dec.get_qindex(1, s) & 0xFF) << (8 * s) for s in range(8)),
              base_q_idx=th.base_q_idx, tx_mode=th.TxMode, reduced_tx_set=th.reduced_tx_set,
-             allow_sct=th.allow_screen_content_tools, enable_filter_intra=th.enable_filter_intra, enable_cdef=th.enable_cdef,
+             allow_sct=th.allow_screen_content_tools, allow_intrabc=th.allow_intrabc, enable_filter_intra=th.enable_filter_intra, enable_cdef=th.enable_cdef,
              cdef_bits=th.cdef_bits, coded_lossless=th.CodedLossless, delta_q_present=th.delta_q_present,
              delta_q_res=th.delta_q_res, delta_lf_present=th.delta_lf_present, delta_lf_res=th.delta_lf_res,
              delta_lf_multi=th.delta_lf_multi, disable_cdf_update=th.disable_cdf_update,
