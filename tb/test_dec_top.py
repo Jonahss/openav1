@@ -84,6 +84,20 @@ async def run_tile(dut, th, dec, data, tag, stats, debug):
     cycles = 0
     idle = 0
     blocks = txb = 0
+    if os.environ.get("TS_NOMODEL"):
+        # coarse wait: the records are not compared, so poll the held tile_done every 128 cycles
+        while True:
+            await ClockCycles(dut.clk, 128)
+            cycles += 128
+            await ReadOnly()
+            if int(dut.tile_done_lvl.value):
+                break
+            assert not int(dut.unsupported.value), f"{tag}: RTL flagged unsupported syntax"
+            assert cycles < 400_000_000, f"{tag}: tile did not finish"
+        await Timer(1, "ns")
+        stats["tiles"] += 1
+        stats["cycles"] += cycles
+        return
     while True:
         await RisingEdge(dut.clk)
         await ReadOnly()
@@ -128,13 +142,27 @@ async def run_tile(dut, th, dec, data, tag, stats, debug):
         dut._log.info(f"{tag}: tile done, {blocks} blocks, {txb} tx blocks, {cycles} cycles")
 
 
-async def pulse_and_wait(dut, start_sig, done_sig, tag, limit=60_000_000):
+async def pulse_and_wait(dut, start_sig, done_sig, tag, limit=60_000_000, busy_sig=None):
+    """Pulse start, wait for the stage. With busy_sig, poll the busy level every 256 cycles instead of every
+    clock (the per-cycle Python await is the bottleneck of frame-level stages)."""
     await Timer(1, "ns")
     start_sig.value = 1
     await RisingEdge(dut.clk)
     await Timer(1, "ns")
     start_sig.value = 0
     cycles = 0
+    if busy_sig is not None:
+        await ClockCycles(dut.clk, 2)
+        cycles = 2
+        while True:
+            await ReadOnly()
+            if not int(busy_sig.value):
+                break
+            await ClockCycles(dut.clk, 256)
+            cycles += 256
+            assert cycles < limit, f"{tag}: stage did not finish"
+        await Timer(1, "ns")
+        return cycles
     while True:
         await RisingEdge(dut.clk)
         await ReadOnly()
@@ -185,8 +213,9 @@ def dump_yuv(path, hdr, get_pixel):
                 fh.write(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
 
 
-def ref_frame(path, hdr, fi):
-    """Frame fi of a dav1d raw-yuv output (planar, visible size, 8-bit bytes or 16-bit LE) as plane arrays."""
+def ref_frame(path, hdr, fi, offset=None):
+    """Frame fi of a dav1d raw-yuv output (planar, visible size, 8-bit bytes or 16-bit LE) as plane arrays.
+    offset: byte offset of this frame (frames may differ in size); defaults to fi * this frame's size."""
     import struct
     sizes = []
     for plane in range(hdr.NumPlanes):
@@ -196,7 +225,7 @@ def ref_frame(path, hdr, fi):
     bps = 1 if hdr.BitDepth == 8 else 2
     frame_bytes = sum(w * h for w, h in sizes) * bps
     with open(path, "rb") as fh:
-        fh.seek(frame_bytes * fi)
+        fh.seek(frame_bytes * fi if offset is None else offset)
         data = fh.read(frame_bytes)
     assert len(data) == frame_bytes, f"{path}: frame {fi} missing (file too short)"
     planes = []
@@ -233,6 +262,7 @@ async def rtl_only(dut, ivfs, stats):
                     break
             assert md5_ref, f"{path}: no reference yuv ({ref_path}) and no md5 file"
             md5 = hashlib.md5()
+        ref_offset = 0                                     # running byte offset into the reference yuv (frame sizes vary)
         for fi, tile_idx in enumerate(d.frames):
             hdr0 = None
             for ti in tile_idx:
@@ -248,19 +278,20 @@ async def rtl_only(dut, ivfs, stats):
             # in-loop filters, driven by the frame header alone
             buf = 0
             dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
-            stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)
+            stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag, busy_sig=dut.lf_busy)
             if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
                 dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
-                stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
+                stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag, busy_sig=dut.cdef_busy)
                 buf = 1
             if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
                 dut.lr_from_deblocked.value = 0 if buf == 1 else 1
-                stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000)
+                stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000, busy_sig=dut.lr_busy)
                 buf = 2
             dut.h_buf.value = buf
             await Timer(1, "ns")
             if md5_ref is None:
-                ref, sizes = ref_frame(ref_path, hdr, fi)
+                ref, sizes = ref_frame(ref_path, hdr, fi, ref_offset)
+                ref_offset += sum(w * h for w, h in sizes) * (1 if hdr.BitDepth == 8 else 2)
             else:
                 ref = None
                 sizes = [(((hdr.FrameWidth + (hdr.subsampling_x if p_ else 0)) >> (hdr.subsampling_x if p_ else 0)),

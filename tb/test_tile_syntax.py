@@ -280,11 +280,26 @@ async def tile_vs_model(dut):
             m = mnorm[i] if i < len(mnorm) else None
             r = rnorm[i] if i < len(rnorm) else None
             dut._log.info(f"  {i:5d} {'!!' if (m is None or r is None or m[:4] != r[:4]) else '  '} model {m}  rtl {r}")
-    for seed in seeds:
-        fmt = os.environ.get("TS_FMT") or random.Random(seed * 7).choice(["420", "444", "mono", "422"])
-        d, args = gen(seed, W, H, fmt)
+    # real streams (TS_IVF=a.ivf,b.obu): every tile of every frame, records compared like the generated ones
+    ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
+    jobs = []
+    if ivfs:
+        for path in ivfs:
+            d = op.Decoder()
+            raw = open(path, "rb").read()
+            if path.endswith(".obu"):
+                d.feed_annexb(raw)
+            else:
+                d.feed_ivf(raw)
+            jobs.append((os.path.basename(path), d, dict(bd=d.tiles[0][0].BitDepth)))
+    else:
+        for seed in seeds:
+            fmt = os.environ.get("TS_FMT") or random.Random(seed * 7).choice(["420", "444", "mono", "422"])
+            d, args = gen(seed, W, H, fmt)
+            jobs.append((f"seed {seed} {fmt}", d, args))
+    for label, d, args in jobs:
         for ti, (th, data) in enumerate(d.tiles):
-            tag0 = f"seed {seed} {fmt} bd{args['bd']} tile {ti} ({th.MiColStart},{th.MiRowStart})"
+            tag0 = f"{label} bd{args['bd']} tile {ti} ({th.MiColStart},{th.MiRowStart})"
             dec = RecDecoder(th, data)
             dec.decode_tile()
             hv = hdr_vals(th, dec)
