@@ -437,7 +437,11 @@ async def dec_vs_model(dut):
         import obu_parser as op
         for path in ivfs:
             d = op.Decoder()
-            d.feed_ivf(open(path, "rb").read())
+            raw = open(path, "rb").read()
+            if path.endswith(".obu"):
+                d.feed_annexb(raw)
+            else:
+                d.feed_ivf(raw)
             for fi, tile_idx in enumerate(d.frames):
                 frame = {}
                 events = []
