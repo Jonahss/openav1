@@ -327,7 +327,8 @@ async def tile_vs_model(dut):
     if ivfs:
         for path in ivfs:
             d = op.Decoder()
-            raw = open(path, "rb").read()
+            with open(path, "rb") as fh:
+                raw = fh.read()
             if path.endswith(".obu"):
                 d.feed_annexb(raw)
             else:

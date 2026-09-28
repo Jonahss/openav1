@@ -287,7 +287,8 @@ async def rtl_only_stream(dut, path, stats):
     ref_dir = os.environ.get("TS_REF_DIR", str(HERE.parent / "refout"))
     if True:
         d = op.Decoder()
-        raw = open(path, "rb").read()
+        with open(path, "rb") as fh:
+            raw = fh.read()
         if path.endswith(".obu"):
             d.feed_annexb(raw)                 # Argon conformance streams (Annex B)
         else:
@@ -459,7 +460,8 @@ async def dec_vs_model(dut):
         import obu_parser as op
         for path in ivfs:
             d = op.Decoder()
-            raw = open(path, "rb").read()
+            with open(path, "rb") as fh:
+                raw = fh.read()
             if path.endswith(".obu"):
                 d.feed_annexb(raw)
             else:
