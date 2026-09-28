@@ -6,12 +6,15 @@
 //
 // Palette blocks are held after their record (pal_hold) until blk_ack, so the colour index map can be read
 // through pm_* (pm_plane/pm_x/pm_y -> pm_idx, 1-cycle latency) before the next block overwrites it.
-// Not yet supported (flagged on `unsupported`): intrabc, inter frames.
+// Intra block copy is decoded (mv_mem holds the frame's motion info for the MV stacks). Inter frames: not yet.
 module tile_syntax
   import cdf_map_pkg::*;
   import blk_tables_pkg::*;
   import syn_pkg::*;
-(
+#(
+    parameter int ML2R = 9,                  // log2 of the motion-info memory rows / columns (4x4 units)
+    parameter int ML2C = 10
+) (
     input  logic              clk,
     input  logic              rst,
     input  hdr_t              hdr,
@@ -135,9 +138,9 @@ module tile_syntax
                    .clear_above, .clear_left, .sbrow_end,
                    .blk_req(nb_req), .blk_r(nb_r), .blk_c(nb_c), .blk_bsize(nb_bs), .nb_valid,
                    .avail_u, .avail_l, .has_chroma, .avail_u_chroma, .avail_l_chroma,
-                   .a_ymode, .l_ymode, .a_skip, .l_skip, .a_misize, .l_misize, .a_txsz, .l_txsz,
+                   .a_ymode, .l_ymode, .a_skip, .l_skip, .a_misize, .l_misize, .a_txsz, .l_txsz, .a_is_inter, .l_is_inter, .a_recs, .l_recs,
                    .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .seg_ul, .seg_u, .seg_l, .a_col_y, .l_col_y, .a_col_u, .l_col_u,
-                   .blk_we(ctx_we), .w_ymode, .w_skip, .w_seg, .w_txsz, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u, .wbusy(ctx_wbusy),
+                   .blk_we(ctx_we), .w_ymode, .w_skip, .w_seg, .w_txsz, .w_is_inter, .w_vartx, .w_txsz_col, .w_txsz_row, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u, .wbusy(ctx_wbusy),
                    .tx_req, .tx_plane, .tx_x4, .tx_y4, .tx_sz, .tx_bsize, .tx_valid, .az_ctx, .dcs_ctx,
                    .tx_we, .w_cul, .w_dccat, .rbc_we);
     assign ctx_tbusy = 1'b0;   // blk_ctx's tx path is single-request; blk_syntax serialises its own use
@@ -145,15 +148,22 @@ module tile_syntax
     // ------------------------------------------------------------------ blk_syntax
     logic b_start, b_busy, b_unsup, sb_start;
     logic bq_go; logic [CDF_AW-1:0] bq_addr; logic [3:0] bq_n; logic [1:0] bq_kind;
+    // motion info of the frame (intra block copy)
+    logic mvm_we, mvm_busy; logic [10:0] mvm_r, mvm_c, mvr_row, mvr_col; logic [5:0] mvm_bw4, mvm_bh4; mv_ent_t mvm_data, mvr_ent;
+    mv_mem #(.ML2R(ML2R), .ML2C(ML2C)) u_mvm (.clk, .rst, .we(mvm_we), .w_r(mvm_r), .w_c(mvm_c), .w_bw4(mvm_bw4), .w_bh4(mvm_bh4),
+                                              .w_data(mvm_data), .busy(mvm_busy), .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent));
+    logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     blk_syntax u_blk (.clk, .rst, .hdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
                       .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec, .tx_ack, .blk_ack, .pal_hold,
                       .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u,
                       .pm_plane, .pm_x, .pm_y, .pm_idx,
                       .sq_go(bq_go), .sq_addr(bq_addr), .sq_n(bq_n), .sq_kind(bq_kind), .sq_done(k_done), .sq_sym(k_sym),
                       .nb_req(nb_req_b), .nb_valid, .avail_u, .avail_l, .has_chroma, .a_ymode, .l_ymode, .a_skip, .l_skip, .a_txsz, .l_txsz,
-                      .seg_ul, .seg_u, .seg_l, .ctx_we, .w_ymode, .w_skip, .w_seg, .w_txsz, .ctx_wbusy,
+                      .a_misize, .l_misize, .a_is_inter, .l_is_inter, .a_recs, .l_recs,
+                      .seg_ul, .seg_u, .seg_l, .ctx_we, .w_ymode, .w_skip, .w_seg, .w_txsz, .w_is_inter, .w_vartx, .w_txsz_col, .w_txsz_row, .ctx_wbusy,
                       .tx_req, .tx_plane, .tx_x4, .tx_y4, .tx_sz_o(tx_sz), .tx_bsize, .tx_valid, .az_ctx, .dcs_ctx, .tx_we, .w_cul, .w_dccat, .rbc_we, .ctx_tbusy,
-                      .cf_tx, .cf_ptype, .cf_start_a, .cf_az_ctx, .cf_done_a, .cf_all_zero, .cf_start_b, .cf_tx_type, .cf_dcs_ctx, .cf_done_b, .cf_eob, .cf_cul, .cf_dccat);
+                      .cf_tx, .cf_ptype, .cf_start_a, .cf_az_ctx, .cf_done_a, .cf_all_zero, .cf_start_b, .cf_tx_type, .cf_dcs_ctx, .cf_done_b, .cf_eob, .cf_cul, .cf_dccat,
+                      .mvm_we, .mvm_r, .mvm_c, .mvm_bw4, .mvm_bh4, .mvm_data, .mvm_busy, .mvr_row, .mvr_col, .mvr_ent);
 
     // ------------------------------------------------------------------ partition / superblock FSM
     typedef struct packed {

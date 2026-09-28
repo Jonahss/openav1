@@ -24,7 +24,10 @@ INTRA_TABLES = COEF_TABLES + [
     "Palette_Y_Mode", "Palette_Y_Size", "Palette_Uv_Mode", "Palette_Uv_Size"] + \
     ["Palette_Size_%d_%s_Color" % (n, p) for n in range(2, 9) for p in ("Y", "Uv")] + [
     "Filter_Intra", "Filter_Intra_Mode", "Tx_8x8", "Tx_16x16", "Tx_32x32", "Tx_64x64",
-    "Intra_Tx_Type_Set1", "Intra_Tx_Type_Set2", "Use_Wiener", "Use_Sgrproj", "Restoration_Type"]
+    "Intra_Tx_Type_Set1", "Intra_Tx_Type_Set2", "Use_Wiener", "Use_Sgrproj", "Restoration_Type",
+    # intra block copy (inter-style syntax inside intra frames): var-tx split, inter tx types, MV coding
+    "Txfm_Split", "Inter_Tx_Type_Set1", "Inter_Tx_Type_Set2", "Inter_Tx_Type_Set3",
+    "Mv_Joint", "Mv_Class", "Mv_Class0_Bit", "Mv_Class0_Fr", "Mv_Class0_Hp", "Mv_Sign", "Mv_Bit", "Mv_Fr", "Mv_Hp"]
 
 
 def _shape(v):

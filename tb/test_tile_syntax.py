@@ -33,12 +33,14 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
     ("last_active_segid", 3), ("seg_skip_en", 8), ("lossless", 8), ("seg_qidx", 64), ("base_q_idx", 8), ("tx_mode", 2),
     ("reduced_tx_set", 1), ("allow_sct", 1), ("allow_intrabc", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
     ("coded_lossless", 1), ("delta_q_present", 1), ("delta_q_res", 2), ("delta_lf_present", 1), ("delta_lf_res", 2),
-    ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", 13), ("upscaled_width", 13)]
+    ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", 13), ("upscaled_width", 13),
+    ("frame_parity", 1)]
 BLK_FIELDS = [
     ("r", 11), ("c", 11), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
     ("delta_lf", 28), ("cdef_valid", 1), ("cdef_idx", 3), ("cdef_units", 4),
-    ("pal_y", 4), ("pal_uv", 4), ("col_y", 96), ("col_u", 96), ("col_v", 96)]
+    ("pal_y", 4), ("pal_uv", 4), ("col_y", 96), ("col_u", 96), ("col_v", 96),
+    ("is_inter", 1), ("mv_row", 18), ("mv_col", 18)]
 TX_FIELDS = [("plane", 2), ("x", 13), ("y", 13), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1)]
 LR_FIELDS = [("plane", 2), ("unit_row", 8), ("unit_col", 8), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
@@ -143,7 +145,7 @@ class RecDecoder(tm.TileDecoder):
         b["os"] = (min(T.Block_Width[subSize], (h.MiCols - c) * 4), min(T.Block_Height[subSize], (h.MiRows - r) * 4))
 
 
-def hdr_vals(th, dec):
+def hdr_vals(th, dec, frame_parity=0):
     v = dict(mi_rows=th.MiRows, mi_cols=th.MiCols, mi_row_start=th.MiRowStart, mi_row_end=th.MiRowEnd,
              mi_col_start=th.MiColStart, mi_col_end=th.MiColEnd, ssx=th.subsampling_x, ssy=th.subsampling_y,
              mono=1 if th.NumPlanes == 1 else 0, sb128=th.use_128x128_superblock, bit_depth=th.BitDepth,
@@ -158,7 +160,7 @@ def hdr_vals(th, dec):
              delta_lf_multi=th.delta_lf_multi, disable_cdf_update=th.disable_cdf_update,
              lr_type=sum(th.FrameRestorationType[p] << (2 * p) for p in range(3)),
              lr_size=sum((th.LoopRestorationSize[p].bit_length() - 1 - 6) << (2 * p) for p in range(3)),
-             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth)
+             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth, frame_parity=frame_parity & 1)
     return v
 
 
@@ -332,7 +334,10 @@ async def tile_vs_model(dut):
             if path.endswith(".obu"):
                 d.feed_annexb(raw)
             else:
-                d.feed_ivf(raw)
+                if path.endswith(".obu"):
+                    d.feed_annexb(raw)
+                else:
+                    d.feed_ivf(raw)
             jobs.append((os.path.basename(path), d, dict(bd=d.tiles[0][0].BitDepth)))
     else:
         for seed in seeds:
@@ -340,11 +345,12 @@ async def tile_vs_model(dut):
             d, args = gen(seed, W, H, fmt)
             jobs.append((f"seed {seed} {fmt}", d, args))
     for label, d, args in jobs:
+        frame_of = {ti: fi for fi, tl in enumerate(getattr(d, "frames", [])) for ti in tl}
         for ti, (th, data) in enumerate(d.tiles):
             tag0 = f"{label} bd{args['bd']} tile {ti} ({th.MiColStart},{th.MiRowStart})"
             dec = RecDecoder(th, data)
             dec.decode_tile()
-            hv = hdr_vals(th, dec)
+            hv = hdr_vals(th, dec, frame_of.get(ti, ti))
             dut.hdr.value = pack(HDR_FIELDS, hv)
             # defaults for base_q_idx
             for i, row in enumerate(M.default_rows(th.base_q_idx)):
@@ -440,12 +446,14 @@ async def collect(dut, dec, tag0, stats):
                                has_chroma=m["has_chroma"], ymode=m["ymode"], uvmode=m["uvmode"], angle_y=m["angle"][0],
                                angle_uv=m["angle"][1], cfl_u=m["cfl"][0], cfl_v=m["cfl"][1], use_fi=m["fi"], fi_mode=m["fim"] if m["fi"] else 0,
                                txsz=m["tx"], qidx=m["qidx"], dlf=m["dlf"],
-                               pal_y=m["pal"][0], pal_uv=m["pal"][1], col_y=m["col_y"], col_u=m["col_u"], col_v=m["col_v"])
+                               pal_y=m["pal"][0], pal_uv=m["pal"][1], col_y=m["col_y"], col_u=m["col_u"], col_v=m["col_v"],
+                               is_inter=m.get("intrabc", 0), mv_row=(m["mv"][0] if m.get("mv") else 0), mv_col=(m["mv"][1] if m.get("mv") else 0))
 
                     def cols(v, n):
                         return [(v >> (12 * k)) & 0xFFF for k in range(n)]
                     gsigned = dict(got, angle_y=to_signed(got["angle_y"], 3), angle_uv=to_signed(got["angle_uv"], 3),
                                    cfl_u=to_signed(got["cfl_u"], 6), cfl_v=to_signed(got["cfl_v"], 6),
+                                   mv_row=to_signed(got["mv_row"], 18), mv_col=to_signed(got["mv_col"], 18),
                                    dlf=[to_signed((got["delta_lf"] >> (7 * i)) & 0x7F, 7) for i in range(4)],
                                    col_y=cols(got["col_y"], m["pal"][0]), col_u=cols(got["col_u"], m["pal"][1]), col_v=cols(got["col_v"], m["pal"][1]))
                     bad = {k: (gsigned[k], exp[k]) for k in exp if gsigned[k] != exp[k]}

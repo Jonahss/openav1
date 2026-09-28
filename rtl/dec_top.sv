@@ -57,7 +57,7 @@ module dec_top
 );
     logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane; logic [10:0] sb_r, sb_c;
     logic [9:0] q_addr; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
-    tile_syntax u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
+    tile_syntax #(.ML2R(FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported,
                       .sb_start_o(sb_start), .sb_r_o(sb_r), .sb_c_o(sb_c), .blk_info, .blk_done, .blk_rec,
                       .tx_done, .tx_rec, .tx_ack, .lr_done, .lr_rec, .q_addr, .q_data,

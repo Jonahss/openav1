@@ -23,7 +23,7 @@ package syn_pkg;
         logic [1:0]  tx_mode;                  // 0 ONLY_4X4, 1 LARGEST, 2 SELECT
         logic        reduced_tx_set;
         logic        allow_sct;                // allow_screen_content_tools
-        logic        allow_intrabc;            // use_intrabc is read per block (intrabc itself: unsupported flag)
+        logic        allow_intrabc;            // use_intrabc is read per block
         logic        enable_filter_intra;
         logic        enable_cdef;
         logic [1:0]  cdef_bits;
@@ -38,6 +38,7 @@ package syn_pkg;
         logic [5:0]  lr_size;                  // log2(LoopRestorationSize[p]) - 6 at [2p+1:2p]
         logic [12:0] frame_height;
         logic [12:0] upscaled_width;
+        logic        frame_parity;             // toggles per frame: mv_mem entries of this frame
     } hdr_t;
 
     // Frame-level parameters only the reconstruction stage needs (software fills this in).
@@ -122,7 +123,20 @@ package syn_pkg;
         logic [95:0] col_y;                    // sorted palette colours, colour k at [12k +: 12]
         logic [95:0] col_u;
         logic [95:0] col_v;                    // (not sorted)
+        logic        is_inter;                 // intra block copy (use_intrabc): predicted from the current frame
+        logic signed [17:0] mv_row;            // Mv[0] in 1/8 luma samples (integer for intrabc)
+        logic signed [17:0] mv_col;
     } blk_rec_t;
+
+    // Per-4x4 motion information of the current frame (spec IsInters / RefFrames / Mvs / MiSizes as the MV
+    // stack needs them): parity = frame parity of the write, so "written this frame" = (parity == current)
+    typedef struct packed {
+        logic        parity;
+        logic        is_intrabc;
+        logic [4:0]  bsize;
+        logic signed [17:0] mv_row;
+        logic signed [17:0] mv_col;
+    } mv_ent_t;
 
     // Per-transform-block record; Quant is read through coef_rd's port while tx_done is held.
     typedef struct packed {

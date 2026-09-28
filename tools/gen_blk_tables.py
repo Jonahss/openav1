@@ -37,6 +37,9 @@ fn1("mode_to_txfm", 4, T.Mode_To_Txfm, 4, "Mode_To_Txfm[mode] (intra modes incl.
 fn1("tx_type_intra_inv_set1", 4, T.Tx_Type_Intra_Inv_Set1, 3, "Tx_Type_Intra_Inv_Set1[v]")
 fn1("tx_type_intra_inv_set2", 4, T.Tx_Type_Intra_Inv_Set2, 3, "Tx_Type_Intra_Inv_Set2[v]")
 fn1("filter_intra_mode_to_intra_dir", 4, T.Filter_Intra_Mode_To_Intra_Dir, 3, "Filter_Intra_Mode_To_Intra_Dir[m]")
+fn1("tx_type_inter_inv_set1", 4, T.Tx_Type_Inter_Inv_Set1, 4, "Tx_Type_Inter_Inv_Set1[v]")
+fn1("tx_type_inter_inv_set2", 4, T.Tx_Type_Inter_Inv_Set2, 4, "Tx_Type_Inter_Inv_Set2[v]")
+fn1("tx_type_inter_inv_set3", 4, T.Tx_Type_Inter_Inv_Set3, 1, "Tx_Type_Inter_Inv_Set3[v]")
 fn1("sb_size_bsize", 5, [T.ENUM["BLOCK_64X64"], T.ENUM["BLOCK_128X128"]], 1, "superblock block size by use_128x128")
 
 # 2D: Partition_Subsize[partition][bsize]
@@ -59,6 +62,14 @@ out.append("      default: subsampled_size = 5'd22;")
 out.append("    endcase")
 out.append("  endfunction")
 # Tx_Type_In_Set_Intra[set][type]
+out.append("  function automatic logic tx_type_in_set_inter(input logic [1:0] s, input logic [3:0] t);  // Tx_Type_In_Set_Inter[s][t]")
+out.append("    case ({s, t})")
+for s_ in range(4):
+    for t in range(16):
+        out.append(f"      {{2'd{s_}, 4'd{t}}}: tx_type_in_set_inter = 1'b{T.Tx_Type_In_Set_Inter[s_][t]};")
+out.append("      default: tx_type_in_set_inter = 1'b0;")
+out.append("    endcase")
+out.append("  endfunction")
 out.append("  function automatic logic tx_type_in_set_intra(input logic [1:0] s, input logic [3:0] t);  // Tx_Type_In_Set_Intra[s][t]")
 out.append("    case ({s, t})")
 for s in range(3):

@@ -357,6 +357,51 @@ package blk_tables_pkg;
       default: filter_intra_mode_to_intra_dir = 4'd0;
     endcase
   endfunction
+  function automatic logic [3:0] tx_type_inter_inv_set1(input logic [3:0] i);  // Tx_Type_Inter_Inv_Set1[v]
+    case (i)
+      4'd0: tx_type_inter_inv_set1 = 4'd9;
+      4'd1: tx_type_inter_inv_set1 = 4'd10;
+      4'd2: tx_type_inter_inv_set1 = 4'd11;
+      4'd3: tx_type_inter_inv_set1 = 4'd12;
+      4'd4: tx_type_inter_inv_set1 = 4'd13;
+      4'd5: tx_type_inter_inv_set1 = 4'd14;
+      4'd6: tx_type_inter_inv_set1 = 4'd15;
+      4'd7: tx_type_inter_inv_set1 = 4'd0;
+      4'd8: tx_type_inter_inv_set1 = 4'd1;
+      4'd9: tx_type_inter_inv_set1 = 4'd2;
+      4'd10: tx_type_inter_inv_set1 = 4'd4;
+      4'd11: tx_type_inter_inv_set1 = 4'd5;
+      4'd12: tx_type_inter_inv_set1 = 4'd3;
+      4'd13: tx_type_inter_inv_set1 = 4'd6;
+      4'd14: tx_type_inter_inv_set1 = 4'd7;
+      4'd15: tx_type_inter_inv_set1 = 4'd8;
+      default: tx_type_inter_inv_set1 = 4'd0;
+    endcase
+  endfunction
+  function automatic logic [3:0] tx_type_inter_inv_set2(input logic [3:0] i);  // Tx_Type_Inter_Inv_Set2[v]
+    case (i)
+      4'd0: tx_type_inter_inv_set2 = 4'd9;
+      4'd1: tx_type_inter_inv_set2 = 4'd10;
+      4'd2: tx_type_inter_inv_set2 = 4'd11;
+      4'd3: tx_type_inter_inv_set2 = 4'd0;
+      4'd4: tx_type_inter_inv_set2 = 4'd1;
+      4'd5: tx_type_inter_inv_set2 = 4'd2;
+      4'd6: tx_type_inter_inv_set2 = 4'd4;
+      4'd7: tx_type_inter_inv_set2 = 4'd5;
+      4'd8: tx_type_inter_inv_set2 = 4'd3;
+      4'd9: tx_type_inter_inv_set2 = 4'd6;
+      4'd10: tx_type_inter_inv_set2 = 4'd7;
+      4'd11: tx_type_inter_inv_set2 = 4'd8;
+      default: tx_type_inter_inv_set2 = 4'd0;
+    endcase
+  endfunction
+  function automatic logic [3:0] tx_type_inter_inv_set3(input logic [0:0] i);  // Tx_Type_Inter_Inv_Set3[v]
+    case (i)
+      1'd0: tx_type_inter_inv_set3 = 4'd9;
+      1'd1: tx_type_inter_inv_set3 = 4'd0;
+      default: tx_type_inter_inv_set3 = 4'd0;
+    endcase
+  endfunction
   function automatic logic [4:0] sb_size_bsize(input logic [0:0] i);  // superblock block size by use_128x128
     case (i)
       1'd0: sb_size_bsize = 5'd12;
@@ -680,6 +725,75 @@ package blk_tables_pkg;
       {5'd21, 1'b1, 1'b0}: subsampled_size = 5'd8;
       {5'd21, 1'b1, 1'b1}: subsampled_size = 5'd19;
       default: subsampled_size = 5'd22;
+    endcase
+  endfunction
+  function automatic logic tx_type_in_set_inter(input logic [1:0] s, input logic [3:0] t);  // Tx_Type_In_Set_Inter[s][t]
+    case ({s, t})
+      {2'd0, 4'd0}: tx_type_in_set_inter = 1'b1;
+      {2'd0, 4'd1}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd2}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd3}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd4}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd5}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd6}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd7}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd8}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd9}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd10}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd11}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd12}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd13}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd14}: tx_type_in_set_inter = 1'b0;
+      {2'd0, 4'd15}: tx_type_in_set_inter = 1'b0;
+      {2'd1, 4'd0}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd1}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd2}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd3}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd4}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd5}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd6}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd7}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd8}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd9}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd10}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd11}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd12}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd13}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd14}: tx_type_in_set_inter = 1'b1;
+      {2'd1, 4'd15}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd0}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd1}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd2}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd3}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd4}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd5}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd6}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd7}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd8}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd9}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd10}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd11}: tx_type_in_set_inter = 1'b1;
+      {2'd2, 4'd12}: tx_type_in_set_inter = 1'b0;
+      {2'd2, 4'd13}: tx_type_in_set_inter = 1'b0;
+      {2'd2, 4'd14}: tx_type_in_set_inter = 1'b0;
+      {2'd2, 4'd15}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd0}: tx_type_in_set_inter = 1'b1;
+      {2'd3, 4'd1}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd2}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd3}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd4}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd5}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd6}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd7}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd8}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd9}: tx_type_in_set_inter = 1'b1;
+      {2'd3, 4'd10}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd11}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd12}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd13}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd14}: tx_type_in_set_inter = 1'b0;
+      {2'd3, 4'd15}: tx_type_in_set_inter = 1'b0;
+      default: tx_type_in_set_inter = 1'b0;
     endcase
   endfunction
   function automatic logic tx_type_in_set_intra(input logic [1:0] s, input logic [3:0] t);  // Tx_Type_In_Set_Intra[s][t]

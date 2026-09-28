@@ -123,8 +123,50 @@ module recon_top
             if (6'(k) >= 6'(start) && 6'(k) < 6'(start) + n) mm_merge[8 * k +: 8] = e;
     endfunction
 
-    typedef enum logic [3:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W} bst_t;
+    typedef enum logic [3:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
+                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR} bst_t;
     bst_t bst;
+    // ---- intra block copy (7.11.3 with refIdx = -1): the block is predicted whole from the pre-filter current
+    // frame before its transform blocks add residuals. someUseIntra is always 1 for an intrabc block (its own
+    // RefFrames[0] is INTRA_FRAME), so each plane is one prediction of the plane residual size with this
+    // block's vector. Luma vectors are whole samples; chroma may be half-sample -> bilinear (Subpel_Filters
+    // BILINEAR: taps 64/64) through the spec's rounding chain (InterRound0 / InterRound1).
+    logic [1:0]  ib_pl;
+    logic        ibc_sx, ibc_sy;
+    logic [7:0]  ib_w, ib_h, ib_i, ib_j;
+    logic [12:0] ib_bx, ib_by, ib_lastx, ib_lasty;
+    logic [3:0]  ib_fx, ib_fy;
+    logic signed [14:0] ib_x0, ib_y0;
+    logic [11:0] ib_s0, ib_s1, ib_s2;
+    logic [4:0]  ib_r0, ib_r1;
+    assign ibc_sx = (ib_pl != 2'd0) && hdr.ssx;
+    assign ibc_sy = (ib_pl != 2'd0) && hdr.ssy;
+    assign ib_r0 = (hdr.bit_depth == 4'd12) ? 5'd5 : 5'd3;
+    assign ib_r1 = (hdr.bit_depth == 4'd12) ? 5'd9 : 5'd11;
+    function automatic logic [12:0] ib_clip(input logic signed [14:0] v, input logic [12:0] last);
+        if (v < 15'sd0) ib_clip = 13'd0;
+        else if (v > 15'(signed'({2'b0, last}))) ib_clip = last;
+        else ib_clip = 13'(v);
+    endfunction
+    logic [12:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;          // clamped source coordinates of the 2x2 neighbourhood
+    assign ib_rx0 = ib_clip(ib_x0 + 15'(signed'({7'b0, ib_j})), ib_lastx);
+    assign ib_rx1 = ib_clip(ib_x0 + 15'(signed'({7'b0, ib_j})) + 15'sd1, ib_lastx);
+    assign ib_ry0 = ib_clip(ib_y0 + 15'(signed'({7'b0, ib_i})), ib_lasty);
+    assign ib_ry1 = ib_clip(ib_y0 + 15'(signed'({7'b0, ib_i})) + 15'sd1, ib_lasty);
+    logic [11:0] ib_out;
+    always_comb begin
+        logic [19:0] a0, a1;
+        logic [16:0] h0, h1;
+        logic [24:0] v;
+        logic [13:0] o;
+        a0 = ib_fx[3] ? 20'd64 * 20'(ib_s0) + 20'd64 * 20'(ib_s1) : 20'd128 * 20'(ib_s0);
+        a1 = ib_fx[3] ? 20'd64 * 20'(ib_s2) + 20'd64 * 20'(fb_rdata) : 20'd128 * 20'(ib_s2);
+        h0 = 17'((a0 + (20'd1 << (ib_r0 - 5'd1))) >> ib_r0);
+        h1 = 17'((a1 + (20'd1 << (ib_r0 - 5'd1))) >> ib_r0);
+        v = ib_fy[3] ? 25'd64 * 25'(h0) + 25'd64 * 25'(h1) : 25'd128 * 25'(h0);
+        o = 14'((v + (25'd1 << (ib_r1 - 5'd1))) >> ib_r1);
+        ib_out = (o > 14'(pix_max)) ? pix_max : 12'(o);
+    end
     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
     logic [5:0]  wr_i;                                     // row counter for the map write
     logic        wr_j;                                     // word half
@@ -194,9 +236,39 @@ module recon_top
                     wr_j <= 1'b1; bst <= B_WR;
                 end else if (wr_i + 6'd1 < bh4) begin
                     wr_j <= 1'b0; wr_i <= wr_i + 6'd1; bst <= B_WR;
+                end else if (b.is_inter) begin
+                    bst <= B_IBC_INIT;
                 end else begin
                     blk_ready <= 1'b1; bst <= B_IDLE;
                 end
+            end
+            // ---- intra block copy prediction, one plane at a time, one output sample per 4-5 cycles
+            B_IBC_INIT: if (rs == R_IDLE) begin ib_pl <= 2'd0; bst <= B_IBC_PL; end
+            B_IBC_PL: begin
+                logic [4:0] psz;
+                logic signed [19:0] mvx2, mvy2;
+                psz = subsampled_size(b.bsize, ibc_sx, ibc_sy);
+                ib_w <= 8'(num4x4w(psz)) << 2; ib_h <= 8'(num4x4h(psz)) << 2;
+                ib_bx <= 13'((13'(b.c) >> ibc_sx) << 2); ib_by <= 13'((13'(b.r) >> ibc_sy) << 2);
+                mvx2 = (20'(b.mv_col) * 20'sd2) >>> ibc_sx;                   // (2 * mv[1]) >> subX
+                mvy2 = (20'(b.mv_row) * 20'sd2) >>> ibc_sy;
+                ib_fx <= mvx2[3:0]; ib_fy <= mvy2[3:0];                       // (p >> 6) & SUBPEL_MASK
+                ib_x0 <= 15'(signed'({2'b0, 13'((13'(b.c) >> ibc_sx) << 2)})) + 15'(mvx2 >>> 4);
+                ib_y0 <= 15'(signed'({2'b0, 13'((13'(b.r) >> ibc_sy) << 2)})) + 15'(mvy2 >>> 4);
+                ib_lastx <= 13'((((13'(hdr.mi_cols) << 2) + 13'(ibc_sx)) >> ibc_sx) - 13'd1);   // RefUpscaledWidth[-1] = MiCols * MI_SIZE
+                ib_lasty <= 13'((((13'(hdr.mi_rows) << 2) + 13'(ibc_sy)) >> ibc_sy) - 13'd1);
+                ib_i <= 8'd0; ib_j <= 8'd0;
+                bst <= B_IBC_R0;
+            end
+            B_IBC_R0: bst <= B_IBC_R1;
+            B_IBC_R1: begin ib_s0 <= fb_rdata; bst <= B_IBC_R2; end
+            B_IBC_R2: begin ib_s1 <= fb_rdata; bst <= B_IBC_R3; end
+            B_IBC_R3: begin ib_s2 <= fb_rdata; bst <= B_IBC_WR; end
+            B_IBC_WR: begin
+                if (ib_j + 8'd1 < ib_w) begin ib_j <= ib_j + 8'd1; bst <= B_IBC_R0; end
+                else if (ib_i + 8'd1 < ib_h) begin ib_j <= 8'd0; ib_i <= ib_i + 8'd1; bst <= B_IBC_R0; end
+                else if (ib_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin ib_pl <= ib_pl + 2'd1; bst <= B_IBC_PL; end
+                else begin blk_ready <= 1'b1; bst <= B_IDLE; end
             end
             default: bst <= B_IDLE;
         endcase
@@ -455,6 +527,15 @@ module recon_top
             R_ADD_B: begin fb_we = 1'b1; fb_x = FBX'(t.x + 13'(add_xx)); fb_y = FBY'(t.y + 13'(add_yy)); fb_wdata = add_out; end
             default: ;
         endcase
+        // intra block copy: the block FSM owns the frame-buffer ports while the transform FSM is idle
+        case (bst)
+            B_IBC_R0: begin fb_re = 1'b1; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry0); end
+            B_IBC_R1: begin fb_re = ib_fx[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry0); end
+            B_IBC_R2: begin fb_re = ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry1); end
+            B_IBC_R3: begin fb_re = ib_fx[3] && ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry1); end
+            B_IBC_WR: begin fb_we = 1'b1; fb_plane = ib_pl; fb_x = FBX'(ib_bx + 13'(ib_j)); fb_y = FBY'(ib_by + 13'(ib_i)); fb_wdata = ib_out; end
+            default: ;
+        endcase
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
     assign mi_tx_plane = t.plane; assign mi_tx_sz = t.txsz;
@@ -498,7 +579,8 @@ module recon_top
                 R_SETUP: begin
                     ci <= 7'd0; cj <= 7'd0; px_valid <= 1'b0; ek <= 9'd0; ep_valid <= 1'b0;
                     n_edges <= 2 * (9'(tw_px) + 9'(th_px));
-                    if (is_pal) rs <= R_PAL;
+                    if (b.is_inter) rs <= R_RESID;                       // predicted whole by the block copy
+                    else if (is_pal) rs <= R_PAL;
                     else rs <= R_EDGE;
                 end
                 // ---- palette prediction: issue map read for (ci, cj), write the previous pixel

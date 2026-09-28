@@ -81,8 +81,8 @@ def start_feed(dut, coro):
     _feed_task[0] = cocotb.start_soon(coro)
     return _feed_task[0]
 
-async def run_tile(dut, th, dec, data, tag, stats, debug):
-    dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec))
+async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0):
+    dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, frame_parity))
     dut.rh.value = TT.pack(REC_FIELDS, rec_vals(th))
     for i, row in enumerate(M.default_rows(th.base_q_idx)):
         dut.def_we.value = 1
@@ -306,7 +306,18 @@ async def rtl_only_stream(dut, path, stats):
                     break
             assert md5_ref, f"{path}: no reference yuv ({ref_path}) and no md5 file"
             md5 = hashlib.md5()
-        ref_offset = 0                                     # running byte offset into the reference yuv (frame sizes vary)
+        # dav1d writes one picture per shown frame: hidden frames appear only when a later show_existing_frame
+        # shows them (7.18 / 7.21), so map decoded frames to output pictures and their byte offsets (sizes vary)
+        shown = d.shown_frames()
+        pic_offset = []
+        off = 0
+        for k in shown:
+            h_k = d.tiles[d.frames[k][0]][0]
+            pic_offset.append(off)
+            off += sum(((h_k.FrameWidth + (h_k.subsampling_x if p_ else 0)) >> (h_k.subsampling_x if p_ else 0)) *
+                       ((h_k.FrameHeight + (h_k.subsampling_y if p_ else 0)) >> (h_k.subsampling_y if p_ else 0))
+                       for p_ in range(h_k.NumPlanes)) * (1 if h_k.BitDepth == 8 else 2)
+        pictures = {}                                      # decoded frame -> read-back planes (md5 mode)
         for fi, tile_idx in enumerate(d.frames):
             hdr0 = None
             for ti in tile_idx:
@@ -315,7 +326,7 @@ async def rtl_only_stream(dut, path, stats):
                 dec.recon_events = []
                 dec.pred_events = []
                 hdr0 = th
-                await run_tile(dut, th, dec, data, f"{Path(path).name} frame {fi} tile ({th.MiColStart},{th.MiRowStart})", stats, False)
+                await run_tile(dut, th, dec, data, f"{Path(path).name} frame {fi} tile ({th.MiColStart},{th.MiRowStart})", stats, False, fi)
                 await ClockCycles(dut.clk, 4)
             hdr = hdr0
             tag = f"{Path(path).name} frame {fi}"
@@ -339,17 +350,19 @@ async def rtl_only_stream(dut, path, stats):
                 buf = 2
             dut.h_buf.value = buf
             await Timer(1, "ns")
-            if md5_ref is None:
-                ref, sizes = ref_frame(ref_path, hdr, fi, ref_offset)
-                ref_offset += sum(w * h for w, h in sizes) * (1 if hdr.BitDepth == 8 else 2)
+            outs = [o for o, k in enumerate(shown) if k == fi]
+            sizes = [(((hdr.FrameWidth + (hdr.subsampling_x if p_ else 0)) >> (hdr.subsampling_x if p_ else 0)),
+                      ((hdr.FrameHeight + (hdr.subsampling_y if p_ else 0)) >> (hdr.subsampling_y if p_ else 0))) for p_ in range(hdr.NumPlanes)]
+            if md5_ref is None and outs:
+                ref, _ = ref_frame(ref_path, hdr, fi, pic_offset[outs[0]])
             else:
                 ref = None
-                sizes = [(((hdr.FrameWidth + (hdr.subsampling_x if p_ else 0)) >> (hdr.subsampling_x if p_ else 0)),
-                          ((hdr.FrameHeight + (hdr.subsampling_y if p_ else 0)) >> (hdr.subsampling_y if p_ else 0))) for p_ in range(hdr.NumPlanes)]
             import struct
+            planes_rb = []
             for plane in range(hdr.NumPlanes):
                 W, H = sizes[plane]
                 bad = []
+                rows = []
                 for y in range(H):
                     row = []
                     for x in range(W):
@@ -363,16 +376,25 @@ async def rtl_only_stream(dut, path, stats):
                         if ref is not None and v != ref[plane][y][x]:
                             bad.append((y, x, v, ref[plane][y][x]))
                         await Timer(1, "ns")
-                    if md5_ref is not None:
-                        md5.update(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
+                    rows.append(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
+                planes_rb.append(rows)
                 stats["pixels"] += W * H
                 assert not bad, f"{tag} plane {plane}: {len(bad)} / {W * H} pixels differ from dav1d (y, x, rtl, dav1d), first {bad[:10]}"
             stats["frames"] += 1
-            if md5_ref is None:
-                dut._log.info(f"{tag}: identical to dav1d ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]})")
+            if md5_ref is not None:
+                pictures[fi] = planes_rb
+            shown_txt = f"shown as picture(s) {outs}" if outs else "hidden (never shown)"
+            if md5_ref is None and outs:
+                dut._log.info(f"{tag}: identical to dav1d ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]}, {shown_txt})")
+            elif md5_ref is None:
+                dut._log.info(f"{tag}: decoded ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}), {shown_txt}: nothing to compare")
             else:
                 dut._log.info(f"{tag}: decoded ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]}); md5 pending")
         if md5_ref is not None:
+            for k in shown:
+                for rows in pictures[k]:
+                    for row in rows:
+                        md5.update(row)
             got = md5.hexdigest()
             assert got == md5_ref, f"{Path(path).name}: md5 {got} != reference {md5_ref}"
             stats["md5_ok"] = stats.get("md5_ok", 0) + 1
@@ -482,7 +504,7 @@ async def dec_vs_model(dut):
                     events.extend(dec.pred_events)
                     events.extend(dec.recon_events)
                     blocks_all.extend(dec.blocks)
-                    await run_tile(dut, th, dec, data, tag, stats, debug)
+                    await run_tile(dut, th, dec, data, tag, stats, debug, fi)
                     await ClockCycles(dut.clk, 4)
                 planes_cmp, buf = await finish_frame(dut, hdr0, decs, frame["planes"], f"{Path(path).name} frame {fi}", stats)
                 dut.h_buf.value = buf

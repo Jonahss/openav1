@@ -1331,8 +1331,15 @@ class TileDecoder:
         maxTxWidth = T.Tx_Width[maxRectTxSize]
         maxTxHeight = T.Tx_Height[maxRectTxSize]
         r, c = self.MiRow, self.MiCol
-        aboveW = self.get_above_tx_width(r, c) if self.AvailU else 0
-        leftH = self.get_left_tx_height(r, c) if self.AvailL else 0
+        # unavailable neighbours count as width/height 0; inter neighbours count with their block size
+        if self.AvailU and self.IsInters[r - 1][c]:
+            aboveW = T.Block_Width[self.MiSizes[r - 1][c]]
+        else:
+            aboveW = self.get_above_tx_width(r, c) if self.AvailU else 0
+        if self.AvailL and self.IsInters[r][c - 1]:
+            leftH = T.Block_Height[self.MiSizes[r][c - 1]]
+        else:
+            leftH = self.get_left_tx_height(r, c) if self.AvailL else 0
         ctx = int(aboveW >= maxTxWidth) + int(leftH >= maxTxHeight)
         if maxTxDepth == 4: return self.cdf["Tx_64x64"][ctx]
         if maxTxDepth == 3: return self.cdf["Tx_32x32"][ctx]

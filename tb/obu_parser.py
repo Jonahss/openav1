@@ -109,7 +109,8 @@ class Decoder:
         self.seq = None
         self.SeenFrameHeader = 0
         self.tiles = []            # list of (hdr, tile_bytes)
-        self.frames = []           # list of lists of tile indices
+        self.frames = []           # list of lists of tile indices (decoded frames, decode order)
+        self.frame_headers = []    # every frame header in decode order, show_existing_frame ones included
         self.RefValid = [0] * 8
         self.RefFrameType = [0] * 8
         self.RefOrderHint = [0] * 8
@@ -334,12 +335,33 @@ class Decoder:
         s.separate_uv_delta_q = br.f(1)
 
     # ---- 5.9 frame header --------------------------------------------------------------------------------
+    def shown_frames(self):
+        """Output pictures in display order as indices into self.frames: a frame with show_frame = 1 is output
+        when decoded; show_existing_frame outputs the decoded frame held in the reference slot (7.20 reference
+        frame update with refresh_frame_flags; a shown key frame refreshes every slot)."""
+        out = []
+        slots = [None] * 8
+        k = 0
+        for h in self.frame_headers:
+            if h.show_existing_frame:
+                out.append(slots[h.frame_to_show_map_idx])
+                continue
+            if h.show_frame:
+                out.append(k)
+            flags = 0xFF if (h.frame_type == KEY_FRAME and h.show_frame) else h.refresh_frame_flags
+            for i in range(8):
+                if (flags >> i) & 1:
+                    slots[i] = k
+            k += 1
+        return out
+
     def frame_header_obu(self, br, payload):
         if self.SeenFrameHeader:
             return                                # frame_header_copy: identical; nothing to do
         self.SeenFrameHeader = 1
         self.uncompressed_header(br)
         h = self.cur
+        self.frame_headers.append(h)
         if h.show_existing_frame:
             self.SeenFrameHeader = 0
         else:

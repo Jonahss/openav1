@@ -34,6 +34,8 @@ module blk_ctx
     output logic        a_skip, l_skip,
     output logic [4:0]  a_misize, l_misize,
     output logic [4:0]  a_txsz, l_txsz,
+    output logic        a_is_inter, l_is_inter,
+    output logic [16*24*2-1:0] a_recs, l_recs,   // 32 above records (columns MiCol&~15 ..) / left records (rows MiRow&~15 ..)
     output logic [3:0]  a_pal_y, l_pal_y, a_pal_uv, l_pal_uv,
     output logic [3:0]  seg_ul, seg_u, seg_l,     // 4'hF = -1 (unavailable)
     output logic [95:0] a_col_y, l_col_y, a_col_u, l_col_u,
@@ -43,6 +45,9 @@ module blk_ctx
     input  logic        w_skip,
     input  logic [2:0]  w_seg,
     input  logic [4:0]  w_txsz,
+    input  logic        w_is_inter,
+    input  logic        w_vartx,               // per-column / per-row transform sizes (InterTxSizes edges)
+    input  logic [159:0] w_txsz_col, w_txsz_row,   // column j of the block: [5j +: 5]; row i: [5i +: 5]
     input  logic [3:0]  w_pal_y, w_pal_uv,
     input  logic [95:0] w_col_y, w_col_u,
     output logic        wbusy,
@@ -60,7 +65,7 @@ module blk_ctx
     input  logic [1:0]  w_dccat,
     input  logic        rbc_we                 // reset_block_context (skip blocks): zero the block's ctx entries
 );
-    localparam int REC_W = 24;                 // {pal_uv[3:0], pal_y[3:0], txsz[4:0], misize[4:0], skip, ymode[3:0]} = 23 -> 24
+    localparam int REC_W = 24;                 // {is_inter, pal_uv[3:0], pal_y[3:0], txsz[4:0], misize[4:0], skip, ymode[3:0]}
     localparam int WORDS = 1 << CAW;
 
     // ------------------------------------------------------------------ storage
@@ -94,7 +99,7 @@ module blk_ctx
     typedef enum logic [2:0] {Q_IDLE, Q_WAIT, Q_RD, Q_OUT} q_t;
     q_t qst;
     logic w_idle;                              // no block-end write in flight (declared below)
-    logic [16*REC_W-1:0] a_word, l_word;
+    logic [16*REC_W-1:0] a_word, l_word, a_word1, l_word1;
     logic [47:0] seg_w_u, seg_w_ul, seg_w_l;
     logic [95:0] ap_y, ap_u, lp_y, lp_u;
     always_ff @(posedge clk) begin
@@ -111,7 +116,9 @@ module blk_ctx
             Q_RD: begin
                 // memory reads (addresses from q_*)
                 a_word  <= above_rec[q_c[CAW+3:4]];
+                a_word1 <= above_rec[q_c[CAW+3:4] + CAW'(1)];
                 l_word  <= left_rec[q_r[4]];
+                l_word1 <= left_rec[~q_r[4]];
                 // row r-1 is inside the current superblock row unless the block sits on the superblock's top row
                 seg_w_u  <= ((q_r[4:0] & sbm) != 5'd0) ? seg_strip[{rm1[4:0] & sbm, q_c[CAW+3:4]}] : seg_prev[q_c[CAW+3:4]];
                 seg_w_ul <= ((q_r[4:0] & sbm) != 5'd0) ? seg_strip[{rm1[4:0] & sbm, cm1[CAW+3:4]}] : seg_prev[cm1[CAW+3:4]];
@@ -157,6 +164,9 @@ module blk_ctx
     assign a_txsz = a_rec[14:10];  assign l_txsz = l_rec[14:10];
     assign a_pal_y = a_rec[18:15]; assign l_pal_y = l_rec[18:15];
     assign a_pal_uv = a_rec[22:19]; assign l_pal_uv = l_rec[22:19];
+    assign a_is_inter = a_rec[23]; assign l_is_inter = l_rec[23];
+    assign a_recs = {a_word1, a_word};
+    assign l_recs = {l_word1, l_word};
     assign seg_u  = au ? {1'b0, seg_w_u[3*q_c[3:0] +: 3]} : 4'hF;
     assign seg_l  = al ? {1'b0, seg_w_l[3*cm1[3:0] +: 3]} : 4'hF;
     assign seg_ul = (au && al) ? {1'b0, seg_w_ul[3*cm1[3:0] +: 3]} : 4'hF;
@@ -170,6 +180,8 @@ module blk_ctx
     logic [5:0]  wi;                            // row / column counter
     logic        wj;                            // word half (0/1) for 32-wide blocks
     logic [REC_W-1:0] wrec;
+    logic        wvartx;
+    logic [159:0] wtx_col, wtx_row;
     logic [2:0]  wseg;
     logic [95:0] wcol_y, wcol_u;
     logic        wpal;
@@ -184,10 +196,15 @@ module blk_ctx
         for (int k = 0; k < 16; k++)
             if (k >= int'(c0) && k < int'(c0) + int'(n)) merge_seg[3*k +: 3] = v;
     endfunction
-    function automatic logic [16*REC_W-1:0] merge_rec(input logic [16*REC_W-1:0] old, input logic [3:0] c0, input logic [5:0] n, input logic [REC_W-1:0] v);
+    function automatic logic [16*REC_W-1:0] merge_rec(input logic [16*REC_W-1:0] old, input logic [3:0] c0, input logic [5:0] n, input logic [REC_W-1:0] v,
+                                                      input logic vartx, input logic [159:0] txs, input logic [4:0] j0);
+        // entries c0 .. c0+n-1 := v; with vartx the tx size of entry k comes from txs[j0 + k - c0]
         merge_rec = old;
         for (int k = 0; k < 16; k++)
-            if (k >= int'(c0) && k < int'(c0) + int'(n)) merge_rec[REC_W*k +: REC_W] = v;
+            if (k >= int'(c0) && k < int'(c0) + int'(n)) begin
+                merge_rec[REC_W*k +: REC_W] = v;
+                if (vartx) merge_rec[REC_W*k + 10 +: 5] = txs[5 * (int'(j0) + k - int'(c0)) +: 5];
+            end
     endfunction
 
     // per-word geometry: a block is aligned to its size; for width 32 it covers two whole words
@@ -212,7 +229,8 @@ module blk_ctx
                 if (blk_we) begin
                     // latch everything the multi-cycle write needs: the block FSM moves on to the next block
                     // (and clears its palette state) while this write is still in flight
-                    wrec <= {1'b0, w_pal_uv, w_pal_y, w_txsz, q_bs, w_skip, w_ymode};
+                    wrec <= {w_is_inter, w_pal_uv, w_pal_y, w_txsz, q_bs, w_skip, w_ymode};
+                    wvartx <= w_vartx; wtx_col <= w_txsz_col; wtx_row <= w_txsz_row;
                     wcol_y <= w_col_y; wcol_u <= w_col_u; wpal <= (w_pal_y != 4'd0) || (w_pal_uv != 4'd0);
                     wr_r <= q_r; wr_c <= q_c; wr_bw4 <= q_bw4; wr_bh4 <= q_bh4; wseg <= w_seg;
                     wi <= 6'd0; wj <= 1'b0;
@@ -236,13 +254,13 @@ module blk_ctx
             end
             W_AREC: begin
                 if (sbrow_end) sbrow_pend <= 1'b1;
-                above_rec[wcol_word] <= merge_rec(above_rec[wcol_word], wj ? 4'd0 : wr_c[3:0], n_cols_word, wrec);
+                above_rec[wcol_word] <= merge_rec(above_rec[wcol_word], wj ? 4'd0 : wr_c[3:0], n_cols_word, wrec, wvartx, wtx_col, wj ? 5'd16 : 5'd0);
                 if (wr_bw4 > 6'd16 && !wj) wj <= 1'b1;
                 else begin wj <= 1'b0; wst <= W_LREC; end
             end
             W_LREC: begin
                 if (sbrow_end) sbrow_pend <= 1'b1;
-                left_rec[wr_r[4] ^ wj] <= merge_rec(left_rec[wr_r[4] ^ wj], wj ? 4'd0 : wr_r[3:0], n_rows_word, wrec);
+                left_rec[wr_r[4] ^ wj] <= merge_rec(left_rec[wr_r[4] ^ wj], wj ? 4'd0 : wr_r[3:0], n_rows_word, wrec, wvartx, wtx_row, wj ? 5'd16 : 5'd0);
                 if (wr_bh4 > 6'd16 && !wj) wj <= 1'b1;
                 else begin wj <= 1'b0; wi <= 6'd0; wst <= wpal ? W_PALA : W_IDLE; end
             end

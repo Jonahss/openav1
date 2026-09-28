@@ -341,7 +341,29 @@ patch(src / "recon_tmpl.c", [
                                    (4 * f->bh + ss_ver - 4 * (t->by & ~ss_ver)) >> ss_ver,
                                    edge, dst, stride);
 '''),
-    # chroma coef + itx (intra blocks; the same text also appears in the inter path -> both hooked)
+    # luma coef + itx (inter blocks: read_coef_tree leaves)
+    ('''                dsp->itx.itxfm_add[ytx][txtp](dst, f->cur.stride[0], cf, eob
+                                              HIGHBD_CALL_SUFFIX);
+''',
+     '''                trace_coef_block(0, t->bx, t->by, ytx, txtp, eob, cf, t_dim->w * 4, t_dim->h * 4);
+                dsp->itx.itxfm_add[ytx][txtp](dst, f->cur.stride[0], cf, eob
+                                              HIGHBD_CALL_SUFFIX);
+                trace_recon(0, t->bx, t->by, t_dim->w * 4, t_dim->h * 4, ytx, txtp, dst, f->cur.stride[0]);
+'''),
+    # chroma coef + itx (inter blocks)
+    ('''                            dsp->itx.itxfm_add[b->uvtx]
+                                              [txtp](&uvdst[4 * x],
+                                                     f->cur.stride[1],
+                                                     cf, eob HIGHBD_CALL_SUFFIX);
+''',
+     '''                            trace_coef_block(1 + pl, t->bx >> ss_hor, t->by >> ss_ver, b->uvtx, txtp, eob, cf, uvtx->w * 4, uvtx->h * 4);
+                            dsp->itx.itxfm_add[b->uvtx]
+                                              [txtp](&uvdst[4 * x],
+                                                     f->cur.stride[1],
+                                                     cf, eob HIGHBD_CALL_SUFFIX);
+                            trace_recon(1 + pl, t->bx >> ss_hor, t->by >> ss_ver, uvtx->w * 4, uvtx->h * 4, b->uvtx, txtp, &uvdst[4 * x], f->cur.stride[1]);
+'''),
+    # chroma coef + itx (intra blocks)
     ('''                                dsp->itx.itxfm_add[b->uvtx]
                                                   [txtp](dst, stride,
                                                          cf, eob HIGHBD_CALL_SUFFIX);

@@ -3,8 +3,10 @@
 reconstruction -> loop filter [-> CDEF -> LR when modelled]) and compare the visible picture with
 dav1d's raw output (refout/<name>.yuv, planar 4:2:0/4:2:2/4:4:4, 8-bit bytes or 16-bit LE).
 
-Usage: tools/xcheck_frame.py <trace.txt> <ref.yuv> [--stage recon|lf|cdef|lr] [-v]
-The stage selects how far post-processing is applied before comparing (default: lf).
+Usage: tools/xcheck_frame.py <trace.txt> <ref.yuv> [--stage recon|lf|cdef|lr] [--stream <file.obu|.ivf>] [-v]
+The stage selects how far post-processing is applied before comparing (default: lf). With --stream the
+output order is taken from the stream's frame headers (hidden frames, show_existing_frame), so each
+decoded frame is compared with every output picture that shows it; without it every frame is assumed shown.
 """
 import struct
 import sys
@@ -59,18 +61,23 @@ class FrameState:
         return T.Subsampled_Size[subsize][subx][suby]
 
 
-def read_ref_frames(path, hdr):
-    bd = hdr.BitDepth
+def frame_sizes(hdr):
     W, H = hdr.UpscaledWidth, hdr.FrameHeight
     sx, sy = hdr.subsampling_x, hdr.subsampling_y
     cw, ch = (W + sx) >> sx, (H + sy) >> sy
-    bps = 1 if bd == 8 else 2
-    sizes = [(W, H)] + ([(cw, ch), (cw, ch)] if hdr.NumPlanes == 3 else [])
-    frame_bytes = sum(w * h for w, h in sizes) * bps
+    return [(W, H)] + ([(cw, ch), (cw, ch)] if hdr.NumPlanes == 3 else [])
+
+
+def read_ref_frames(path, hdrs):
+    """dav1d's raw output, one picture per frame header (frame sizes may change from frame to frame)."""
     data = open(path, "rb").read()
     frames = []
     off = 0
-    while off + frame_bytes <= len(data):
+    for hdr in hdrs:
+        sizes = frame_sizes(hdr)
+        bps = 1 if hdr.BitDepth == 8 else 2
+        if off + sum(w * h for w, h in sizes) * bps > len(data):
+            break
         planes = []
         for w, h in sizes:
             n = w * h
@@ -81,7 +88,7 @@ def read_ref_frames(path, hdr):
             planes.append([vals[r * w:(r + 1) * w] for r in range(h)])
             off += n * bps
         frames.append(planes)
-    return frames, sizes
+    return frames
 
 
 def main():
@@ -108,8 +115,21 @@ def main():
         if hdr.tile_row == 0 and hdr.tile_col == 0:
             frames.append([])
         frames[-1].append((hdr, t["data"]))
-    hdr0 = frames[0][0][0]
-    refs, sizes = read_ref_frames(ref, hdr0)
+    if "--stream" in sys.argv:
+        import obu_parser as op
+        d = op.Decoder()
+        spath = sys.argv[sys.argv.index("--stream") + 1]
+        with open(spath, "rb") as fh:
+            raw = fh.read()
+        if spath.endswith(".obu"):
+            d.feed_annexb(raw)
+        else:
+            d.feed_ivf(raw)
+        shown = d.shown_frames()
+        print(f"output order (decoded frame per picture): {shown}")
+    else:
+        shown = list(range(len(frames)))
+    refs = read_ref_frames(ref, [frames[k][0][0] for k in shown])
     if len(refs) < len(frames):
         print(f"reference has {len(refs)} frames, trace {len(frames)}")
     total_bad = 0
@@ -130,11 +150,14 @@ def main():
             planes = cdm.Cdef(hdr, state, planes).apply()
         if stage == "lr":
             planes = lrm.LoopRestoration(hdr, state, deblocked, planes).apply()
-        if fi >= len(refs):
-            break
-        for p, (w, h) in enumerate(sizes):
+        outs = [o for o, k in enumerate(shown) if k == fi and o < len(refs)]
+        if not outs:
+            print(f"frame {fi}: not shown (no output picture to compare)")
+            continue
+        for o in outs:
+          for p, (w, h) in enumerate(frame_sizes(hdr)):
             got = planes[p]
-            exp = refs[fi][p]
+            exp = refs[o][p]
             bad = 0
             first = None
             for y in range(h):
@@ -146,7 +169,7 @@ def main():
                             first = (x, y, gr[x], er[x])
             total_bad += bad
             tag = "OK " if bad == 0 else "BAD"
-            print(f"frame {fi} plane {p} {w}x{h}: {tag} {bad} differing samples" + (f", first at x={first[0]} y={first[1]} model={first[2]} dav1d={first[3]}" if first else ""))
+            print(f"frame {fi} (picture {o}) plane {p} {w}x{h}: {tag} {bad} differing samples" + (f", first at x={first[0]} y={first[1]} model={first[2]} dav1d={first[3]}" if first else ""))
     print("OK" if total_bad == 0 else f"{total_bad} differing samples")
     sys.exit(1 if total_bad else 0)
 
