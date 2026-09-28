@@ -63,7 +63,7 @@ symbols = dict(enums); symbols.update(consts)   # constants win
 # ---- tables --------------------------------------------------------------------------------------
 tables = {}
 order = []
-pat = re.compile(r"^([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*(\{)?\s*$|^([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*\{")
+pat = re.compile(r"^\s*([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*(\{)?\s*$|^\s*([A-Z][A-Za-z_0-9]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*\{")
 i = 0
 while i < len(lines):
     m = pat.match(lines[i])

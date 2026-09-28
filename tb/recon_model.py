@@ -14,6 +14,9 @@ import tile_model as tm         # noqa: E402
 import intra_model as im        # noqa: E402
 import itx_model as xm          # noqa: E402
 
+REF_SCALE_SHIFT, SUBPEL_BITS, SCALE_SUBPEL_BITS, SUBPEL_MASK = 14, 4, 10, 15
+MI_SIZE = tm.MI_SIZE
+
 FLIP_UD = {xm.FLIPADST_DCT, xm.FLIPADST_ADST, xm.V_FLIPADST, xm.FLIPADST_FLIPADST}
 FLIP_LR = {xm.DCT_FLIPADST, xm.ADST_FLIPADST, xm.H_FLIPADST, xm.FLIPADST_FLIPADST}
 SMOOTH_MODES = (im.SMOOTH_PRED, im.SMOOTH_V_PRED, im.SMOOTH_H_PRED)
@@ -65,8 +68,143 @@ class FrameRecon(tm.TileDecoder):
             self.BlockDecoded.append(bd)
 
     # ---- prediction --------------------------------------------------------------------------------
+    # ---- 7.11.1 compute_prediction: inter blocks (intra block copy) are predicted whole, before the residual
+    def compute_prediction(self):
+        if not self.is_inter:
+            return
+        h = self.h
+        for plane in range(1 + self.HasChroma * 2):
+            planeSz = self.get_plane_residual_size(self.MiSize, plane)
+            num4x4W = T.Num_4x4_Blocks_Wide[planeSz]
+            num4x4H = T.Num_4x4_Blocks_High[planeSz]
+            subX = h.subsampling_x if plane > 0 else 0
+            subY = h.subsampling_y if plane > 0 else 0
+            baseX = (self.MiCol >> subX) * MI_SIZE
+            baseY = (self.MiRow >> subY) * MI_SIZE
+            candRow = (self.MiRow >> subY) << subY
+            candCol = (self.MiCol >> subX) << subX
+            assert self.RefFrame[1] != tm.INTRA_FRAME, "interintra is not modelled"
+            predW = T.Block_Width[self.MiSize] >> subX
+            predH = T.Block_Height[self.MiSize] >> subY
+            someUseIntra = 0
+            for r in range(num4x4H << subY):
+                for c in range(num4x4W << subX):
+                    rr, cc = candRow + r, candCol + c
+                    if rr < h.MiRows and cc < h.MiCols and self.RefFrames[rr][cc] is not None \
+                            and self.RefFrames[rr][cc][0] == tm.INTRA_FRAME:
+                        someUseIntra = 1
+            if someUseIntra:
+                predW = num4x4W * 4
+                predH = num4x4H * 4
+                candRow = self.MiRow
+                candCol = self.MiCol
+            r = 0
+            for y in range(0, num4x4H * 4, predH):
+                c = 0
+                for x in range(0, num4x4W * 4, predW):
+                    self.predict_inter(plane, baseX + x, baseY + y, predW, predH, candRow + r, candCol + c)
+                    c += 1
+                r += 1
+
+    # ---- 7.11.3 inter prediction (the intra block copy subset: one reference = the current frame, no
+    # scaling, no warp, no compound, no masks, no OBMC)
+    def predict_inter(self, plane, x, y, w, hh, candRow, candCol):
+        h = self.h
+        assert self.use_intrabc, "inter frames are not modelled"
+        isCompound = self.RefFrames[candRow][candCol][1] > tm.INTRA_FRAME
+        # 7.11.3.2 rounding variables
+        InterRound0 = 3
+        InterRound1 = 7 if isCompound else 11
+        if h.BitDepth == 12:
+            InterRound0 += 2
+        if h.BitDepth == 12 and not isCompound:
+            InterRound1 -= 2
+        mv = self.Mvs[candRow][candCol][0]
+        # refIdx = -1: the reference is the current (pre loop filter) frame, first with the frame's size (so the
+        # scaling process has no effect), then with the size rounded up to whole 4x4 units for the clamping
+        startX, startY, stepX, stepY = self.motion_vector_scaling(plane, x, y, mv, h.UpscaledWidth, h.FrameHeight)
+        refUpscaledWidth = h.MiCols * MI_SIZE
+        refFrameHeight = h.MiRows * MI_SIZE
+        pred = self.block_inter_prediction(plane, self.planes, startX, startY, stepX, stepY, w, hh, candRow, candCol,
+                                           refUpscaledWidth, refFrameHeight, InterRound0, InterRound1)
+        buf = self.planes[plane]
+        mx = (1 << h.BitDepth) - 1
+        for i in range(hh):
+            row = buf[y + i]
+            for j in range(w):
+                v = pred[i][j]
+                row[x + j] = 0 if v < 0 else mx if v > mx else v
+
+    def motion_vector_scaling(self, plane, x, y, mv, refUpscaledWidth, refFrameHeight):
+        h = self.h
+        xScale = ((refUpscaledWidth << REF_SCALE_SHIFT) + (h.FrameWidth // 2)) // h.FrameWidth
+        yScale = ((refFrameHeight << REF_SCALE_SHIFT) + (h.FrameHeight // 2)) // h.FrameHeight
+        subX = h.subsampling_x if plane > 0 else 0
+        subY = h.subsampling_y if plane > 0 else 0
+        halfSample = 1 << (SUBPEL_BITS - 1)
+        origX = (x << SUBPEL_BITS) + ((2 * mv[1]) >> subX) + halfSample
+        origY = (y << SUBPEL_BITS) + ((2 * mv[0]) >> subY) + halfSample
+        baseX = origX * xScale - (halfSample << REF_SCALE_SHIFT)
+        baseY = origY * yScale - (halfSample << REF_SCALE_SHIFT)
+        off = (1 << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) // 2
+        startX = im.round2signed(baseX, REF_SCALE_SHIFT + SUBPEL_BITS - SCALE_SUBPEL_BITS) + off
+        startY = im.round2signed(baseY, REF_SCALE_SHIFT + SUBPEL_BITS - SCALE_SUBPEL_BITS) + off
+        stepX = im.round2signed(xScale, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS)
+        stepY = im.round2signed(yScale, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS)
+        return startX, startY, stepX, stepY
+
+    def block_inter_prediction(self, plane, ref, x, y, xStep, yStep, w, hh, candRow, candCol,
+                               refUpscaledWidth, refFrameHeight, InterRound0, InterRound1):
+        h = self.h
+        subX = h.subsampling_x if plane > 0 else 0
+        subY = h.subsampling_y if plane > 0 else 0
+        lastX = ((refUpscaledWidth + subX) >> subX) - 1
+        lastY = ((refFrameHeight + subY) >> subY) - 1
+        intermediateHeight = (((hh - 1) * yStep + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8
+        F = T.Subpel_Filters
+        refp = ref[plane]
+        interpFilter = self.InterpFilters[candRow][candCol][1]
+        if w <= 4:
+            if interpFilter in (tm.EIGHTTAP, tm.EIGHTTAP_SHARP):
+                interpFilter = 4
+            elif interpFilter == tm.EIGHTTAP_SMOOTH:
+                interpFilter = 5
+        intermediate = []
+        for r in range(intermediateHeight):
+            srow = refp[im.clip3(0, lastY, (y >> 10) + r - 3)]
+            orow = []
+            for c in range(w):
+                p = x + xStep * c
+                taps = F[interpFilter][(p >> 6) & SUBPEL_MASK]
+                s = 0
+                for t in range(8):
+                    s += taps[t] * srow[im.clip3(0, lastX, (p >> 10) + t - 3)]
+                orow.append(im.round2(s, InterRound0))
+            intermediate.append(orow)
+        interpFilter = self.InterpFilters[candRow][candCol][0]
+        if hh <= 4:
+            if interpFilter in (tm.EIGHTTAP, tm.EIGHTTAP_SHARP):
+                interpFilter = 4
+            elif interpFilter == tm.EIGHTTAP_SMOOTH:
+                interpFilter = 5
+        pred = []
+        for r in range(hh):
+            p = (y & 1023) + yStep * r
+            taps = F[interpFilter][(p >> 6) & SUBPEL_MASK]
+            base = p >> 10
+            orow = []
+            for c in range(w):
+                s = 0
+                for t in range(8):
+                    s += taps[t] * intermediate[base + t][c]
+                orow.append(im.round2(s, InterRound1))
+            pred.append(orow)
+        return pred
+
     def predict_block(self, plane, startX, startY, txSz, x, y, subX, subY, sbMiRow, sbMiCol, stepX, stepY):
         h = self.h
+        if self.is_inter:
+            return      # predicted whole by compute_prediction
         if (plane == 0 and self.PaletteSizeY) or (plane != 0 and self.PaletteSizeUV):
             self.predict_palette(plane, startX, startY, x, y, txSz)
         else:

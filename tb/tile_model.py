@@ -23,6 +23,7 @@ E = dict(T.ENUM)
 for _k, _v in T.CONST.items():        # names like BLOCK_INVALID live in the constants list
     E.setdefault(_k, _v)
 MI_SIZE = 4
+MI_SIZE_LOG2 = 2
 MAX_ANGLE_DELTA = 3
 PALETTE_COLORS = 8
 PALETTE_NUM_NEIGHBORS = 3
@@ -46,7 +47,23 @@ SGRPROJ_PRJ_SUBEXP_K = 4
 SGRPROJ_PRJ_BITS = 7
 SUPERRES_NUM = 8
 TX_SET_DCTONLY, TX_SET_INTRA_1, TX_SET_INTRA_2 = 0, 1, 2
+TX_SET_INTER_1, TX_SET_INTER_2, TX_SET_INTER_3 = 1, 2, 3
 INTRA_FRAME, NONE = 0, -1
+# inter / intra block copy (5.11.26 assign_mv, 5.11.32 read_mv, 7.10.2 find_mv_stack)
+MV_JOINT_ZERO, MV_JOINT_HNZVZ, MV_JOINT_HZVNZ, MV_JOINT_HNZVNZ = 0, 1, 2, 3
+MV_CLASS_0 = 0
+CLASS0_SIZE = 2
+MV_CONTEXTS = 2
+MV_INTRABC_CONTEXT = 1
+MV_BORDER = 128
+INTRABC_DELAY_PIXELS = 256
+REF_CAT_LEVEL = 640
+MAX_REF_MV_STACK_SIZE = 8
+NEARESTMV, NEARMV, GLOBALMV, NEWMV = 13, 14, 15, 16
+NEAREST_NEARESTMV, NEAR_NEARMV, NEAREST_NEWMV, NEW_NEARESTMV, NEAR_NEWMV, NEW_NEARMV, GLOBAL_GLOBALMV, NEW_NEWMV = \
+    17, 18, 19, 20, 21, 22, 23, 24
+SIMPLE, COMPOUND_AVERAGE = 0, 2
+EIGHTTAP, EIGHTTAP_SMOOTH, EIGHTTAP_SHARP, BILINEAR = 0, 1, 2, 3
 
 BLOCK_4X4, BLOCK_8X8, BLOCK_64X64, BLOCK_128X128 = E["BLOCK_4X4"], E["BLOCK_8X8"], E["BLOCK_64X64"], E["BLOCK_128X128"]
 BLOCK_INVALID = E["BLOCK_INVALID"]
@@ -59,6 +76,13 @@ TX_MODE_SELECT = 2
 DC_PRED, V_PRED, D67_PRED, UV_CFL_PRED = 0, 1, 8, 13
 DCT_DCT, IDTX, V_DCT, H_DCT, V_ADST, H_ADST, V_FLIPADST, H_FLIPADST = 0, 9, 10, 11, 12, 13, 14, 15
 RESTORE_NONE, RESTORE_WIENER, RESTORE_SGRPROJ, RESTORE_SWITCHABLE = 0, 1, 2, 3
+
+
+def find_tx_size(w, h):
+    for txSz in range(T.TX_SIZES_ALL):
+        if T.Tx_Width[txSz] == w and T.Tx_Height[txSz] == h:
+            return txSz
+    return T.TX_SIZES_ALL
 
 
 def is_directional_mode(mode):
@@ -198,6 +222,11 @@ class FrameHeader:
         self.segmentation_enabled, self.segmentation_update_map, self.segmentation_temporal_update = nxt(), nxt(), nxt()
         self.SegIdPreSkip, self.LastActiveSegId = nxt(), nxt()
         self.LosslessArray = [0] * 8
+        # not in the trace: fixed by the spec for intra frames (uncompressed_header: FrameIsIntra forces
+        # force_integer_mv = 1; allow_high_precision_mv / use_ref_frame_mvs are only read for inter frames)
+        self.force_integer_mv = 1
+        self.allow_high_precision_mv = 0
+        self.use_ref_frame_mvs = 0
         self.seg_qidx = [0] * 8
         self.FeatureEnabled = [[0] * 8 for _ in range(8)]
         self.FeatureData = [[0] * 8 for _ in range(8)]
@@ -257,6 +286,13 @@ def make_cdfs(base_q_idx):
                 val = val[idx]
             d[key] = copy.deepcopy(val)
     d["Delta_Lf_Multi"] = [copy.deepcopy(T.Default_Delta_Lf_Cdf) for _ in range(FRAME_LF_COUNT)]
+    # MvJointCdf[ctx], MvClassCdf[ctx][comp], MvClass0FrCdf[ctx][comp][bit], MvFrCdf[ctx][comp] (the comp
+    # dimension is part of the default table); MvClass0BitCdf / MvClass0HpCdf / MvSignCdf / MvHpCdf /
+    # MvBitCdf are [ctx][comp] copies of a single default row (MvBit: [ctx][comp][i])
+    for k in ("Mv_Joint", "Mv_Class", "Mv_Class0_Fr", "Mv_Fr"):
+        d[k] = [copy.deepcopy(d[k]) for _ in range(MV_CONTEXTS)]
+    for k in ("Mv_Class0_Bit", "Mv_Class0_Hp", "Mv_Sign", "Mv_Hp", "Mv_Bit"):
+        d[k] = [[copy.deepcopy(d[k]) for _ in range(2)] for _ in range(MV_CONTEXTS)]
     return d
 
 
@@ -281,6 +317,12 @@ class TileDecoder:
         self.PaletteColors = [[[None] * Cc for _ in range(R)] for _ in range(2)]
         self.TxTypes = [[DCT_DCT] * Cc for _ in range(R)]
         self.DeltaLFs = [[None] * Cc for _ in range(R)]
+        self.RefFrames = [[None] * Cc for _ in range(R)]      # None = not written yet this frame (7.10.2.4)
+        self.IsInters = [[0] * Cc for _ in range(R)]
+        self.Mvs = [[None] * Cc for _ in range(R)]
+        self.InterpFilters = [[None] * Cc for _ in range(R)]
+        self.use_intrabc = 0
+        self.is_inter = 0
         self.AboveLevelContext = [[0] * Cc for _ in range(3)]
         self.AboveDcContext = [[0] * Cc for _ in range(3)]
         self.LeftLevelContext = [[0] * R for _ in range(3)]
@@ -488,16 +530,23 @@ class TileDecoder:
         self.read_block_tx_size()
         if self.skip:
             self.reset_block_context(bw4, bh4)
+        isCompound = self.RefFrame[1] > INTRA_FRAME
         for y in range(bh4):
             for x in range(bw4):
                 if r + y < h.MiRows and c + x < h.MiCols:
                     self.YModes[r + y][c + x] = self.YMode
-                    if self.HasChroma:
+                    if self.RefFrame[0] == INTRA_FRAME and self.HasChroma:
                         self.UVModes[r + y][c + x] = self.UVMode
+                    self.RefFrames[r + y][c + x] = list(self.RefFrame)
+                    if self.is_inter:
+                        self.InterpFilters[r + y][c + x] = list(self.interp_filter)
+                        self.Mvs[r + y][c + x] = [list(self.Mv[i]) for i in range(1 + isCompound)]
+        self.compute_prediction()
         self.residual()
         for y in range(bh4):
             for x in range(bw4):
                 if r + y < h.MiRows and c + x < h.MiCols:
+                    self.IsInters[r + y][c + x] = self.is_inter
                     self.Skips[r + y][c + x] = self.skip
                     self.TxSizes[r + y][c + x] = self.TxSize
                     self.MiSizes[r + y][c + x] = self.MiSize
@@ -510,7 +559,8 @@ class TileDecoder:
         self.blocks.append(dict(r=r, c=c, size=subSize, skip=self.skip, ymode=self.YMode, uvmode=self.UVMode,
                                 tx=self.TxSize, seg=self.segment_id, pal=(self.PaletteSizeY, self.PaletteSizeUV),
                                 fi=self.use_filter_intra, angle=(self.AngleDeltaY, self.AngleDeltaUV),
-                                cfl=(self.CflAlphaU, self.CflAlphaV)))
+                                cfl=(self.CflAlphaU, self.CflAlphaV), intrabc=self.use_intrabc,
+                                mv=(tuple(self.Mv[0]) if self.use_intrabc else None)))
 
     def reset_block_context(self, bw4, bh4):
         h = self.h
@@ -542,8 +592,6 @@ class TileDecoder:
         self.ReadDeltas = 0
         self.RefFrame = [INTRA_FRAME, NONE]
         self.use_intrabc = self.sym(self.cdf["Intrabc"], "use_intrabc") if h.allow_intrabc else 0
-        assert not self.use_intrabc, "intrabc is not modelled"
-        self.is_inter = 0
         self.PaletteSizeY = self.PaletteSizeUV = 0
         self.palette_colors_y = [0] * 8
         self.palette_colors_u = [0] * 8
@@ -553,6 +601,18 @@ class TileDecoder:
         self.AngleDeltaY = self.AngleDeltaUV = 0
         self.CflAlphaU = self.CflAlphaV = 0
         self.UVMode = DC_PRED
+        self.Mv = [[0, 0], [0, 0]]
+        if self.use_intrabc:
+            self.is_inter = 1
+            self.YMode = DC_PRED
+            self.UVMode = DC_PRED
+            self.motion_mode = SIMPLE
+            self.compound_type = COMPOUND_AVERAGE
+            self.interp_filter = [BILINEAR, BILINEAR]
+            self.find_mv_stack(0)
+            self.assign_mv(0)
+            return
+        self.is_inter = 0
         abovemode = T.Intra_Mode_Context[self.YModes[self.MiRow - 1][self.MiCol] if self.AvailU else DC_PRED]
         leftmode = T.Intra_Mode_Context[self.YModes[self.MiRow][self.MiCol - 1] if self.AvailL else DC_PRED]
         self.YMode = self.sym(self.cdf["Intra_Frame_Y_Mode"][abovemode][leftmode], "intra_frame_y_mode")
@@ -566,6 +626,306 @@ class TileDecoder:
                 and h.allow_screen_content_tools):
             self.palette_mode_info()
         self.filter_intra_mode_info()
+
+    # ---- 7.10.2 motion vector prediction (single reference; what an intra frame with intrabc needs) --------
+    def find_mv_stack(self, isCompound):
+        assert not isCompound, "compound prediction is not modelled"
+        h = self.h
+        bw4 = T.Num_4x4_Blocks_Wide[self.MiSize]
+        bh4 = T.Num_4x4_Blocks_High[self.MiSize]
+        self.NumMvFound = 0
+        self.NewMvCount = 0
+        self.RefStackMv = [[[0, 0], [0, 0]] for _ in range(MAX_REF_MV_STACK_SIZE)]
+        self.WeightStack = [0] * MAX_REF_MV_STACK_SIZE
+        self.GlobalMvs = [self.setup_global_mv(0), [0, 0]]
+        self.FoundMatch = 0
+        self.scan_row(-1, isCompound)
+        foundAboveMatch = self.FoundMatch
+        self.FoundMatch = 0
+        self.scan_col(-1, isCompound)
+        foundLeftMatch = self.FoundMatch
+        self.FoundMatch = 0
+        if max(bw4, bh4) <= 16:
+            self.scan_point(-1, bw4, isCompound)
+        if self.FoundMatch:
+            foundAboveMatch = 1
+        self.CloseMatches = foundAboveMatch + foundLeftMatch
+        numNearest = self.NumMvFound
+        numNew = self.NewMvCount
+        for idx in range(numNearest):
+            self.WeightStack[idx] += REF_CAT_LEVEL
+        self.ZeroMvContext = 0
+        assert not h.use_ref_frame_mvs, "temporal MV candidates are not modelled (inter frames)"
+        self.scan_point(-1, -1, isCompound)
+        if self.FoundMatch:
+            foundAboveMatch = 1
+        self.FoundMatch = 0
+        self.scan_row(-3, isCompound)
+        if self.FoundMatch:
+            foundAboveMatch = 1
+        self.FoundMatch = 0
+        self.scan_col(-3, isCompound)
+        if self.FoundMatch:
+            foundLeftMatch = 1
+        self.FoundMatch = 0
+        if bh4 > 1:
+            self.scan_row(-5, isCompound)
+        if self.FoundMatch:
+            foundAboveMatch = 1
+        self.FoundMatch = 0
+        if bw4 > 1:
+            self.scan_col(-5, isCompound)
+        if self.FoundMatch:
+            foundLeftMatch = 1
+        self.TotalMatches = foundAboveMatch + foundLeftMatch
+        self.sort_stack(0, numNearest)
+        self.sort_stack(numNearest, self.NumMvFound)
+        if self.NumMvFound < 2:
+            self.extra_search(isCompound)
+        self.context_and_clamping(isCompound, numNew)
+
+    def setup_global_mv(self, refList):
+        ref = self.RefFrame[refList]
+        if ref != INTRA_FRAME:
+            raise NotImplementedError("global motion (inter frames) is not modelled")
+        mv = [0, 0]
+        self.lower_mv_precision(mv)
+        return mv
+
+    def scan_row(self, deltaRow, isCompound):
+        h = self.h
+        bw4 = T.Num_4x4_Blocks_Wide[self.MiSize]
+        end4 = min(min(bw4, h.MiCols - self.MiCol), 16)
+        deltaCol = 0
+        useStep16 = bw4 >= 16
+        if abs(deltaRow) > 1:
+            deltaRow += self.MiRow & 1
+            deltaCol = 1 - (self.MiCol & 1)
+        i = 0
+        while i < end4:
+            mvRow = self.MiRow + deltaRow
+            mvCol = self.MiCol + deltaCol + i
+            if not self.is_inside(mvRow, mvCol):
+                break
+            length = min(bw4, T.Num_4x4_Blocks_Wide[self.MiSizes[mvRow][mvCol]])
+            if abs(deltaRow) > 1:
+                length = max(2, length)
+            if useStep16:
+                length = max(4, length)
+            self.add_ref_mv_candidate(mvRow, mvCol, isCompound, length * 2)
+            i += length
+
+    def scan_col(self, deltaCol, isCompound):
+        h = self.h
+        bh4 = T.Num_4x4_Blocks_High[self.MiSize]
+        end4 = min(min(bh4, h.MiRows - self.MiRow), 16)
+        deltaRow = 0
+        useStep16 = bh4 >= 16
+        if abs(deltaCol) > 1:
+            deltaRow = 1 - (self.MiRow & 1)
+            deltaCol += self.MiCol & 1
+        i = 0
+        while i < end4:
+            mvRow = self.MiRow + deltaRow + i
+            mvCol = self.MiCol + deltaCol
+            if not self.is_inside(mvRow, mvCol):
+                break
+            length = min(bh4, T.Num_4x4_Blocks_High[self.MiSizes[mvRow][mvCol]])
+            if abs(deltaCol) > 1:
+                length = max(2, length)
+            if useStep16:
+                length = max(4, length)
+            self.add_ref_mv_candidate(mvRow, mvCol, isCompound, length * 2)
+            i += length
+
+    def scan_point(self, deltaRow, deltaCol, isCompound):
+        mvRow = self.MiRow + deltaRow
+        mvCol = self.MiCol + deltaCol
+        if self.is_inside(mvRow, mvCol) and self.RefFrames[mvRow][mvCol] is not None:
+            self.add_ref_mv_candidate(mvRow, mvCol, isCompound, 4)
+
+    def add_ref_mv_candidate(self, mvRow, mvCol, isCompound, weight):
+        if not self.IsInters[mvRow][mvCol]:
+            return
+        for candList in range(2):
+            if self.RefFrames[mvRow][mvCol][candList] == self.RefFrame[0]:
+                self.search_stack(mvRow, mvCol, candList, weight)
+
+    def search_stack(self, mvRow, mvCol, candList, weight):
+        candMode = self.YModes[mvRow][mvCol]
+        if candMode in (GLOBALMV, GLOBAL_GLOBALMV):
+            raise NotImplementedError("global motion candidates (inter frames) are not modelled")
+        candMv = list(self.Mvs[mvRow][mvCol][candList])
+        self.lower_mv_precision(candMv)
+        if candMode in (NEWMV, NEW_NEWMV, NEAR_NEWMV, NEW_NEARMV, NEAREST_NEWMV, NEW_NEARESTMV):
+            self.NewMvCount += 1
+        self.FoundMatch = 1
+        for idx in range(self.NumMvFound):
+            if candMv == self.RefStackMv[idx][0]:
+                self.WeightStack[idx] += weight
+                return
+        if self.NumMvFound < MAX_REF_MV_STACK_SIZE:
+            self.RefStackMv[self.NumMvFound][0] = candMv
+            self.WeightStack[self.NumMvFound] = weight
+            self.NumMvFound += 1
+
+    def lower_mv_precision(self, candMv):
+        if self.h.allow_high_precision_mv:
+            return
+        for i in range(2):
+            if self.h.force_integer_mv:
+                a = abs(candMv[i])
+                aInt = (a + 3) >> 3
+                candMv[i] = (aInt << 3) if candMv[i] > 0 else -(aInt << 3)
+            elif candMv[i] & 1:
+                candMv[i] += -1 if candMv[i] > 0 else 1
+
+    def sort_stack(self, start, end):
+        while end > start:
+            newEnd = start
+            for idx in range(start + 1, end):
+                if self.WeightStack[idx - 1] < self.WeightStack[idx]:
+                    self.WeightStack[idx - 1], self.WeightStack[idx] = self.WeightStack[idx], self.WeightStack[idx - 1]
+                    self.RefStackMv[idx - 1], self.RefStackMv[idx] = self.RefStackMv[idx], self.RefStackMv[idx - 1]
+                    newEnd = idx
+            end = newEnd
+
+    def extra_search(self, isCompound):
+        h = self.h
+        w4 = min(16, T.Num_4x4_Blocks_Wide[self.MiSize])
+        h4 = min(16, T.Num_4x4_Blocks_High[self.MiSize])
+        w4 = min(w4, h.MiCols - self.MiCol)
+        h4 = min(h4, h.MiRows - self.MiRow)
+        num4x4 = min(w4, h4)
+        for pass_ in range(2):
+            idx = 0
+            while idx < num4x4 and self.NumMvFound < 2:
+                if pass_ == 0:
+                    mvRow, mvCol = self.MiRow - 1, self.MiCol + idx
+                else:
+                    mvRow, mvCol = self.MiRow + idx, self.MiCol - 1
+                if not self.is_inside(mvRow, mvCol):
+                    break
+                self.add_extra_mv_candidate(mvRow, mvCol, isCompound)
+                if pass_ == 0:
+                    idx += T.Num_4x4_Blocks_Wide[self.MiSizes[mvRow][mvCol]]
+                else:
+                    idx += T.Num_4x4_Blocks_High[self.MiSizes[mvRow][mvCol]]
+        for idx in range(self.NumMvFound, 2):
+            self.RefStackMv[idx][0] = list(self.GlobalMvs[0])
+
+    def add_extra_mv_candidate(self, mvRow, mvCol, isCompound):
+        for candList in range(2):
+            candRef = self.RefFrames[mvRow][mvCol][candList]
+            if candRef > INTRA_FRAME:
+                raise NotImplementedError("reference-frame candidates (inter frames) are not modelled")
+
+    def clamp_mv_row(self, mvec, border):
+        bh4 = T.Num_4x4_Blocks_High[self.MiSize]
+        mbToTopEdge = -((self.MiRow * MI_SIZE) * 8)
+        mbToBottomEdge = ((self.h.MiRows - bh4 - self.MiRow) * MI_SIZE) * 8
+        return clip3(mbToTopEdge - border, mbToBottomEdge + border, mvec)
+
+    def clamp_mv_col(self, mvec, border):
+        bw4 = T.Num_4x4_Blocks_Wide[self.MiSize]
+        mbToLeftEdge = -((self.MiCol * MI_SIZE) * 8)
+        mbToRightEdge = ((self.h.MiCols - bw4 - self.MiCol) * MI_SIZE) * 8
+        return clip3(mbToLeftEdge - border, mbToRightEdge + border, mvec)
+
+    def context_and_clamping(self, isCompound, numNew):
+        bw = T.Block_Width[self.MiSize]
+        bh = T.Block_Height[self.MiSize]
+        self.DrlCtxStack = []
+        for idx in range(self.NumMvFound):
+            z = 0
+            if idx + 1 < self.NumMvFound:
+                w0 = self.WeightStack[idx]
+                w1 = self.WeightStack[idx + 1]
+                if w0 >= REF_CAT_LEVEL:
+                    if w1 < REF_CAT_LEVEL:
+                        z = 1
+                else:
+                    z = 2
+            self.DrlCtxStack.append(z)
+        for idx in range(self.NumMvFound):
+            refMv = self.RefStackMv[idx][0]
+            refMv[0] = self.clamp_mv_row(refMv[0], MV_BORDER + bh * 8)
+            refMv[1] = self.clamp_mv_col(refMv[1], MV_BORDER + bw * 8)
+        if self.CloseMatches == 0:
+            self.NewMvContext = min(self.TotalMatches, 1)
+            self.RefMvContext = self.TotalMatches
+        elif self.CloseMatches == 1:
+            self.NewMvContext = 3 - min(numNew, 1)
+            self.RefMvContext = 2 + self.TotalMatches
+        else:
+            self.NewMvContext = 5 - min(numNew, 1)
+            self.RefMvContext = 5
+
+    # ---- 5.11.26 assign_mv / 5.11.32 read_mv ----------------------------------------------------------------
+    def assign_mv(self, isCompound):
+        h = self.h
+        self.PredMv = [[0, 0], [0, 0]]
+        for i in range(1 + isCompound):
+            if not self.use_intrabc:
+                raise NotImplementedError("inter modes are not modelled")
+            compMode = NEWMV
+            self.PredMv[0] = list(self.RefStackMv[0][0])
+            if self.PredMv[0] == [0, 0]:
+                self.PredMv[0] = list(self.RefStackMv[1][0])
+            if self.PredMv[0] == [0, 0]:
+                sbSize = BLOCK_128X128 if h.use_128x128_superblock else BLOCK_64X64
+                sbSize4 = T.Num_4x4_Blocks_High[sbSize]
+                if self.MiRow - sbSize4 < h.MiRowStart:
+                    self.PredMv[0] = [0, -(sbSize4 * MI_SIZE + INTRABC_DELAY_PIXELS) * 8]
+                else:
+                    self.PredMv[0] = [-(sbSize4 * MI_SIZE * 8), 0]
+            if compMode == NEWMV:
+                self.read_mv(i)
+            else:
+                self.Mv[i] = list(self.PredMv[i])
+
+    def read_mv(self, ref):
+        diffMv = [0, 0]
+        MvCtx = MV_INTRABC_CONTEXT if self.use_intrabc else 0
+        mv_joint = self.sym(self.cdf["Mv_Joint"][MvCtx], "mv_joint")
+        if mv_joint in (MV_JOINT_HZVNZ, MV_JOINT_HNZVNZ):
+            diffMv[0] = self.read_mv_component(MvCtx, 0)
+        if mv_joint in (MV_JOINT_HNZVZ, MV_JOINT_HNZVNZ):
+            diffMv[1] = self.read_mv_component(MvCtx, 1)
+        self.Mv[ref] = [self.PredMv[ref][0] + diffMv[0], self.PredMv[ref][1] + diffMv[1]]
+
+    def read_mv_component(self, MvCtx, comp):
+        h = self.h
+        cdf = self.cdf
+        mv_sign = self.sym(cdf["Mv_Sign"][MvCtx][comp], "mv_sign")
+        mv_class = self.sym(cdf["Mv_Class"][MvCtx][comp], "mv_class")
+        if mv_class == MV_CLASS_0:
+            mv_class0_bit = self.sym(cdf["Mv_Class0_Bit"][MvCtx][comp], "mv_class0_bit")
+            if h.force_integer_mv:
+                mv_class0_fr = 3
+            else:
+                mv_class0_fr = self.sym(cdf["Mv_Class0_Fr"][MvCtx][comp][mv_class0_bit], "mv_class0_fr")
+            if h.allow_high_precision_mv:
+                mv_class0_hp = self.sym(cdf["Mv_Class0_Hp"][MvCtx][comp], "mv_class0_hp")
+            else:
+                mv_class0_hp = 1
+            mag = ((mv_class0_bit << 3) | (mv_class0_fr << 1) | mv_class0_hp) + 1
+        else:
+            d = 0
+            for i in range(mv_class):
+                mv_bit = self.sym(cdf["Mv_Bit"][MvCtx][comp][i], "mv_bit")
+                d |= mv_bit << i
+            mag = CLASS0_SIZE << (mv_class + 2)
+            if h.force_integer_mv:
+                mv_fr = 3
+            else:
+                mv_fr = self.sym(cdf["Mv_Fr"][MvCtx][comp], "mv_fr")
+            if h.allow_high_precision_mv:
+                mv_hp = self.sym(cdf["Mv_Hp"][MvCtx][comp], "mv_hp")
+            else:
+                mv_hp = 1
+            mag += ((d << 3) | (mv_fr << 1) | mv_hp) + 1
+        return -mag if mv_sign else mag
 
     def uv_mode_cdf(self):
         if self.Lossless and self.get_plane_residual_size(self.MiSize, 1) == BLOCK_4X4:
@@ -908,12 +1268,52 @@ class TileDecoder:
         h = self.h
         bw4 = T.Num_4x4_Blocks_Wide[self.MiSize]
         bh4 = T.Num_4x4_Blocks_High[self.MiSize]
-        # intra blocks: never the var-tx path
-        self.read_tx_size(allowSelect=(not self.skip) or (not self.is_inter))
-        for row in range(self.MiRow, self.MiRow + bh4):
-            for col in range(self.MiCol, self.MiCol + bw4):
-                if row < h.MiRows and col < h.MiCols:
-                    self.InterTxSizes[row][col] = self.TxSize
+        if (h.TxMode == TX_MODE_SELECT and self.MiSize > BLOCK_4X4 and self.is_inter
+                and not self.skip and not self.Lossless):
+            maxTxSz = T.Max_Tx_Size_Rect[self.MiSize]
+            txW4 = T.Tx_Width[maxTxSz] // MI_SIZE
+            txH4 = T.Tx_Height[maxTxSz] // MI_SIZE
+            for row in range(self.MiRow, self.MiRow + bh4, txH4):
+                for col in range(self.MiCol, self.MiCol + bw4, txW4):
+                    self.read_var_tx_size(row, col, maxTxSz, 0)
+        else:
+            self.read_tx_size(allowSelect=(not self.skip) or (not self.is_inter))
+            for row in range(self.MiRow, self.MiRow + bh4):
+                for col in range(self.MiCol, self.MiCol + bw4):
+                    if row < h.MiRows and col < h.MiCols:
+                        self.InterTxSizes[row][col] = self.TxSize
+
+    def read_var_tx_size(self, row, col, txSz, depth):
+        h = self.h
+        if row >= h.MiRows or col >= h.MiCols:
+            return
+        if txSz == TX_4X4 or depth == MAX_VARTX_DEPTH:
+            txfm_split = 0
+        else:
+            txfm_split = self.sym(self.cdf["Txfm_Split"][self.txfm_split_ctx(row, col, txSz)], "txfm_split")
+        w4 = T.Tx_Width[txSz] // MI_SIZE
+        h4 = T.Tx_Height[txSz] // MI_SIZE
+        if txfm_split:
+            subTxSz = T.Split_Tx_Size[txSz]
+            stepW = T.Tx_Width[subTxSz] // MI_SIZE
+            stepH = T.Tx_Height[subTxSz] // MI_SIZE
+            for i in range(0, h4, stepH):
+                for j in range(0, w4, stepW):
+                    self.read_var_tx_size(row + i, col + j, subTxSz, depth + 1)
+        else:
+            for i in range(h4):
+                for j in range(w4):
+                    if row + i < h.MiRows and col + j < h.MiCols:
+                        self.InterTxSizes[row + i][col + j] = txSz
+            self.TxSize = txSz
+
+    def txfm_split_ctx(self, row, col, txSz):
+        above = int(self.get_above_tx_width(row, col) < T.Tx_Width[txSz])
+        left = int(self.get_left_tx_height(row, col) < T.Tx_Height[txSz])
+        size = min(64, max(T.Block_Width[self.MiSize], T.Block_Height[self.MiSize]))
+        maxTxSz = find_tx_size(size, size)
+        txSzSqrUp = T.Tx_Size_Sqr_Up[txSz]
+        return int(txSzSqrUp != maxTxSz) * 3 + (TX_SIZES - 1 - maxTxSz) * 6 + above + left
 
     def read_tx_size(self, allowSelect):
         if self.Lossless:
@@ -931,7 +1331,6 @@ class TileDecoder:
         maxTxWidth = T.Tx_Width[maxRectTxSize]
         maxTxHeight = T.Tx_Height[maxRectTxSize]
         r, c = self.MiRow, self.MiCol
-        # neighbours are intra (IsInters == 0) in an intra frame
         aboveW = self.get_above_tx_width(r, c) if self.AvailU else 0
         leftH = self.get_left_tx_height(r, c) if self.AvailL else 0
         ctx = int(aboveW >= maxTxWidth) + int(leftH >= maxTxHeight)
@@ -944,13 +1343,16 @@ class TileDecoder:
         if row == self.MiRow:
             if not self.AvailU:
                 return 64
-            # Skips && IsInters never both true in an intra frame
+            if self.Skips[row - 1][col] and self.IsInters[row - 1][col]:
+                return T.Block_Width[self.MiSizes[row - 1][col]]
         return T.Tx_Width[self.InterTxSizes[row - 1][col]]
 
     def get_left_tx_height(self, row, col):
         if col == self.MiCol:
             if not self.AvailL:
                 return 64
+            if self.Skips[row][col - 1] and self.IsInters[row][col - 1]:
+                return T.Block_Height[self.MiSizes[row][col - 1]]
         return T.Tx_Height[self.InterTxSizes[row][col - 1]]
 
     # ---- residual ---------------------------------------------------------------------------------
@@ -990,6 +1392,11 @@ class TileDecoder:
                     num4x4H = T.Num_4x4_Blocks_High[planeSz]
                     subX = h.subsampling_x if plane > 0 else 0
                     subY = h.subsampling_y if plane > 0 else 0
+                    if self.is_inter and not self.Lossless and plane == 0:
+                        baseX = (miColChunk >> subX) * MI_SIZE
+                        baseY = (miRowChunk >> subY) * MI_SIZE
+                        self.transform_tree(baseX, baseY, num4x4W * 4, num4x4H * 4)
+                        continue
                     baseXBlock = (self.MiCol >> subX) * MI_SIZE
                     baseYBlock = (self.MiRow >> subY) * MI_SIZE
                     y = 0
@@ -1000,6 +1407,32 @@ class TileDecoder:
                                                  x + ((chunkX << 4) >> subX), y + ((chunkY << 4) >> subY))
                             x += stepX
                         y += stepY
+
+    def transform_tree(self, startX, startY, w, hh):
+        h = self.h
+        maxX = h.MiCols * MI_SIZE
+        maxY = h.MiRows * MI_SIZE
+        if startX >= maxX or startY >= maxY:
+            return
+        row = startY >> MI_SIZE_LOG2
+        col = startX >> MI_SIZE_LOG2
+        lumaTxSz = self.InterTxSizes[row][col]
+        lumaW = T.Tx_Width[lumaTxSz]
+        lumaH = T.Tx_Height[lumaTxSz]
+        if w <= lumaW and hh <= lumaH:
+            txSz = find_tx_size(w, hh)
+            self.transform_block(0, startX, startY, txSz, 0, 0)
+        elif w > hh:
+            self.transform_tree(startX, startY, w // 2, hh)
+            self.transform_tree(startX + w // 2, startY, w // 2, hh)
+        elif w < hh:
+            self.transform_tree(startX, startY, w, hh // 2)
+            self.transform_tree(startX, startY + hh // 2, w, hh // 2)
+        else:
+            self.transform_tree(startX, startY, w // 2, hh // 2)
+            self.transform_tree(startX + w // 2, startY, w // 2, hh // 2)
+            self.transform_tree(startX, startY + hh // 2, w // 2, hh // 2)
+            self.transform_tree(startX + w // 2, startY + hh // 2, w // 2, hh // 2)
 
     def transform_block(self, plane, baseX, baseY, txSz, x, y):
         h = self.h
@@ -1037,6 +1470,9 @@ class TileDecoder:
     def clear_block_decoded_flags(self, r, c, sbSize4):
         pass
 
+    def compute_prediction(self):
+        pass
+
     def predict_block(self, plane, startX, startY, txSz, x, y, subX, subY, sbMiRow, sbMiCol, stepX, stepY):
         pass
 
@@ -1052,7 +1488,10 @@ class TileDecoder:
         txSzSqrUp = T.Tx_Size_Sqr_Up[txSz]
         if txSzSqrUp > TX_32X32:
             return TX_SET_DCTONLY
-        # intra
+        if self.is_inter:
+            if self.h.reduced_tx_set or txSzSqrUp == TX_32X32: return TX_SET_INTER_3
+            if txSzSqr == TX_16X16: return TX_SET_INTER_2
+            return TX_SET_INTER_1
         if txSzSqrUp == TX_32X32: return TX_SET_DCTONLY
         if self.h.reduced_tx_set: return TX_SET_INTRA_2
         if txSzSqr == TX_16X16: return TX_SET_INTRA_2
@@ -1062,7 +1501,17 @@ class TileDecoder:
         h = self.h
         s = self.get_tx_set(txSz)
         qidx = self.get_qindex(1, self.segment_id) if h.segmentation_enabled else h.base_q_idx
-        if s > 0 and qidx > 0:
+        if s > 0 and qidx > 0 and self.is_inter:
+            if s == TX_SET_INTER_1:
+                v = self.sym(self.cdf["Inter_Tx_Type_Set1"][T.Tx_Size_Sqr[txSz]], "inter_tx_type")
+                TxType = T.Tx_Type_Inter_Inv_Set1[v]
+            elif s == TX_SET_INTER_2:
+                v = self.sym(self.cdf["Inter_Tx_Type_Set2"], "inter_tx_type")
+                TxType = T.Tx_Type_Inter_Inv_Set2[v]
+            else:
+                v = self.sym(self.cdf["Inter_Tx_Type_Set3"][T.Tx_Size_Sqr[txSz]], "inter_tx_type")
+                TxType = T.Tx_Type_Inter_Inv_Set3[v]
+        elif s > 0 and qidx > 0:
             intraDir = T.Filter_Intra_Mode_To_Intra_Dir[self.filter_intra_mode] if self.use_filter_intra else self.YMode
             if s == TX_SET_INTRA_1:
                 v = self.sym(self.cdf["Intra_Tx_Type_Set1"][T.Tx_Size_Sqr[txSz]][intraDir], "intra_tx_type")
@@ -1084,6 +1533,13 @@ class TileDecoder:
         txSet = self.get_tx_set(txSz)
         if plane == 0:
             return self.TxTypes[blockY][blockX]
+        if self.is_inter:
+            x4 = max(self.MiCol, blockX << self.h.subsampling_x)
+            y4 = max(self.MiRow, blockY << self.h.subsampling_y)
+            txType = self.TxTypes[y4][x4]
+            if not T.Tx_Type_In_Set_Inter[txSet][txType]:
+                return DCT_DCT
+            return txType
         txType = T.Mode_To_Txfm[self.UVMode]
         if not T.Tx_Type_In_Set_Intra[txSet][txType]:
             return DCT_DCT
