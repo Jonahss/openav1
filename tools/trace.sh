@@ -8,4 +8,5 @@ set -euo pipefail
 source "$(dirname "$0")/../env.sh"
 out="${4:-/dev/null}"
 muxer="yuv"; [ "$out" = "/dev/null" ] && muxer="null"
-DAV1D_TRACE="$2" DAV1D_TRACE_MASK="${3:-15}" "$DAV1D_TRACE_BIN" -q -i "$1" -o "$out" --muxer "$muxer" --threads 1
+# DAV1D_EXTRA: extra dav1d options, e.g. "--filmgrain 0" to write the picture without film grain (Argon md5_no_film_grain)
+DAV1D_TRACE="$2" DAV1D_TRACE_MASK="${3:-15}" "$DAV1D_TRACE_BIN" -q -i "$1" -o "$out" --muxer "$muxer" --threads 1 ${DAV1D_EXTRA:-}
