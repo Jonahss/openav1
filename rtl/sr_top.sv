@@ -36,7 +36,7 @@ module sr_top
     typedef enum logic [2:0] {S_IDLE, S_PLANE, S_RD, S_RD_LAST, S_OUT, S_NEXT, S_DONE} st_t;
     st_t st;
     logic        sub_x, sub_y;
-    logic [12:0] down_w, up_w, plane_h, max_x;
+    logic [12:0] up_w, plane_h, max_x;
     logic [31:0] step_x;
     logic signed [31:0] init_subpel, src_x;
     logic [12:0] x, y;                                       // read column / row
@@ -97,15 +97,17 @@ module sr_top
         else case (st)
             S_IDLE: if (start) begin plane <= 2'd0; st <= S_PLANE; end
             S_PLANE: begin
-                down_w <= g_down; up_w <= g_up; plane_h <= g_h; max_x <= g_maxx; step_x <= g_step;
+                up_w <= g_up; plane_h <= g_h; max_x <= g_maxx; step_x <= g_step;
                 init_subpel <= g_init & 32'sd16383;
                 y <= 13'd0; x <= 13'd0;
                 st <= S_RD;
             end
-            // copy row y into the line buffer (the read lands one cycle after its address)
+            // copy row y into the line buffer (the read lands one cycle after its address): all MiCols * 4
+            // decoded samples, not just FrameWidth of them -- the filter clamps to maxX = miW * MI_SIZE - 1 and
+            // reads the decoded margin beyond the picture edge
             S_RD: begin
                 if (x != 13'd0) line[x[FBX-1:0] - FBX'(1)] <= s_rdata;
-                if (x + 13'd1 < down_w) x <= x + 13'd1;
+                if (x < max_x) x <= x + 13'd1;
                 else st <= S_RD_LAST;
             end
             S_RD_LAST: begin
