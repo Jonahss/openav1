@@ -22,6 +22,7 @@ async def load_edges(dut, above, left, tl):
     dut.edge_we.value = 1; dut.edge_side.value = 2; dut.edge_idx.value = 0; dut.edge_data.value = tl
     await RisingEdge(dut.clk)
     dut.edge_we.value = 0
+    dut.edge_we4.value = 0
     await Timer(1, "ns")
 
 

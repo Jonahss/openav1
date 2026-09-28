@@ -386,10 +386,10 @@ module recon_top
                             .start(itx_start), .tx_sz(t.txsz), .tx_type(t.lossless ? 4'd0 : t.txtype), .bit_depth(hdr.bit_depth), .lossless(t.lossless),
                             .busy(itx_busy), .done(itx_done), .res_addr, .res_data, .res_data4);
     // ipred
-    logic edge_we, ip_start, ip_busy, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data; logic [47:0] ip_pix4; logic [5:0] ip_ox, ip_oy;
+    logic edge_we, edge_we4, ip_start, ip_busy, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data; logic [47:0] edge_data4; logic [47:0] ip_pix4; logic [5:0] ip_ox, ip_oy;
     logic ft_sel;
     assign ft_sel = (is_dir(mode) && !((t.plane == 2'd0) && b.use_fi)) ? ((t.plane == 2'd0) ? ft_y : ft_uv) : 1'b0;
-    ipred #(.PW(12)) u_ip (.clk, .rst, .edge_we, .edge_side, .edge_idx, .edge_data,
+    ipred #(.PW(12)) u_ip (.clk, .rst, .edge_we, .edge_side, .edge_idx, .edge_data, .edge_we4, .edge_data4,
                            .start(ip_start), .mode, .use_filter_intra((t.plane == 2'd0) && b.use_fi), .filter_intra_mode(b.fi_mode),
                            .angle_delta((t.plane == 2'd0) ? b.angle_y : b.angle_uv), .log2w(l2w), .log2h(l2h), .bit_depth(hdr.bit_depth),
                            .have_left(have_l), .have_above(have_a), .filter_type(ft_sel), .edge_filter_en(rh.enable_intra_edge_filter),
@@ -445,6 +445,13 @@ module recon_top
     logic [6:0]  ci, cj;                                   // generic pixel / coefficient counters (row, col)
     logic [8:0]  ek, n_edges;                              // edge entry counter: 0..2(w+h)
     logic        ep_valid, ep_const;                       // edge pipeline register
+    // above-row groups: entries 0 .. w+h-1 are gathered 4 per read (aligned at t.x); entries past AboveRow's last
+    // available sample (above_lim) replicate it, which may lie in an earlier group (last_above)
+    logic        ep_grp, ep_rep;                           // landing is a group; group replicates the left neighbour (no above)
+    logic [12:0] ep_xb;                                    // x of the group's first sample
+    logic [11:0] last_above;
+    logic [8:0]  n_above;
+    assign n_above = 9'(tw_px) + 9'(th_px);
     logic [1:0]  ep_side; logic [7:0] ep_idx; logic [11:0] ep_val;
     logic        px_valid;                                 // generic 1-deep read pipeline
     logic [6:0]  px_i, px_j;
@@ -566,6 +573,16 @@ module recon_top
         fb2_we = 1'b0; fb2_plane = t.plane; fb2_x = '0; fb2_y = '0; fb2_wdata = 12'd0;
         fb4_we = 1'b0; fb4_plane = t.plane; fb4_x = '0; fb4_y = '0; fb4_wdata = 48'd0;
         edge_we = 1'b0; edge_side = ep_side; edge_idx = ep_idx; edge_data = ep_const ? ep_val : fb_rdata;
+        edge_we4 = 1'b0;
+        for (int l = 0; l < 4; l++) begin                                    // group lanes with the clamp to above_lim
+            logic [12:0] gx;
+            gx = ep_xb + 13'(l);
+            if (ep_const) edge_data4[l * 12 +: 12] = ep_val;
+            else if (ep_rep) edge_data4[l * 12 +: 12] = fb_rdata;
+            else if (gx <= above_lim) edge_data4[l * 12 +: 12] = fb_rdata4[l * 12 +: 12];
+            else if (above_lim >= ep_xb) edge_data4[l * 12 +: 12] = fb_rdata4[(above_lim - ep_xb) * 12 +: 12];
+            else edge_data4[l * 12 +: 12] = last_above;
+        end
         itx_we = 1'b0; itx_addr = 10'd0; itx_data = '0;
         cl_lwe = 1'b0; cl_dwe = 1'b0; cl_laddr = 10'd0; cl_ldata = fb_rdata; cl_daddr = 10'd0; cl_ddata = fb_rdata;
         res_addr = 12'({pci[5:0], pcj[5:0]});                 // residual of the position read last cycle
@@ -582,8 +599,12 @@ module recon_top
                 end
             end
             R_EDGE: begin
-                if (ek <= n_edges && !e_const) begin fb_re = 1'b1; fb_x = FBX'(e_rx); fb_y = FBY'(e_ry); end
-                if (ep_valid) edge_we = 1'b1;
+                if (ek < n_above) begin                                      // above row: one aligned group of 4 per read
+                    if (have_a) begin fb_re = 1'b1; fb_x = FBX'(t.x + 13'(ek)); fb_y = FBY'(t.y - 13'd1); end
+                    else if (have_l) begin fb_re = 1'b1; fb_x = FBX'(t.x - 13'd1); fb_y = FBY'(t.y); end
+                end else if (ek <= n_edges && !e_const) begin fb_re = 1'b1; fb_x = FBX'(e_rx); fb_y = FBY'(e_ry); end
+                if (ep_valid && !ep_grp) edge_we = 1'b1;
+                if (ep_valid && ep_grp) edge_we4 = 1'b1;
             end
             R_IP_W: if (ip_ov) begin fb4_we = 1'b1; fb4_x = FBX'(t.x + 13'(ip_ox)); fb4_y = FBY'(t.y + 13'(ip_oy)); fb4_wdata = ip_pix4; end
             R_CFL_L: begin
@@ -675,8 +696,14 @@ module recon_top
                 R_PAL_LAST: begin px_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; rs <= R_RESID; end
                 // ---- edge preparation (7.11.2.1), pipelined: issue entry ek, write entry ek-1
                 R_EDGE: begin
-                    if (ek <= n_edges) begin
-                        ep_valid <= 1'b1; ep_side <= e_side; ep_idx <= e_idx; ep_const <= e_const; ep_val <= e_val;
+                    if (ep_valid && ep_grp && !ep_const && !ep_rep && above_lim >= ep_xb && above_lim <= ep_xb + 13'd3)
+                        last_above <= fb_rdata4[(above_lim - ep_xb) * 12 +: 12];
+                    if (ek < n_above) begin                                  // above row, groups of 4
+                        ep_valid <= 1'b1; ep_grp <= 1'b1; ep_side <= 2'd0; ep_idx <= 8'(ek); ep_xb <= t.x + 13'(ek);
+                        ep_const <= !have_a && !have_l; ep_val <= mid_m1; ep_rep <= !have_a && have_l;
+                        ek <= ek + 9'd4;
+                    end else if (ek <= n_edges) begin
+                        ep_valid <= 1'b1; ep_grp <= 1'b0; ep_side <= e_side; ep_idx <= e_idx; ep_const <= e_const; ep_val <= e_val;
                         ek <= ek + 9'd1;
                     end else begin
                         ep_valid <= 1'b0;

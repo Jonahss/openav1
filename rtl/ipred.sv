@@ -22,6 +22,8 @@ module ipred #(
     input  logic [1:0]    edge_side,
     input  logic [7:0]    edge_idx,
     input  logic [PW-1:0] edge_data,
+    input  logic          edge_we4,          // AboveRow[edge_idx .. edge_idx+3] <= edge_data4 lanes (edge_idx a multiple of 4)
+    input  logic [4*PW-1:0] edge_data4,
 
     // ---- parameters (sampled at start) ----
     input  logic          start,
@@ -385,6 +387,7 @@ module ipred #(
                         default: TL_in <= edge_data;
                     endcase
                 end
+                if (edge_we4) for (int l = 0; l < 4; l++) A[EOFF + (int'(edge_idx)) + l] <= edge_data4[l * PW +: PW];
                 if (start) begin
                     l_mode <= mode; l_fi <= use_filter_intra; l_fimode <= filter_intra_mode;
                     l_log2w <= log2w; l_log2h <= log2h;
