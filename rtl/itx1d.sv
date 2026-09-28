@@ -9,7 +9,7 @@
 //   * one of the dedicated single-cycle transforms (ADST4, identity, WHT),
 //   * end.
 // Start latches the input vector and the program; done pulses with the result in out_vec.
-// Cycle count = ROM rows for the program (+1): DCT4 5, DCT8 7, DCT16 14, DCT32 29, DCT64 65,
+// Cycle count = ROM rows for the program (+1): DCT4 3 (dedicated op), DCT8 7, DCT16 14, DCT32 29, DCT64 65,
 // ADST8 9, ADST16 17, ADST4/identity/WHT 3 — at NSLOTS=4. Widen NSLOTS to trade area for speed.
 module itx1d #(
     parameter int TW = 20                   // element width (bits): BitDepth + 10 covers every intermediate (20 for 8/10-bit, 22 for 12-bit)
@@ -41,7 +41,7 @@ module itx1d #(
     itx_prog_start u_start (.pid(prog), .addr(prog_addr));
     wire [3:0] kind = row[3:0];
     localparam logic [3:0] K_OPS = 4'd1, K_PERM_DCT = 4'd2, K_PERM_ADST_IN = 4'd3, K_PERM_ADST_OUT = 4'd4,
-                           K_ADST4 = 4'd5, K_IDENT = 4'd6, K_WHT = 4'd7, K_END = 4'd8;
+                           K_ADST4 = 4'd5, K_IDENT = 4'd6, K_WHT = 4'd7, K_END = 4'd8, K_DCT4 = 4'd9;
 
     // ------------------------------------------------------------------ slot decode
     logic [1:0] s_op   [NS];
@@ -141,6 +141,10 @@ module itx1d #(
     logic signed [TW-1:0] T_perm  [64];
     logic signed [TW-1:0] T_ident [64];
     logic signed [TW-1:0] T_adst4 [4];
+    logic signed [TW-1:0] T_dct4  [4];
+    logic signed [12:0] c32, s32, c48, s48;              // the DCT4 rotation constants (cos128 / sin128 of 32 and 48)
+    cos128_lut u_c32 (.angle(8'd32), .val(c32)); cos128_lut u_s32 (.angle(8'd32 - 8'd64), .val(s32));
+    cos128_lut u_c48 (.angle(8'd48), .val(c48)); cos128_lut u_s48 (.angle(8'd48 - 8'd64), .val(s48));
     logic signed [TW-1:0] T_wht   [4];
 
     always_comb begin
@@ -217,6 +221,24 @@ module itx1d #(
             T_adst4[2] = TW'((x2 + (TW+14)'(2048)) >>> 12);
             T_adst4[3] = TW'((x3 + (TW+14)'(2048)) >>> 12);
         end
+        // DCT4 (spec 7.13.2.3 with n = 2) in one step: bit-reversal permutation, B(0,1,32,flip) and B(2,3,48),
+        // then H(0,3) and H(1,2) — the same arithmetic as the slot datapath (Round2 12 rotations, clamped Hadamards)
+        begin
+            logic signed [TW-1:0] p0, p1, p2, p3, r0, r1, r2, r3;
+            logic signed [TW+13:0] x, y;
+            logic signed [TW:0] sum, dif;
+            p0 = T[0]; p1 = T[2]; p2 = T[1]; p3 = T[3];                    // T[brev(2, i)]
+            x = p0 * c32 - p1 * s32; y = p0 * s32 + p1 * c32;
+            r0 = TW'((y + (TW+14)'(2048)) >>> 12); r1 = TW'((x + (TW+14)'(2048)) >>> 12);   // flip: index 0 takes y
+            x = p2 * c48 - p3 * s48; y = p2 * s48 + p3 * c48;
+            r2 = TW'((x + (TW+14)'(2048)) >>> 12); r3 = TW'((y + (TW+14)'(2048)) >>> 12);
+            sum = (TW+1)'(r0) + (TW+1)'(r3); dif = (TW+1)'(r0) - (TW+1)'(r3);
+            T_dct4[0] = (sum < (TW+1)'(clip_lo)) ? clip_lo : (sum > (TW+1)'(clip_hi)) ? clip_hi : TW'(sum);
+            T_dct4[3] = (dif < (TW+1)'(clip_lo)) ? clip_lo : (dif > (TW+1)'(clip_hi)) ? clip_hi : TW'(dif);
+            sum = (TW+1)'(r1) + (TW+1)'(r2); dif = (TW+1)'(r1) - (TW+1)'(r2);
+            T_dct4[1] = (sum < (TW+1)'(clip_lo)) ? clip_lo : (sum > (TW+1)'(clip_hi)) ? clip_hi : TW'(sum);
+            T_dct4[2] = (dif < (TW+1)'(clip_lo)) ? clip_lo : (dif > (TW+1)'(clip_hi)) ? clip_hi : TW'(dif);
+        end
         // WHT (spec 7.13.2.10)
         begin
             logic signed [TW-1:0] a, b, c, d, e;
@@ -258,6 +280,7 @@ module itx1d #(
                                  for (int i = 0; i < 64; i++) T[i] <= T_perm[i];
                 K_IDENT:         for (int i = 0; i < 64; i++) T[i] <= T_ident[i];
                 K_ADST4:         for (int i = 0; i < 4;  i++) T[i] <= T_adst4[i];
+                K_DCT4:          for (int i = 0; i < 4;  i++) T[i] <= T_dct4[i];
                 K_WHT:           for (int i = 0; i < 4;  i++) T[i] <= T_wht[i];
                 K_END: begin
                     busy <= 1'b0;
