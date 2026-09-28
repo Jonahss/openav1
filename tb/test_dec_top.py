@@ -240,10 +240,30 @@ def ref_frame(path, hdr, fi, offset=None):
 
 
 async def rtl_only(dut, ivfs, stats):
+    """Every stream is attempted; failures are collected and reported at the end (one bad stream must not hide
+    the others' results in a conformance batch)."""
+    failures = []
+    for path in ivfs:
+        try:
+            await rtl_only_stream(dut, path, stats)
+        except AssertionError as e:
+            failures.append(str(e)[:300])
+            stats["failed"] = stats.get("failed", 0) + 1
+            dut._log.error(f"FAIL {Path(path).name}: {str(e)[:300]}")
+            # the decoder may be mid-frame: reset it before the next stream
+            dut.rst.value = 1
+            await ClockCycles(dut.clk, 4)
+            dut.rst.value = 0
+            await RisingEdge(dut.clk)
+    dut._log.info(f"streams: {len(ivfs)}, failed: {len(failures)}")
+    assert not failures, f"{len(failures)} / {len(ivfs)} streams failed: " + " | ".join(failures)
+
+
+async def rtl_only_stream(dut, path, stats):
     import obu_parser as op
     import tile_model as tm
     ref_dir = os.environ.get("TS_REF_DIR", str(HERE.parent / "refout"))
-    for path in ivfs:
+    if True:
         d = op.Decoder()
         raw = open(path, "rb").read()
         if path.endswith(".obu"):
