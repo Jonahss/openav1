@@ -517,7 +517,10 @@ async def dec_vs_model(dut):
             if path.endswith(".obu"):
                 d.feed_annexb(raw)
             else:
-                d.feed_ivf(raw)
+                if path.endswith(".obu"):
+                    d.feed_annexb(raw)
+                else:
+                    d.feed_ivf(raw)
             for fi, tile_idx in enumerate(d.frames):
                 frame = {}
                 events = []

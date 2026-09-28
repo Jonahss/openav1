@@ -56,7 +56,8 @@ separately.
 | CDEF (7.15) | `tb/cdef_model.py` | `rtl/cdef_top.sv` | 4 real frames, 172 k filtered pixels == model; model == dav1d |
 | Loop restoration (7.17): Wiener + self-guided | `tb/lr_model.py` | `rtl/lr_top.sv` | 2 real frames, 32 k filtered pixels == model; model == dav1d |
 | Intra block copy (5.11.7 / 7.10.2 / 7.11.3 with the current frame as reference) | `tb/tile_model.py`, `tb/recon_model.py` | `rtl/mv_stack.sv`, `rtl/mv_mem.sv`, `rtl/blk_syntax.sv`, `rtl/recon_top.sv` | model == dav1d on 4 Argon intrabc streams (test4592/8304/5297/5366: 1.04 M symbols, 22 k coefficient blocks, 21 pictures); RTL syntax == model on test4592 + test8304 (10 k blocks); full RTL picture == dav1d on test4592 |
-| Super-resolution, film grain | not yet | not yet | — |
+| Super-resolution (7.16) | `tb/superres_model.py` | `rtl/sr_top.sv` (in-place row upscaler) | model == dav1d on 4 Argon upscaling frames; full RTL picture == dav1d on test60 (60->67), test5644 (255->447), test7463 (1260->2048 with CDEF + self-guided restoration) |
+| Film grain synthesis (7.18.3) | not planned for the core: conformance references are grain-free (Argon md5_no_film_grain) | — | — |
 
 `rtl/dec_top.sv` is the integrated intra decoder: tile bytes + parsed headers in, then the in-loop filters
 (deblocking, CDEF, loop restoration) run over the finished frame on request; the output picture is read
