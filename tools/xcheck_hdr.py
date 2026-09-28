@@ -51,7 +51,9 @@ def main():
             b = getattr(dh, fld, "MISSING")
             if fld == "FeatureData":
                 # dav1d stores ref = -1 when disabled; the spec stores 0 with FeatureEnabled = 0
-                b = [[v if th.FeatureEnabled[s][j] else 0 for j, v in enumerate(row)] for s, row in enumerate(b)]
+                # ... and keeps the coded value unclipped; the spec clips to Segmentation_Feature_Max (255 / 63 / 7 / 0)
+                lim = [255, 63, 63, 63, 63, 7, 0, 0]
+                b = [[max(-lim[j], min(lim[j], v)) if th.FeatureEnabled[s][j] else 0 for j, v in enumerate(row)] for s, row in enumerate(b)]
             if fld == "FeatureEnabled":
                 # dav1d cannot distinguish "enabled with value 0" from disabled for value features (see FrameHeader)
                 a = [[(1 if (a[s][j] and (th.FeatureData[s][j] != 0 or j >= 5)) else 0) for j in range(8)] for s in range(8)]
