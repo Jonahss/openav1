@@ -404,7 +404,7 @@ module blk_syntax
                 end
                 // ---- delta q
                 S_DQ: begin
-                    if ((bs == sb_bs && skip) || !read_deltas) st <= S_YMODE;
+                    if ((bs == sb_bs && skip) || !read_deltas) st <= S_IBC;
                     else st <= S_DQ_GO;
                 end
                 S_DQ_GO: begin st <= S_DQ_W;
@@ -475,7 +475,7 @@ module blk_syntax
                 S_IBC_GO: st <= S_IBC_W;
                 S_IBC_W: if (sq_done) begin if (sq_sym[0]) unsupported <= 1'b1; st <= S_YMODE; end
                 // ---- modes  (ReadDeltas cleared here: after delta syntax, before anything else)
-                S_YMODE: begin read_deltas <= 1'b0; st <= S_YMODE_W; end
+                S_YMODE: begin read_deltas <= 1'b0; st <= S_IBC_W; end
                 S_YMODE_W: if (sq_done) begin ymode <= sq_sym; st <= S_ANGY; end
                 S_ANGY: begin
                     if (bs >= BLOCK_8X8 && is_dir(ymode)) st <= S_ANGY_GO;
