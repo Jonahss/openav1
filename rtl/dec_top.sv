@@ -1,6 +1,6 @@
 // Intra tile decoder top: tile_syntax (entropy decoding + syntax) -> recon_top (prediction, transforms,
 // reconstruction) -> frame_mem, plus mi_store + lf_top (deblocking, on lf_start) + cdef_top (on cdef_start, into a
-// second frame buffer). Software supplies the parsed headers (hdr_t / rec_hdr_t), the CDF defaults
+// second frame buffer) + lr_top (on lr_start, into a third). h_buf selects which picture the host reads. Software supplies the parsed headers (hdr_t / rec_hdr_t), the CDF defaults
 // and the tile bytes; the picture (pre loop filter) is read back through the frame buffer's host port.
 module dec_top
   import cdf_map_pkg::*;
@@ -36,6 +36,10 @@ module dec_top
     input  logic              cdef_start,          // after lf_done (when enable_cdef && !CodedLossless && !allow_intrabc)
     output logic              cdef_busy,
     output logic              cdef_done,
+    input  logic              lr_start,            // after cdef_done (or lf_done when CDEF is off); reads fb0 + fb1, writes fb2
+    input  logic              lr_from_deblocked,   // 1 when CDEF did not run this frame: CdefFrame == deblocked frame, read fb0 for both
+    output logic              lr_busy,
+    output logic              lr_done_o,
     // observability (records as they stream between the stages)
     output logic              blk_done,
     output blk_rec_t          blk_rec,
@@ -43,8 +47,8 @@ module dec_top
     output tx_rec_t           tx_rec,
     output logic              lr_done,
     output lr_rec_t           lr_rec,
-    // frame buffer host read port (registered): h_buf 0 = deblocked frame, 1 = CdefFrame
-    input  logic              h_buf,
+    // frame buffer host read port (registered): h_buf 0 = deblocked frame, 1 = CdefFrame, 2 = LrFrame
+    input  logic [1:0]        h_buf,
     input  logic [1:0]        h_plane,
     input  logic [FBX-1:0]    h_x,
     input  logic [FBY-1:0]    h_y,
@@ -76,7 +80,7 @@ module dec_top
                    .rd_row(mi_rd_row), .rd_col(mi_rd_col), .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
                    .cd_clr(mi_cd_clr), .cd_we(mi_cd_we), .cd_row64(mi_cd_row64), .cd_col64(mi_cd_col64), .cd_sb128(hdr.sb128), .cd_mask(mi_cd_mask), .cd_idx(mi_cd_idx),
                    .cdr_row64, .cdr_col64, .cdr_val,
-                   .lr_we(1'b0), .lr_rec('0), .lrr_plane(2'd0), .lrr_row(6'd0), .lrr_col(6'd0), .lrr_rec());
+                   .lr_we(lr_done), .lr_rec, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec);
     logic lf_re, lf_we; logic [1:0] lf_plane; logic [FBX-1:0] lf_x; logic [FBY-1:0] lf_y; logic [11:0] lf_wdata;
     lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start(lf_start), .busy(lf_busy), .done(lf_done),
                                          .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
@@ -92,16 +96,31 @@ module dec_top
     assign mi_rd_row = cdef_busy ? cd_rd_row : rd_row;
     assign mi_rd_col = cdef_busy ? cd_rd_col : rd_col;
 
-    logic [11:0] h_rdata0, h_rdata1;
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .re(lf_busy ? lf_re : cdef_busy ? cd_re : fb_re), .we(lf_busy ? lf_we : cdef_busy ? 1'b0 : fb_we),
-                                                     .plane(lf_busy ? lf_plane : cdef_busy ? cd_plane : fb_plane),
-                                                     .x(lf_busy ? lf_x : cdef_busy ? cd_x : fb_x), .y(lf_busy ? lf_y : cdef_busy ? cd_y : fb_y),
+    // loop restoration: reads fb0 (deblocked) and fb1 (CdefFrame) while lr_busy, writes fb2 (LrFrame)
+    logic [1:0] lrr_plane; logic [5:0] lrr_row, lrr_col; lr_rec_t lrr_rec;
+    logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata, fb1_rdata;
+    lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start(lr_start), .busy(lr_busy), .done(lr_done_o),
+                                         .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
+                                         .s0_re(lr_s0_re), .s1_re(lr_s1_re), .s_plane(lr_splane), .s_x(lr_sx), .s_y(lr_sy), .s0_rdata(fb_rdata),
+                                         .s1_rdata(lr_from_deblocked ? fb_rdata : fb1_rdata),
+                                         .d_we(lr_we2), .d_plane(lr_dplane), .d_x(lr_dx), .d_y(lr_dy), .d_wdata(lr_wdata));
+
+    logic [11:0] h_rdata0, h_rdata1, h_rdata2;
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .re(lf_busy ? lf_re : cdef_busy ? cd_re : lr_busy ? (lr_s0_re || (lr_from_deblocked && lr_s1_re)) : fb_re),
+                                                     .we(lf_busy ? lf_we : (cdef_busy || lr_busy) ? 1'b0 : fb_we),
+                                                     .plane(lf_busy ? lf_plane : cdef_busy ? cd_plane : lr_busy ? lr_splane : fb_plane),
+                                                     .x(lf_busy ? lf_x : cdef_busy ? cd_x : lr_busy ? lr_sx : fb_x),
+                                                     .y(lf_busy ? lf_y : cdef_busy ? cd_y : lr_busy ? lr_sy : fb_y),
                                                      .wdata(lf_busy ? lf_wdata : fb_wdata), .rdata(fb_rdata),
                                                      .h_plane, .h_x, .h_y, .h_rdata(h_rdata0));
-    logic [11:0] unused_r1;
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .re(1'b0), .we(cd_we), .plane(cd_dplane), .x(cd_dx), .y(cd_dy), .wdata(cd_wdata), .rdata(unused_r1),
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb1 (.clk, .re(lr_busy ? (lr_s1_re && !lr_from_deblocked) : 1'b0), .we(cdef_busy ? cd_we : 1'b0),
+                                                      .plane(lr_busy ? lr_splane : cd_dplane), .x(lr_busy ? lr_sx : cd_dx), .y(lr_busy ? lr_sy : cd_dy),
+                                                      .wdata(cd_wdata), .rdata(fb1_rdata),
                                                       .h_plane, .h_x, .h_y, .h_rdata(h_rdata1));
-    assign h_rdata = h_buf ? h_rdata1 : h_rdata0;
+    logic [11:0] unused_r2;
+    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb2 (.clk, .re(1'b0), .we(lr_we2), .plane(lr_dplane), .x(lr_dx), .y(lr_dy), .wdata(lr_wdata), .rdata(unused_r2),
+                                                      .h_plane, .h_x, .h_y, .h_rdata(h_rdata2));
+    assign h_rdata = (h_buf == 2'd2) ? h_rdata2 : (h_buf == 2'd1) ? h_rdata1 : h_rdata0;
 
     // tile_done once the syntax is finished and the reconstruction stage has drained
     logic done_pend;

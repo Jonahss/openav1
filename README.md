@@ -53,11 +53,13 @@ separately.
 | Chroma from luma (7.11.5) | `tb/intra_model.py` | `rtl/cfl.sv` | 264 dav1d blocks + fuzz |
 | Dequantisation, edge preparation, palette prediction, reconstruction, frame buffer | `tb/recon_model.py` | `rtl/recon_top.sv`, `rtl/frame_mem.sv` | whole frames == model: all 21 corpus streams (44 frames, 4.9 M pixels) + 18 generated frames |
 | Deblocking loop filter (7.14) | `tb/lf_model.py` | `rtl/lf_top.sv`, `rtl/mi_store.sv` | 6 real frames, 37 k filtered pixels == model; model == dav1d |
-| CDEF (7.15), loop restoration (7.17) | `tb/cdef_model.py`, `tb/lr_model.py` | not yet | model: output pictures == dav1d on the corpus |
+| CDEF (7.15) | `tb/cdef_model.py` | `rtl/cdef_top.sv` | 4 real frames, 172 k filtered pixels == model; model == dav1d |
+| Loop restoration (7.17): Wiener + self-guided | `tb/lr_model.py` | `rtl/lr_top.sv` | 2 real frames, 32 k filtered pixels == model; model == dav1d |
 | Super-resolution, film grain | not yet | not yet | — |
 
-`rtl/dec_top.sv` is the integrated intra tile decoder: tile bytes + parsed headers in, pre-loop-filter
-picture out. It is slow-and-correct (one pixel or coefficient per cycle or two, no overlap between
+`rtl/dec_top.sv` is the integrated intra decoder: tile bytes + parsed headers in, then the in-loop filters
+(deblocking, CDEF, loop restoration) run over the finished frame on request; the output picture is read
+from the frame buffer the last stage wrote. It is slow-and-correct (one pixel or coefficient per cycle or two, no overlap between
 stages); throughput work starts once the pipeline is complete and the numbers are measured.
 
 Reference oracle: the Argon conformance suite (2,763 streams) decodes identically with dav1d and against

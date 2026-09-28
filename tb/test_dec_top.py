@@ -20,13 +20,14 @@ sys.path.insert(0, str(HERE.parent / "tools"))
 import cdf_map as M                     # noqa: E402
 import cdef_model as cdm                # noqa: E402
 import lf_model as lfm                  # noqa: E402
+import lr_model as lrm                  # noqa: E402
 import test_cdef_top as TC              # noqa: E402
 import recon_model as rm                # noqa: E402
 import test_lf_top as TL                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 
-STAGE = os.environ.get("TS_STAGE", "recon")      # recon | lf | cdef : how far the RTL and the model go before comparing
+STAGE = os.environ.get("TS_STAGE", "recon")      # recon | lf | cdef | lr : how far the RTL and the model go before comparing
 
 REC_FIELDS = [  # syn_pkg::rec_hdr_t order (MSB first)
     ("enable_intra_edge_filter", 1), ("dq_ydc", 7), ("dq_udc", 7), ("dq_uac", 7), ("dq_vdc", 7), ("dq_vac", 7),
@@ -148,17 +149,26 @@ async def pulse_and_wait(dut, start_sig, done_sig, tag, limit=60_000_000):
 async def finish_frame(dut, hdr, decs, planes, tag, stats):
     """After all tiles: run the in-loop filters up to STAGE in both the model and the RTL. Returns the planes to
     compare and which frame buffer holds the RTL result (0 = deblocked frame, 1 = CdefFrame)."""
-    if STAGE in ("lf", "cdef"):
+    buf = 0
+    if STAGE in ("lf", "cdef", "lr"):
         state = xf.FrameState(hdr, decs)
         lfm.LoopFilter(hdr, state, planes).apply()
         dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
         stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)
-        if STAGE == "cdef" and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+        deblocked = planes
+        if STAGE in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             planes = cdm.Cdef(hdr, state, planes).apply()
             dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
             stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
-            return planes, 1
-    return planes, 0
+            buf = 1
+        if STAGE == "lr" and any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
+            # CDEF off: CdefFrame == deblocked frame (the RTL reads fb0 for both sources via lr_from_deblocked)
+            planes_cdef = planes if buf == 1 else [[row[:] for row in p] for p in planes]
+            dut.lr_from_deblocked.value = 0 if buf == 1 else 1
+            planes = lrm.LoopRestoration(hdr, state, deblocked, planes_cdef).apply()
+            stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000)
+            buf = 2
+    return planes, buf
 
 
 def dump_yuv(path, hdr, get_pixel):
@@ -237,13 +247,13 @@ async def dec_vs_model(dut):
     H = int(os.environ.get("TS_H", "96"))
     debug = bool(os.environ.get("TD_DEBUG"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "lf_start", "cdef_start", "h_buf", "h_plane", "h_x", "h_y"):
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, cdef_cycles=0, stage=STAGE)
+    stats = dict(frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, cdef_cycles=0, lr_cycles=0, stage=STAGE)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:
         # real streams (aomenc / dav1d-verified corpus): every frame, every tile
