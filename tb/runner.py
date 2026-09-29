@@ -35,4 +35,5 @@ if os.environ.get("SIM_FAST", "0") == "1":
     build_args += ["-O3", "--x-assign", "fast", "--x-initial", "fast", "-CFLAGS", "-O2", "--threads", str(threads), "-Wno-UNOPTTHREADS"]
 r.build(sources=sources, hdl_toplevel=top, parameters=params,
         build_dir=ROOT / "build" / top, build_args=build_args, waves=waves)
-r.test(hdl_toplevel=top, test_module=mod, build_dir=ROOT / "build" / top, waves=waves)
+plusargs = [f"+vis={os.environ['TS_VIS']}"] if os.environ.get("TS_VIS") else []   # decode-progress trace (docs/vis-trace.md)
+r.test(hdl_toplevel=top, test_module=mod, build_dir=ROOT / "build" / top, waves=waves, plusargs=plusargs)

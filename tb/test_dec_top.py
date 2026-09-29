@@ -3,7 +3,8 @@ model on generated streams. Every tile of a frame is decoded by both; then the R
 through the host port and compared with the model's CurrFrame (pre loop filter) over the MI-aligned area.
 
 Env: TS_SEEDS (as in test_tile_syntax), TS_W / TS_H (frame size, default 128x96), TS_FMT, TS_SCREEN (1/0/rand),
-TS_NOLR, TD_DEBUG=1 (per-tile record counting + hang dump).
+TS_NOLR, TD_DEBUG=1 (per-tile record counting + hang dump), TS_FRAMES=2,5 (model-compare mode with TS_IVF: only these
+decoded-frame indices; frames with primary_ref_frame = NONE are independent).
 """
 import os
 import random
@@ -455,6 +456,15 @@ async def rtl_only_stream(dut, path, stats):
                     rows.append(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
                 planes_rb.append(rows)
                 stats["pixels"] += W * H
+                if not bad and os.environ.get("TS_DUMP") and plane == hdr.NumPlanes - 1:
+                    # TS_DUMP with an identical frame: keep the RTL's output picture (planar, dav1d's layout)
+                    # so tools/demo.sh can show it next to dav1d's
+                    ddir = os.environ["TS_DUMP"]
+                    os.makedirs(ddir, exist_ok=True)
+                    with open(os.path.join(ddir, f"{Path(path).name}_frame_{fi}.rtl.yuv"), "wb") as dfh:   # name tools/cmp_dump_refout.py expects
+                        for rows_ in planes_rb:
+                            for row_ in rows_:
+                                dfh.write(row_)
                 if bad and os.environ.get("TS_DUMP"):
                     # every frame buffer (0 deblocked, 1 CDEF, 2 restored; upscaled in place when superres) for
                     # stage-by-stage comparison with tools/model_stages.py
@@ -592,7 +602,10 @@ async def dec_vs_model(dut):
                     d.feed_annexb(raw)
                 else:
                     d.feed_ivf(raw)
+            frames_sel = {int(x) for x in os.environ.get("TS_FRAMES", "").split(",") if x}   # decoded-frame indices to run (default all)
             for fi, tile_idx in enumerate(d.frames):
+                if frames_sel and fi not in frames_sel:
+                    continue
                 frame = {}
                 events = []
                 blocks_all = []

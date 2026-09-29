@@ -325,4 +325,31 @@ module dec_top
             if ((done_pend || ts_done) && !rc_busy && !ev_valid) begin done_pend <= 1'b0; tile_done <= 1'b1; tile_done_lvl <= 1'b1; end
         end
     end
+    // ---- decode-progress trace for tools/vis_render.py: +vis=<file> (docs/vis-trace.md). Simulation only. ----
+`ifdef VERILATOR
+    int          vis_fd = 0;
+    string       vis_path;
+    logic [63:0] vis_cyc = 64'd0;
+    initial begin
+        if ($value$plusargs("vis=%s", vis_path)) vis_fd = $fopen(vis_path, "w");
+    end
+    always_ff @(posedge clk) begin
+        if (rst || frame_start) vis_cyc <= 64'd0; else vis_cyc <= vis_cyc + 64'd1;
+        if (vis_fd != 0 && !rst) begin
+            if (tx_ack)
+                $fwrite(vis_fd, "T %0d %0d %0d %0d %0d %0d\n", vis_cyc, tx_rec.plane, tx_rec.x, tx_rec.y,
+                        blk_tables_pkg::tx_width(tx_rec.txsz), blk_tables_pkg::tx_height(tx_rec.txsz));
+            if (lf_pend && lf_done)
+                $fwrite(vis_fd, "F %0d L %0d %0d\n", vis_cyc, 32'(lf_row_first) * 4, 32'(lf_row_last) * 4 + 3);
+            if (cd_pend && cdef_done)
+                $fwrite(vis_fd, "F %0d C %0d %0d\n", vis_cyc, 32'(cd_row_first) * 4, 32'(cd_row_last) * 4 + 3);
+            if (sr_pend && sr_done)
+                $fwrite(vis_fd, "F %0d S %0d %0d\n", vis_cyc, 32'(sr_ly_first), 32'(sr_ly_last));
+            if (lr_pend && lr_done_o)
+                $fwrite(vis_fd, "F %0d R %0d %0d\n", vis_cyc, 32'(lr_ly_first), 32'(lr_ly_last));
+            if (frame_done)
+                $fwrite(vis_fd, "E %0d\n", vis_cyc);
+        end
+    end
+`endif
 endmodule
