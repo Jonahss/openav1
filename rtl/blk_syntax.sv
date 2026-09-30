@@ -267,15 +267,15 @@ module blk_syntax
     logic [4:0] max_rect;
     logic [2:0] max_depth;
     logic [1:0] txd_ctx;
-    logic [6:0] above_w, left_h;
+    logic [7:0] above_w, left_h;                 // 8 bits: an inter neighbour's block size can be 128
     always_comb begin
         max_rect = max_tx_size_rect(bs);
         max_depth = max_tx_depth(bs);
         // unavailable neighbours count as width/height 0 (tile_model.tx_depth_cdf, matches dav1d); inter
         // neighbours count with their block size
-        above_w = avail_u ? (a_is_inter ? 7'(blk_w(a_misize)) : tx_width(a_txsz)) : 7'd0;
-        left_h  = avail_l ? (l_is_inter ? 7'(blk_h(l_misize)) : tx_height(l_txsz)) : 7'd0;
-        txd_ctx = 2'(above_w >= tx_width(max_rect)) + 2'(left_h >= tx_height(max_rect));
+        above_w = avail_u ? (a_is_inter ? blk_w(a_misize) : 8'(tx_width(a_txsz))) : 8'd0;
+        left_h  = avail_l ? (l_is_inter ? blk_h(l_misize) : 8'(tx_height(l_txsz))) : 8'd0;
+        txd_ctx = 2'(above_w >= 8'(tx_width(max_rect))) + 2'(left_h >= 8'(tx_height(max_rect)));
     end
     logic uv_cfl_allowed;
     always_comb begin
@@ -325,7 +325,7 @@ module blk_syntax
     logic [4:0]  vt_tx;
     logic [5:0]  vt_r, vt_c;
     logic [23:0] vt_arec, vt_lrec;
-    logic [6:0]  vt_above_w, vt_left_h;
+    logic [7:0]  vt_above_w, vt_left_h;          // 8 bits: a skipped inter neighbour counts with its block size (up to 128)
     logic [2:0]  vt_max_tx;
     logic [4:0]  vt_ctx;
     always_comb begin
@@ -333,15 +333,15 @@ module blk_syntax
         vt_arec = a_recs[24 * (int'(bc[3:0]) + int'(vt_c)) +: 24];
         vt_lrec = l_recs[24 * (int'(br[3:0]) + int'(vt_r)) +: 24];
         if (vt_r == 6'd0) begin
-            if (!avail_u) vt_above_w = 7'd64;
-            else if (vt_arec[4] && vt_arec[23]) vt_above_w = 7'(blk_w(vt_arec[9:5]));        // Skips && IsInters
-            else vt_above_w = tx_width(vt_arec[14:10]);
-        end else vt_above_w = tx_width(top_edge[vt_c[4:0]]);
+            if (!avail_u) vt_above_w = 8'd64;
+            else if (vt_arec[4] && vt_arec[23]) vt_above_w = blk_w(vt_arec[9:5]);            // Skips && IsInters
+            else vt_above_w = 8'(tx_width(vt_arec[14:10]));
+        end else vt_above_w = 8'(tx_width(top_edge[vt_c[4:0]]));
         if (vt_c == 6'd0) begin
-            if (!avail_l) vt_left_h = 7'd64;
-            else if (vt_lrec[4] && vt_lrec[23]) vt_left_h = 7'(blk_h(vt_lrec[9:5]));
-            else vt_left_h = tx_height(vt_lrec[14:10]);
-        end else vt_left_h = tx_height(left_edge[vt_r[4:0]]);
+            if (!avail_l) vt_left_h = 8'd64;
+            else if (vt_lrec[4] && vt_lrec[23]) vt_left_h = blk_h(vt_lrec[9:5]);
+            else vt_left_h = 8'(tx_height(vt_lrec[14:10]));
+        end else vt_left_h = 8'(tx_height(left_edge[vt_r[4:0]]));
         begin
             logic [7:0] sz;
             sz = (bwp > bhp) ? bwp : bhp;
@@ -349,7 +349,7 @@ module blk_syntax
             vt_max_tx = (sz == 8'd64) ? 3'd4 : (sz == 8'd32) ? 3'd3 : (sz == 8'd16) ? 3'd2 : (sz == 8'd8) ? 3'd1 : 3'd0;
         end
         vt_ctx = 5'((tx_sqr_up(vt_tx) != vt_max_tx) ? 3 : 0) + (5'd4 - 5'(vt_max_tx)) * 5'd6
-                 + 5'(vt_above_w < tx_width(vt_tx)) + 5'(vt_left_h < tx_height(vt_tx));
+                 + 5'(vt_above_w < 8'(tx_width(vt_tx))) + 5'(vt_left_h < 8'(tx_height(vt_tx)));
     end
     // chroma inter transform type: the luma leaf covering (max(MiRow, y4 << ssy), max(MiCol, x4 << ssx))
     logic [10:0] uvt_y4, uvt_x4;

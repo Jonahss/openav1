@@ -7,9 +7,11 @@
 // Colour-index context: the wavefront visits anti-diagonals; pixel (r, c) on diagonal i = r + c needs
 // (r, c-1) and (r-1, c) from diagonal i-1 and (r-1, c-1) from diagonal i-2, all indexed by column c, so
 // two 64-entry diagonal buffers (d1 = previous, d2 = the one before) give the three neighbours without
-// random reads of the map memory. The map itself is written once per pixel into a plain memory and only
-// the onscreen part is written (the spec's replication into the offscreen part is never read by anything
-// that matters for output: pixels beyond MiCols*4 / MiRows*4 are outside every is_inside() check).
+// random reads of the map memory. The map itself is written once per pixel into a plain memory; only the
+// onscreen part is written, and the read port replicates the last onscreen column / row into the offscreen
+// part (spec 5.11.49). That part is not dead: the palette prediction writes whole transform blocks, and CfL
+// averages the block's luma up to MaxLumaW / MaxLumaH (7.11.5), which reaches past MiCols * 4 for a block
+// straddling the frame edge (Argon test10469 / test10467: a constant offset on the CfL plane).
 // Note the palette size test is "MiSize >= BLOCK_8X8" on the enum, so 4x16 / 16x4 / 8x32 ... blocks (enum
 // values 16+) qualify too; their subsampled chroma map is widened by 2 when narrower than 4 (spec 5.11.49).
 module pal_syntax
@@ -85,6 +87,7 @@ module pal_syntax
     logic [15:0] lit_val;
     // tokens
     logic [6:0]  tw, th;                         // onscreen plane dims
+    logic [6:0]  tw_p [2], th_p [2];             // the same per plane, kept for the map read port
     logic [7:0]  di;                             // diagonal index i
     logic [6:0]  dj, djmin;                      // column j and its lower bound on this diagonal
     logic [2:0]  d1 [64];
@@ -254,7 +257,13 @@ module pal_syntax
     end
 
     // ---------------------------------------------------------------- map read port
-    always_ff @(posedge clk) pm_idx <= pm_plane ? cmap_uv[{pm_y, pm_x}] : cmap_y[{pm_y, pm_x}];
+    // offscreen positions read the last onscreen column / row (the spec's ColorMap replication)
+    logic [5:0] pm_xc, pm_yc;
+    always_comb begin
+        pm_xc = (7'(pm_x) >= tw_p[pm_plane]) ? 6'(tw_p[pm_plane] - 7'd1) : pm_x;
+        pm_yc = (7'(pm_y) >= th_p[pm_plane]) ? 6'(th_p[pm_plane] - 7'd1) : pm_y;
+    end
+    always_ff @(posedge clk) pm_idx <= pm_plane ? cmap_uv[{pm_yc, pm_xc}] : cmap_y[{pm_yc, pm_xc}];
 
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
@@ -370,6 +379,8 @@ module pal_syntax
                     n <= pl ? pal_uv : pal_y;
                     tw <= pl ? 7'(os_w >> hdr.ssx) + ((hdr.ssx && blk_w(bs) == 8'd4) ? 7'd2 : 7'd0) : 7'(os_w);
                     th <= pl ? 7'(os_h >> hdr.ssy) + ((hdr.ssy && blk_h(bs) == 8'd4) ? 7'd2 : 7'd0) : 7'(os_h);
+                    tw_p[pl] <= pl ? 7'(os_w >> hdr.ssx) + ((hdr.ssx && blk_w(bs) == 8'd4) ? 7'd2 : 7'd0) : 7'(os_w);
+                    th_p[pl] <= pl ? 7'(os_h >> hdr.ssy) + ((hdr.ssy && blk_h(bs) == 8'd4) ? 7'd2 : 7'd0) : 7'(os_h);
                     st <= T_NS;
                 end
                 T_NS: begin

@@ -6,7 +6,8 @@ the RTL tile by tile. Compared: every block record (position, size, skip, segmen
 alphas, filter-intra, tx size, CurrentQIndex, DeltaLF) and every transform block (plane, position, tx
 size, tx type, eob, all Quant coefficients).
 
-Env: TS_SEEDS (comma list or count, default "1,2,3"), TS_W/TS_H (default 128x96), TS_FMT (default random).
+Env: TS_SEEDS (comma list or count, default "1,2,3"), TS_W/TS_H (default 128x96), TS_FMT (default random),
+TS_IVF=a.ivf,b.obu (real streams), TS_FRAMES=0,3 (with TS_IVF: only these decoded-frame indices), TS_DEBUG=1.
 """
 import os
 import random
@@ -356,7 +357,10 @@ async def tile_vs_model(dut):
             jobs.append((f"seed {seed} {fmt}", d, args))
     for label, d, args in jobs:
         frame_of = {ti: fi for fi, tl in enumerate(getattr(d, "frames", [])) for ti in tl}
+        frames_sel = {int(x) for x in os.environ.get("TS_FRAMES", "").split(",") if x}   # decoded-frame indices to run (default all)
         for ti, (th, data) in enumerate(d.tiles):
+            if frames_sel and frame_of.get(ti, ti) not in frames_sel:
+                continue
             tag0 = f"{label} bd{args['bd']} tile {ti} ({th.MiColStart},{th.MiRowStart})"
             dec = RecDecoder(th, data)
             dec.decode_tile()
