@@ -329,7 +329,7 @@ module dec_top
 `ifdef VERILATOR
     int          vis_fd = 0;
     string       vis_path;
-    logic [63:0] vis_cyc = 64'd0;
+    logic [63:0] vis_cyc;
     initial begin
         if ($value$plusargs("vis=%s", vis_path)) vis_fd = $fopen(vis_path, "w");
     end
