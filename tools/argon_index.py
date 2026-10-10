@@ -139,10 +139,12 @@ def index_stream(path):
     row = {'path': path}
     for name, gen in (('section5', obus_section5), ('annexb', obus_annexb)):
         try:
-            seq = None; cnt = dict(n_key=0, n_intra_only=0, n_inter=0, n_switch=0, n_show_existing=0)
+            seq = None; mw = mh = 0; cnt = dict(n_key=0, n_intra_only=0, n_inter=0, n_switch=0, n_show_existing=0)
             for typ, off, size in gen(d):
                 if typ == 1:
-                    seq = parse_seq(Bits(d, off))
+                    # Argon splices tests with different sizes into one stream: max_w/max_h = the max over ALL
+                    # sequence headers, the other facts from the last one (the last header alone hid 147 Mpx frames)
+                    seq = parse_seq(Bits(d, off)); mw = max(mw, seq['max_w']); mh = max(mh, seq['max_h'])
                 elif typ in (3, 6) and seq is not None:
                     b = Bits(d, off)
                     if seq['reduced_hdr']:
@@ -151,7 +153,7 @@ def index_stream(path):
                     ft = b.f(2)
                     cnt[('n_key', 'n_inter', 'n_intra_only', 'n_switch')[ft]] += 1
             if seq is None: raise ValueError('no sequence header')
-            row.pop('error', None); row['container'] = name; row.update(seq); row.update(cnt)
+            row.pop('error', None); row['container'] = name; row.update(seq); row['max_w'] = mw; row['max_h'] = mh; row.update(cnt)
             row['n_frames'] = cnt['n_key'] + cnt['n_intra_only'] + cnt['n_inter'] + cnt['n_switch']
             row['intra_only_stream'] = int(cnt['n_inter'] == 0 and cnt['n_switch'] == 0 and row['n_frames'] > 0)
             return row
