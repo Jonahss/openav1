@@ -17,6 +17,8 @@ files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cd
 sources="$here/frame_mem_bb.sv"
 for f in $files; do [ -f "$root/rtl/$f.sv" ] || { echo "missing rtl/$f.sv" >&2; exit 1; }; sources="$sources $root/rtl/$f.sv"; done
 export SYNTH_ROOT=$root SYNTH_OUT=$out SYNTH_FBX=$fbx SYNTH_FBY=$fby SYNTH_SOURCES=$sources
+# qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): give Vivado the same shape
+mkdir -p "$out/work/run"; ln -sfn "$root/rtl" "$out/rtl"
 echo "dec_top FBX=$fbx FBY=$fby -> $out"
-cd "$out"
+cd "$out/work/run"
 exec vivado -mode batch -nojournal -log "$out/vivado.log" -source "$here/dec_top.tcl"
