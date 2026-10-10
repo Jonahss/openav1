@@ -21,4 +21,4 @@ export SYNTH_ROOT=$root SYNTH_OUT=$out SYNTH_FBX=$fbx SYNTH_FBY=$fby SYNTH_SOURC
 mkdir -p "$out/work/run"; ln -sfn "$root/rtl" "$out/rtl"
 echo "dec_top FBX=$fbx FBY=$fby -> $out"
 cd "$out/work/run"
-exec vivado -mode batch -nojournal -log "$out/vivado.log" -source "$here/dec_top.tcl"
+exec vivado -mode batch -nojournal -log "$out/vivado.log" -source "$here/synth.tcl"
