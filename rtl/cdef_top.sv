@@ -18,13 +18,13 @@ module cdef_top
     input  hdr_t        hdr,
     input  cdef_hdr_t   ch,
     input  logic        start,
-    input  logic [10:0] row_first, row_last,  // mi rows of the 8x8 blocks to filter (inclusive; multiples of 2)
+    input  logic [MIW-1:0] row_first, row_last,  // mi rows of the 8x8 blocks to filter (inclusive; multiples of 2)
     output logic        busy,
     output logic        done,
     // mi_store: skips (lf_info) and cdef_idx
-    output logic [10:0] rd_row, rd_col,
+    output logic [MIW-1:0] rd_row, rd_col,
     input  mi_lf_t      rd_info,
-    output logic [6:0]  cdr_row64, cdr_col64,
+    output logic [SBW-1:0]  cdr_row64, cdr_col64,
     input  logic [3:0]  cdr_val,
     // deblocked frame (read) and CdefFrame (write)
     output logic        src_re,
@@ -53,16 +53,16 @@ module cdef_top
     logic done_pend;
 
     // ---------------------------------------------------------------- block loop
-    logic [10:0] r, c;                                  // 8x8 block position in 4x4 units (step 2)
+    logic [MIW-1:0] r, c;                                  // 8x8 block position in 4x4 units (step 2)
     logic [3:0]  cidx;                                  // {valid, idx}
     logic [3:0]  skips;
-    logic [10:0] r1, c1;
+    logic [MIW-1:0] r1, c1;
     logic [3:0]  cs;                                    // coeffShift = BitDepth - 8
     always_comb begin
-        r1 = (r + 11'd1 < hdr.mi_rows) ? r + 11'd1 : hdr.mi_rows - 11'd1;
-        c1 = (c + 11'd1 < hdr.mi_cols) ? c + 11'd1 : hdr.mi_cols - 11'd1;
+        r1 = (r + MIW'(1) < hdr.mi_rows) ? r + MIW'(1) : hdr.mi_rows - MIW'(1);
+        c1 = (c + MIW'(1) < hdr.mi_cols) ? c + MIW'(1) : hdr.mi_cols - MIW'(1);
         cs = hdr.bit_depth - 4'd8;
-        cdr_row64 = 7'(r >> 4); cdr_col64 = 7'(c >> 4);
+        cdr_row64 = SBW'(r >> 4); cdr_col64 = SBW'(c >> 4);
         case (st)
             C_RD_S0: begin rd_row = r;  rd_col = c;  end
             C_RD_S1: begin rd_row = r1; rd_col = c;  end
@@ -75,12 +75,12 @@ module cdef_top
     logic [1:0]  fplane;
     logic        sub_x, sub_y;
     logic [3:0]  pw, ph;                                // block dims in the plane (8 or 4)
-    logic [12:0] px0, py0, fw, fh;
+    logic [PXW-1:0] px0, py0, fw, fh;
     always_comb begin
         sub_x = (fplane != 2'd0) && hdr.ssx; sub_y = (fplane != 2'd0) && hdr.ssy;
         pw = 4'd8 >> sub_x; ph = 4'd8 >> sub_y;
-        px0 = (13'(c) << 2) >> sub_x; py0 = (13'(r) << 2) >> sub_y;
-        fw = (13'(hdr.mi_cols) << 2) >> sub_x; fh = (13'(hdr.mi_rows) << 2) >> sub_y;
+        px0 = (PXW'(c) << 2) >> sub_x; py0 = (PXW'(r) << 2) >> sub_y;
+        fw = (PXW'(hdr.mi_cols) << 2) >> sub_x; fh = (PXW'(hdr.mi_rows) << 2) >> sub_y;
     end
 
     // ---------------------------------------------------------------- window: block + 2-sample border, [row][col] at +2
@@ -88,13 +88,13 @@ module cdef_top
     logic        win_ok [0:11][0:11];
     logic [3:0]  wr;                                    // load row 0 .. ph+3
     logic [1:0]  wg, wg_last;                           // aligned group of 4 within the row: x = px0 - 4 + 4 wg
-    logic        wpend; logic [3:0] wpr; logic [1:0] wpg; logic wp_rowok; logic signed [14:0] wpx;
-    logic signed [14:0] wy, wx;
+    logic        wpend; logic [3:0] wpr; logic [1:0] wpg; logic wp_rowok; logic signed [PXS-1:0] wpx;
+    logic signed [PXS-1:0] wy, wx;
     logic        w_row_in;
     always_comb begin
-        wy = 15'(signed'({2'b0, py0})) + 15'(signed'({11'b0, wr})) - 15'sd2;
-        wx = 15'(signed'({2'b0, px0})) + 15'(signed'({13'b0, wg}) << 2) - 15'sd4;
-        w_row_in = (wy >= 0) && (wy < 15'(signed'({2'b0, fh})));
+        wy = PXS'(signed'({2'b0, py0})) + PXS'(signed'({11'b0, wr})) - PXS'(2);
+        wx = PXS'(signed'({2'b0, px0})) + PXS'(signed'({13'b0, wg}) << 2) - PXS'(4);
+        w_row_in = (wy >= 0) && (wy < PXS'(signed'({2'b0, fh})));
         wg_last = (pw == 4'd8) ? 2'd3 : 2'd2;           // 12 window columns span 4 groups, 8 span 3
     end
 
@@ -216,12 +216,12 @@ module cdef_top
     // ---------------------------------------------------------------- memory ports
     always_comb begin
         src_re = 1'b0; src_plane = fplane; src_x = FBX'(wx); src_y = FBY'(wy);
-        dst_we = 1'b0; dst_plane = fplane; dst_x = FBX'(px0 + 13'(pj)); dst_y = FBY'(py0 + 13'(pi)); dst_wdata = 12'd0;
-        dst4_we = 1'b0; dst4_plane = fplane; dst4_x = FBX'(px0 + 13'(cpi[2:0])); dst4_y = FBY'(py0 + 13'(cpi[5:3])); dst4_wdata = src_rdata4;
+        dst_we = 1'b0; dst_plane = fplane; dst_x = FBX'(px0 + PXW'(pj)); dst_y = FBY'(py0 + PXW'(pi)); dst_wdata = 12'd0;
+        dst4_we = 1'b0; dst4_plane = fplane; dst4_x = FBX'(px0 + PXW'(cpi[2:0])); dst4_y = FBY'(py0 + PXW'(cpi[5:3])); dst4_wdata = src_rdata4;
         case (st)
             C_WIN: src_re = w_row_in;                    // absent columns of a present row are masked at landing
-            C_PIX: begin dst4_we = 1'b1; dst4_x = FBX'(px0 + 13'(pj)); dst4_y = FBY'(py0 + 13'(pi)); dst4_wdata = out4; end
-            C_COPY_RD: begin src_re = 1'b1; src_x = FBX'(px0 + 13'(cpi[2:0])); src_y = FBY'(py0 + 13'(cpi[5:3])); end
+            C_PIX: begin dst4_we = 1'b1; dst4_x = FBX'(px0 + PXW'(pj)); dst4_y = FBY'(py0 + PXW'(pi)); dst4_wdata = out4; end
+            C_COPY_RD: begin src_re = 1'b1; src_x = FBX'(px0 + PXW'(cpi[2:0])); src_y = FBY'(py0 + PXW'(cpi[5:3])); end
             C_COPY_WR: dst4_we = 1'b1;
             default: ;
         endcase
@@ -237,13 +237,13 @@ module cdef_top
                 col = 4 * int'(wpg) - 2 + l;
                 if (col >= 0 && col < int'(pw) + 4) begin
                     win[wpr][col] <= src_rdata4[l * 12 +: 12];
-                    win_ok[wpr][col] <= wp_rowok && (wpx + 15'(l) >= 0) && (wpx + 15'(l) < 15'(signed'({2'b0, fw})));
+                    win_ok[wpr][col] <= wp_rowok && (wpx + PXS'(l) >= 0) && (wpx + PXS'(l) < PXS'(signed'({2'b0, fw})));
                 end
             end
         wpend <= 1'b0;
         if (rst) st <= C_IDLE;
         else case (st)
-            C_IDLE: if (start) begin r <= row_first; c <= 11'd0; st <= C_BLK; end
+            C_IDLE: if (start) begin r <= row_first; c <= MIW'(0); st <= C_BLK; end
             C_BLK: st <= C_RD_IDX;                       // cdr_* addressed; value lands next cycle
             C_RD_IDX: begin cidx <= cdr_val; st <= C_RD_S0; end
             C_RD_S0: st <= C_RD_S1;
@@ -322,10 +322,10 @@ module cdef_top
                 end
             end
             C_NEXT: begin
-                if (c + 11'd2 < hdr.mi_cols) begin c <= c + 11'd2; st <= C_BLK; end
+                if (c + MIW'(2) < hdr.mi_cols) begin c <= c + MIW'(2); st <= C_BLK; end
                 else begin
-                    c <= 11'd0;
-                    if (r + 11'd2 <= row_last && r + 11'd2 < hdr.mi_rows) begin r <= r + 11'd2; st <= C_BLK; end
+                    c <= MIW'(0);
+                    if (r + MIW'(2) <= row_last && r + MIW'(2) < hdr.mi_rows) begin r <= r + MIW'(2); st <= C_BLK; end
                     else begin done <= 1'b1; st <= C_IDLE; end
                 end
             end

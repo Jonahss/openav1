@@ -69,7 +69,7 @@ module dec_top
     input  logic [FBY-1:0]    h_y,
     output logic [11:0]       h_rdata
 );
-    logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane, blk_ack; logic [10:0] sb_r, sb_c;
+    logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane, blk_ack; logic [MIW-1:0] sb_r, sb_c;
     logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
     tile_syntax #(.ML2R(FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported,
@@ -78,7 +78,7 @@ module dec_top
                       .pal_hold, .blk_ack, .pm_plane, .pm_x, .pm_y, .pm_idx);
     // event queue: the syntax decoder runs ahead of reconstruction; a palette block is released (blk_ack) only
     // once reconstruction has drained the queue, because its colour map lives in the syntax stage
-    logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [10:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
+    logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
     rec_fifo u_q (.clk, .rst, .flush(tile_start), .sb_start, .sb_r, .sb_c, .blk_info, .blk_rec, .tx_done, .tx_rec, .tx_ack, .w_slot(q_slot_w),
                   .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight);
     assign blk_ack = pal_hold && !ev_valid && !rc_busy;
@@ -86,9 +86,9 @@ module dec_top
     logic fb_re, fb_we, rc_busy; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
     logic fb2_we; logic [1:0] fb2_plane; logic [FBX-1:0] fb2_x; logic [FBY-1:0] fb2_y; logic [11:0] fb2_wdata;
     logic fb4_we; logic [1:0] fb4_plane; logic [FBX-1:0] fb4_x; logic [FBY-1:0] fb4_y; logic [47:0] fb4_wdata, fb_rdata4;
-    logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [10:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
+    logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
-    logic mi_cd_clr, mi_cd_we; logic [6:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
+    logic mi_cd_clr, mi_cd_we; logic [SBW-1:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
     recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FBY - 2), .ML2C(FBX - 2)) u_rc (.clk, .rst, .hdr, .rh,
                                             .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
@@ -100,7 +100,7 @@ module dec_top
                                             .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata);
 
     // per-4x4 state + deblocking filter; the filter owns the frame buffer port while it runs
-    logic [10:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
+    logic [MIW-1:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
     mi_store #(.ML2R(FBY - 2), .ML2C(FBX - 2)) u_mi (.clk, .rst, .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(mi_blk_busy),
                    .tx_we(mi_tx_we), .tx_plane(mi_tx_plane), .tx_row(mi_tx_row), .tx_col(mi_tx_col), .tx_w4(mi_tx_w4), .tx_h4(mi_tx_h4), .tx_sz(mi_tx_sz), .tx_busy(mi_tx_busy),
                    .rd_row(rd_row), .rd_col(rd_col), .rd_info, .rd2_row(cd_rd_row), .rd2_col(cd_rd_col), .rd2_info(cd_rd_info), .txr_plane, .txr_row, .txr_col, .txr_sz,
@@ -108,10 +108,10 @@ module dec_top
                    .cdr_row64, .cdr_col64, .cdr_val,
                    .lr_we(lr_done), .lr_rec, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec);
     // stage row ranges (whole frame in host-driven mode; the frame sequencer bounds them per superblock row)
-    logic [10:0] lf_row_first, lf_row_last, cd_row_first, cd_row_last; logic [12:0] lr_ly_first, lr_ly_last, sr_ly_first, sr_ly_last;
+    logic [MIW-1:0] lf_row_first, lf_row_last, cd_row_first, cd_row_last; logic [PXW-1:0] lr_ly_first, lr_ly_last, sr_ly_first, sr_ly_last;
     logic lf_go, cd_go, sr_go, lr_go, lf_start_i, cdef_start_i, sr_start_i, lr_start_i, sr_buf_i, lr_from_deblocked_i;
-    logic [6:0] lf_next, cd_next, sr_next, lr_next;   // next superblock row (stripe for LR) each stage will process
-    logic [12:0] lr_ly0, lr_ly1;
+    logic [SBW-1:0] lf_next, cd_next, sr_next, lr_next;   // next superblock row (stripe for LR) each stage will process
+    logic [PXW-1:0] lr_ly0, lr_ly1;
     assign lf_start_i = pipe_en ? lf_go : lf_start; assign cdef_start_i = pipe_en ? cd_go : cdef_start;
     assign sr_start_i = pipe_en ? sr_go : sr_start; assign lr_start_i = pipe_en ? lr_go : lr_start;
     logic lf_re, lf_we; logic [1:0] lf_plane; logic [FBX-1:0] lf_x; logic [FBY-1:0] lf_y; logic [11:0] lf_wdata;
@@ -121,7 +121,7 @@ module dec_top
                                          .fb_re(lf_re), .fb_we(lf_we), .fb_plane(lf_plane), .fb_x(lf_x), .fb_y(lf_y), .fb_wdata(lf_wdata), .fb_rdata(lf_rdata),
                                          .fb_rdata4(lf_rdata4), .fb4_we(lf4_we), .fb4_x(lf4_x), .fb4_y(lf4_y), .fb4_wdata(lf4_wdata));
     // CDEF: reads the deblocked frame (fb0, shared port while cdef_busy), writes CdefFrame (fb1)
-    logic [10:0] cd_rd_row, cd_rd_col; logic [6:0] cdr_row64, cdr_col64; logic [3:0] cdr_val; mi_lf_t cd_rd_info;
+    logic [MIW-1:0] cd_rd_row, cd_rd_col; logic [SBW-1:0] cdr_row64, cdr_col64; logic [3:0] cdr_val; mi_lf_t cd_rd_info;
     logic cd_re, cd_we; logic [1:0] cd_plane, cd_dplane; logic [FBX-1:0] cd_x, cd_dx; logic [FBY-1:0] cd_y, cd_dy; logic [11:0] cd_wdata;
     logic cd4_we; logic [1:0] cd4_plane; logic [FBX-1:0] cd4_x; logic [FBY-1:0] cd4_y; logic [47:0] cd4_wdata;
     cdef_top #(.FBX(FBX), .FBY(FBY)) u_cdef (.clk, .rst, .hdr, .ch, .start(cdef_start_i), .row_first(cd_row_first), .row_last(cd_row_last), .busy(cdef_busy), .done(cdef_done),
@@ -131,7 +131,7 @@ module dec_top
                                              .dst_we(cd_we), .dst_plane(cd_dplane), .dst_x(cd_dx), .dst_y(cd_dy), .dst_wdata(cd_wdata));
 
     // loop restoration: reads fb0 (deblocked) and fb1 (CdefFrame) while lr_busy, writes fb2 (LrFrame)
-    logic [1:0] lrr_plane; logic [5:0] lrr_row, lrr_col; lr_rec_t lrr_rec;
+    logic [1:0] lrr_plane; logic [SBW-1:0] lrr_row, lrr_col; lr_rec_t lrr_rec;
     logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata; logic lr_we4; logic [3:0] lr_be4; logic [47:0] lr_wdata4, lr0_rdata4, lr1_rdata4;
     lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start(lr_start_i), .ly_first(lr_ly_first), .ly_last(lr_ly_last), .busy(lr_busy), .done(lr_done_o),
                                          .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
@@ -216,55 +216,55 @@ module dec_top
     // stripe touches. The last row takes "r+1" as already done.
     localparam int NSBR = 1 << (FBY - 6);                 // superblock rows (64-pixel; a 128 superblock counts as two entries' worth of mi rows)
     logic [4:0]  sb_shift;                                // log2(mi rows per superblock row)
-    logic [6:0]  n_rows, n_stripes;
+    logic [SBW-1:0]  n_rows, n_stripes;
     logic [7:0]  row_cnt [0:NSBR-1];
     logic        cdef_en, sr_en, lr_en, sr_sub, seq_active, rows_seen;
     // frame geometry and stage enables follow the live header (the host loads it with the first tile, after frame_start)
-    assign n_rows = 7'((hdr.mi_rows + (11'd1 << sb_shift) - 11'd1) >> sb_shift);
-    assign n_stripes = 7'(((hdr.frame_height + 13'd7) >> 6) + 13'd1);
+    assign n_rows = SBW'((hdr.mi_rows + (MIW'(1) << sb_shift) - MIW'(1)) >> sb_shift);
+    assign n_stripes = SBW'(((hdr.frame_height + PXW'(7)) >> 6) + PXW'(1));
     assign cdef_en = hdr.enable_cdef && !hdr.coded_lossless && !hdr.allow_intrabc;
     assign sr_en = hdr.use_superres;
     assign lr_en = (hdr.lr_type[1:0] != 2'd0) || (!hdr.mono && ((hdr.lr_type[3:2] != 2'd0) || (hdr.lr_type[5:4] != 2'd0)));
-    logic [6:0]  tile_row_prev; logic tile_row_valid;
-    logic        sb_pop; logic [6:0] sb_pop_row;
+    logic [SBW-1:0]  tile_row_prev; logic tile_row_valid;
+    logic        sb_pop; logic [SBW-1:0] sb_pop_row;
     assign sb_shift = hdr.sb128 ? 5'd5 : 5'd4;
     assign sb_pop = ev_valid && ev_pop && (ev_kind == 2'd2);
-    assign sb_pop_row = 7'(ev_sb_r >> sb_shift);
-    function automatic logic row_dec(input logic [6:0] r);   // row r decoded by every tile column
-        row_dec = (r >= n_rows) || (row_cnt[r[FBY-7:0]] >= 8'(n_tile_cols));
+    assign sb_pop_row = SBW'(ev_sb_r >> sb_shift);
+    function automatic logic row_dec(input logic [SBW-1:0] r);   // row r decoded by every tile column
+        row_dec = (r >= n_rows) || (row_cnt[(FBY - 6)'(r)] >= 8'(n_tile_cols));
     endfunction
     // stage ranges
-    logic [12:0] sb_px;                                   // luma rows per superblock row
-    assign sb_px = hdr.sb128 ? 13'd128 : 13'd64;
+    logic [PXW-1:0] sb_px;                                   // luma rows per superblock row
+    assign sb_px = hdr.sb128 ? PXW'(128) : PXW'(64);
     always_comb begin
         if (pipe_en) begin
-            lf_row_first = 11'(lf_next) << sb_shift; lf_row_last = (11'(lf_next + 7'd1) << sb_shift) - 11'd1;
-            if (lf_row_last >= hdr.mi_rows) lf_row_last = hdr.mi_rows - 11'd1;
-            cd_row_first = 11'(cd_next) << sb_shift; cd_row_last = (11'(cd_next + 7'd1) << sb_shift) - 11'd1;
-            if (cd_row_last >= hdr.mi_rows) cd_row_last = hdr.mi_rows - 11'd1;
-            sr_ly_first = 13'(sr_next) * sb_px; sr_ly_last = 13'(sr_next + 7'd1) * sb_px - 13'd1;
-            if (sr_ly_last >= hdr.frame_height) sr_ly_last = hdr.frame_height - 13'd1;
-            lr_ly0 = (lr_next == 7'd0) ? 13'd0 : 13'(lr_next) * 13'd64 - 13'd8;
-            lr_ly1 = 13'(lr_next) * 13'd64 + 13'd55;
-            if (lr_ly1 >= hdr.frame_height) lr_ly1 = hdr.frame_height - 13'd1;
+            lf_row_first = MIW'(lf_next) << sb_shift; lf_row_last = (MIW'(lf_next + SBW'(1)) << sb_shift) - MIW'(1);
+            if (lf_row_last >= hdr.mi_rows) lf_row_last = hdr.mi_rows - MIW'(1);
+            cd_row_first = MIW'(cd_next) << sb_shift; cd_row_last = (MIW'(cd_next + SBW'(1)) << sb_shift) - MIW'(1);
+            if (cd_row_last >= hdr.mi_rows) cd_row_last = hdr.mi_rows - MIW'(1);
+            sr_ly_first = PXW'(sr_next) * sb_px; sr_ly_last = PXW'(sr_next + SBW'(1)) * sb_px - PXW'(1);
+            if (sr_ly_last >= hdr.frame_height) sr_ly_last = hdr.frame_height - PXW'(1);
+            lr_ly0 = (lr_next == SBW'(0)) ? PXW'(0) : PXW'(lr_next) * PXW'(64) - PXW'(8);
+            lr_ly1 = PXW'(lr_next) * PXW'(64) + PXW'(55);
+            if (lr_ly1 >= hdr.frame_height) lr_ly1 = hdr.frame_height - PXW'(1);
             lr_ly_first = lr_ly0; lr_ly_last = lr_ly1;
         end else begin
-            lf_row_first = 11'd0; lf_row_last = hdr.mi_rows - 11'd1; cd_row_first = 11'd0; cd_row_last = hdr.mi_rows - 11'd1;
-            sr_ly_first = 13'd0; sr_ly_last = hdr.frame_height - 13'd1; lr_ly_first = 13'd0; lr_ly_last = hdr.frame_height - 13'd1;
-            lr_ly0 = 13'd0; lr_ly1 = 13'd0;
+            lf_row_first = MIW'(0); lf_row_last = hdr.mi_rows - MIW'(1); cd_row_first = MIW'(0); cd_row_last = hdr.mi_rows - MIW'(1);
+            sr_ly_first = PXW'(0); sr_ly_last = hdr.frame_height - PXW'(1); lr_ly_first = PXW'(0); lr_ly_last = hdr.frame_height - PXW'(1);
+            lr_ly0 = PXW'(0); lr_ly1 = PXW'(0);
         end
     end
     // readiness of the row a stage wants next (rows finish in order, so "stage done up to r" is next > r)
     logic lf_ok, cd_ok, sr_ok, lr_ok;
-    logic [6:0] lr_row;                                   // superblock row holding the stripe's last line
+    logic [SBW-1:0] lr_row;                                   // superblock row holding the stripe's last line
     always_comb begin
-        logic [6:0] r;
-        r = lf_next; lf_ok = (r < n_rows) && row_dec(r) && row_dec(r + 7'd1) && !mi_blk_busy && !mi_tx_busy;
-        r = cd_next; cd_ok = cdef_en && (r < n_rows) && (lf_next > r) && ((r + 7'd1 >= n_rows) || (lf_next > r + 7'd1));
-        r = sr_next; sr_ok = sr_en && (r < n_rows) && (cdef_en ? ((cd_next > r) && ((r + 7'd1 >= n_rows) || (cd_next > r + 7'd1)))
-                                                            : ((lf_next > r) && ((r + 7'd1 >= n_rows) || (lf_next > r + 7'd1))));
-        lr_row = 7'(lr_ly1 >> (hdr.sb128 ? 7 : 6));
-        lr_ok = lr_en && (lr_next < n_stripes) && (cdef_en ? (cd_next > lr_row) : ((lf_next > lr_row) && ((lr_row + 7'd1 >= n_rows) || (lf_next > lr_row + 7'd1))))
+        logic [SBW-1:0] r;
+        r = lf_next; lf_ok = (r < n_rows) && row_dec(r) && row_dec(r + SBW'(1)) && !mi_blk_busy && !mi_tx_busy;
+        r = cd_next; cd_ok = cdef_en && (r < n_rows) && (lf_next > r) && ((r + SBW'(1) >= n_rows) || (lf_next > r + SBW'(1)));
+        r = sr_next; sr_ok = sr_en && (r < n_rows) && (cdef_en ? ((cd_next > r) && ((r + SBW'(1) >= n_rows) || (cd_next > r + SBW'(1))))
+                                                            : ((lf_next > r) && ((r + SBW'(1) >= n_rows) || (lf_next > r + SBW'(1)))));
+        lr_row = SBW'(lr_ly1 >> (hdr.sb128 ? 7 : 6));
+        lr_ok = lr_en && (lr_next < n_stripes) && (cdef_en ? (cd_next > lr_row) : ((lf_next > lr_row) && ((lr_row + SBW'(1) >= n_rows) || (lf_next > lr_row + SBW'(1)))))
                       && (!sr_en || (sr_next > lr_row));
     end
     logic lf_pend, cd_pend, sr_pend, lr_pend;             // start issued, done not yet seen
@@ -273,35 +273,35 @@ module dec_top
         if (rst) begin
             seq_active <= 1'b0; frame_busy <= 1'b0; frame_done_lvl <= 1'b0; tile_row_valid <= 1'b0; rows_seen <= 1'b0;
             lf_pend <= 1'b0; cd_pend <= 1'b0; sr_pend <= 1'b0; lr_pend <= 1'b0;
-            lf_next <= 7'd0; cd_next <= 7'd0; sr_next <= 7'd0; lr_next <= 7'd0; sr_sub <= 1'b0;
+            lf_next <= SBW'(0); cd_next <= SBW'(0); sr_next <= SBW'(0); lr_next <= SBW'(0); sr_sub <= 1'b0;
             for (int i = 0; i < NSBR; i++) row_cnt[i] <= 8'd0;
         end else if (frame_start) begin
             seq_active <= 1'b1; frame_busy <= 1'b1; frame_done_lvl <= 1'b0; tile_row_valid <= 1'b0;
             lf_pend <= 1'b0; cd_pend <= 1'b0; sr_pend <= 1'b0; lr_pend <= 1'b0;
-            lf_next <= 7'd0; cd_next <= 7'd0; sr_next <= 7'd0; lr_next <= 7'd0; sr_sub <= 1'b0;
+            lf_next <= SBW'(0); cd_next <= SBW'(0); sr_next <= SBW'(0); lr_next <= SBW'(0); sr_sub <= 1'b0;
             for (int i = 0; i < NSBR; i++) row_cnt[i] <= 8'd0;
             rows_seen <= 1'b0;
         end else if (seq_active) begin
             if (sb_pop) rows_seen <= 1'b1;
             // row completion per tile
             if (sb_pop) begin
-                if (tile_row_valid && sb_pop_row != tile_row_prev) row_cnt[tile_row_prev[FBY-7:0]] <= row_cnt[tile_row_prev[FBY-7:0]] + 8'd1;
+                if (tile_row_valid && sb_pop_row != tile_row_prev) row_cnt[(FBY - 6)'(tile_row_prev)] <= row_cnt[(FBY - 6)'(tile_row_prev)] + 8'd1;
                 tile_row_prev <= sb_pop_row; tile_row_valid <= 1'b1;
             end
-            if (tile_done && tile_row_valid) begin row_cnt[tile_row_prev[FBY-7:0]] <= row_cnt[tile_row_prev[FBY-7:0]] + 8'd1; tile_row_valid <= 1'b0; end
+            if (tile_done && tile_row_valid) begin row_cnt[(FBY - 6)'(tile_row_prev)] <= row_cnt[(FBY - 6)'(tile_row_prev)] + 8'd1; tile_row_valid <= 1'b0; end
             // stage starts
             if (!lf_pend && !lf_busy && lf_ok) begin lf_go <= 1'b1; lf_pend <= 1'b1; end
-            if (lf_pend && lf_done) begin lf_pend <= 1'b0; lf_next <= lf_next + 7'd1; end
+            if (lf_pend && lf_done) begin lf_pend <= 1'b0; lf_next <= lf_next + SBW'(1); end
             if (!cd_pend && !cdef_busy && cd_ok) begin cd_go <= 1'b1; cd_pend <= 1'b1; end
-            if (cd_pend && cdef_done) begin cd_pend <= 1'b0; cd_next <= cd_next + 7'd1; end
+            if (cd_pend && cdef_done) begin cd_pend <= 1'b0; cd_next <= cd_next + SBW'(1); end
             if (!sr_pend && !sr_busy && sr_ok) begin sr_go <= 1'b1; sr_pend <= 1'b1; end
             if (sr_pend && sr_done) begin
                 sr_pend <= 1'b0;
                 if (cdef_en && !sr_sub) sr_sub <= 1'b1;                    // the CDEF frame's rows next
-                else begin sr_sub <= 1'b0; sr_next <= sr_next + 7'd1; end
+                else begin sr_sub <= 1'b0; sr_next <= sr_next + SBW'(1); end
             end
             if (!lr_pend && !lr_busy && lr_ok) begin lr_go <= 1'b1; lr_pend <= 1'b1; end
-            if (lr_pend && lr_done_o) begin lr_pend <= 1'b0; lr_next <= lr_next + 7'd1; end
+            if (lr_pend && lr_done_o) begin lr_pend <= 1'b0; lr_next <= lr_next + SBW'(1); end
             // frame done: every enabled stage past its last unit
             if (rows_seen && !tile_busy && (lf_next >= n_rows) && (!cdef_en || cd_next >= n_rows) && (!sr_en || sr_next >= n_rows) && (!lr_en || lr_next >= n_stripes)
                 && !lf_pend && !cd_pend && !sr_pend && !lr_pend) begin

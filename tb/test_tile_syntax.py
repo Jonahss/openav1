@@ -28,22 +28,24 @@ import obu_parser as op         # noqa: E402
 import tile_model as tm         # noqa: E402
 
 ACK_DELAY = int(os.environ.get("TS_ACK_DELAY", "0"))
+# coordinate widths: must match syn_pkg::MIW / SBW / PXW (4x4-unit, 64x64-superblock and pixel positions / counts)
+MIW, SBW, PXW = 13, 9, 15
 HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
-    ("mi_rows", 11), ("mi_cols", 11), ("mi_row_start", 11), ("mi_row_end", 11), ("mi_col_start", 11), ("mi_col_end", 11),
+    ("mi_rows", MIW), ("mi_cols", MIW), ("mi_row_start", MIW), ("mi_row_end", MIW), ("mi_col_start", MIW), ("mi_col_end", MIW),
     ("ssx", 1), ("ssy", 1), ("mono", 1), ("sb128", 1), ("bit_depth", 4), ("seg_enabled", 1), ("seg_preskip", 1),
     ("last_active_segid", 3), ("seg_skip_en", 8), ("lossless", 8), ("seg_qidx", 64), ("base_q_idx", 8), ("tx_mode", 2),
     ("reduced_tx_set", 1), ("allow_sct", 1), ("allow_intrabc", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
     ("coded_lossless", 1), ("delta_q_present", 1), ("delta_q_res", 2), ("delta_lf_present", 1), ("delta_lf_res", 2),
-    ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", 13), ("upscaled_width", 13),
+    ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", PXW), ("upscaled_width", PXW),
     ("use_superres", 1), ("superres_denom", 5)]
 BLK_FIELDS = [
-    ("r", 11), ("c", 11), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
+    ("r", MIW), ("c", MIW), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
     ("delta_lf", 28), ("cdef_valid", 1), ("cdef_idx", 3), ("cdef_units", 4),
     ("pal_y", 4), ("pal_uv", 4), ("col_y", 96), ("col_u", 96), ("col_v", 96),
     ("is_inter", 1), ("mv_row", 18), ("mv_col", 18)]
-TX_FIELDS = [("plane", 2), ("x", 13), ("y", 13), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1), ("slot", 3)]
-LR_FIELDS = [("plane", 2), ("unit_row", 8), ("unit_col", 8), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
+TX_FIELDS = [("plane", 2), ("x", PXW), ("y", PXW), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1), ("slot", 3)]
+LR_FIELDS = [("plane", 2), ("unit_row", SBW), ("unit_col", SBW), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
 
 def pack(fields, vals):

@@ -22,16 +22,16 @@ module lr_tb_top
     input  logic        lr_we,
     input  lr_rec_t     lr_rec
 );
-    logic [1:0] lrr_plane; logic [5:0] lrr_row, lrr_col; lr_rec_t lrr_rec;
+    logic [1:0] lrr_plane; logic [SBW-1:0] lrr_row, lrr_col; lr_rec_t lrr_rec;
     mi_lf_t rd_info_u; logic [4:0] txr_sz_u; logic [3:0] cdr_val_u;
-    mi_store u_mi (.clk, .rst, .rd2_row(11'd0), .rd2_col(11'd0), .rd2_info(), .blk_we(1'b0), .blk_r(11'd0), .blk_c(11'd0), .blk_bw4(6'd0), .blk_bh4(6'd0), .blk_data('0), .blk_busy(),
-                   .tx_we(1'b0), .tx_plane(2'd0), .tx_row(11'd0), .tx_col(11'd0), .tx_w4(5'd0), .tx_h4(5'd0), .tx_sz(5'd0), .tx_busy(),
-                   .rd_row(11'd0), .rd_col(11'd0), .rd_info(rd_info_u), .txr_plane(2'd0), .txr_row(11'd0), .txr_col(11'd0), .txr_sz(txr_sz_u),
-                   .cd_clr(1'b0), .cd_we(1'b0), .cd_row64(7'd0), .cd_col64(7'd0), .cd_sb128(1'b0), .cd_mask(4'd0), .cd_idx(3'd0),
-                   .cdr_row64(7'd0), .cdr_col64(7'd0), .cdr_val(cdr_val_u),
+    mi_store u_mi (.clk, .rst, .rd2_row(MIW'(0)), .rd2_col(MIW'(0)), .rd2_info(), .blk_we(1'b0), .blk_r(MIW'(0)), .blk_c(MIW'(0)), .blk_bw4(6'd0), .blk_bh4(6'd0), .blk_data('0), .blk_busy(),
+                   .tx_we(1'b0), .tx_plane(2'd0), .tx_row(MIW'(0)), .tx_col(MIW'(0)), .tx_w4(5'd0), .tx_h4(5'd0), .tx_sz(5'd0), .tx_busy(),
+                   .rd_row(MIW'(0)), .rd_col(MIW'(0)), .rd_info(rd_info_u), .txr_plane(2'd0), .txr_row(MIW'(0)), .txr_col(MIW'(0)), .txr_sz(txr_sz_u),
+                   .cd_clr(1'b0), .cd_we(1'b0), .cd_row64(SBW'(0)), .cd_col64(SBW'(0)), .cd_sb128(1'b0), .cd_mask(4'd0), .cd_idx(3'd0),
+                   .cdr_row64(SBW'(0)), .cdr_col64(SBW'(0)), .cdr_val(cdr_val_u),
                    .lr_we, .lr_rec, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec);
     logic s0_re, s1_re, d_we; logic [1:0] s_plane, d_plane; logic [FBX-1:0] s_x, d_x; logic [FBY-1:0] s_y, d_y; logic [11:0] s0_rdata, s1_rdata, d_wdata;
-    lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start, .ly_first(13'd0), .ly_last(hdr.frame_height - 13'd1), .busy, .done, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
+    lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start, .ly_first(PXW'(0)), .ly_last(hdr.frame_height - PXW'(1)), .busy, .done, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
                                          .s0_re, .s1_re, .s_plane, .s_x, .s_y, .s0_rdata, .s1_rdata, .s0_rdata4(u0_4), .s1_rdata4(u1_4), .d4_we, .d4_be, .d4_wdata, .d_we, .d_plane, .d_x, .d_y, .d_wdata);
     logic [11:0] u0, u1, u2;
     logic w_h0_we; logic [3:0] w_h0_be; logic [1:0] w_h0_pl; logic [FBX-1:0] w_h0_x; logic [FBY-1:0] w_h0_y; logic [47:0] w_h0_d;

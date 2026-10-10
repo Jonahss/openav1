@@ -1,13 +1,23 @@
 // Shared types for the tile syntax decoder.
 package syn_pkg;
+    // Coordinate widths. Every position and count in the decoder is sized from these three, so a taller or wider
+    // frame needs only the frame-buffer parameters (FBX/FBY -> ML2R/ML2C) raised to match: the widths below are
+    // the hard ceiling the hardware can address at all. Each covers both coordinates (0 .. 2^N - 1) and the
+    // matching count (mi_rows, frame_height, ...), which is why they hold one bit more than the coordinate alone.
+    localparam int MIW = 13;         // 4x4 (MI) row/col: mi_rows / mi_cols up to 4096 = 16384 px (FBY/FBX = 14)
+    localparam int SBW = 9;          // 64x64 superblock rows / cols: up to 256 = 16384 px
+    localparam int PXW = 15;         // pixel row/col: frame_height / upscaled_width up to 16384
+    localparam int MIS = MIW + 2;    // signed MI position with headroom for neighbour offsets (-32 .. +)
+    localparam int PXS = PXW + 2;    // signed pixel position with headroom (filter taps / MV offsets below 0)
+
     // Frame/tile-level parameters the syntax needs (software parses the headers and fills this in).
     typedef struct packed {
-        logic [10:0] mi_rows;
-        logic [10:0] mi_cols;
-        logic [10:0] mi_row_start;
-        logic [10:0] mi_row_end;
-        logic [10:0] mi_col_start;
-        logic [10:0] mi_col_end;
+        logic [MIW-1:0] mi_rows;
+        logic [MIW-1:0] mi_cols;
+        logic [MIW-1:0] mi_row_start;
+        logic [MIW-1:0] mi_row_end;
+        logic [MIW-1:0] mi_col_start;
+        logic [MIW-1:0] mi_col_end;
         logic        ssx;
         logic        ssy;
         logic        mono;
@@ -36,8 +46,8 @@ package syn_pkg;
         logic        disable_cdf_update;
         logic [5:0]  lr_type;                  // FrameRestorationType[p] at [2p+1:2p] (0 NONE, 1 WIENER, 2 SGRPROJ, 3 SWITCHABLE)
         logic [5:0]  lr_size;                  // log2(LoopRestorationSize[p]) - 6 at [2p+1:2p]
-        logic [12:0] frame_height;
-        logic [12:0] upscaled_width;
+        logic [PXW-1:0] frame_height;
+        logic [PXW-1:0] upscaled_width;
         logic        use_superres;             // 7.16 upscaling: LR unit columns scale by SuperresDenom / SUPERRES_NUM
         logic [4:0]  superres_denom;           // SuperresDenom (9..16)
     } hdr_t;
@@ -58,8 +68,8 @@ package syn_pkg;
 
     // Frame-level parameters of the deblocking loop filter (spec 7.14; software fills this in).
     typedef struct packed {
-        logic [12:0] frame_width;              // FrameWidth (pixels; edges at x >= FrameWidth are not filtered)
-        logic [12:0] frame_height;
+        logic [PXW-1:0] frame_width;              // FrameWidth (pixels; edges at x >= FrameWidth are not filtered)
+        logic [PXW-1:0] frame_height;
         logic [23:0] level;                    // loop_filter_level[0..3], 6 bits each at [6i +: 6]
         logic [2:0]  sharpness;
         logic        delta_enabled;            // loop_filter_delta_enabled
@@ -88,8 +98,8 @@ package syn_pkg;
     // Per loop-restoration-unit record (read_lr_unit).
     typedef struct packed {
         logic [1:0]  plane;
-        logic [7:0]  unit_row;
-        logic [7:0]  unit_col;
+        logic [SBW-1:0] unit_row;              // LR units are >= 64 px, so unit positions / counts fit the superblock width
+        logic [SBW-1:0] unit_col;
         logic [1:0]  lr_type;                  // RESTORE_NONE / WIENER / SGRPROJ
         logic [41:0] wiener;                   // [pass][tap] signed 7 bits: pass1 tap2 .. pass0 tap0 (LSB)
         logic [3:0]  sgr_set;
@@ -98,8 +108,8 @@ package syn_pkg;
 
     // Per-block record emitted by the syntax decoder.
     typedef struct packed {
-        logic [10:0] r;
-        logic [10:0] c;
+        logic [MIW-1:0] r;
+        logic [MIW-1:0] c;
         logic [4:0]  bsize;
         logic        skip;
         logic [2:0]  seg;
@@ -141,8 +151,8 @@ package syn_pkg;
     // Per-transform-block record; Quant is read through coef_rd's port while tx_done is held.
     typedef struct packed {
         logic [1:0]  plane;
-        logic [12:0] x;                        // start pixel (plane units)
-        logic [12:0] y;
+        logic [PXW-1:0] x;                        // start pixel (plane units)
+        logic [PXW-1:0] y;
         logic [4:0]  txsz;
         logic [3:0]  txtype;
         logic [10:0] eob;

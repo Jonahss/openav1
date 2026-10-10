@@ -18,7 +18,7 @@ module blk_syntax
     input  logic        sb_start,             // superblock start: ReadDeltas := delta_q_present, cdef flags := 0
     input  logic        tile_start,           // CurrentQIndex := base_q_idx, DeltaLF := 0
     input  logic        start,
-    input  logic [10:0] r, c,
+    input  logic [MIW-1:0] r, c,
     input  logic [4:0]  bsize,
     output logic        busy,
     output logic        blk_info,             // blk_rec valid: pulsed before the block's transform blocks
@@ -68,7 +68,7 @@ module blk_syntax
     input  logic        ctx_wbusy,
     output logic        tx_req,
     output logic [1:0]  tx_plane,
-    output logic [10:0] tx_x4, tx_y4,
+    output logic [MIW-1:0] tx_x4, tx_y4,
     output logic [4:0]  tx_sz_o,
     output logic [4:0]  tx_bsize,
     input  logic        tx_valid,
@@ -95,11 +95,11 @@ module blk_syntax
     input  logic [1:0]  cf_dccat,
     // motion info memory (mv_mem): this block's entry out, neighbours in (for mv_stack)
     output logic        mvm_we,
-    output logic [10:0] mvm_r, mvm_c,
+    output logic [MIW-1:0] mvm_r, mvm_c,
     output logic [5:0]  mvm_bw4, mvm_bh4,
     output mv_ent_t     mvm_data,
     input  logic        mvm_busy,
-    output logic [10:0] mvr_row, mvr_col,
+    output logic [MIW-1:0] mvr_row, mvr_col,
     input  mv_ent_t     mvr_ent,
     input  logic        mvr_written
 );
@@ -133,7 +133,7 @@ module blk_syntax
     end
 
     // ---------------------------------------------------------------- block registers
-    logic [10:0] br, bc;
+    logic [MIW-1:0] br, bc;
     logic [4:0]  bs;
     logic [5:0]  bw4, bh4;
     logic [7:0]  bwp, bhp;                     // pixels
@@ -167,7 +167,7 @@ module blk_syntax
     logic [1:0]  plane;
     logic [4:0]  p_txsz;
     logic [5:0]  step_x, step_y, n4w, n4h, rx, ry;
-    logic [12:0] base_x, base_y, start_x, start_y, max_x, max_y;
+    logic [PXW-1:0] base_x, base_y, start_x, start_y, max_x, max_y;
     logic        sub_x, sub_y;
     logic [3:0]  p_txtype;
     logic [10:0] t_eob;
@@ -294,13 +294,13 @@ module blk_syntax
     logic [3:0]  pal_y, pal_uv;
     logic [95:0] col_y, col_u, col_v;
     logic        pq_go; logic [CDF_AW-1:0] pq_addr; logic [3:0] pq_n; logic [1:0] pq_kind;
-    logic [12:0] rem_w, rem_h;
+    logic [PXW-1:0] rem_w, rem_h;
     logic [7:0]  os_w, os_h;                     // onscreen block dims (luma pixels)
     always_comb begin
-        rem_w = (13'(hdr.mi_cols) - 13'(bc)) << 2;
-        rem_h = (13'(hdr.mi_rows) - 13'(br)) << 2;
-        os_w = (rem_w < 13'(bwp)) ? rem_w[7:0] : bwp;
-        os_h = (rem_h < 13'(bhp)) ? rem_h[7:0] : bhp;
+        rem_w = (PXW'(hdr.mi_cols) - PXW'(bc)) << 2;
+        rem_h = (PXW'(hdr.mi_rows) - PXW'(br)) << 2;
+        os_w = (rem_w < PXW'(bwp)) ? rem_w[7:0] : bwp;
+        os_h = (rem_h < PXW'(bhp)) ? rem_h[7:0] : bhp;
     end
     pal_syntax u_pal (.clk, .rst, .hdr, .clr(pal_clr),
                       .start_mi(pal_start_mi), .bs, .ymode, .uvmode, .hc, .avail_u, .avail_l, .br,
@@ -352,12 +352,12 @@ module blk_syntax
                  + 5'(vt_above_w < 8'(tx_width(vt_tx))) + 5'(vt_left_h < 8'(tx_height(vt_tx)));
     end
     // chroma inter transform type: the luma leaf covering (max(MiRow, y4 << ssy), max(MiCol, x4 << ssx))
-    logic [10:0] uvt_y4, uvt_x4;
+    logic [MIW-1:0] uvt_y4, uvt_x4;
     logic [5:0]  uvt_ry, uvt_rx;
     logic        uvt_hit;
     always_comb begin
-        uvt_y4 = 11'(start_y >> 2) << hdr.ssy; if (uvt_y4 < br) uvt_y4 = br;
-        uvt_x4 = 11'(start_x >> 2) << hdr.ssx; if (uvt_x4 < bc) uvt_x4 = bc;
+        uvt_y4 = MIW'(start_y >> 2) << hdr.ssy; if (uvt_y4 < br) uvt_y4 = br;
+        uvt_x4 = MIW'(start_x >> 2) << hdr.ssx; if (uvt_x4 < bc) uvt_x4 = bc;
         uvt_ry = 6'(uvt_y4 - br); uvt_rx = 6'(uvt_x4 - bc);
         uvt_hit = (uvt_k < n_leaves) && (uvt_ry >= leaf_r[uvt_k[5:0]]) && (7'(uvt_ry) < 7'(leaf_r[uvt_k[5:0]]) + 7'(tx_height(leaf_tx[uvt_k[5:0]]) >> 2))
                   && (uvt_rx >= leaf_c[uvt_k[5:0]]) && (7'(uvt_rx) < 7'(leaf_c[uvt_k[5:0]]) + 7'(tx_width(leaf_tx[uvt_k[5:0]]) >> 2));
@@ -421,8 +421,8 @@ module blk_syntax
     assign cf_dcs_ctx = dcs_ctx;
     assign cf_tx_type = p_txtype;
     assign tx_plane = plane;
-    assign tx_x4 = 11'(start_x >> 2);
-    assign tx_y4 = 11'(start_y >> 2);
+    assign tx_x4 = MIW'(start_x >> 2);
+    assign tx_y4 = MIW'(start_y >> 2);
     assign tx_sz_o = p_txsz;
     assign tx_bsize = subsampled_size(bs, sub_x, sub_y);
     assign w_ymode = ymode; assign w_skip = skip; assign w_seg = seg; assign w_txsz = txsz;
@@ -436,14 +436,14 @@ module blk_syntax
     always_comb begin
         sub_x = (plane != 2'd0) && hdr.ssx;
         sub_y = (plane != 2'd0) && hdr.ssy;
-        max_x = 13'(({2'b0, hdr.mi_cols} << 2) >> sub_x);
-        max_y = 13'(({2'b0, hdr.mi_rows} << 2) >> sub_y);
+        max_x = PXW'(({2'b0, hdr.mi_cols} << 2) >> sub_x);
+        max_y = PXW'(({2'b0, hdr.mi_rows} << 2) >> sub_y);
         if (leaf_mode) begin
-            start_x = base_x + (13'(leaf_c[leaf_rd[5:0]]) << 2);
-            start_y = base_y + (13'(leaf_r[leaf_rd[5:0]]) << 2);
+            start_x = base_x + (PXW'(leaf_c[leaf_rd[5:0]]) << 2);
+            start_y = base_y + (PXW'(leaf_r[leaf_rd[5:0]]) << 2);
         end else begin
-            start_x = base_x + ((13'(rx) + (chunk_x ? (13'd16 >> sub_x) : 13'd0)) << 2);
-            start_y = base_y + ((13'(ry) + (chunk_y ? (13'd16 >> sub_y) : 13'd0)) << 2);
+            start_x = base_x + ((PXW'(rx) + (chunk_x ? (PXW'(16) >> sub_x) : PXW'(0))) << 2);
+            start_y = base_y + ((PXW'(ry) + (chunk_y ? (PXW'(16) >> sub_y) : PXW'(0))) << 2);
         end
     end
 
@@ -729,7 +729,7 @@ module blk_syntax
                     st <= S_VTX_NODE;
                 end
                 S_VTX_NODE: begin
-                    if (11'(br + 11'(vt_r)) >= hdr.mi_rows || 11'(bc + 11'(vt_c)) >= hdr.mi_cols) st <= S_VTX_POP;   // outside the frame
+                    if (MIW'(br + MIW'(vt_r)) >= hdr.mi_rows || MIW'(bc + MIW'(vt_c)) >= hdr.mi_cols) st <= S_VTX_POP;   // outside the frame
                     else if (!vt_read || vt_tx == TX_4X4 || vt_d == 2'd2) st <= S_VTX_LEAF;           // depth == MAX_VARTX_DEPTH
                     else st <= S_VTX_GO;
                 end
@@ -815,7 +815,7 @@ module blk_syntax
                         step_x <= 6'(tx_width(ptx) >> 2); step_y <= 6'(tx_height(ptx) >> 2);
                         n4w <= num4x4w(psz); n4h <= num4x4h(psz);
                     end
-                    base_x <= (13'(bc) >> sub_x) << 2; base_y <= (13'(br) >> sub_y) << 2;
+                    base_x <= (PXW'(bc) >> sub_x) << 2; base_y <= (PXW'(br) >> sub_y) << 2;
                     rx <= 6'd0; ry <= 6'd0;
                     leaf_mode <= (plane == 2'd0) && use_ibc && !lossless;
                     st <= ((plane == 2'd0) && use_ibc && !lossless) ? S_RES_LEAF : S_RES_TX;

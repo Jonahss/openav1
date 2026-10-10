@@ -11,14 +11,15 @@
 // transform block touches at most 2 words per row.
 module blk_ctx
   import blk_tables_pkg::*;
+  import syn_pkg::*;
 #(
     parameter int CAW = 6                 // log2(words of 16 columns): 6 -> 1024 columns = 4096 px
 )(
     input  logic        clk,
     input  logic        rst,
     // tile parameters
-    input  logic [10:0] mi_cols, mi_rows,
-    input  logic [10:0] mi_col_start, mi_col_end, mi_row_start, mi_row_end,
+    input  logic [MIW-1:0] mi_cols, mi_rows,
+    input  logic [MIW-1:0] mi_col_start, mi_col_end, mi_row_start, mi_row_end,
     input  logic        ssx, ssy, mono,
     input  logic        sb128,
     input  logic        clear_above,          // tile start: coefficient contexts above := 0
@@ -26,7 +27,7 @@ module blk_ctx
     input  logic        sbrow_end,            // superblock row end: seg_prev := last strip row
     // ---- block neighbour query -------------------------------------------------------------------
     input  logic        blk_req,
-    input  logic [10:0] blk_r, blk_c,
+    input  logic [MIW-1:0] blk_r, blk_c,
     input  logic [4:0]  blk_bsize,
     output logic        nb_valid,
     output logic        avail_u, avail_l, has_chroma, avail_u_chroma, avail_l_chroma,
@@ -54,7 +55,7 @@ module blk_ctx
     // ---- transform-block coefficient contexts --------------------------------------------------------
     input  logic        tx_req,
     input  logic [1:0]  tx_plane,
-    input  logic [10:0] tx_x4, tx_y4,          // plane units
+    input  logic [MIW-1:0] tx_x4, tx_y4,          // plane units
     input  logic [4:0]  tx_sz,
     input  logic [4:0]  tx_bsize,              // get_plane_residual_size(MiSize, plane)
     output logic        tx_valid,
@@ -79,22 +80,22 @@ module blk_ctx
     logic [127:0]        l_lvl [0:2][0:1];
 
     // ------------------------------------------------------------------ helpers
-    function automatic logic is_inside(input logic [10:0] r, input logic [10:0] c,
-                                    input logic [10:0] cs, input logic [10:0] ce, input logic [10:0] rs, input logic [10:0] re);
+    function automatic logic is_inside(input logic [MIW-1:0] r, input logic [MIW-1:0] c,
+                                    input logic [MIW-1:0] cs, input logic [MIW-1:0] ce, input logic [MIW-1:0] rs, input logic [MIW-1:0] re);
         // r, c may be "negative" (wrapped) -> compare as signed 12-bit
         is_inside = ($signed({1'b0, c}) >= $signed({1'b0, cs})) && (c < ce) && ($signed({1'b0, r}) >= $signed({1'b0, rs})) && (r < re);
     endfunction
 
     // ------------------------------------------------------------------ block query (registered pipeline)
-    logic [10:0] q_r, q_c;
+    logic [MIW-1:0] q_r, q_c;
     logic [4:0]  q_bs;
     logic [5:0]  q_bw4, q_bh4;
     logic        q_au, q_al;
     logic [4:0]  sbm;                          // row mask inside the superblock (15 or 31)
     assign sbm = sb128 ? 5'd31 : 5'd15;
-    logic [10:0] rm1, cm1;
-    assign rm1 = q_r - 11'd1;
-    assign cm1 = q_c - 11'd1;
+    logic [MIW-1:0] rm1, cm1;
+    assign rm1 = q_r - MIW'(1);
+    assign cm1 = q_c - MIW'(1);
 
     typedef enum logic [2:0] {Q_IDLE, Q_WAIT, Q_RD, Q_OUT} q_t;
     q_t qst;
@@ -145,8 +146,8 @@ module blk_ctx
         else hc = !mono;
         auc = au; alc = al;
         if (hc) begin
-            if (ssy && q_bh4 == 6'd1) auc = is_inside(q_r - 11'd2, q_c, mi_col_start, mi_col_end, mi_row_start, mi_row_end);
-            if (ssx && q_bw4 == 6'd1) alc = is_inside(q_r, q_c - 11'd2, mi_col_start, mi_col_end, mi_row_start, mi_row_end);
+            if (ssy && q_bh4 == 6'd1) auc = is_inside(q_r - MIW'(2), q_c, mi_col_start, mi_col_end, mi_row_start, mi_row_end);
+            if (ssx && q_bw4 == 6'd1) alc = is_inside(q_r, q_c - MIW'(2), mi_col_start, mi_col_end, mi_row_start, mi_row_end);
         end else begin
             auc = 1'b0; alc = 1'b0;
         end
@@ -208,17 +209,17 @@ module blk_ctx
     endfunction
 
     // per-word geometry: a block is aligned to its size; for width 32 it covers two whole words
-    logic [10:0] wr_r, wr_c;
+    logic [MIW-1:0] wr_r, wr_c;
     logic [5:0]  wr_bw4, wr_bh4;
     logic [5:0] n_cols_word, n_rows_word;
     assign n_cols_word = wr_bw4 > 6'd16 ? 6'd16 : wr_bw4;
     assign n_rows_word = wr_bh4 > 6'd16 ? 6'd16 : wr_bh4;
-    logic [10:0] wrow;
-    assign wrow = wr_r + 11'(wi);
+    logic [MIW-1:0] wrow;
+    assign wrow = wr_r + MIW'(wi);
     logic [CAW-1:0] wcol_word;
     assign wcol_word = wr_c[CAW+3:4] + CAW'(wj);
-    logic [10:0] wcol4;
-    assign wcol4 = wr_c + 11'(wi);
+    logic [MIW-1:0] wcol4;
+    assign wcol4 = wr_c + MIW'(wi);
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -291,14 +292,14 @@ module blk_ctx
     // all_zero_ctx / dc_sign_ctx over the transform block's above (w4 entries) and left (h4 entries) ranges;
     // ranges are aligned so each lies within one 16-entry word.
     logic [1:0]  t_plane;
-    logic [10:0] t_x4, t_y4;
+    logic [MIW-1:0] t_x4, t_y4;
     logic [5:0]  t_w4, t_h4;
     logic [4:0]  t_sz, t_bs;
     logic [127:0] t_aw, t_lw;
     typedef enum logic [1:0] {T_IDLE, T_RD, T_OUT} t_t;
     t_t tst;
     logic t_pend;
-    logic [10:0] max_x4, max_y4;
+    logic [MIW-1:0] max_x4, max_y4;
     assign max_x4 = (t_plane != 2'd0 && ssx) ? (mi_cols >> 1) : mi_cols;
     assign max_y4 = (t_plane != 2'd0 && ssy) ? (mi_rows >> 1) : mi_rows;
 
@@ -313,8 +314,8 @@ module blk_ctx
             logic [7:0] ae, le;
             logic a_in, l_in;
             ae = t_aw[8*k +: 8]; le = t_lw[8*k +: 8];
-            a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & 11'h7F0) + 11'(k) < max_x4);
-            l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & 11'h7F0) + 11'(k) < max_y4);
+            a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & ~MIW'(15)) + MIW'(k) < max_x4);
+            l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & ~MIW'(15)) + MIW'(k) < max_y4);
             if (a_in) begin
                 if (8'(ae[5:0]) > top_max) top_max = 8'(ae[5:0]);
                 if (ae != 8'd0) above_nz = 1'b1;
@@ -351,8 +352,8 @@ module blk_ctx
             logic [7:0] ae, le;
             logic a_in, l_in;
             ae = t_aw[8*k +: 8]; le = t_lw[8*k +: 8];
-            a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & 11'h7F0) + 11'(k) < max_x4);
-            l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & 11'h7F0) + 11'(k) < max_y4);
+            a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & ~MIW'(15)) + MIW'(k) < max_x4);
+            l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & ~MIW'(15)) + MIW'(k) < max_y4);
             if (a_in) begin if (ae[7:6] == 2'd1) dcs_wide = dcs_wide - 8'sd1; else if (ae[7:6] == 2'd2) dcs_wide = dcs_wide + 8'sd1; end
             if (l_in) begin if (le[7:6] == 2'd1) dcs_wide = dcs_wide - 8'sd1; else if (le[7:6] == 2'd2) dcs_wide = dcs_wide + 8'sd1; end
         end
@@ -370,16 +371,16 @@ module blk_ctx
     r_t rstt;
     logic [1:0] rp;
     logic       rj;
-    logic [10:0] rc0, rr0;             // plane-unit start col/row
+    logic [MIW-1:0] rc0, rr0;             // plane-unit start col/row
     logic [5:0]  rn_c, rn_r;           // plane-unit counts
-    logic [10:0] rb_r, rb_c;
+    logic [MIW-1:0] rb_r, rb_c;
     logic [5:0]  rb_bw4, rb_bh4;
     logic        rb_hc;
     always_comb begin
         rc0 = (rp != 0 && ssx) ? (rb_c >> 1) : rb_c;
         rr0 = (rp != 0 && ssy) ? (rb_r >> 1) : rb_r;
-        rn_c = (rp != 0 && ssx) ? 6'(((rb_c + 11'(rb_bw4)) >> 1) - (rb_c >> 1)) : rb_bw4;
-        rn_r = (rp != 0 && ssy) ? 6'(((rb_r + 11'(rb_bh4)) >> 1) - (rb_r >> 1)) : rb_bh4;
+        rn_c = (rp != 0 && ssx) ? 6'(((rb_c + MIW'(rb_bw4)) >> 1) - (rb_c >> 1)) : rb_bw4;
+        rn_r = (rp != 0 && ssy) ? 6'(((rb_r + MIW'(rb_bh4)) >> 1) - (rb_r >> 1)) : rb_bh4;
     end
     logic tbusy;
     assign tbusy = (tst != T_IDLE) || (rstt != R_IDLE);

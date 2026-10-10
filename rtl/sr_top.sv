@@ -16,7 +16,7 @@ module sr_top
     input  hdr_t        hdr,
     input  lf_hdr_t     lh,                   // frame_width (FrameWidth before upscaling)
     input  logic        start,
-    input  logic [12:0] ly_first, ly_last,    // luma rows to upscale (inclusive); chroma rows follow by subsampling
+    input  logic [PXW-1:0] ly_first, ly_last,    // luma rows to upscale (inclusive); chroma rows follow by subsampling
     output logic        busy,
     output logic        done,
     // the buffer being upscaled (same plane for reads and writes)
@@ -37,26 +37,26 @@ module sr_top
     typedef enum logic [2:0] {S_IDLE, S_PLANE, S_RD, S_RD_LAST, S_OUT, S_NEXT, S_DONE} st_t;
     st_t st;
     logic        sub_x, sub_y;
-    logic [12:0] up_w, plane_h, max_x;
+    logic [PXW-1:0] up_w, plane_h, max_x;
     logic [31:0] step_x;
     logic signed [31:0] init_subpel, src_x;
-    logic [12:0] x, y;                                       // read column / row
-    logic [12:0] xo;                                         // output column
+    logic [PXW-1:0] x, y;                                       // read column / row
+    logic [PXW-1:0] xo;                                         // output column
     logic [11:0] line [0:(1 << FBX) - 1];
     logic [11:0] pix_max;
     assign pix_max = 12'((13'd1 << hdr.bit_depth) - 13'd1);
 
     // per-plane geometry (7.16)
-    logic [12:0] g_down, g_up, g_h, g_maxx;
+    logic [PXW-1:0] g_down, g_up, g_h, g_maxx;
     logic [31:0] g_step;
     logic signed [31:0] g_err, g_num, g_q, g_init;
     always_comb begin
         sub_x = (plane != 2'd0) && hdr.ssx;
         sub_y = (plane != 2'd0) && hdr.ssy;
-        g_down = (lh.frame_width + 13'(sub_x)) >> sub_x;          // Round2(FrameWidth, subX)
-        g_up = (hdr.upscaled_width + 13'(sub_x)) >> sub_x;
-        g_h = (lh.frame_height + 13'(sub_y)) >> sub_y;
-        g_maxx = 13'(((13'(hdr.mi_cols) >> sub_x) << 2) - 13'd1);
+        g_down = (lh.frame_width + PXW'(sub_x)) >> sub_x;          // Round2(FrameWidth, subX)
+        g_up = (hdr.upscaled_width + PXW'(sub_x)) >> sub_x;
+        g_h = (lh.frame_height + PXW'(sub_y)) >> sub_y;
+        g_maxx = PXW'(((PXW'(hdr.mi_cols) >> sub_x) << 2) - PXW'(1));
         g_step = ((32'(g_down) << SUPERRES_SCALE_BITS) + 32'(g_up >> 1)) / 32'(g_up);
         g_err = $signed(32'(g_up) * g_step) - $signed(32'(g_down) << SUPERRES_SCALE_BITS);
         g_num = -$signed((32'(g_up) - 32'(g_down)) << (SUPERRES_SCALE_BITS - 1)) + $signed(32'(g_up >> 1));
@@ -77,9 +77,9 @@ module sr_top
         acc = 22'sd0;
         for (int k = 0; k < 8; k++) begin
             logic signed [31:0] sx_;
-            logic [12:0] sxc;
+            logic [PXW-1:0] sxc;
             sx_ = src_px + 32'(k) - 32'sd3;
-            sxc = (sx_ < 0) ? 13'd0 : (sx_ > 32'(max_x)) ? max_x : 13'(sx_);
+            sxc = (sx_ < 0) ? PXW'(0) : (sx_ > 32'(max_x)) ? max_x : PXW'(sx_);
             acc = acc + 22'(signed'({1'b0, line[sxc[FBX-1:0]]})) * 22'(upscale_filter(subpel, 3'(k)));
         end
         o_val = 15'((acc + 22'sd64) >>> FILTER_BITS);           // Round2(sum, FILTER_BITS)
@@ -100,31 +100,31 @@ module sr_top
             S_PLANE: begin
                 up_w <= g_up; plane_h <= g_h; max_x <= g_maxx; step_x <= g_step;
                 init_subpel <= g_init & 32'sd16383;
-                y <= ly_first >> sub_y; x <= 13'd0;
+                y <= ly_first >> sub_y; x <= PXW'(0);
                 st <= S_RD;
             end
             // copy row y into the line buffer (the read lands one cycle after its address): all MiCols * 4
             // decoded samples, not just FrameWidth of them -- the filter clamps to maxX = miW * MI_SIZE - 1 and
             // reads the decoded margin beyond the picture edge
             S_RD: begin
-                if (x != 13'd0) line[x[FBX-1:0] - FBX'(1)] <= s_rdata;
-                if (x < max_x) x <= x + 13'd1;
+                if (x != PXW'(0)) line[x[FBX-1:0] - FBX'(1)] <= s_rdata;
+                if (x < max_x) x <= x + PXW'(1);
                 else st <= S_RD_LAST;
             end
             S_RD_LAST: begin
                 line[x[FBX-1:0]] <= s_rdata;
-                xo <= 13'd0; src_x <= -(32'sd1 <<< SUPERRES_SCALE_BITS) + init_subpel;
+                xo <= PXW'(0); src_x <= -(32'sd1 <<< SUPERRES_SCALE_BITS) + init_subpel;
                 st <= S_OUT;
             end
             // one upscaled sample per cycle: srcX = -(1 << 14) + initialSubpelX + x * stepX
             S_OUT: begin
                 src_x <= src_x + $signed(step_x);
-                if (xo + 13'd1 < up_w) xo <= xo + 13'd1;
+                if (xo + PXW'(1) < up_w) xo <= xo + PXW'(1);
                 else st <= S_NEXT;
             end
             S_NEXT: begin
-                x <= 13'd0;
-                if (y + 13'd1 < plane_h && y + 13'd1 <= (ly_last >> sub_y)) begin y <= y + 13'd1; st <= S_RD; end
+                x <= PXW'(0);
+                if (y + PXW'(1) < plane_h && y + PXW'(1) <= (ly_last >> sub_y)) begin y <= y + PXW'(1); st <= S_RD; end
                 else if (plane + 2'd1 < (hdr.mono ? 2'd1 : 2'd3)) begin plane <= plane + 2'd1; st <= S_PLANE; end
                 else st <= S_DONE;
             end

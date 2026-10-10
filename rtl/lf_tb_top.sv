@@ -21,26 +21,26 @@ module lf_tb_top
     input  logic [11:0] h_wdata,
     output logic [11:0] h_rdata,
     input  logic        blk_we,
-    input  logic [10:0] blk_r, blk_c,
+    input  logic [MIW-1:0] blk_r, blk_c,
     input  logic [5:0]  blk_bw4, blk_bh4,
     input  mi_lf_t      blk_data,
     output logic        blk_busy,
     input  logic        tx_we,
     input  logic [1:0]  tx_plane,
-    input  logic [10:0] tx_row, tx_col,
+    input  logic [MIW-1:0] tx_row, tx_col,
     input  logic [4:0]  tx_w4, tx_h4,
     input  logic [4:0]  tx_sz,
     output logic        tx_busy
 );
-    logic [10:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
-    mi_store u_mi (.clk, .rst, .rd2_row(11'd0), .rd2_col(11'd0), .rd2_info(), .blk_we, .blk_r, .blk_c, .blk_bw4, .blk_bh4, .blk_data, .blk_busy,
+    logic [MIW-1:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
+    mi_store u_mi (.clk, .rst, .rd2_row(MIW'(0)), .rd2_col(MIW'(0)), .rd2_info(), .blk_we, .blk_r, .blk_c, .blk_bw4, .blk_bh4, .blk_data, .blk_busy,
                    .tx_we, .tx_plane, .tx_row, .tx_col, .tx_w4, .tx_h4, .tx_sz, .tx_busy,
                    .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
-                   .cd_clr(1'b0), .cd_we(1'b0), .cd_row64(7'd0), .cd_col64(7'd0), .cd_sb128(1'b0), .cd_mask(4'd0), .cd_idx(3'd0),
-                   .cdr_row64(7'd0), .cdr_col64(7'd0), .cdr_val(),
-                   .lr_we(1'b0), .lr_rec('0), .lrr_plane(2'd0), .lrr_row(6'd0), .lrr_col(6'd0), .lrr_rec());
+                   .cd_clr(1'b0), .cd_we(1'b0), .cd_row64(SBW'(0)), .cd_col64(SBW'(0)), .cd_sb128(1'b0), .cd_mask(4'd0), .cd_idx(3'd0),
+                   .cdr_row64(SBW'(0)), .cdr_col64(SBW'(0)), .cdr_val(),
+                   .lr_we(1'b0), .lr_rec('0), .lrr_plane(2'd0), .lrr_row(SBW'(0)), .lrr_col(SBW'(0)), .lrr_rec());
     logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata; logic [47:0] fb_rdata4, fb4_wdata; logic fb4_we; logic [FBX-1:0] fb4_x; logic [FBY-1:0] fb4_y;
-    lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start, .row_first(11'd0), .row_last(hdr.mi_rows - 11'd1), .busy, .done,
+    lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start, .row_first(MIW'(0)), .row_last(hdr.mi_rows - MIW'(1)), .busy, .done,
                                          .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
                                          .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata,
                                          .fb_rdata4, .fb4_we, .fb4_x, .fb4_y, .fb4_wdata);

@@ -14,13 +14,13 @@ module mv_stack
     input  logic        rst,
     input  hdr_t        hdr,
     input  logic        start,
-    input  logic [10:0] r, c,                 // MiRow, MiCol
+    input  logic [MIW-1:0] r, c,                 // MiRow, MiCol
     input  logic [4:0]  bs,                   // MiSize
     output logic        busy,
     output logic        done,                 // 1-cycle pulse; pred_* valid from then on
     output logic signed [17:0] pred_row, pred_col,
     // mv_info read port (entry and its written-this-frame bit valid the cycle after the address)
-    output logic [10:0] rd_row, rd_col,
+    output logic [MIW-1:0] rd_row, rd_col,
     input  mv_ent_t     rd_ent,
     input  logic        rd_written
 );
@@ -32,13 +32,13 @@ module mv_stack
     logic [5:0] bw4, bh4;
     assign bw4 = num4x4w(bs);
     assign bh4 = num4x4h(bs);
-    logic [10:0] mi_rows, mi_cols;
+    logic [MIW-1:0] mi_rows, mi_cols;
     assign mi_rows = hdr.mi_rows;
     assign mi_cols = hdr.mi_cols;
 
-    function automatic logic is_inside(input logic signed [12:0] rr, input logic signed [12:0] cc);
-        is_inside = (cc >= 13'(signed'({2'b0, hdr.mi_col_start}))) && (cc < 13'(signed'({2'b0, hdr.mi_col_end}))) &&
-                    (rr >= 13'(signed'({2'b0, hdr.mi_row_start}))) && (rr < 13'(signed'({2'b0, hdr.mi_row_end})));
+    function automatic logic is_inside(input logic signed [MIS-1:0] rr, input logic signed [MIS-1:0] cc);
+        is_inside = (cc >= MIS'(signed'({2'b0, hdr.mi_col_start}))) && (cc < MIS'(signed'({2'b0, hdr.mi_col_end}))) &&
+                    (rr >= MIS'(signed'({2'b0, hdr.mi_row_start}))) && (rr < MIS'(signed'({2'b0, hdr.mi_row_end})));
     endfunction
 
     // lower_mv_precision (7.10.2.10) with force_integer_mv = 1 (every intra frame): round to whole samples
@@ -60,10 +60,10 @@ module mv_stack
     typedef enum logic [3:0] {M_IDLE, M_PH, M_ISSUE, M_WAIT, M_PROC, M_NEAR, M_SORT, M_SORT_END, M_FILL, M_CLAMP, M_SEL, M_DONE} st_t;
     st_t st;
     logic        is_row, is_point;
-    logic signed [12:0] d_row, d_col;         // scan offsets (after the odd-position adjustment)
+    logic signed [MIS-1:0] d_row, d_col;         // scan offsets (after the odd-position adjustment)
     logic [5:0]  end4, i;
     logic        step16, far;                 // far: |delta| > 1
-    logic signed [12:0] mv_r, mv_c;           // position being scanned
+    logic signed [MIS-1:0] mv_r, mv_c;           // position being scanned
     logic [5:0]  cand_len;
     logic [15:0] cand_w;
     logic signed [17:0] cand_row, cand_col;
@@ -75,10 +75,10 @@ module mv_stack
 
     always_comb begin
         // position of the current scan step
-        if (is_point) begin mv_r = 13'(signed'({2'b0, r})) + d_row; mv_c = 13'(signed'({2'b0, c})) + d_col; end
-        else if (is_row) begin mv_r = 13'(signed'({2'b0, r})) + d_row; mv_c = 13'(signed'({2'b0, c})) + d_col + 13'(signed'({7'b0, i})); end
-        else begin mv_r = 13'(signed'({2'b0, r})) + d_row + 13'(signed'({7'b0, i})); mv_c = 13'(signed'({2'b0, c})) + d_col; end
-        rd_row = 11'(mv_r); rd_col = 11'(mv_c);
+        if (is_point) begin mv_r = MIS'(signed'({2'b0, r})) + d_row; mv_c = MIS'(signed'({2'b0, c})) + d_col; end
+        else if (is_row) begin mv_r = MIS'(signed'({2'b0, r})) + d_row; mv_c = MIS'(signed'({2'b0, c})) + d_col + MIS'(signed'({7'b0, i})); end
+        else begin mv_r = MIS'(signed'({2'b0, r})) + d_row + MIS'(signed'({7'b0, i})); mv_c = MIS'(signed'({2'b0, c})) + d_col; end
+        rd_row = MIW'(mv_r); rd_col = MIW'(mv_c);
         // candidate from the entry just read
         if (is_point) cand_len = 6'd0;
         else if (is_row) cand_len = (bw4 < num4x4w(rd_ent.bsize)) ? bw4 : num4x4w(rd_ent.bsize);
@@ -99,10 +99,10 @@ module mv_stack
         logic signed [19:0] border_r, border_c;
         border_r = 20'(MV_BORDER) + 20'(signed'({14'b0, bh4})) * 20'sd32;       // bh * 8 = bh4 * 4 * 8
         border_c = 20'(MV_BORDER) + 20'(signed'({14'b0, bw4})) * 20'sd32;
-        top_lo  = -(20'(signed'({9'b0, r})) * 20'sd32) - border_r;             // mbToTopEdge - border
-        top_hi  = (20'(signed'({9'b0, mi_rows})) - 20'(signed'({14'b0, bh4})) - 20'(signed'({9'b0, r}))) * 20'sd32 + border_r;
-        left_lo = -(20'(signed'({9'b0, c})) * 20'sd32) - border_c;
-        left_hi = (20'(signed'({9'b0, mi_cols})) - 20'(signed'({14'b0, bw4})) - 20'(signed'({9'b0, c}))) * 20'sd32 + border_c;
+        top_lo  = -(20'(signed'({{(20 - MIW){1'b0}}, r})) * 20'sd32) - border_r;             // mbToTopEdge - border
+        top_hi  = (20'(signed'({{(20 - MIW){1'b0}}, mi_rows})) - 20'(signed'({14'b0, bh4})) - 20'(signed'({{(20 - MIW){1'b0}}, r}))) * 20'sd32 + border_r;
+        left_lo = -(20'(signed'({{(20 - MIW){1'b0}}, c})) * 20'sd32) - border_c;
+        left_hi = (20'(signed'({{(20 - MIW){1'b0}}, mi_cols})) - 20'(signed'({14'b0, bw4})) - 20'(signed'({{(20 - MIW){1'b0}}, c}))) * 20'sd32 + border_c;
     end
     function automatic logic signed [17:0] clamp18(input logic signed [17:0] v, input logic signed [19:0] lo, input logic signed [19:0] hi);
         logic signed [19:0] x;
@@ -116,7 +116,7 @@ module mv_stack
     logic [5:0] sb_size4;
     assign sb_size4 = hdr.sb128 ? 6'd32 : 6'd16;
     logic top_of_tile;
-    assign top_of_tile = (13'(signed'({2'b0, r})) - 13'(signed'({7'b0, sb_size4}))) < 13'(signed'({2'b0, hdr.mi_row_start}));
+    assign top_of_tile = (MIS'(signed'({2'b0, r})) - MIS'(signed'({7'b0, sb_size4}))) < MIS'(signed'({2'b0, hdr.mi_row_start}));
 
     assign busy = (st != M_IDLE);
 
@@ -132,46 +132,46 @@ module mv_stack
             end
             // ---- phase setup (scan row / scan col / scan point parameters)
             M_PH: begin
-                i <= 6'd0; is_point <= 1'b0; far <= 1'b0; is_row <= 1'b0; step16 <= 1'b0; d_row <= 13'sd0; d_col <= 13'sd0;
+                i <= 6'd0; is_point <= 1'b0; far <= 1'b0; is_row <= 1'b0; step16 <= 1'b0; d_row <= MIS'(0); d_col <= MIS'(0);
                 case (ph)
                     P_ROW1, P_ROW3, P_ROW5: begin
-                        logic signed [12:0] dr;
-                        dr = (ph == P_ROW1) ? -13'sd1 : (ph == P_ROW3) ? -13'sd3 : -13'sd5;
+                        logic signed [MIS-1:0] dr;
+                        dr = (ph == P_ROW1) ? -MIS'(1) : (ph == P_ROW3) ? -MIS'(3) : -MIS'(5);
                         is_row <= 1'b1;
                         begin   // end4 = Min(Min(bw4, MiCols - MiCol), 16), compared at full width
-                            logic [10:0] rem, e;
+                            logic [MIW-1:0] rem, e;
                             rem = mi_cols - c;
-                            e = (11'(bw4) < rem) ? 11'(bw4) : rem;
-                            end4 <= (e > 11'd16) ? 6'd16 : 6'(e);
+                            e = (MIW'(bw4) < rem) ? MIW'(bw4) : rem;
+                            end4 <= (e > MIW'(16)) ? 6'd16 : 6'(e);
                         end
                         step16 <= (bw4 >= 6'd16);
-                        if (ph != P_ROW1) begin far <= 1'b1; d_row <= dr + 13'(signed'({12'b0, r[0]})); d_col <= 13'sd1 - 13'(signed'({12'b0, c[0]})); end
+                        if (ph != P_ROW1) begin far <= 1'b1; d_row <= dr + MIS'(signed'({12'b0, r[0]})); d_col <= MIS'(1) - MIS'(signed'({12'b0, c[0]})); end
                         else d_row <= dr;
                         // rows -5 only for bh4 > 1
                         if (ph == P_ROW5 && bh4 == 6'd1) begin ph <= P_COL5; st <= M_PH; end
                         else st <= M_ISSUE;
                     end
                     P_COL1, P_COL3, P_COL5: begin
-                        logic signed [12:0] dc;
-                        dc = (ph == P_COL1) ? -13'sd1 : (ph == P_COL3) ? -13'sd3 : -13'sd5;
+                        logic signed [MIS-1:0] dc;
+                        dc = (ph == P_COL1) ? -MIS'(1) : (ph == P_COL3) ? -MIS'(3) : -MIS'(5);
                         begin
-                            logic [10:0] rem, e;
+                            logic [MIW-1:0] rem, e;
                             rem = mi_rows - r;
-                            e = (11'(bh4) < rem) ? 11'(bh4) : rem;
-                            end4 <= (e > 11'd16) ? 6'd16 : 6'(e);
+                            e = (MIW'(bh4) < rem) ? MIW'(bh4) : rem;
+                            end4 <= (e > MIW'(16)) ? 6'd16 : 6'(e);
                         end
                         step16 <= (bh4 >= 6'd16);
-                        if (ph != P_COL1) begin far <= 1'b1; d_row <= 13'sd1 - 13'(signed'({12'b0, r[0]})); d_col <= dc + 13'(signed'({12'b0, c[0]})); end
+                        if (ph != P_COL1) begin far <= 1'b1; d_row <= MIS'(1) - MIS'(signed'({12'b0, r[0]})); d_col <= dc + MIS'(signed'({12'b0, c[0]})); end
                         else d_col <= dc;
                         if (ph == P_COL5 && bw4 == 6'd1) begin ph <= P_END; st <= M_PH; end
                         else st <= M_ISSUE;
                     end
                     P_TR: begin
-                        is_point <= 1'b1; d_row <= -13'sd1; d_col <= 13'(signed'({7'b0, bw4}));
+                        is_point <= 1'b1; d_row <= -MIS'(1); d_col <= MIS'(signed'({7'b0, bw4}));
                         if ((bw4 > bh4 ? bw4 : bh4) <= 6'd16) st <= M_ISSUE;
                         else st <= M_NEAR;                          // no top-right scan for large blocks
                     end
-                    P_TL: begin is_point <= 1'b1; d_row <= -13'sd1; d_col <= -13'sd1; st <= M_ISSUE; end
+                    P_TL: begin is_point <= 1'b1; d_row <= -MIS'(1); d_col <= -MIS'(1); st <= M_ISSUE; end
                     default: begin                                  // P_END: sorts
                         s_start <= 4'd0; s_end <= n_nearest; s_second <= 1'b0; st <= M_SORT_END;
                     end

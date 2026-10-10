@@ -34,7 +34,7 @@ module tile_syntax
     output logic              unsupported,
     // records
     output logic              sb_start_o,      // superblock start (for the reconstruction stage's BlockDecoded flags)
-    output logic [10:0]       sb_r_o, sb_c_o,
+    output logic [MIW-1:0]       sb_r_o, sb_c_o,
     output logic              blk_info,        // blk_rec valid, before the block's transform blocks
     output logic              blk_done,
     output blk_rec_t          blk_rec,
@@ -116,19 +116,19 @@ module tile_syntax
     // ------------------------------------------------------------------ blk_ctx
     logic clear_above, clear_left, sbrow_end;
     logic nb_req_b, nb_req_p, nb_req, nb_valid;
-    logic [10:0] nb_r, nb_c; logic [4:0] nb_bs;
+    logic [MIW-1:0] nb_r, nb_c; logic [4:0] nb_bs;
     logic avail_u, avail_l, has_chroma, avail_u_chroma, avail_l_chroma;
     logic [3:0] a_ymode, l_ymode; logic a_skip, l_skip; logic [4:0] a_misize, l_misize, a_txsz, l_txsz;
     logic [3:0] a_pal_y, l_pal_y, a_pal_uv, l_pal_uv, seg_ul, seg_u, seg_l;
     logic [95:0] a_col_y, l_col_y, a_col_u, l_col_u;
     logic ctx_we, ctx_wbusy; logic [3:0] w_ymode; logic w_skip; logic [2:0] w_seg; logic [4:0] w_txsz;
     logic [3:0] w_pal_y, w_pal_uv; logic [95:0] w_col_y, w_col_u;
-    logic tx_req, tx_valid, tx_we, rbc_we, ctx_tbusy; logic [1:0] tx_plane; logic [10:0] tx_x4, tx_y4; logic [4:0] tx_sz, tx_bsize;
+    logic tx_req, tx_valid, tx_we, rbc_we, ctx_tbusy; logic [1:0] tx_plane; logic [MIW-1:0] tx_x4, tx_y4; logic [4:0] tx_sz, tx_bsize;
     logic [3:0] az_ctx; logic [1:0] dcs_ctx; logic [5:0] w_cul; logic [1:0] w_dccat;
     // block position for the ctx query: partition FSM (node) or blk_syntax (block)
     logic blk_active;
-    logic [10:0] p_r, p_c; logic [4:0] p_bs;
-    logic [10:0] b_r, b_c; logic [4:0] b_bs;
+    logic [MIW-1:0] p_r, p_c; logic [4:0] p_bs;
+    logic [MIW-1:0] b_r, b_c; logic [4:0] b_bs;
     assign nb_req = blk_active ? nb_req_b : nb_req_p;
     assign nb_r = blk_active ? b_r : p_r;
     assign nb_c = blk_active ? b_c : p_c;
@@ -151,7 +151,7 @@ module tile_syntax
     logic b_start, b_busy, b_unsup, sb_start;
     logic bq_go; logic [CDF_AW-1:0] bq_addr; logic [3:0] bq_n; logic [1:0] bq_kind;
     // motion info of the frame (intra block copy)
-    logic mvm_we, mvm_busy, mvm_clr, mvr_written; logic [10:0] mvm_r, mvm_c, mvr_row, mvr_col; logic [5:0] mvm_bw4, mvm_bh4; mv_ent_t mvm_data, mvr_ent;
+    logic mvm_we, mvm_busy, mvm_clr, mvr_written; logic [MIW-1:0] mvm_r, mvm_c, mvr_row, mvr_col; logic [5:0] mvm_bw4, mvm_bh4; mv_ent_t mvm_data, mvr_ent;
     mv_mem #(.ML2R(ML2R), .ML2C(ML2C)) u_mvm (.clk, .rst, .we(mvm_we), .w_r(mvm_r), .w_c(mvm_c), .w_bw4(mvm_bw4), .w_bh4(mvm_bh4),
                                               .w_data(mvm_data), .busy(mvm_busy), .clr(mvm_clr), .clr_row(sb_r), .clr_n(sb4),
                                               .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
@@ -172,8 +172,8 @@ module tile_syntax
 
     // ------------------------------------------------------------------ partition / superblock FSM
     typedef struct packed {
-        logic [10:0] r;
-        logic [10:0] c;
+        logic [MIW-1:0] r;
+        logic [MIW-1:0] c;
         logic [4:0]  bs;
         logic [3:0]  part;
         logic [2:0]  child;
@@ -196,7 +196,7 @@ module tile_syntax
         if (rst) perf_st <= '{default: 32'd0};
         else perf_st[st] <= perf_st[st] + 32'd1;
     end
-    logic [10:0] sb_r, sb_c;
+    logic [MIW-1:0] sb_r, sb_c;
     logic [5:0]  sb4;                          // 16 or 32
     assign sb4 = hdr.sb128 ? 6'd32 : 6'd16;
     logic [5:0] half4, quarter4;
@@ -261,7 +261,7 @@ module tile_syntax
 
     // child descriptor for (part, child index)
     logic child_is_blk, child_valid;
-    logic [10:0] ch_r, ch_c;
+    logic [MIW-1:0] ch_r, ch_c;
     logic [4:0] ch_bs;
     always_comb begin
         child_valid = 1'b0; child_is_blk = 1'b1; ch_r = top.r; ch_c = top.c; ch_bs = sub_size;
@@ -269,56 +269,56 @@ module tile_syntax
             P_NONE: child_valid = (top.child == 0);
             P_HORZ: begin
                 if (top.child == 0) child_valid = 1'b1;
-                else if (top.child == 1 && top.has_rows) begin child_valid = 1'b1; ch_r = top.r + 11'(half4); end
+                else if (top.child == 1 && top.has_rows) begin child_valid = 1'b1; ch_r = top.r + MIW'(half4); end
             end
             P_VERT: begin
                 if (top.child == 0) child_valid = 1'b1;
-                else if (top.child == 1 && top.has_cols) begin child_valid = 1'b1; ch_c = top.c + 11'(half4); end
+                else if (top.child == 1 && top.has_cols) begin child_valid = 1'b1; ch_c = top.c + MIW'(half4); end
             end
             P_SPLIT: begin
                 child_is_blk = 1'b0; child_valid = (top.child < 4);
-                ch_r = top.r + (top.child[1] ? 11'(half4) : 11'd0);
-                ch_c = top.c + (top.child[0] ? 11'(half4) : 11'd0);
+                ch_r = top.r + (top.child[1] ? MIW'(half4) : MIW'(0));
+                ch_c = top.c + (top.child[0] ? MIW'(half4) : MIW'(0));
             end
             P_HORZ_A: begin
                 child_valid = (top.child < 3);
                 case (top.child)
                     3'd0: begin ch_bs = split_size; end
-                    3'd1: begin ch_bs = split_size; ch_c = top.c + 11'(half4); end
-                    default: begin ch_r = top.r + 11'(half4); end
+                    3'd1: begin ch_bs = split_size; ch_c = top.c + MIW'(half4); end
+                    default: begin ch_r = top.r + MIW'(half4); end
                 endcase
             end
             P_HORZ_B: begin
                 child_valid = (top.child < 3);
                 case (top.child)
                     3'd0: ;
-                    3'd1: begin ch_bs = split_size; ch_r = top.r + 11'(half4); end
-                    default: begin ch_bs = split_size; ch_r = top.r + 11'(half4); ch_c = top.c + 11'(half4); end
+                    3'd1: begin ch_bs = split_size; ch_r = top.r + MIW'(half4); end
+                    default: begin ch_bs = split_size; ch_r = top.r + MIW'(half4); ch_c = top.c + MIW'(half4); end
                 endcase
             end
             P_VERT_A: begin
                 child_valid = (top.child < 3);
                 case (top.child)
                     3'd0: begin ch_bs = split_size; end
-                    3'd1: begin ch_bs = split_size; ch_r = top.r + 11'(half4); end
-                    default: begin ch_c = top.c + 11'(half4); end
+                    3'd1: begin ch_bs = split_size; ch_r = top.r + MIW'(half4); end
+                    default: begin ch_c = top.c + MIW'(half4); end
                 endcase
             end
             P_VERT_B: begin
                 child_valid = (top.child < 3);
                 case (top.child)
                     3'd0: ;
-                    3'd1: begin ch_bs = split_size; ch_c = top.c + 11'(half4); end
-                    default: begin ch_bs = split_size; ch_r = top.r + 11'(half4); ch_c = top.c + 11'(half4); end
+                    3'd1: begin ch_bs = split_size; ch_c = top.c + MIW'(half4); end
+                    default: begin ch_bs = split_size; ch_r = top.r + MIW'(half4); ch_c = top.c + MIW'(half4); end
                 endcase
             end
             P_HORZ_4: begin
-                ch_r = top.r + 11'(quarter4) * 11'(top.child);
-                child_valid = (top.child < 3) || (top.child == 3 && (top.r + 11'(quarter4) * 11'd3) < hdr.mi_rows);
+                ch_r = top.r + MIW'(quarter4) * MIW'(top.child);
+                child_valid = (top.child < 3) || (top.child == 3 && (top.r + MIW'(quarter4) * MIW'(3)) < hdr.mi_rows);
             end
             default: begin   // P_VERT_4
-                ch_c = top.c + 11'(quarter4) * 11'(top.child);
-                child_valid = (top.child < 3) || (top.child == 3 && (top.c + 11'(quarter4) * 11'd3) < hdr.mi_cols);
+                ch_c = top.c + MIW'(quarter4) * MIW'(top.child);
+                child_valid = (top.child < 3) || (top.child == 3 && (top.c + MIW'(quarter4) * MIW'(3)) < hdr.mi_cols);
             end
         endcase
     end
@@ -358,8 +358,8 @@ module tile_syntax
                     if (sp != 4'd1) stack[spp].child <= stack[spp].child + 3'd1;
                     st <= (sp == 4'd1) ? T_SB_ROW_END : T_CHILD;
                 end else begin
-                    stack[spi].has_rows <= (top.r + 11'(half4)) < hdr.mi_rows;
-                    stack[spi].has_cols <= (top.c + 11'(half4)) < hdr.mi_cols;
+                    stack[spi].has_rows <= (top.r + MIW'(half4)) < hdr.mi_rows;
+                    stack[spi].has_cols <= (top.c + MIW'(half4)) < hdr.mi_cols;
                     stack[spi].child <= 3'd0;
                     if (top.bs < BLOCK_8X8) begin stack[spi].part <= P_NONE; st <= T_CHILD; end
                     else begin nb_req_p <= 1'b1; st <= T_NB_W; end
@@ -402,11 +402,11 @@ module tile_syntax
             T_BLK_W: if (blk_done) begin blk_active <= 1'b0; st <= T_CHILD; end
             // ---- next superblock
             T_SB_ROW_END: begin
-                if (sb_c + 11'(sb4) < hdr.mi_col_end) begin sb_c <= sb_c + 11'(sb4); st <= T_SB; end
+                if (sb_c + MIW'(sb4) < hdr.mi_col_end) begin sb_c <= sb_c + MIW'(sb4); st <= T_SB; end
                 else begin
                     sbrow_end <= 1'b1;
-                    if (sb_r + 11'(sb4) < hdr.mi_row_end) begin
-                        sb_r <= sb_r + 11'(sb4); sb_c <= hdr.mi_col_start; clear_left <= 1'b1; st <= T_SB;
+                    if (sb_r + MIW'(sb4) < hdr.mi_row_end) begin
+                        sb_r <= sb_r + MIW'(sb4); sb_c <= hdr.mi_col_start; clear_left <= 1'b1; st <= T_SB;
                     end else st <= T_DONE;
                 end
             end

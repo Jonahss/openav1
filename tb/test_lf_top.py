@@ -24,7 +24,7 @@ import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 
 LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
-    ("frame_width", 13), ("frame_height", 13), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
+    ("frame_width", TT.PXW), ("frame_height", TT.PXW), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
     ("ref_delta_intra", 7), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
 MI_FIELDS = [("bsize", 5), ("skip", 1), ("seg", 3), ("delta_lf", 28)]
 

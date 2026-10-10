@@ -13,14 +13,14 @@ module mv_mem
     input  logic        clk,
     input  logic        rst,
     input  logic        we,
-    input  logic [10:0] w_r, w_c,
+    input  logic [MIW-1:0] w_r, w_c,
     input  logic [5:0]  w_bw4, w_bh4,
     input  mv_ent_t     w_data,
     output logic        busy,
     input  logic        clr,                  // clear the written bits of rows clr_row .. clr_row + clr_n - 1
-    input  logic [10:0] clr_row,
+    input  logic [MIW-1:0] clr_row,
     input  logic [5:0]  clr_n,
-    input  logic [10:0] rd_row, rd_col,
+    input  logic [MIW-1:0] rd_row, rd_col,
     output mv_ent_t     rd_ent,
     output logic        rd_written
 );
@@ -29,7 +29,7 @@ module mv_mem
     mv_ent_t mem [0:N-1];
     logic [WC-1:0] written [0:63];
     logic        c_busy, w_busy;
-    logic [10:0] c_row;
+    logic [MIW-1:0] c_row;
     logic [5:0]  c_n;
     assign busy = c_busy || w_busy;
     always_ff @(posedge clk) begin
@@ -38,16 +38,16 @@ module mv_mem
             if (clr) begin c_busy <= 1'b1; c_row <= clr_row; c_n <= clr_n; end
         end else begin
             written[c_row[5:0]] <= '0;
-            c_row <= c_row + 11'd1;
+            c_row <= c_row + MIW'(1);
             if (c_n == 6'd1) c_busy <= 1'b0;
             c_n <= c_n - 6'd1;
         end
     end
-    function automatic logic [ML2R+ML2C-1:0] idx(input logic [10:0] row, input logic [10:0] col);
-        idx = {row[ML2R-1:0], col[ML2C-1:0]};
+    function automatic logic [ML2R+ML2C-1:0] idx(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+        idx = {ML2R'(row), ML2C'(col)};
     endfunction
     logic [5:0]  wi, wj;
-    logic [10:0] b_r, b_c;
+    logic [MIW-1:0] b_r, b_c;
     logic [5:0]  b_w, b_h;
     mv_ent_t     b_d;
     always_ff @(posedge clk) begin
@@ -58,8 +58,8 @@ module mv_mem
             end
         end else begin
             logic [ML2R+ML2C-1:0] a;
-            logic [10:0] rr, cc;
-            rr = b_r + 11'(wi); cc = b_c + 11'(wj);
+            logic [MIW-1:0] rr, cc;
+            rr = b_r + MIW'(wi); cc = b_c + MIW'(wj);
             a = idx(rr, cc);
             mem[a] <= b_d;
             written[rr[5:0]][cc[ML2C-1:0]] <= 1'b1;

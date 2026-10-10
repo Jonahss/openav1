@@ -10,7 +10,7 @@ module lr_syntax
     input  hdr_t        hdr,
     input  logic        tile_start,
     input  logic        start,                 // superblock start
-    input  logic [10:0] r, c,                  // superblock MiRow / MiCol
+    input  logic [MIW-1:0] r, c,                  // superblock MiRow / MiCol
     input  logic        sb128,
     output logic        busy,
     output logic        done,
@@ -41,7 +41,7 @@ module lr_syntax
     logic [1:0]  frt;                          // FrameRestorationType[plane]
     logic [3:0]  usz_log2;                     // 6..8
     logic        sub_x, sub_y;
-    logic [7:0]  unit_rows, unit_cols, ur_start, ur_end, uc_start, uc_end, ur, uc;
+    logic [SBW-1:0] unit_rows, unit_cols, ur_start, ur_end, uc_start, uc_end, ur, uc;
     logic [1:0]  rtype;
     logic signed [6:0] coef [2][3];
     logic        pss;
@@ -65,16 +65,16 @@ module lr_syntax
     logic [15:0] lit_val;
 
     // geometry helpers -------------------------------------------------------------------------------
-    function automatic logic [7:0] count_units(input logic [3:0] lg, input logic [13:0] frame_size);
-        logic [13:0] n;
-        n = (frame_size + (14'd1 << (lg - 1))) >> lg;
-        count_units = (n == 0) ? 8'd1 : 8'(n);
+    function automatic logic [SBW-1:0] count_units(input logic [3:0] lg, input logic [PXW:0] frame_size);
+        logic [PXW:0] n;
+        n = (frame_size + ((PXW + 1)'(1) << (lg - 1))) >> lg;
+        count_units = (n == 0) ? SBW'(1) : SBW'(n);
     endfunction
-    function automatic logic [13:0] round2(input logic [12:0] x, input logic n);
-        round2 = n ? (14'(x) + 14'd1) >> 1 : 14'(x);
+    function automatic logic [PXW:0] round2(input logic [PXW-1:0] x, input logic n);
+        round2 = n ? ((PXW + 1)'(x) + (PXW + 1)'(1)) >> 1 : (PXW + 1)'(x);
     endfunction
-    function automatic logic [7:0] ceil_div_pow2(input logic [15:0] x, input logic [3:0] lg);
-        ceil_div_pow2 = 8'((x + (16'd1 << lg) - 16'd1) >> lg);
+    function automatic logic [SBW-1:0] ceil_div_pow2(input logic [15:0] x, input logic [3:0] lg);
+        ceil_div_pow2 = SBW'((x + (16'd1 << lg) - 16'd1) >> lg);
     endfunction
 
     logic [5:0] sb4;
@@ -144,7 +144,7 @@ module lr_syntax
                     else begin
                         logic [3:0] lg;
                         logic sx, sy;
-                        logic [7:0] urows, ucols, urs, ure, ucs, uce;
+                        logic [SBW-1:0] urows, ucols, urs, ure, ucs, uce;
                         sx = (plane != 0) && hdr.ssx; sy = (plane != 0) && hdr.ssy;
                         lg = 4'd6 + 4'(hdr.lr_size[2*plane +: 2]);
                         urows = count_units(lg, round2(hdr.frame_height, sy));
@@ -165,8 +165,8 @@ module lr_syntax
                                 ne = (20'(c) + 20'(sb4)) * 20'(4 >> sx);
                                 dl = 5'(lg);
                             end
-                            ucs = 8'((ns + (20'd1 << dl) - 20'd1) >> dl);
-                            uce = 8'((ne + (20'd1 << dl) - 20'd1) >> dl);
+                            ucs = SBW'((ns + (20'd1 << dl) - 20'd1) >> dl);
+                            uce = SBW'((ne + (20'd1 << dl) - 20'd1) >> dl);
                         end
                         frt <= hdr.lr_type[2*plane +: 2]; usz_log2 <= lg; sub_x <= sx; sub_y <= sy;
                         unit_rows <= urows; unit_cols <= ucols;
@@ -241,8 +241,8 @@ module lr_syntax
                     st <= S_NEXT;
                 end
                 S_NEXT: begin
-                    if (uc + 8'd1 < uc_end) begin uc <= uc + 8'd1; st <= S_UNIT; end
-                    else if (ur + 8'd1 < ur_end) begin uc <= uc_start; ur <= ur + 8'd1; st <= S_UNIT; end
+                    if (uc + SBW'(1) < uc_end) begin uc <= uc + SBW'(1); st <= S_UNIT; end
+                    else if (ur + SBW'(1) < ur_end) begin uc <= uc_start; ur <= ur + SBW'(1); st <= S_UNIT; end
                     else begin plane <= plane + 2'd1; st <= S_PLANE; end
                 end
                 // ---- decode_subexp_bool(numSyms, k) -> se_v, then unsigned-with-ref + low -> se_result

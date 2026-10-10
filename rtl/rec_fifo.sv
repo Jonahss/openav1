@@ -15,7 +15,7 @@ module rec_fifo
     input  logic        flush,                // tile start
     // producers (tile_syntax): at most one push per cycle
     input  logic        sb_start,
-    input  logic [10:0] sb_r, sb_c,
+    input  logic [MIW-1:0] sb_r, sb_c,
     input  logic        blk_info,
     input  blk_rec_t    blk_rec,
     input  logic        tx_done,
@@ -25,7 +25,7 @@ module rec_fifo
     // consumer (recon_top): head of the queue
     output logic        ev_valid,
     output logic [1:0]  ev_kind,              // 0 transform block, 1 block record, 2 superblock start
-    output logic [10:0] ev_sb_r, ev_sb_c,
+    output logic [MIW-1:0] ev_sb_r, ev_sb_c,
     output blk_rec_t    ev_blk,
     output tx_rec_t     ev_tx,
     input  logic        ev_pop,
@@ -35,7 +35,7 @@ module rec_fifo
     logic [1:0]  kind_q [0:DEPTH-1];
     blk_rec_t    blk_q  [0:DEPTH-1];
     tx_rec_t     tx_q   [0:DEPTH-1];
-    logic [10:0] sbr_q  [0:DEPTH-1], sbc_q [0:DEPTH-1];
+    logic [MIW-1:0] sbr_q  [0:DEPTH-1], sbc_q [0:DEPTH-1];
     logic [AW-1:0] wr, rd;
     logic [AW:0]   count;
     logic [2:0]    tx_pushes;

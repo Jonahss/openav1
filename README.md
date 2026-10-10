@@ -100,7 +100,8 @@ python tb/runner.py dec_top                   # RTL vs model, whole frames, gene
 TS_IVF=streams/synth/synth_8bit.ivf python tb/runner.py dec_top    # same on a real stream
 TS_NOMODEL=1 TS_STAGE=lr TS_IVF=... python tb/runner.py dec_top      # model-free: RTL runs every stage from the headers,
                                                                      # output compared with dav1d's pictures (refout/) or Argon md5s
-SIM_FAST=1 FBX=12 FBY=9 ...                                          # faster Verilator build; frame-buffer capacity (log2 px)
+SIM_FAST=1 FBX=12 FBY=9 ...                                          # faster Verilator build; frame-buffer capacity (log2 px, up to 14:
+                                                                     # the coordinate widths MIW/SBW/PXW in rtl/syn_pkg.sv cap frames at 16384)
 python tb/runner.py tile_syntax               # syntax decoder vs model (TS_SCREEN=1 for palettes, TS_DEBUG=1 for symbol dumps)
 python tb/runner.py itx2d | ipred | cfl | msac | coef_top           # per-block tests
 tools/fuzz_streams.sh 40                      # generated streams: dav1d vs the Python decoder

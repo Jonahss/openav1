@@ -29,7 +29,7 @@ module pal_syntax
     input  logic [3:0]  ymode, uvmode,
     input  logic        hc,
     input  logic        avail_u, avail_l,
-    input  logic [10:0] br,
+    input  logic [MIW-1:0] br,
     input  logic [3:0]  a_pal_y, l_pal_y, a_pal_uv, l_pal_uv,
     input  logic [95:0] a_col_y, l_col_y, a_col_u, l_col_u,
     output logic        done_mi,

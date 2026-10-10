@@ -21,26 +21,26 @@ module cdef_tb_top
     input  logic [11:0] h_wdata,
     output logic [11:0] h_rdata,
     input  logic        blk_we,
-    input  logic [10:0] blk_r, blk_c,
+    input  logic [MIW-1:0] blk_r, blk_c,
     input  logic [5:0]  blk_bw4, blk_bh4,
     input  mi_lf_t      blk_data,
     output logic        blk_busy,
     input  logic        cd_clr,
     input  logic        cd_we,
-    input  logic [6:0]  cd_row64, cd_col64,
+    input  logic [SBW-1:0]  cd_row64, cd_col64,
     input  logic        cd_sb128,
     input  logic [3:0]  cd_mask,
     input  logic [2:0]  cd_idx
 );
-    logic [10:0] rd_row, rd_col; mi_lf_t rd_info; logic [6:0] cdr_row64, cdr_col64; logic [3:0] cdr_val;
+    logic [MIW-1:0] rd_row, rd_col; mi_lf_t rd_info; logic [SBW-1:0] cdr_row64, cdr_col64; logic [3:0] cdr_val;
     logic [4:0] txr_sz;
-    mi_store u_mi (.clk, .rst, .rd2_row(11'd0), .rd2_col(11'd0), .rd2_info(), .blk_we, .blk_r, .blk_c, .blk_bw4, .blk_bh4, .blk_data, .blk_busy,
-                   .tx_we(1'b0), .tx_plane(2'd0), .tx_row(11'd0), .tx_col(11'd0), .tx_w4(5'd0), .tx_h4(5'd0), .tx_sz(5'd0), .tx_busy(),
-                   .rd_row, .rd_col, .rd_info, .txr_plane(2'd0), .txr_row(11'd0), .txr_col(11'd0), .txr_sz,
+    mi_store u_mi (.clk, .rst, .rd2_row(MIW'(0)), .rd2_col(MIW'(0)), .rd2_info(), .blk_we, .blk_r, .blk_c, .blk_bw4, .blk_bh4, .blk_data, .blk_busy,
+                   .tx_we(1'b0), .tx_plane(2'd0), .tx_row(MIW'(0)), .tx_col(MIW'(0)), .tx_w4(5'd0), .tx_h4(5'd0), .tx_sz(5'd0), .tx_busy(),
+                   .rd_row, .rd_col, .rd_info, .txr_plane(2'd0), .txr_row(MIW'(0)), .txr_col(MIW'(0)), .txr_sz,
                    .cd_clr, .cd_we, .cd_row64, .cd_col64, .cd_sb128, .cd_mask, .cd_idx, .cdr_row64, .cdr_col64, .cdr_val,
-                   .lr_we(1'b0), .lr_rec('0), .lrr_plane(2'd0), .lrr_row(6'd0), .lrr_col(6'd0), .lrr_rec());
+                   .lr_we(1'b0), .lr_rec('0), .lrr_plane(2'd0), .lrr_row(SBW'(0)), .lrr_col(SBW'(0)), .lrr_rec());
     logic src_re, dst_we; logic [1:0] src_plane, dst_plane; logic [FBX-1:0] src_x, dst_x; logic [FBY-1:0] src_y, dst_y; logic [11:0] src_rdata, dst_wdata; logic [47:0] src_rdata4, dst4_wdata; logic dst4_we; logic [1:0] dst4_plane; logic [FBX-1:0] dst4_x; logic [FBY-1:0] dst4_y;
-    cdef_top #(.FBX(FBX), .FBY(FBY)) u_cdef (.clk, .rst, .hdr, .ch, .start, .row_first(11'd0), .row_last(hdr.mi_rows - 11'd1), .busy, .done,
+    cdef_top #(.FBX(FBX), .FBY(FBY)) u_cdef (.clk, .rst, .hdr, .ch, .start, .row_first(MIW'(0)), .row_last(hdr.mi_rows - MIW'(1)), .busy, .done,
                                              .rd_row, .rd_col, .rd_info, .cdr_row64, .cdr_col64, .cdr_val,
                                              .src_re, .src_plane, .src_x, .src_y, .src_rdata, .src_rdata4, .dst_we, .dst_plane, .dst_x, .dst_y, .dst_wdata,
                                              .dst4_we, .dst4_plane, .dst4_x, .dst4_y, .dst4_wdata);

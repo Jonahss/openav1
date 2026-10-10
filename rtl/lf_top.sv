@@ -18,14 +18,14 @@ module lf_top
     input  hdr_t        hdr,
     input  lf_hdr_t     lh,
     input  logic        start,
-    input  logic [10:0] row_first, row_last,  // mi rows to filter (inclusive): a superblock-row band, or the whole frame
+    input  logic [MIW-1:0] row_first, row_last,  // mi rows to filter (inclusive): a superblock-row band, or the whole frame
     output logic        busy,
     output logic        done,
     // mi_store reads (registered, 1 cycle)
-    output logic [10:0] rd_row, rd_col,
+    output logic [MIW-1:0] rd_row, rd_col,
     input  mi_lf_t      rd_info,
     output logic [1:0]  txr_plane,
-    output logic [10:0] txr_row, txr_col,
+    output logic [MIW-1:0] txr_row, txr_col,
     input  logic [4:0]  txr_sz,
     // frame buffer
     output logic        fb_re,
@@ -49,10 +49,10 @@ module lf_top
     // ---------------------------------------------------------------- loop state
     logic [1:0]  plane;
     logic        pss;                                   // 0: vertical edges (dx=1), 1: horizontal edges (dy=1)
-    logic [10:0] row, col;
+    logic [MIW-1:0] row, col;
     logic        sub_x, sub_y;
-    logic [10:0] rowa, cola, prow, pcol;                // adjusted (row | subY, col | subX) and previous positions
-    logic [12:0] x, y, xp, yp;
+    logic [MIW-1:0] rowa, cola, prow, pcol;                // adjusted (row | subY, col | subX) and previous positions
+    logic [PXW-1:0] x, y, xp, yp;
     mi_lf_t      cur, prv;
     logic [4:0]  cur_tx, prv_tx;
     logic [1:0]  i4;                                    // sample index along the edge (0..3)
@@ -80,18 +80,18 @@ module lf_top
     logic        any_mod;
     logic signed [4:0] f_lo_all, f_hi_all;                // union of the columns' modified ranges
     logic [11:0] pix_a [0:13];                            // samples the filter datapath works on
-    logic [12:0] sx, sy;                                // sample position
+    logic [PXW-1:0] sx, sy;                                // sample position
 
     always_comb begin
         sub_x = (plane != 2'd0) && hdr.ssx;
         sub_y = (plane != 2'd0) && hdr.ssy;
-        x = 13'(col) << 2; y = 13'(row) << 2;
-        rowa = row | 11'(sub_y); cola = col | 11'(sub_x);
+        x = PXW'(col) << 2; y = PXW'(row) << 2;
+        rowa = row | MIW'(sub_y); cola = col | MIW'(sub_x);
         xp = x >> sub_x; yp = y >> sub_y;
-        prow = pss ? rowa - (11'd1 << sub_y) : rowa;
-        pcol = pss ? cola : cola - (11'd1 << sub_x);
-        sx = pss ? xp + 13'(i4) : xp;
-        sy = pss ? yp : yp + 13'(i4);
+        prow = pss ? rowa - (MIW'(1) << sub_y) : rowa;
+        pcol = pss ? cola : cola - (MIW'(1) << sub_x);
+        sx = pss ? xp + PXW'(i4) : xp;
+        sy = pss ? yp : yp + PXW'(i4);
     end
 
     // ---------------------------------------------------------------- 7.14.4 / 7.14.5 strength
@@ -145,12 +145,12 @@ module lf_top
     always_comb begin
         plane_size = subsampled_size(cur.bsize, sub_x, sub_y);
         if (!pss) begin
-            is_blk_edge = (xp & (13'(blk_w(plane_size)) - 13'd1)) == 13'd0;
-            is_tx_edge  = (xp & (13'(tx_width(cur_tx)) - 13'd1)) == 13'd0;
+            is_blk_edge = (xp & (PXW'(blk_w(plane_size)) - PXW'(1))) == PXW'(0);
+            is_tx_edge  = (xp & (PXW'(tx_width(cur_tx)) - PXW'(1))) == PXW'(0);
             base_size = (tx_width(prv_tx) < tx_width(cur_tx)) ? tx_width(prv_tx) : tx_width(cur_tx);
         end else begin
-            is_blk_edge = (yp & (13'(blk_h(plane_size)) - 13'd1)) == 13'd0;
-            is_tx_edge  = (yp & (13'(tx_height(cur_tx)) - 13'd1)) == 13'd0;
+            is_blk_edge = (yp & (PXW'(blk_h(plane_size)) - PXW'(1))) == PXW'(0);
+            is_tx_edge  = (yp & (PXW'(tx_height(cur_tx)) - PXW'(1))) == PXW'(0);
             base_size = (tx_height(prv_tx) < tx_height(cur_tx)) ? tx_height(prv_tx) : tx_height(cur_tx);
         end
         apply_filter = is_tx_edge && (is_blk_edge || !cur.skip || 1'b1);     // isIntra: always true for intra frames
@@ -314,17 +314,17 @@ module lf_top
         txr_row = ((st == L_EDGE) ? rowa : prow) >> sub_y;
         txr_col = ((st == L_EDGE) ? cola : pcol) >> sub_x;
         fb_re = 1'b0; fb_we = 1'b0; fb_plane = plane; fb_x = '0; fb_y = '0; fb_wdata = out_pix;
-        fb4_we = 1'b0; fb4_x = FBX'(13'(signed'(sx) + 13'(rbase) + 13'(4 * int'(rd_g)))); fb4_y = FBY'(sy); fb4_wdata = grp_out;
+        fb4_we = 1'b0; fb4_x = FBX'(PXW'(signed'(sx) + PXW'(rbase) + PXW'(4 * int'(rd_g)))); fb4_y = FBY'(sy); fb4_wdata = grp_out;
         if (st == L_S_RD && !pss && kk <= 4'(n_rg)) begin        // group kk of the vertical-edge span
             fb_re = 1'b1;
-            fb_x = FBX'(13'(signed'(sx) + 13'(rbase) + 13'(4 * int'(kk)))); fb_y = FBY'(sy);
+            fb_x = FBX'(PXW'(signed'(sx) + PXW'(rbase) + PXW'(4 * int'(kk)))); fb_y = FBY'(sy);
         end
         if (st == L_S_RD && pss && kk < n_rd) begin        // the group of 4 columns at row sy + rk
             fb_re = 1'b1;
-            fb_x = FBX'(sx); fb_y = FBY'(sy + 13'(rk));
+            fb_x = FBX'(sx); fb_y = FBY'(sy + PXW'(rk));
         end
         if (st == L_S_WR && pss) begin                     // row sy + wk of the 4 columns, modified lanes replaced
-            fb4_we = 1'b1; fb4_x = FBX'(sx); fb4_y = FBY'(sy + 13'(wk)); fb4_wdata = grp_h;
+            fb4_we = 1'b1; fb4_x = FBX'(sx); fb4_y = FBY'(sy + PXW'(wk)); fb4_wdata = grp_h;
         end
         if (st == L_S_WR && !pss) fb4_we = 1'b1;
     end
@@ -346,11 +346,11 @@ module lf_top
         if (rst) st <= L_IDLE;
         else case (st)
             L_IDLE: if (start) begin
-                plane <= 2'd0; pss <= 1'b0; row <= row_first; col <= 11'd0;
+                plane <= 2'd0; pss <= 1'b0; row <= row_first; col <= MIW'(0);
                 st <= (lh.level[5:0] == 6'd0 && lh.level[11:6] == 6'd0) ? L_DONE : L_EDGE;
             end
             L_EDGE: begin
-                if (x >= lh.frame_width || y >= lh.frame_height || (!pss && x == 13'd0) || (pss && y == 13'd0)) st <= L_NEXT;
+                if (x >= lh.frame_width || y >= lh.frame_height || (!pss && x == PXW'(0)) || (pss && y == PXW'(0))) st <= L_NEXT;
                 else st <= L_RD1;                        // cur read issued (addresses are combinational on the state)
             end
             L_RD1: begin cur <= rd_info; cur_tx <= txr_sz; st <= L_RD2; end     // prev read issued
@@ -407,10 +407,10 @@ module lf_top
             end
             // ---- next edge position: col, row, pass, plane
             L_NEXT: begin
-                if (col + (11'd1 << sub_x) < hdr.mi_cols) begin col <= col + (11'd1 << sub_x); st <= L_EDGE; end
+                if (col + (MIW'(1) << sub_x) < hdr.mi_cols) begin col <= col + (MIW'(1) << sub_x); st <= L_EDGE; end
                 else begin
-                    col <= 11'd0;
-                    if (row + (11'd1 << sub_y) <= row_last && row + (11'd1 << sub_y) < hdr.mi_rows) begin row <= row + (11'd1 << sub_y); st <= L_EDGE; end
+                    col <= MIW'(0);
+                    if (row + (MIW'(1) << sub_y) <= row_last && row + (MIW'(1) << sub_y) < hdr.mi_rows) begin row <= row + (MIW'(1) << sub_y); st <= L_EDGE; end
                     else begin
                         row <= row_first;
                         if (!pss) begin pss <= 1'b1; st <= L_EDGE; end

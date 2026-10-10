@@ -14,40 +14,40 @@ module mi_store
     input  logic        rst,
     // block write: the block at (r, c), bw4 x bh4 units
     input  logic        blk_we,
-    input  logic [10:0] blk_r, blk_c,
+    input  logic [MIW-1:0] blk_r, blk_c,
     input  logic [5:0]  blk_bw4, blk_bh4,
     input  mi_lf_t      blk_data,
     output logic        blk_busy,
     // transform-block write: plane, position and size in 4x4 units of the plane
     input  logic        tx_we,
     input  logic [1:0]  tx_plane,
-    input  logic [10:0] tx_row, tx_col,
+    input  logic [MIW-1:0] tx_row, tx_col,
     input  logic [4:0]  tx_w4, tx_h4,
     input  logic [4:0]  tx_sz,
     output logic        tx_busy,
     // reads (registered)
-    input  logic [10:0] rd_row, rd_col,
+    input  logic [MIW-1:0] rd_row, rd_col,
     output mi_lf_t      rd_info,
-    input  logic [10:0] rd2_row, rd2_col,     // second read port (CDEF, concurrent with the deblocking filter)
+    input  logic [MIW-1:0] rd2_row, rd2_col,     // second read port (CDEF, concurrent with the deblocking filter)
     output mi_lf_t      rd2_info,
     input  logic [1:0]  txr_plane,
-    input  logic [10:0] txr_row, txr_col,
+    input  logic [MIW-1:0] txr_row, txr_col,
     output logic [4:0]  txr_sz,
     // cdef_idx per 64x64 unit: cleared per superblock (cd_clr: 1 or 4 units from the superblock's top-left
     // unit), set per block (cd_we: units of the mask, relative to the superblock's top-left unit), read (registered)
     input  logic        cd_clr,
     input  logic        cd_we,
-    input  logic [6:0]  cd_row64, cd_col64,   // superblock top-left unit
+    input  logic [SBW-1:0]  cd_row64, cd_col64,   // superblock top-left unit
     input  logic        cd_sb128,
     input  logic [3:0]  cd_mask,              // units (i*2+j) covered; ignored (unit 0) when !cd_sb128
     input  logic [2:0]  cd_idx,
-    input  logic [6:0]  cdr_row64, cdr_col64,
+    input  logic [SBW-1:0]  cdr_row64, cdr_col64,
     output logic [3:0]  cdr_val,              // {valid, idx}
     // loop-restoration unit records (from tile_syntax lr_done / lr_rec); read registered
     input  logic        lr_we,
     input  lr_rec_t     lr_rec,
     input  logic [1:0]  lrr_plane,
-    input  logic [5:0]  lrr_row, lrr_col,
+    input  logic [SBW-1:0] lrr_row, lrr_col,
     output lr_rec_t     lrr_rec
 );
     localparam int N = 1 << (ML2R + ML2C);
@@ -56,13 +56,13 @@ module mi_store
     logic [4:0] lf_tx1 [0:N-1];
     logic [4:0] lf_tx2 [0:N-1];
 
-    function automatic logic [ML2R+ML2C-1:0] idx(input logic [10:0] row, input logic [10:0] col);
-        idx = {row[ML2R-1:0], col[ML2C-1:0]};
+    function automatic logic [ML2R+ML2C-1:0] idx(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+        idx = {ML2R'(row), ML2C'(col)};
     endfunction
 
     // ---- block writer
     logic [5:0]  bi, bj;
-    logic [10:0] b_r, b_c;
+    logic [MIW-1:0] b_r, b_c;
     logic [5:0]  b_w, b_h;
     mi_lf_t      b_d;
     always_ff @(posedge clk) begin
@@ -73,7 +73,7 @@ module mi_store
             end
         end else begin
             logic [ML2R+ML2C-1:0] a;
-            a = idx(b_r + 11'(bi), b_c + 11'(bj));                 // (Verilator: no function call in an NBA LHS index)
+            a = idx(b_r + MIW'(bi), b_c + MIW'(bj));                 // (Verilator: no function call in an NBA LHS index)
             lf_info[a] <= b_d;
             if (bj + 6'd1 < b_w) bj <= bj + 6'd1;
             else begin
@@ -87,7 +87,7 @@ module mi_store
     // ---- transform-block writer
     logic [4:0]  ti, tj;
     logic [1:0]  t_p;
-    logic [10:0] t_r, t_c;
+    logic [MIW-1:0] t_r, t_c;
     logic [4:0]  t_w, t_h, t_sz;
     always_ff @(posedge clk) begin
         if (rst) tx_busy <= 1'b0;
@@ -97,7 +97,7 @@ module mi_store
             end
         end else begin
             logic [ML2R+ML2C-1:0] a;
-            a = idx(t_r + 11'(ti), t_c + 11'(tj));
+            a = idx(t_r + MIW'(ti), t_c + MIW'(tj));
             case (t_p)
                 2'd0: lf_tx0[a] <= t_sz;
                 2'd1: lf_tx1[a] <= t_sz;
@@ -115,8 +115,8 @@ module mi_store
     // ---- cdef_idx per 64x64 unit (flops: up to 4 units written per cycle)
     localparam int NU = 1 << (ML2R - 4 + ML2C - 4);
     logic [3:0] cdef_arr [0:NU-1];
-    function automatic logic [ML2R+ML2C-9:0] uidx(input logic [6:0] r64, input logic [6:0] c64);
-        uidx = {r64[ML2R-5:0], c64[ML2C-5:0]};
+    function automatic logic [ML2R+ML2C-9:0] uidx(input logic [SBW-1:0] r64, input logic [SBW-1:0] c64);
+        uidx = {(ML2R - 4)'(r64), (ML2C - 4)'(c64)};
     endfunction
     always_ff @(posedge clk) begin
         if (cd_clr || cd_we) begin
@@ -124,7 +124,7 @@ module mi_store
                 for (int j = 0; j < 2; j++)
                     if ((i == 0 && j == 0) || cd_sb128) begin
                         logic [ML2R+ML2C-9:0] u;
-                        u = uidx(cd_row64 + 7'(i), cd_col64 + 7'(j));
+                        u = uidx(cd_row64 + SBW'(i), cd_col64 + SBW'(j));
                         if (cd_clr) cdef_arr[u] <= 4'd0;
                         else if (!cd_sb128 || cd_mask[i * 2 + j]) cdef_arr[u] <= {1'b1, cd_idx};
                     end
@@ -132,11 +132,13 @@ module mi_store
         cdr_val <= cdef_arr[uidx(cdr_row64, cdr_col64)];
     end
 
-    // ---- loop-restoration units: [plane][unitRow][unitCol], up to 64 x 64 units per plane
-    lr_rec_t lr_units [0:3 * 4096 - 1];
+    // ---- loop-restoration units: [plane][unitRow][unitCol], 2^(ML2R-4) x 2^(ML2C-4) units per plane (64-px units over the per-4x4 capacity)
+    // units are at least 64 px, so the per-4x4 capacity (ML2R/ML2C) bounds the unit grid at 2^(ML2-4) per axis
+    localparam int LUR = ML2R - 4, LUC = ML2C - 4;
+    lr_rec_t lr_units [0:3 * (1 << (LUR + LUC)) - 1];
     always_ff @(posedge clk) begin
-        if (lr_we) lr_units[{lr_rec.plane, lr_rec.unit_row[5:0], lr_rec.unit_col[5:0]}] <= lr_rec;
-        lrr_rec <= lr_units[{lrr_plane, lrr_row, lrr_col}];
+        if (lr_we) lr_units[{lr_rec.plane, LUR'(lr_rec.unit_row), LUC'(lr_rec.unit_col)}] <= lr_rec;
+        lrr_rec <= lr_units[{lrr_plane, LUR'(lrr_row), LUC'(lrr_col)}];
     end
 
     // ---- reads
