@@ -26,9 +26,19 @@ module mv_mem
 );
     localparam int N = 1 << (ML2R + ML2C);
     localparam int WC = 1 << ML2C;
-    // Stored as a flat vector array, not `mv_ent_t mem [...]`: synthesis (Vivado) only infers block RAM from an
-    // array of plain vectors with one synchronous read; the struct is cast on at the read.
-    logic [$bits(mv_ent_t)-1:0] mem [0:N-1];
+    // The entry store is written in the canonical RAM shape synthesis recognises (Vivado: one always_ff holding
+    // only the write and the registered read of a flat vector array, addresses and data as plain signals, the
+    // struct cast on outside). Anything fancier and the 2^(ML2R+ML2C) x 42-bit array becomes flops.
+    localparam int EW = $bits(mv_ent_t);
+    logic [EW-1:0] mem [0:N-1];
+    logic           m_we;
+    logic [ML2R+ML2C-1:0] m_waddr, m_raddr;
+    logic [EW-1:0]  m_wdata, m_rdata;
+    always_ff @(posedge clk) begin
+        if (m_we) mem[m_waddr] <= m_wdata;
+        m_rdata <= mem[m_raddr];
+    end
+    assign rd_ent = mv_ent_t'(m_rdata);
     logic [WC-1:0] written [0:63];
     logic        c_busy, w_busy;
     logic [MIW-1:0] c_row;
@@ -59,11 +69,8 @@ module mv_mem
                 w_busy <= 1'b1; b_r <= w_r; b_c <= w_c; b_w <= w_bw4; b_h <= w_bh4; b_d <= w_data; wi <= 6'd0; wj <= 6'd0;
             end
         end else begin
-            logic [ML2R+ML2C-1:0] a;
             logic [MIW-1:0] rr, cc;
             rr = b_r + MIW'(wi); cc = b_c + MIW'(wj);
-            a = idx(rr, cc);
-            mem[a] <= b_d;
             written[rr[5:0]][cc[ML2C-1:0]] <= 1'b1;
             if (wj + 6'd1 < b_w) wj <= wj + 6'd1;
             else begin
@@ -72,7 +79,11 @@ module mv_mem
                 else w_busy <= 1'b0;
             end
         end
-        rd_ent <= mv_ent_t'(mem[idx(rd_row, rd_col)]);
         rd_written <= written[rd_row[5:0]][rd_col[ML2C-1:0]];
     end
+    // the area-fill writer stores one entry per cycle while busy (the FSM above steps wi/wj over the block)
+    assign m_we = w_busy && !rst;
+    assign m_waddr = idx(b_r + MIW'(wi), b_c + MIW'(wj));
+    assign m_wdata = b_d;
+    assign m_raddr = idx(rd_row, rd_col);
 endmodule

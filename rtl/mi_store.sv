@@ -55,8 +55,37 @@ module mi_store
     // lf_info is read by two stages at once (deblocking and CDEF), so it is kept as two identically written
     // copies, each a simple dual-port RAM (one write, one synchronous read): that is the shape block RAM has.
     // Flat vector arrays rather than `mi_lf_t [...]` for the same reason (synthesis infers RAM from vectors only).
-    logic [$bits(mi_lf_t)-1:0] lf_info_a [0:N-1];
-    logic [$bits(mi_lf_t)-1:0] lf_info_b [0:N-1];
+    // Each store is one always_ff holding only the write and the registered read of a flat vector array, with
+    // plain address/data signals and the struct cast outside: the shape synthesis infers RAM from.
+    localparam int IW = $bits(mi_lf_t), LW = $bits(lr_rec_t);
+    logic [IW-1:0] lf_info_a [0:N-1];
+    logic [IW-1:0] lf_info_b [0:N-1];
+    logic          i_we; logic [ML2R+ML2C-1:0] i_waddr, i_raddr_a, i_raddr_b; logic [IW-1:0] i_wdata, i_rdata_a, i_rdata_b;
+    always_ff @(posedge clk) begin
+        if (i_we) lf_info_a[i_waddr] <= i_wdata;
+        i_rdata_a <= lf_info_a[i_raddr_a];
+    end
+    always_ff @(posedge clk) begin
+        if (i_we) lf_info_b[i_waddr] <= i_wdata;
+        i_rdata_b <= lf_info_b[i_raddr_b];
+    end
+    assign rd_info = mi_lf_t'(i_rdata_a);
+    assign rd2_info = mi_lf_t'(i_rdata_b);
+    logic t_we0, t_we1, t_we2; logic [ML2R+ML2C-1:0] t_waddr, t_raddr; logic [4:0] t_wdata, t_rdata0, t_rdata1, t_rdata2; logic [1:0] txr_plane_q;
+    always_ff @(posedge clk) begin
+        if (t_we0) lf_tx0[t_waddr] <= t_wdata;
+        t_rdata0 <= lf_tx0[t_raddr];
+    end
+    always_ff @(posedge clk) begin
+        if (t_we1) lf_tx1[t_waddr] <= t_wdata;
+        t_rdata1 <= lf_tx1[t_raddr];
+    end
+    always_ff @(posedge clk) begin
+        if (t_we2) lf_tx2[t_waddr] <= t_wdata;
+        t_rdata2 <= lf_tx2[t_raddr];
+    end
+    always_ff @(posedge clk) txr_plane_q <= txr_plane;
+    assign txr_sz = (txr_plane_q == 2'd0) ? t_rdata0 : (txr_plane_q == 2'd1) ? t_rdata1 : t_rdata2;
     logic [4:0] lf_tx0 [0:N-1];
     logic [4:0] lf_tx1 [0:N-1];
     logic [4:0] lf_tx2 [0:N-1];
@@ -77,10 +106,6 @@ module mi_store
                 blk_busy <= 1'b1; b_r <= blk_r; b_c <= blk_c; b_w <= blk_bw4; b_h <= blk_bh4; b_d <= blk_data; bi <= 6'd0; bj <= 6'd0;
             end
         end else begin
-            logic [ML2R+ML2C-1:0] a;
-            a = idx(b_r + MIW'(bi), b_c + MIW'(bj));                 // (Verilator: no function call in an NBA LHS index)
-            lf_info_a[a] <= b_d;
-            lf_info_b[a] <= b_d;
             if (bj + 6'd1 < b_w) bj <= bj + 6'd1;
             else begin
                 bj <= 6'd0;
@@ -102,13 +127,6 @@ module mi_store
                 tx_busy <= 1'b1; t_p <= tx_plane; t_r <= tx_row; t_c <= tx_col; t_w <= tx_w4; t_h <= tx_h4; t_sz <= tx_sz; ti <= 5'd0; tj <= 5'd0;
             end
         end else begin
-            logic [ML2R+ML2C-1:0] a;
-            a = idx(t_r + MIW'(ti), t_c + MIW'(tj));
-            case (t_p)
-                2'd0: lf_tx0[a] <= t_sz;
-                2'd1: lf_tx1[a] <= t_sz;
-                default: lf_tx2[a] <= t_sz;
-            endcase
             if (tj + 5'd1 < t_w) tj <= tj + 5'd1;
             else begin
                 tj <= 5'd0;
@@ -141,20 +159,27 @@ module mi_store
     // ---- loop-restoration units: [plane][unitRow][unitCol], 2^(ML2R-4) x 2^(ML2C-4) units per plane (64-px units over the per-4x4 capacity)
     // units are at least 64 px, so the per-4x4 capacity (ML2R/ML2C) bounds the unit grid at 2^(ML2-4) per axis
     localparam int LUR = ML2R - 4, LUC = ML2C - 4;
-    logic [$bits(lr_rec_t)-1:0] lr_units [0:3 * (1 << (LUR + LUC)) - 1];   // vector array: RAM-inferable
+    logic [LW-1:0] lr_units [0:3 * (1 << (LUR + LUC)) - 1];
+    logic [LUR+LUC+1:0] u_waddr, u_raddr; logic [LW-1:0] u_wdata, u_rdata;
+    assign u_waddr = {lr_rec.plane, LUR'(lr_rec.unit_row), LUC'(lr_rec.unit_col)};
+    assign u_wdata = lr_rec;
+    assign u_raddr = {lrr_plane, LUR'(lrr_row), LUC'(lrr_col)};
     always_ff @(posedge clk) begin
-        if (lr_we) lr_units[{lr_rec.plane, LUR'(lr_rec.unit_row), LUC'(lr_rec.unit_col)}] <= lr_rec;
-        lrr_rec <= lr_rec_t'(lr_units[{lrr_plane, LUR'(lrr_row), LUC'(lrr_col)}]);
+        if (lr_we) lr_units[u_waddr] <= u_wdata;
+        u_rdata <= lr_units[u_raddr];
     end
+    assign lrr_rec = lr_rec_t'(u_rdata);
 
-    // ---- reads
-    always_ff @(posedge clk) begin
-        rd_info <= mi_lf_t'(lf_info_a[idx(rd_row, rd_col)]);
-        rd2_info <= mi_lf_t'(lf_info_b[idx(rd2_row, rd2_col)]);
-        case (txr_plane)
-            2'd0: txr_sz <= lf_tx0[idx(txr_row, txr_col)];
-            2'd1: txr_sz <= lf_tx1[idx(txr_row, txr_col)];
-            default: txr_sz <= lf_tx2[idx(txr_row, txr_col)];
-        endcase
-    end
+    // ---- store ports: the writers store one entry per cycle while busy (their FSMs step the indices)
+    assign i_we = blk_busy && !rst;
+    assign i_waddr = idx(b_r + MIW'(bi), b_c + MIW'(bj));
+    assign i_wdata = b_d;
+    assign i_raddr_a = idx(rd_row, rd_col);
+    assign i_raddr_b = idx(rd2_row, rd2_col);
+    assign t_we0 = tx_busy && !rst && (t_p == 2'd0);
+    assign t_we1 = tx_busy && !rst && (t_p == 2'd1);
+    assign t_we2 = tx_busy && !rst && (t_p == 2'd2 || t_p == 2'd3);
+    assign t_waddr = idx(t_r + MIW'(ti), t_c + MIW'(tj));
+    assign t_wdata = t_sz;
+    assign t_raddr = idx(txr_row, txr_col);
 endmodule
