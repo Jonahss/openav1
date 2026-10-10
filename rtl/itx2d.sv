@@ -13,14 +13,21 @@
 //                     Residual[i][j] = Round2(T[i], colShift)   (colShift = 4, or 0 if lossless)
 // Rows i >= 32 are all-zero and every 1D transform maps zero to zero, so they are skipped.
 //
-// Dequant and Residual live in register arrays for simulation; a real implementation puts them in a
-// transpose memory. Flips (FLIPADST) are applied by the reconstruction stage, not here.
+// Dequant and Residual share one transpose memory (below): 64 x 64 x TW in 64 banks of distributed RAM, skewed
+// so that any whole row or whole column is one access. Flips (FLIPADST) are applied by the reconstruction
+// stage, not here.
 //
 // v2 (throughput): NLANES 1D engines run NLANES rows (then NLANES columns) at once. A group of rows is
-// loaded into the lanes in one cycle, transformed (DCT4 5 cycles .. DCT64 65), and stored in one cycle;
-// the next group starts the cycle after. Row groups at i >= 32 are all-zero and written without a
-// transform. Cost per block ~ ceil(h/NLANES) x (rowprog + 1) + ceil(w/NLANES) x (colprog + 1) + 2:
-// a 4x4 DCT block is 14 cycles with 4 lanes (was ~52 with one engine visited row by row).
+// loaded into the lanes one row per cycle, transformed (DCT4 5 cycles .. DCT64 65), and stored one row per
+// cycle; the next group follows. Row groups at i >= 32 are all-zero and written without a transform.
+// Cost per block ~ ceil(h/NLANES) x (rowprog + 2 NLANES + 1) + ceil(w/NLANES) x (colprog + 2 NLANES + 1) + 2.
+//
+// v3 (mappable): the transpose memory replaces the two register arrays (coef[32][32], res[64][64]) whose
+// random multi-row reads were a 64:1 mux per element and synthesised to several hundred thousand LUTs.
+// Element (i, j) lives in bank (i + j) mod 64 at address i, so row i is "all banks, address i" and column j
+// is "bank b, address (b - j) mod 64", each followed by a rotate by i or j. Coefficients are written in
+// place (one element per cycle while idle) and the row pass overwrites each row with its residual, so
+// no second array is needed; a 32x32 valid bitmap stands in for clearing the coefficient array.
 module itx2d #(
     parameter int TW = 20,
     parameter int NLANES = 4              // power of two, 1..32 (row groups must not straddle row 32)
@@ -99,16 +106,52 @@ module itx2d #(
         endcase
     endfunction
 
-    // ---------------------------------------------------------------- buffers
-    logic signed [TW-1:0] coef [32][32];
-    logic signed [TW-1:0] res  [64][64];
-
-    always_ff @(posedge clk) begin
-        if (coef_clr && !busy) for (int i = 0; i < 32; i++) for (int j = 0; j < 32; j++) coef[i][j] <= '0;
-        else if (coef_we && !busy) coef[coef_addr[9:5]][coef_addr[4:0]] <= coef_data;
+    // ---------------------------------------------------------------- transpose memory
+    // 64 banks x 64 entries x TW. Row/column access: element k of the vector is bank (k + s) mod 64, where s is
+    // the row index (row mode: every bank at address s) or the column index (column mode: bank b at address
+    // (b - s) mod 64). Distributed RAM: synchronous write, asynchronous read, so the residual read port below
+    // stays combinational as before.
+    typedef logic [TW-1:0] vec_t [64];
+    logic          tm_we [64];
+    logic [5:0]    tm_waddr [64], tm_raddr [64];
+    logic [TW-1:0] tm_wdata [64], tm_rdata [64];
+    genvar gb;
+    generate
+        for (gb = 0; gb < 64; gb++) begin : g_bank
+            (* ram_style = "distributed" *) logic [TW-1:0] mem [0:63];
+            always_ff @(posedge clk) if (tm_we[gb]) mem[tm_waddr[gb]] <= tm_wdata[gb];
+            assign tm_rdata[gb] = mem[tm_raddr[gb]];
+        end
+    endgenerate
+    // read side: mode/index chosen by the sequencer (loading a group) or the residual port (otherwise)
+    logic       rd_col;                 // 0: row s, 1: column s
+    logic [5:0] rd_s;
+    vec_t       rd_vec;                 // element k (column j = k in row mode, row i = k in column mode)
+    always_comb begin
+        for (int b = 0; b < 64; b++) tm_raddr[b] = rd_col ? 6'(b - 32'(rd_s)) : rd_s;
+        for (int k = 0; k < 64; k++) rd_vec[k] = tm_rdata[6'(k + 32'(rd_s))];   // rotate left by s
     end
-    assign res_data = res[res_addr[11:6]][res_addr[5:0]];
-    always_comb for (int l = 0; l < 4; l++) res_data4[l*TW +: TW] = res[res_addr[11:6]][{res_addr[5:2], 2'(l)}];
+    // write side: a vector (row or column s) with per-element enables, from the store states or the coefficient port
+    logic        wr_col;
+    logic [5:0]  wr_s;
+    logic [63:0] wr_en;
+    vec_t        wr_vec;
+    always_comb begin
+        for (int b = 0; b < 64; b++) begin
+            logic [5:0] k;
+            k = 6'(b - 32'(wr_s));                                  // element that lands in bank b (rotate right by s)
+            tm_we[b]    = wr_en[k];
+            tm_waddr[b] = wr_col ? k : wr_s;
+            tm_wdata[b] = wr_vec[k];
+        end
+    end
+
+    // coefficient valid bitmap (the array is never cleared; a row read masks with its valid bits)
+    logic [31:0] cv [0:31];
+    always_ff @(posedge clk) begin
+        if (coef_clr && !busy) for (int i = 0; i < 32; i++) cv[i] <= '0;
+        else if (coef_we && !busy) cv[coef_addr[9:5]][coef_addr[4:0]] <= 1'b1;
+    end
 
     // ---------------------------------------------------------------- latched parameters
     logic [3:0] l_bd;
@@ -130,7 +173,7 @@ module itx2d #(
     logic [2:0]       e_n;
     logic [4:0]       e_r;
     logic [1:0]       e_wht;
-    logic [64*TW-1:0] e_in  [NL];
+    logic [64*TW-1:0] e_in  [NL];          // registered: loaded one lane per cycle from the transpose memory
     logic [64*TW-1:0] e_out [NL];
     logic             e_done [NL];
     logic             e_busy [NL];
@@ -144,29 +187,14 @@ module itx2d #(
         end
     endgenerate
 
-    typedef enum logic [1:0] { S_IDLE, S_ROW, S_COL, S_DONE } state_t;
+    typedef enum logic [2:0] { S_IDLE, S_RLD, S_RRUN, S_RST, S_CLD, S_CRUN, S_CST, S_DONE } state_t;
     state_t state;
-    logic [6:0] idx;                    // first row i (S_ROW) or first column j (S_COL) of the current group
+    logic [6:0] idx;                    // first row i (row pass) or first column j (column pass) of the current group
+    logic [$clog2(NL > 1 ? NL : 2)-1:0] lane;   // lane being loaded / stored
+    logic       zero_grp;               // row group at i >= 32: all zero, no transform
     logic [1:0] row_cls_l, col_cls_l;
-
-    // Lane l carries row idx+l (with the rectangular pre-scale) or column idx+l.
-    logic signed [TW-1:0] rowvec [NL][64];
-    logic signed [TW-1:0] colvec [NL][64];
-    always_comb begin
-        for (int l = 0; l < NL; l++) begin
-            logic [6:0] i, jj;
-            i  = idx + 7'(l);
-            jj = idx + 7'(l);
-            for (int j = 0; j < 64; j++) begin
-                logic signed [TW-1:0]  c;
-                logic signed [TW+12:0] p;
-                c = (i < 7'd32 && i < h && j < 32 && j < 32'(w)) ? coef[i[4:0]][j[4:0]] : '0;
-                p = c * 13'sd2896;
-                rowvec[l][j] = rect ? TW'((p + (TW+13)'(2048)) >>> 12) : c;
-            end
-            for (int k = 0; k < 64; k++) colvec[l][k] = (k < 32'(h) && jj < w) ? res[k[5:0]][jj[5:0]] : '0;
-        end
-    end
+    logic [6:0] cur;                    // row / column handled this cycle
+    assign cur = idx + 7'(lane);
 
     // Round2 helper with a variable shift (0..4)
     function automatic logic signed [TW-1:0] round2v(input logic signed [TW-1:0] x, input logic [2:0] sh);
@@ -180,28 +208,74 @@ module itx2d #(
     assign clip_lo = -(TW'(1) <<< (col_clamp - 5'd1));
     assign clip_hi =  (TW'(1) <<< (col_clamp - 5'd1)) - TW'(1);
 
+    // loaded vector for the current lane: row cur of the coefficients (valid bits, size, rectangular pre-scale)
+    // or column cur of the residuals (rows below h)
+    vec_t ld_vec;
     always_comb begin
-        e_prog = 4'd0; e_n = 3'd2; e_r = 5'd16; e_wht = 2'd0;
-        for (int l = 0; l < NL; l++) e_in[l] = '0;
-        case (state)
-            S_ROW: begin
-                e_prog = prog_id(row_cls_l, l_log2w, l_lossless);
-                e_n    = l_log2w;
-                e_r    = row_clamp;
-                e_wht  = 2'd2;
-                for (int l = 0; l < NL; l++)
-                    for (int j = 0; j < 64; j++) e_in[l][j*TW +: TW] = rowvec[l][j];
+        for (int k = 0; k < 64; k++) begin
+            logic signed [TW-1:0]  c;
+            logic signed [TW+12:0] p;
+            c = '0; p = '0;
+            if (state == S_RLD) begin
+                c = (cur < 7'd32 && cur < h && k < 32 && k < 32'(w) && cv[cur[4:0]][k[4:0]]) ? signed'(rd_vec[k]) : '0;
+                p = c * 13'sd2896;
+                ld_vec[k] = rect ? TW'((p + (TW+13)'(2048)) >>> 12) : TW'(c);
+            end else begin
+                ld_vec[k] = (k < 32'(h) && cur < w) ? rd_vec[k] : '0;
             end
-            S_COL: begin
-                e_prog = prog_id(col_cls_l, l_log2h, l_lossless);
-                e_n    = l_log2h;
-                e_r    = col_clamp;
-                e_wht  = 2'd0;
-                for (int l = 0; l < NL; l++)
-                    for (int i = 0; i < 64; i++) e_in[l][i*TW +: TW] = colvec[l][i];
+        end
+    end
+    // read port select: the sequencer while loading, the residual port otherwise
+    always_comb begin
+        if (state == S_RLD) begin rd_col = 1'b0; rd_s = cur[5:0]; end
+        else if (state == S_CLD) begin rd_col = 1'b1; rd_s = cur[5:0]; end
+        else begin rd_col = 1'b0; rd_s = res_addr[11:6]; end
+    end
+    assign res_data = rd_vec[res_addr[5:0]];
+    always_comb for (int l = 0; l < 4; l++) res_data4[l*TW +: TW] = rd_vec[{res_addr[5:2], 2'(l)}];
+
+    // write port: stored lane vector (row or column cur) or one coefficient while idle
+    always_comb begin
+        wr_col = 1'b0; wr_s = cur[5:0]; wr_en = '0;
+        for (int k = 0; k < 64; k++) wr_vec[k] = '0;
+        case (state)
+            S_RST: begin
+                wr_en = (cur < h) ? '1 : '0;
+                if (!zero_grp)
+                    for (int j = 0; j < 64; j++) begin
+                        logic signed [TW-1:0] v;
+                        v = round2v(e_out[lane][j*TW +: TW], 3'(l_rowshift));
+                        v = (v < clip_lo) ? clip_lo : (v > clip_hi) ? clip_hi : v;
+                        wr_vec[j] = v;
+                    end
+            end
+            S_CST: begin
+                wr_col = 1'b1;
+                wr_en = (cur < w) ? '1 : '0;
+                for (int i = 0; i < 64; i++) wr_vec[i] = round2v(e_out[lane][i*TW +: TW], l_lossless ? 3'd0 : 3'd4);
+            end
+            S_IDLE: if (coef_we && !busy) begin
+                wr_s = {1'b0, coef_addr[9:5]};
+                wr_en[6'(coef_addr[4:0])] = 1'b1;
+                wr_vec[6'(coef_addr[4:0])] = coef_data;
             end
             default: ;
         endcase
+    end
+
+    always_comb begin
+        e_prog = 4'd0; e_n = 3'd2; e_r = 5'd16; e_wht = 2'd0;
+        if (state == S_RLD || state == S_RRUN) begin
+            e_prog = prog_id(row_cls_l, l_log2w, l_lossless);
+            e_n    = l_log2w;
+            e_r    = row_clamp;
+            e_wht  = 2'd2;
+        end else begin
+            e_prog = prog_id(col_cls_l, l_log2h, l_lossless);
+            e_n    = l_log2h;
+            e_r    = col_clamp;
+            e_wht  = 2'd0;
+        end
     end
 
     always_ff @(posedge clk) begin
@@ -211,6 +285,7 @@ module itx2d #(
             state <= S_IDLE;
             busy  <= 1'b0;
             idx   <= '0;
+            lane  <= '0;
         end else begin
             case (state)
                 S_IDLE: if (start) begin
@@ -223,47 +298,43 @@ module itx2d #(
                     row_cls_l  <= row_cls;
                     col_cls_l  <= col_cls;
                     idx        <= '0;
+                    lane       <= '0;
+                    zero_grp   <= 1'b0;
                     busy       <= 1'b1;
-                    go         <= 1'b1;
-                    state      <= S_ROW;
+                    state      <= S_RLD;
                 end
-                // ---- rows: a group of NL rows per pass; groups at i >= 32 are zero and skip the engines
-                S_ROW: begin
-                    if (e_done[0]) begin
-                        for (int l = 0; l < NL; l++) begin
-                            logic [6:0] i;
-                            i = idx + 7'(l);
-                            if (i < h)
-                                for (int j = 0; j < 64; j++) begin
-                                    logic signed [TW-1:0] v;
-                                    v = round2v(e_out[l][j*TW +: TW], 3'(l_rowshift));
-                                    v = (v < clip_lo) ? clip_lo : (v > clip_hi) ? clip_hi : v;
-                                    if (j < 32'(w)) res[i[5:0]][j] <= v;
-                                end
-                        end
-                        if (idx + 7'(NL) >= h) begin idx <= '0; go <= 1'b1; state <= S_COL; end
-                        else begin idx <= idx + 7'(NL); go <= (idx + 7'(NL) < 7'd32); end
-                    end else if (!go && !e_busy[0] && idx >= 7'd32) begin
-                        for (int l = 0; l < NL; l++) begin
-                            logic [6:0] i;
-                            i = idx + 7'(l);
-                            if (i < h) for (int j = 0; j < 64; j++) res[i[5:0]][j] <= '0;
-                        end
-                        if (idx + 7'(NL) >= h) begin idx <= '0; go <= 1'b1; state <= S_COL; end
-                        else idx <= idx + 7'(NL);
-                    end
+                // ---- rows: load NL rows (one per cycle), transform, store NL rows; groups at i >= 32 are zero
+                S_RLD: begin
+                    for (int l = 0; l < NL; l++)
+                        if (l == 32'(lane)) for (int k = 0; k < 64; k++) e_in[l][k*TW +: TW] <= ld_vec[k];
+                    if (32'(lane) == NL - 1) begin
+                        lane <= '0;
+                        if (idx < 7'd32) begin go <= 1'b1; state <= S_RRUN; end
+                        else begin zero_grp <= 1'b1; state <= S_RST; end
+                    end else lane <= lane + 1'b1;
                 end
-                // ---- columns: a group of NL columns per pass
-                S_COL: if (e_done[0]) begin
-                    for (int l = 0; l < NL; l++) begin
-                        logic [6:0] jj;
-                        jj = idx + 7'(l);
-                        if (jj < w)
-                            for (int i = 0; i < 64; i++)
-                                if (i < 32'(h)) res[i[5:0]][jj[5:0]] <= round2v(e_out[l][i*TW +: TW], l_lossless ? 3'd0 : 3'd4);
-                    end
-                    if (idx + 7'(NL) >= w) state <= S_DONE;
-                    else begin idx <= idx + 7'(NL); go <= 1'b1; end
+                S_RRUN: if (e_done[0]) state <= S_RST;
+                S_RST: begin
+                    if (32'(lane) == NL - 1) begin
+                        lane <= '0; zero_grp <= 1'b0;
+                        if (idx + 7'(NL) >= h) begin idx <= '0; state <= S_CLD; end
+                        else begin idx <= idx + 7'(NL); state <= S_RLD; end
+                    end else lane <= lane + 1'b1;
+                end
+                // ---- columns: load NL columns, transform, store NL columns
+                S_CLD: begin
+                    for (int l = 0; l < NL; l++)
+                        if (l == 32'(lane)) for (int k = 0; k < 64; k++) e_in[l][k*TW +: TW] <= ld_vec[k];
+                    if (32'(lane) == NL - 1) begin lane <= '0; go <= 1'b1; state <= S_CRUN; end
+                    else lane <= lane + 1'b1;
+                end
+                S_CRUN: if (e_done[0]) state <= S_CST;
+                S_CST: begin
+                    if (32'(lane) == NL - 1) begin
+                        lane <= '0;
+                        if (idx + 7'(NL) >= w) state <= S_DONE;
+                        else begin idx <= idx + 7'(NL); state <= S_CLD; end
+                    end else lane <= lane + 1'b1;
                 end
                 S_DONE: begin
                     done  <= 1'b1;
