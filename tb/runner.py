@@ -1,5 +1,5 @@
 """cocotb 2.x runner: python tb/runner.py [top] [test_module]  (defaults: smoke / test_smoke)
-Set WAVES=1 to record an FST trace in build/<top>/ (slow and large for long replays)."""
+Set WAVES=1 to record an FST trace in the build dir (slow and large for long replays)."""
 import os, sys
 from pathlib import Path
 from cocotb_tools.runner import get_runner
@@ -33,7 +33,10 @@ build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECT
 if os.environ.get("SIM_FAST", "0") == "1":
     threads = int(os.environ.get("SIM_THREADS", str(os.cpu_count() or 1)))
     build_args += ["-O3", "--x-assign", "fast", "--x-initial", "fast", "-CFLAGS", "-O2", "--threads", str(threads), "-Wno-UNOPTTHREADS"]
+# One build dir per configuration (build/<top> or build/<top>_fb<X>x<Y>), so Argon classes with different
+# frame-buffer sizes build and run side by side instead of rebuilding one dir in turn.
+build_dir = ROOT / "build" / (top + (f"_fb{params['FBX']}x{params['FBY']}" if params else ""))
 r.build(sources=sources, hdl_toplevel=top, parameters=params,
-        build_dir=ROOT / "build" / top, build_args=build_args, waves=waves)
+        build_dir=build_dir, build_args=build_args, waves=waves)
 plusargs = [f"+vis={os.environ['TS_VIS']}"] if os.environ.get("TS_VIS") else []   # decode-progress trace (docs/vis-trace.md)
-r.test(hdl_toplevel=top, test_module=mod, build_dir=ROOT / "build" / top, waves=waves, plusargs=plusargs)
+r.test(hdl_toplevel=top, test_module=mod, build_dir=build_dir, waves=waves, plusargs=plusargs)
