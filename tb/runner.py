@@ -16,11 +16,11 @@ EXTRA = {"itx1d": ["itx_ucode.sv", "cos128_lut.sv"], "itx2d": ["itx_ucode.sv", "
                          "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv"],
          "dec_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "q_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                      "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv", "tile_syntax.sv",
-                     "itx_ucode.sv", "cos128_lut.sv", "itx1d.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "frame_mem.sv", "recon_top.sv",
+                     "itx_ucode.sv", "cos128_lut.sv", "itx1d.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "frame_mem.sv", "frame_mem_w.sv", "recon_top.sv",
                      "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "rec_fifo.sv", "lf_top.sv", "cdef_top.sv", "lr_top.sv", "sr_top.sv"],
-         "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "mi_store.sv", "lf_top.sv"],
-         "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "mi_store.sv", "lr_top.sv"],
-         "cdef_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "cdef_pkg.sv", "frame_mem.sv", "mi_store.sv", "cdef_top.sv"]}
+         "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lf_top.sv"],
+         "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lr_top.sv"],
+         "cdef_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "cdef_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "cdef_top.sv"]}
 sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{top}.sv"]
 # frame-buffer / per-4x4 state capacity for the frame-level tops (dec_top, *_tb_top): FBX/FBY = log2 pixels,
 # ML2 = log2 4x4 units (FBX-2 / FBY-2 covers the same picture). Defaults fit 1024x512; Argon needs more.

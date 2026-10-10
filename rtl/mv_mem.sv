@@ -26,7 +26,9 @@ module mv_mem
 );
     localparam int N = 1 << (ML2R + ML2C);
     localparam int WC = 1 << ML2C;
-    mv_ent_t mem [0:N-1];
+    // Stored as a flat vector array, not `mv_ent_t mem [...]`: synthesis (Vivado) only infers block RAM from an
+    // array of plain vectors with one synchronous read; the struct is cast on at the read.
+    logic [$bits(mv_ent_t)-1:0] mem [0:N-1];
     logic [WC-1:0] written [0:63];
     logic        c_busy, w_busy;
     logic [MIW-1:0] c_row;
@@ -70,7 +72,7 @@ module mv_mem
                 else w_busy <= 1'b0;
             end
         end
-        rd_ent <= mem[idx(rd_row, rd_col)];
+        rd_ent <= mv_ent_t'(mem[idx(rd_row, rd_col)]);
         rd_written <= written[rd_row[5:0]][rd_col[ML2C-1:0]];
     end
 endmodule

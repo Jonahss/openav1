@@ -3,6 +3,7 @@
 //   lf_info[mi_row][mi_col]         : mi_lf_t, written per block (blk_we iterates the block's bh4 x bw4 area)
 //   lf_tx[plane][row_p][col_p]      : transform size, written per transform block (tx_we iterates h4 x w4)
 // Both writers run as small FSMs with busy flags; reads are registered (1-cycle latency).
+// Storage is written so that synthesis maps it to block RAM: see the notes at each array.
 // Capacity: (1 << ML2R) x (1 << ML2C) 4x4 units per plane array.
 module mi_store
   import syn_pkg::*;
@@ -51,7 +52,11 @@ module mi_store
     output lr_rec_t     lrr_rec
 );
     localparam int N = 1 << (ML2R + ML2C);
-    mi_lf_t     lf_info [0:N-1];
+    // lf_info is read by two stages at once (deblocking and CDEF), so it is kept as two identically written
+    // copies, each a simple dual-port RAM (one write, one synchronous read): that is the shape block RAM has.
+    // Flat vector arrays rather than `mi_lf_t [...]` for the same reason (synthesis infers RAM from vectors only).
+    logic [$bits(mi_lf_t)-1:0] lf_info_a [0:N-1];
+    logic [$bits(mi_lf_t)-1:0] lf_info_b [0:N-1];
     logic [4:0] lf_tx0 [0:N-1];
     logic [4:0] lf_tx1 [0:N-1];
     logic [4:0] lf_tx2 [0:N-1];
@@ -74,7 +79,8 @@ module mi_store
         end else begin
             logic [ML2R+ML2C-1:0] a;
             a = idx(b_r + MIW'(bi), b_c + MIW'(bj));                 // (Verilator: no function call in an NBA LHS index)
-            lf_info[a] <= b_d;
+            lf_info_a[a] <= b_d;
+            lf_info_b[a] <= b_d;
             if (bj + 6'd1 < b_w) bj <= bj + 6'd1;
             else begin
                 bj <= 6'd0;
@@ -135,16 +141,16 @@ module mi_store
     // ---- loop-restoration units: [plane][unitRow][unitCol], 2^(ML2R-4) x 2^(ML2C-4) units per plane (64-px units over the per-4x4 capacity)
     // units are at least 64 px, so the per-4x4 capacity (ML2R/ML2C) bounds the unit grid at 2^(ML2-4) per axis
     localparam int LUR = ML2R - 4, LUC = ML2C - 4;
-    lr_rec_t lr_units [0:3 * (1 << (LUR + LUC)) - 1];
+    logic [$bits(lr_rec_t)-1:0] lr_units [0:3 * (1 << (LUR + LUC)) - 1];   // vector array: RAM-inferable
     always_ff @(posedge clk) begin
         if (lr_we) lr_units[{lr_rec.plane, LUR'(lr_rec.unit_row), LUC'(lr_rec.unit_col)}] <= lr_rec;
-        lrr_rec <= lr_units[{lrr_plane, LUR'(lrr_row), LUC'(lrr_col)}];
+        lrr_rec <= lr_rec_t'(lr_units[{lrr_plane, LUR'(lrr_row), LUC'(lrr_col)}]);
     end
 
     // ---- reads
     always_ff @(posedge clk) begin
-        rd_info <= lf_info[idx(rd_row, rd_col)];
-        rd2_info <= lf_info[idx(rd2_row, rd2_col)];
+        rd_info <= mi_lf_t'(lf_info_a[idx(rd_row, rd_col)]);
+        rd2_info <= mi_lf_t'(lf_info_b[idx(rd2_row, rd2_col)]);
         case (txr_plane)
             2'd0: txr_sz <= lf_tx0[idx(txr_row, txr_col)];
             2'd1: txr_sz <= lf_tx1[idx(txr_row, txr_col)];
