@@ -54,8 +54,50 @@ module ipred #(
 
     localparam logic [3:0] DC_PRED = 0, SMOOTH_PRED = 9, SMOOTH_V_PRED = 10, SMOOTH_H_PRED = 11, PAETH_PRED = 12;
 
-    logic [PW-1:0] A [ESZ];
-    logic [PW-1:0] L [ESZ];
+    // Edge storage in four banks each (entry e at bank e & 3, address e >> 2), as distributed RAM: every read site
+    // is then a small asynchronous RAM port instead of a 260:1 mux. All writes come from the sequencer below and
+    // never hit one bank twice in a clock (the 4-wide group write is aligned, the upsampler's pairs are adjacent).
+    localparam int BKD = (ESZ + 3) / 4;
+    (* ram_style = "distributed" *) logic [PW-1:0] A0 [0:BKD-1];
+    (* ram_style = "distributed" *) logic [PW-1:0] A1 [0:BKD-1];
+    (* ram_style = "distributed" *) logic [PW-1:0] A2 [0:BKD-1];
+    (* ram_style = "distributed" *) logic [PW-1:0] A3 [0:BKD-1];
+    (* ram_style = "distributed" *) logic [PW-1:0] L0 [0:BKD-1];
+    (* ram_style = "distributed" *) logic [PW-1:0] L1 [0:BKD-1];
+    (* ram_style = "distributed" *) logic [PW-1:0] L2 [0:BKD-1];
+    (* ram_style = "distributed" *) logic [PW-1:0] L3 [0:BKD-1];
+    function automatic logic [PW-1:0] rA(input int idx);        // edge index -2 .. 257
+        case ((idx + EOFF) & 3)
+            0: rA = A0[(idx + EOFF) >> 2];
+            1: rA = A1[(idx + EOFF) >> 2];
+            2: rA = A2[(idx + EOFF) >> 2];
+            default: rA = A3[(idx + EOFF) >> 2];
+        endcase
+    endfunction
+    function automatic logic [PW-1:0] rL(input int idx);
+        case ((idx + EOFF) & 3)
+            0: rL = L0[(idx + EOFF) >> 2];
+            1: rL = L1[(idx + EOFF) >> 2];
+            2: rL = L2[(idx + EOFF) >> 2];
+            default: rL = L3[(idx + EOFF) >> 2];
+        endcase
+    endfunction
+    task automatic wA(input int idx, input logic [PW-1:0] v);
+        case ((idx + EOFF) & 3)
+            0: A0[(idx + EOFF) >> 2] <= v;
+            1: A1[(idx + EOFF) >> 2] <= v;
+            2: A2[(idx + EOFF) >> 2] <= v;
+            default: A3[(idx + EOFF) >> 2] <= v;
+        endcase
+    endtask
+    task automatic wL(input int idx, input logic [PW-1:0] v);
+        case ((idx + EOFF) & 3)
+            0: L0[(idx + EOFF) >> 2] <= v;
+            1: L1[(idx + EOFF) >> 2] <= v;
+            2: L2[(idx + EOFF) >> 2] <= v;
+            default: L3[(idx + EOFF) >> 2] <= v;
+        endcase
+    endtask
     logic [PW-1:0] TL_in;                    // top-left as written through the port
 
     // ------------------------------------------------------------------ latched parameters
@@ -193,7 +235,7 @@ module ipred #(
     logic [5:0]    px, py;
 
     // filter-intra: emitted pixels, one 4x2 patch (8 pixels) per entry, entry = (row>>1)*8 + (col>>2)
-    logic [8*PW-1:0] fi_buf [128];
+    (* ram_style = "distributed" *) logic [8*PW-1:0] fi_buf [128];   // one write, four lane reads: LUT RAM
     logic [8*PW-1:0] fi_next_packed;
     function automatic logic [PW-1:0] fi_rd(input int r, input int c);
         fi_rd = fi_buf[((r >> 1) & 15) * 8 + ((c >> 2) & 7)][((r & 1) * 4 + (c & 3)) * PW +: PW];
@@ -211,58 +253,58 @@ module ipred #(
         end else if (l_mode == DC_PRED) begin
             pix_val = dc_val;
         end else if (l_mode == PAETH_PRED) begin
-            tl   = int'(A[ai(-1)]);
-            base = int'(A[ai(j)]) + int'(L[ai(i)]) - tl;
-            pl  = base - int'(L[ai(i)]);  if (pl < 0) pl = -pl;
-            pt  = base - int'(A[ai(j)]);  if (pt < 0) pt = -pt;
+            tl   = int'(rA(-1));
+            base = int'(rA(j)) + int'(rL(i)) - tl;
+            pl  = base - int'(rL(i));  if (pl < 0) pl = -pl;
+            pt  = base - int'(rA(j));  if (pt < 0) pt = -pt;
             ptl = base - tl;              if (ptl < 0) ptl = -ptl;
-            if (pl <= pt && pl <= ptl) pix_val = L[ai(i)];
-            else if (pt <= ptl)        pix_val = A[ai(j)];
+            if (pl <= pt && pl <= ptl) pix_val = rL(i);
+            else if (pt <= ptl)        pix_val = rA(j);
             else                       pix_val = PW'(tl);
         end else if (l_mode == SMOOTH_PRED) begin
             wy = int'(sm_weight(l_log2h, 6'(i)));
             wx = int'(sm_weight(l_log2w, 6'(j)));
-            s = wy * int'(A[ai(j)]) + (256 - wy) * int'(L[ai(int'(h) - 1)])
-              + wx * int'(L[ai(i)]) + (256 - wx) * int'(A[ai(int'(w) - 1)]);
+            s = wy * int'(rA(j)) + (256 - wy) * int'(rL(int'(h) - 1))
+              + wx * int'(rL(i)) + (256 - wx) * int'(rA(int'(w) - 1));
             pix_val = PW'((s + 256) >> 9);
         end else if (l_mode == SMOOTH_V_PRED) begin
             wy = int'(sm_weight(l_log2h, 6'(i)));
-            s = wy * int'(A[ai(j)]) + (256 - wy) * int'(L[ai(int'(h) - 1)]);
+            s = wy * int'(rA(j)) + (256 - wy) * int'(rL(int'(h) - 1));
             pix_val = PW'((s + 128) >> 8);
         end else if (l_mode == SMOOTH_H_PRED) begin
             wx = int'(sm_weight(l_log2w, 6'(j)));
-            s = wx * int'(L[ai(i)]) + (256 - wx) * int'(A[ai(int'(w) - 1)]);
+            s = wx * int'(rL(i)) + (256 - wx) * int'(rA(int'(w) - 1));
             pix_val = PW'((s + 128) >> 8);
         end else if (p_angle == 9'd90) begin
-            pix_val = A[ai(j)];
+            pix_val = rA(j);
         end else if (p_angle == 9'd180) begin
-            pix_val = L[ai(i)];
+            pix_val = rL(i);
         end else if (p_angle < 9'd90) begin                                   // Z1
             idx   = (i + 1) * int'(dx);
             base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
             shift = ((idx << int'(up_a)) >> 1) & 31;
             maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
             if (base < maxb)
-                pix_val = PW'((int'(A[ai(base)]) * (32 - shift) + int'(A[ai(base + 1)]) * shift + 16) >> 5);
+                pix_val = PW'((int'(rA(base)) * (32 - shift) + int'(rA(base + 1)) * shift + 16) >> 5);
             else
-                pix_val = A[ai(maxb)];
+                pix_val = rA(maxb);
         end else if (p_angle < 9'd180) begin                                  // Z2
             idx  = (j << 6) - (i + 1) * int'(dx);
             base = idx >>> (6 - int'(up_a));
             if (base >= -(1 << int'(up_a))) begin
                 shift = ((idx << int'(up_a)) >> 1) & 31;
-                pix_val = PW'((int'(A[ai(base)]) * (32 - shift) + int'(A[ai(base + 1)]) * shift + 16) >> 5);
+                pix_val = PW'((int'(rA(base)) * (32 - shift) + int'(rA(base + 1)) * shift + 16) >> 5);
             end else begin
                 idx2   = (i << 6) - (j + 1) * int'(dy);
                 base2  = idx2 >>> (6 - int'(up_l));
                 shift2 = ((idx2 << int'(up_l)) >> 1) & 31;
-                pix_val = PW'((int'(L[ai(base2)]) * (32 - shift2) + int'(L[ai(base2 + 1)]) * shift2 + 16) >> 5);
+                pix_val = PW'((int'(rL(base2)) * (32 - shift2) + int'(rL(base2 + 1)) * shift2 + 16) >> 5);
             end
         end else begin                                                        // Z3
             idx   = (j + 1) * int'(dy);
             base  = (idx >> (6 - int'(up_l))) + (i << int'(up_l));
             shift = ((idx << int'(up_l)) >> 1) & 31;
-            pix_val = PW'((int'(L[ai(base)]) * (32 - shift) + int'(L[ai(base + 1)]) * shift + 16) >> 5);
+            pix_val = PW'((int'(rL(base)) * (32 - shift) + int'(rL(base + 1)) * shift + 16) >> 5);
         end
         return pix_val;
     endfunction
@@ -278,11 +320,11 @@ module ipred #(
         for (int t = 0; t < 7; t++) begin
             p[t] = 0;
             if (t < 5) begin
-                if (i2 == 0)                p[t] = int'(A[ai((j4 << 2) + t - 1)]);          // t=0 -> A[-1] = top-left
-                else if (j4 == 0 && t == 0) p[t] = int'(L[ai((i2 << 1) - 1)]);
+                if (i2 == 0)                p[t] = int'(rA((j4 << 2) + t - 1));          // t=0 -> A[-1] = top-left
+                else if (j4 == 0 && t == 0) p[t] = int'(rL((i2 << 1) - 1));
                 else                        p[t] = int'(fi_rd((i2 << 1) - 1, (j4 << 2) + t - 1));
             end else begin
-                if (j4 == 0) p[t] = int'(L[ai((i2 << 1) + t - 5)]);
+                if (j4 == 0) p[t] = int'(rL((i2 << 1) + t - 5));
                 else         p[t] = int'(fi_rd((i2 << 1) + t - 5, (j4 << 2) - 1));
             end
         end
@@ -317,7 +359,7 @@ module ipred #(
         // position 0 (top-left) and positions >= kk are untouched in the array
         if (m >= 1 && m == kk - 1)      ef_src = o1;
         else if (m >= 1 && m == kk - 2) ef_src = o0;
-        else                            ef_src = ef_side ? L[ai(m - 1)] : A[ai(m - 1)];
+        else                            ef_src = ef_side ? rL(m - 1) : rA(m - 1);
     endfunction
     always_comb begin
         int m0, m1, m3, m4, kk, szi;
@@ -339,10 +381,10 @@ module ipred #(
         s = 0; d0 = '0; d1 = '0; d2 = '0; d3 = '0;
         side = (state == S_UP_L);
         i = int'(k) - 1; n = int'(ef_sz);
-        d0 = side ? L[ai((i - 2 < -1) ? -1 : i - 2)] : A[ai((i - 2 < -1) ? -1 : i - 2)];
-        d1 = side ? L[ai(i - 1)] : A[ai(i - 1)];
-        d2 = side ? L[ai(i)] : A[ai(i)];
-        d3 = side ? L[ai((i + 1 > n - 1) ? n - 1 : i + 1)] : A[ai((i + 1 > n - 1) ? n - 1 : i + 1)];
+        d0 = side ? rL((i - 2 < -1) ? -1 : i - 2) : rA((i - 2 < -1) ? -1 : i - 2);
+        d1 = side ? rL(i - 1) : rA(i - 1);
+        d2 = side ? rL(i) : rA(i);
+        d3 = side ? rL((i + 1 > n - 1) ? n - 1 : i + 1) : rA((i + 1 > n - 1) ? n - 1 : i + 1);
         if (i - 2 == 1) d0 = up_save1;
         if (i - 1 == 1) d1 = up_save1;
         if (i == 1)     d2 = up_save1;
@@ -362,8 +404,8 @@ module ipred #(
             int kk;
             kk = int'(k) + l;
             if (kk < int'(dc_n)) begin
-                if (l_hl && kk < int'(h)) dc_part += 20'(L[ai(kk)]);
-                else                      dc_part += 20'(A[ai(kk - (l_hl ? int'(h) : 0))]);
+                if (l_hl && kk < int'(h)) dc_part += 20'(rL(kk));
+                else                      dc_part += 20'(rA(kk - (l_hl ? int'(h) : 0)));
             end
         end
     end
@@ -382,12 +424,17 @@ module ipred #(
             S_IDLE: begin
                 if (edge_we) begin
                     case (edge_side)
-                        2'd0: A[EOFF + (int'(edge_idx))] <= edge_data;
-                        2'd1: L[EOFF + (int'(edge_idx))] <= edge_data;
+                        2'd0: wA(int'(edge_idx), edge_data);
+                        2'd1: wL(int'(edge_idx), edge_data);
                         default: TL_in <= edge_data;
                     endcase
                 end
-                if (edge_we4) for (int l = 0; l < 4; l++) A[EOFF + (int'(edge_idx)) + l] <= edge_data4[l * PW +: PW];
+                if (edge_we4) begin                     // edge_idx is a multiple of 4: entries 4m+2 .. 4m+5
+                    A2[(int'(edge_idx) + EOFF) >> 2]     <= edge_data4[0 * PW +: PW];
+                    A3[(int'(edge_idx) + EOFF) >> 2]     <= edge_data4[1 * PW +: PW];
+                    A0[(int'(edge_idx) + EOFF) / 4 + 1]  <= edge_data4[2 * PW +: PW];
+                    A1[(int'(edge_idx) + EOFF) / 4 + 1]  <= edge_data4[3 * PW +: PW];
+                end
                 if (start) begin
                     l_mode <= mode; l_fi <= use_filter_intra; l_fimode <= filter_intra_mode;
                     l_log2w <= log2w; l_log2h <= log2h;
@@ -398,7 +445,7 @@ module ipred #(
                     l_apx <= above_px; l_lpx <= left_px;
                     p_angle <= mode_to_angle(mode) + 9'(signed'({{6{angle_delta[2]}}, angle_delta}) * 3);
                     up_a <= 1'b0; up_l <= 1'b0;
-                    A[EOFF + (-1)] <= TL_in; L[ai(-1)] <= TL_in;
+                    wA(-1, TL_in); wL(-1, TL_in);
                     busy  <= 1'b1;
                     state <= S_SETUP;
                 end
@@ -418,8 +465,8 @@ module ipred #(
             end
             S_CORNER: begin
                 if (p_angle > 90 && p_angle < 180 && wh >= 24) begin
-                    A[EOFF + (-1)] <= PW'((int'(L[ai(0)]) * 5 + int'(A[ai(-1)]) * 6 + int'(A[ai(0)]) * 5 + 8) >> 4);
-                    L[EOFF + (-1)] <= PW'((int'(L[ai(0)]) * 5 + int'(A[ai(-1)]) * 6 + int'(A[ai(0)]) * 5 + 8) >> 4);
+                    wA(-1, PW'((int'(rL(0)) * 5 + int'(rA(-1)) * 6 + int'(rA(0)) * 5 + 8) >> 4));
+                    wL(-1, PW'((int'(rL(0)) * 5 + int'(rA(-1)) * 6 + int'(rA(0)) * 5 + 8) >> 4));
                 end
                 // set up the above-edge filter pass (or the left one if there is no above)
                 if (l_ha) begin
@@ -446,10 +493,10 @@ module ipred #(
                     end
                 end else begin
                     // side[k-1] (= edge[k]) <- filtered; remember its original for the next two steps
-                    if (ef_side) L[EOFF + (int'(k) - 1)] <= ef_out;
-                    else         A[EOFF + (int'(k) - 1)] <= ef_out;
+                    if (ef_side) wL(int'(k) - 1, ef_out);
+                    else         wA(int'(k) - 1, ef_out);
                     o0 <= o1;
-                    o1 <= ef_side ? L[ai(int'(k) - 1)] : A[ai(int'(k) - 1)];
+                    o1 <= ef_side ? rL(int'(k) - 1) : rA(int'(k) - 1);
                     k  <= k + 9'd1;
                 end
             end
@@ -459,17 +506,17 @@ module ipred #(
                         up_a  <= 1'b1;
                         ef_sz <= 9'(w) + (p_angle < 90 ? 9'(h) : 9'd0);
                         k     <= 9'(w) + (p_angle < 90 ? 9'(h) : 9'd0);
-                        up_save1 <= A[ai(1)];
+                        up_save1 <= rA(1);
                     end else begin
                         state <= S_UP_L;
                     end
                 end else begin
                     int i;
                     i = int'(k) - 1;
-                    A[EOFF + (2 * i - 1)] <= up_s;
-                    A[EOFF + (2 * i)]     <= up_d2;
+                    wA(2 * i - 1, up_s);
+                    wA(2 * i, up_d2);
                     if (i == 0) begin
-                        A[EOFF + (-2)] <= A[ai(-1)];
+                        wA(-2, rA(-1));
                         state <= S_UP_L; k <= 0;
                     end else k <= k - 9'd1;
                 end
@@ -480,17 +527,17 @@ module ipred #(
                         up_l  <= 1'b1;
                         ef_sz <= 9'(h) + (p_angle > 180 ? 9'(w) : 9'd0);
                         k     <= 9'(h) + (p_angle > 180 ? 9'(w) : 9'd0);
-                        up_save1 <= L[ai(1)];
+                        up_save1 <= rL(1);
                     end else begin
                         state <= S_PIX;
                     end
                 end else begin
                     int i;
                     i = int'(k) - 1;
-                    L[EOFF + (2 * i - 1)] <= up_s;
-                    L[EOFF + (2 * i)]     <= up_d2;
+                    wL(2 * i - 1, up_s);
+                    wL(2 * i, up_d2);
                     if (i == 0) begin
-                        L[EOFF + (-2)] <= L[ai(-1)];
+                        wL(-2, rL(-1));
                         state <= S_PIX;
                     end else k <= k - 9'd1;
                 end
