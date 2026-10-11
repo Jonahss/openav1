@@ -6,7 +6,7 @@ module scan_rom (
     input  logic [11:0] addr,
     output logic [9:0]  data
 );
-  logic [9:0] rom [0:3343];
+  (* ram_style = "block" *) logic [9:0] rom [0:3343];
   initial begin
     rom[0] = 10'd0;
     rom[1] = 10'd1;
