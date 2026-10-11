@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # Synthesise dec_top (or one block: -t lr_top etc.) for the Kria K26 with Vivado:
-#   synth/vivado/run.sh [-t top] <FBX> <FBY> [tag]
+#   synth/vivado/run.sh [-t top] [-b mod,mod,...] <FBX> <FBY> [tag]
+# -b replaces the named modules by black-box stubs (stub.py), to measure a block without its children.
 # Needs Vivado on PATH (source /opt/Xilinx/<ver>/Vivado/settings64.sh). Reports land in
 # ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/<top>-<tag>/ (util.rpt, util_hier.rpt, ram.rpt, timing.rpt,
 # post_synth.dcp); the log is next to them. The frame buffer is a black box (frame_mem_bb.sv): see that file.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-top=dec_top
-if [ "${1:-}" = "-t" ]; then top=$2; shift 2; fi
+top=dec_top; bb=""
+while [ "${1:-}" = "-t" ] || [ "${1:-}" = "-b" ]; do
+    if [ "$1" = "-t" ]; then top=$2; else bb=${2//,/ }; fi; shift 2
+done
 fbx=${1:?FBX}; fby=${2:?FBY}
-tag=${3:-$(git -C "$root" rev-parse --short HEAD)-fb${fbx}x${fby}}
+tag=${3:-$(git -C "$root" rev-parse --short HEAD)-fb${fbx}x${fby}${bb:+-bb}}
 out=${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/$top-$tag
 # generics the block takes, in the convention of tb/runner.py: FBX/FBY = log2 pixels, ML2R/ML2C = log2 4x4 units
 generics=""
@@ -22,7 +25,14 @@ files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cd
        pal_syntax mv_mem mv_stack blk_syntax lr_syntax tile_syntax itx_ucode cos128_lut itx1d itx2d ipred cfl qm_rom
        frame_mem_w recon_top cdef_pkg lr_pkg mi_store rec_fifo lf_top cdef_top lr_top sr_top dec_top"
 sources="$here/frame_mem_bb.sv"
-for f in $files; do [ -f "$root/rtl/$f.sv" ] || { echo "missing rtl/$f.sv" >&2; exit 1; }; sources="$sources $root/rtl/$f.sv"; done
+mkdir -p "$out/stubs"
+for f in $files; do
+    [ -f "$root/rtl/$f.sv" ] || { echo "missing rtl/$f.sv" >&2; exit 1; }
+    case " $bb " in
+        *" $f "*) python3 "$here/stub.py" "$root/rtl/$f.sv" > "$out/stubs/$f.sv"; sources="$sources $out/stubs/$f.sv" ;;
+        *) sources="$sources $root/rtl/$f.sv" ;;
+    esac
+done
 export SYNTH_ROOT=$root SYNTH_OUT=$out SYNTH_TOP=$top SYNTH_GENERICS=$generics SYNTH_SOURCES=$sources
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): give Vivado the same shape
 mkdir -p "$out/work/run"; ln -sfn "$root/rtl" "$out/rtl"
