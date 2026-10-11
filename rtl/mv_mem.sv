@@ -39,7 +39,7 @@ module mv_mem
         m_rdata <= mem[m_raddr];
     end
     assign rd_ent = mv_ent_t'(m_rdata);
-    logic [WC-1:0] written [0:63];
+    logic [63:0][WC-1:0] written;      // packed: flops by construction (row clears + bit sets are no RAM template)
     logic        c_busy, w_busy;
     logic [MIW-1:0] c_row;
     logic [5:0]  c_n;
