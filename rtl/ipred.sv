@@ -255,7 +255,16 @@ module ipred #(
     function automatic logic [PW-1:0] fi_rd(input int r, input int c);
         logic [8*PW-1:0] wd;
         wd = fi_buf[((r >> 1) & 15) * 8 + ((c >> 2) & 7)];
-        fi_rd = wd[((r & 1) * 4 + (c & 3)) * PW +: PW];
+        case ((r & 1) * 4 + (c & 3))                     // lane select spelled out: Vivado dropped the buffer as
+            0: fi_rd = wd[0 * PW +: PW];                 // "unused" behind a variable part-select of wd
+            1: fi_rd = wd[1 * PW +: PW];
+            2: fi_rd = wd[2 * PW +: PW];
+            3: fi_rd = wd[3 * PW +: PW];
+            4: fi_rd = wd[4 * PW +: PW];
+            5: fi_rd = wd[5 * PW +: PW];
+            6: fi_rd = wd[6 * PW +: PW];
+            default: fi_rd = wd[7 * PW +: PW];
+        endcase
     endfunction
 
     // ------------------------------------------------------------------ pixel datapath: pred[i][j]
