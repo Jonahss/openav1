@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Synthesise dec_top (or one block: -t lr_top etc.) for the Kria K26 with Vivado:
-#   synth/vivado/run.sh [-t top] [-b mod,mod,...] <FBX> <FBY> [tag]
+#   synth/vivado/run.sh [-t top] [-b mod,mod,...] [-g NAME=VAL ...] <FBX> <FBY> [tag]
 # -b replaces the named modules by black-box stubs (stub.py), to measure a block without its children.
 # Needs Vivado on PATH (source /opt/Xilinx/<ver>/Vivado/settings64.sh). Reports land in
 # ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/<top>-<tag>/ (util.rpt, util_hier.rpt, ram.rpt, timing.rpt,
@@ -8,9 +8,9 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-top=dec_top; bb=""
-while [ "${1:-}" = "-t" ] || [ "${1:-}" = "-b" ]; do
-    if [ "$1" = "-t" ]; then top=$2; else bb=${2//,/ }; fi; shift 2
+top=dec_top; bb=""; extra=""
+while [ "${1:-}" = "-t" ] || [ "${1:-}" = "-b" ] || [ "${1:-}" = "-g" ]; do
+    case "$1" in -t) top=$2 ;; -b) bb=${2//,/ } ;; -g) extra="$extra -generic $2" ;; esac; shift 2
 done
 fbx=${1:?FBX}; fby=${2:?FBY}
 tag=${3:-$(git -C "$root" rev-parse --short HEAD)-fb${fbx}x${fby}${bb:+-bb}}
@@ -19,6 +19,7 @@ out=${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/$top-$tag
 generics=""
 grep -q "parameter int FBX" "$root/rtl/$top.sv" && generics="$generics -generic FBX=$fbx -generic FBY=$fby"
 grep -q "parameter int ML2R" "$root/rtl/$top.sv" && generics="$generics -generic ML2R=$((fby - 2)) -generic ML2C=$((fbx - 2))"
+generics="$generics$extra"
 mkdir -p "$out"
 # rtl in dependency order; keep in step with the dec_top entry of tb/runner.py (packages first, leaves before users)
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq coef_rd blk_ctx

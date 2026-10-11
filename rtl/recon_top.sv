@@ -19,6 +19,7 @@ module recon_top
   import syn_pkg::*;
 #(
     parameter int FBX = 9,                   // frame buffer x address bits
+    parameter int ITX_LANES = 4,             // 1-D transform engines (rows, then columns, at once): 4 for throughput, 2 fits the K26
     parameter int FBY = 9,
     parameter int ML2R = 8,                  // mode map capacity: log2(MI rows), log2(MI cols)
     parameter int ML2C = 8
@@ -422,7 +423,7 @@ module recon_top
     // ================================================================ sub-blocks
     // itx2d
     logic itx_we, itx_clr, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data; logic [4*TW-1:0] res_data4;
-    itx2d #(.TW(TW)) u_itx (.clk, .rst, .coef_clr(itx_clr), .coef_we(itx_we), .coef_addr(itx_addr), .coef_data(itx_data),
+    itx2d #(.TW(TW), .NLANES(ITX_LANES)) u_itx (.clk, .rst, .coef_clr(itx_clr), .coef_we(itx_we), .coef_addr(itx_addr), .coef_data(itx_data),
                             .start(itx_start), .tx_sz(t.txsz), .tx_type(t.lossless ? 4'd0 : t.txtype), .bit_depth(hdr.bit_depth), .lossless(t.lossless),
                             .busy(itx_busy), .done(itx_done), .res_addr, .res_data, .res_data4);
     // ipred

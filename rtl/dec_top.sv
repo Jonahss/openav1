@@ -7,7 +7,8 @@ module dec_top
   import syn_pkg::*;
 #(
     parameter int FBX = 10,                  // 1024 x 512 frame buffer: covers the test corpus (<= 640x360 + overhang)
-    parameter int FBY = 9
+    parameter int FBY = 9,
+    parameter int ITX_LANES = 4              // transform engines: 4 (throughput) or 2 (K26 area, +2.6% cycles)
 ) (
     input  logic              clk,
     input  logic              rst,
@@ -93,7 +94,7 @@ module dec_top
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [SBW-1:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
-    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FBY - 2), .ML2C(FBX - 2)) u_rc (.clk, .rst, .hdr, .rh,
+    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES)) u_rc (.clk, .rst, .hdr, .rh,
                                             .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
