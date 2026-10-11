@@ -95,8 +95,14 @@ module pal_syntax
     logic [2:0]  dcur [64];
     logic [3:0]  ns_w, ns_m, ns_v;
     // colour maps
+    // colour maps: one write per clock from the FSM (through cm_*), one registered read (pm_idx): block RAM
     logic [2:0]  cmap_y  [0:4095];
     logic [2:0]  cmap_uv [0:4095];
+    logic        cm_we; logic [11:0] cm_addr; logic [2:0] cm_data;
+    always_ff @(posedge clk) begin
+        if (cm_we && pl)  cmap_uv[cm_addr] <= cm_data;
+        if (cm_we && !pl) cmap_y[cm_addr] <= cm_data;
+    end
 
     // ---------------------------------------------------------------- helpers
     function automatic logic [3:0] ceil_log2(input logic [12:0] x);
@@ -264,6 +270,18 @@ module pal_syntax
         pm_yc = (7'(pm_y) >= th_p[pm_plane]) ? 6'(th_p[pm_plane] - 7'd1) : pm_y;
     end
     always_ff @(posedge clk) pm_idx <= pm_plane ? cmap_uv[{pm_yc, pm_xc}] : cmap_y[{pm_yc, pm_xc}];
+    // colour-map write: the first colour (index 0) from the literal states, then one pixel per diagonal step
+    always_comb begin
+        logic [3:0] v;
+        v = (ns_v << 1) - ns_m + lit_val[3:0];
+        cm_we = 1'b0; cm_addr = 12'd0; cm_data = lit_val[2:0];
+        case (st)
+            T_NS_W:   begin cm_we = (lit_val[3:0] < ns_m); cm_data = lit_val[2:0]; end
+            T_NS_X_W: begin cm_we = 1'b1; cm_data = v[2:0]; end
+            T_PIX_W:  begin cm_we = sq_done; cm_addr = {6'(dr), 6'(dj)}; cm_data = pix_val; end
+            default: ;
+        endcase
+    end
 
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
@@ -392,8 +410,7 @@ module pal_syntax
                 T_NS_W: begin
                     ns_v <= lit_val[3:0];
                     if (lit_val[3:0] < ns_m) begin
-                        d1[0] <= lit_val[2:0]; dcur[0] <= lit_val[2:0];
-                        if (pl) cmap_uv[0] <= lit_val[2:0]; else cmap_y[0] <= lit_val[2:0];
+                        d1[0] <= lit_val[2:0]; dcur[0] <= lit_val[2:0];        // (cmap[0] written through cm_*)
                         di <= 8'd1; st <= T_DIAG;
                     end else begin lit_n <= 4'd1; lit_val <= '0; lit_ret <= T_NS_X_W; st <= P_LIT; end
                 end
@@ -402,7 +419,6 @@ module pal_syntax
                         logic [3:0] v;
                         v = (ns_v << 1) - ns_m + lit_val[3:0];
                         d1[0] <= v[2:0]; dcur[0] <= v[2:0];
-                        if (pl) cmap_uv[0] <= v[2:0]; else cmap_y[0] <= v[2:0];
                     end
                     di <= 8'd1; st <= T_DIAG;
                 end
@@ -417,7 +433,6 @@ module pal_syntax
                 end
                 T_PIX: st <= T_PIX_W;
                 T_PIX_W: if (sq_done) begin
-                    if (pl) cmap_uv[{6'(dr), 6'(dj)}] <= pix_val; else cmap_y[{6'(dr), 6'(dj)}] <= pix_val;
                     dcur[dj[5:0]] <= pix_val;
                     if (dj == djmin) begin
                         for (int k = 0; k < 64; k++) begin

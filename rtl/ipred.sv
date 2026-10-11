@@ -82,22 +82,37 @@ module ipred #(
             default: rL = L3[(idx + EOFF) >> 2];
         endcase
     endfunction
-    task automatic wA(input int idx, input logic [PW-1:0] v);
-        case ((idx + EOFF) & 3)
-            0: A0[(idx + EOFF) >> 2] <= v;
-            1: A1[(idx + EOFF) >> 2] <= v;
-            2: A2[(idx + EOFF) >> 2] <= v;
-            default: A3[(idx + EOFF) >> 2] <= v;
-        endcase
-    endtask
-    task automatic wL(input int idx, input logic [PW-1:0] v);
-        case ((idx + EOFF) & 3)
-            0: L0[(idx + EOFF) >> 2] <= v;
-            1: L1[(idx + EOFF) >> 2] <= v;
-            2: L2[(idx + EOFF) >> 2] <= v;
-            default: L3[(idx + EOFF) >> 2] <= v;
-        endcase
-    endtask
+    // Edge writes: each write site of the sequencer posts a request (side, edge index, value) into its own slot
+    // for the current clock, and a bank takes the request addressed to it. So every bank has exactly one write
+    // port (the LUT-RAM template) while the sequencer keeps its natural "write edge[k]" form. A later slot wins
+    // over an earlier one, matching the statement order the sites had in the sequencer.
+    localparam int NRQ = 7;
+    typedef struct { logic v; logic side; int idx; logic [PW-1:0] d; } ereq_t;
+    ereq_t rq [NRQ];
+    logic          bweA [4], bweL [4];
+    logic [6:0]    bwaA [4], bwaL [4];
+    logic [PW-1:0] bwdA [4], bwdL [4];
+    always_comb begin
+        for (int b = 0; b < 4; b++) begin
+            bweA[b] = 1'b0; bwaA[b] = '0; bwdA[b] = '0;
+            bweL[b] = 1'b0; bwaL[b] = '0; bwdL[b] = '0;
+            for (int r = 0; r < NRQ; r++)
+                if (rq[r].v && ((rq[r].idx + EOFF) & 3) == b) begin
+                    if (!rq[r].side) begin bweA[b] = 1'b1; bwaA[b] = 7'((rq[r].idx + EOFF) >> 2); bwdA[b] = rq[r].d; end
+                    else             begin bweL[b] = 1'b1; bwaL[b] = 7'((rq[r].idx + EOFF) >> 2); bwdL[b] = rq[r].d; end
+                end
+        end
+    end
+    always_ff @(posedge clk) begin
+        if (bweA[0]) A0[bwaA[0]] <= bwdA[0];
+        if (bweA[1]) A1[bwaA[1]] <= bwdA[1];
+        if (bweA[2]) A2[bwaA[2]] <= bwdA[2];
+        if (bweA[3]) A3[bwaA[3]] <= bwdA[3];
+        if (bweL[0]) L0[bwaL[0]] <= bwdL[0];
+        if (bweL[1]) L1[bwaL[1]] <= bwdL[1];
+        if (bweL[2]) L2[bwaL[2]] <= bwdL[2];
+        if (bweL[3]) L3[bwaL[3]] <= bwdL[3];
+    end
     logic [PW-1:0] TL_in;                    // top-left as written through the port
 
     // ------------------------------------------------------------------ latched parameters
@@ -238,7 +253,9 @@ module ipred #(
     (* ram_style = "distributed" *) logic [8*PW-1:0] fi_buf [128];   // one write, four lane reads: LUT RAM
     logic [8*PW-1:0] fi_next_packed;
     function automatic logic [PW-1:0] fi_rd(input int r, input int c);
-        fi_rd = fi_buf[((r >> 1) & 15) * 8 + ((c >> 2) & 7)][((r & 1) * 4 + (c & 3)) * PW +: PW];
+        logic [8*PW-1:0] wd;
+        wd = fi_buf[((r >> 1) & 15) * 8 + ((c >> 2) & 7)];
+        fi_rd = wd[((r & 1) * 4 + (c & 3)) * PW +: PW];
     endfunction
 
     // ------------------------------------------------------------------ pixel datapath: pred[i][j]
@@ -413,6 +430,39 @@ module ipred #(
     assign first_of_patch = l_fi && (py[0] == 1'b0);
 
     // ------------------------------------------------------------------ sequencer
+    // ------------------------------------------------------------------ edge-write requests (one slot per site)
+    logic [PW-1:0] corner_v;                 // smoothed top-left for the directional corner case
+    assign corner_v = PW'((int'(rL(0)) * 5 + int'(rA(-1)) * 6 + int'(rA(0)) * 5 + 8) >> 4);
+    always_comb begin
+        for (int r = 0; r < NRQ; r++) rq[r] = '{1'b0, 1'b0, 0, '0};
+        if (!rst) case (state)
+            S_IDLE: begin
+                if (edge_we4)                            // edge_idx is a multiple of 4: entries idx .. idx+3
+                    for (int l = 0; l < 4; l++) rq[l] = '{1'b1, 1'b0, int'(edge_idx) + l, edge_data4[l * PW +: PW]};
+                if (edge_we && edge_side == 2'd0) rq[4] = '{1'b1, 1'b0, int'(edge_idx), edge_data};
+                if (edge_we && edge_side == 2'd1) rq[4] = '{1'b1, 1'b1, int'(edge_idx), edge_data};
+                if (start) begin rq[5] = '{1'b1, 1'b0, -1, TL_in}; rq[6] = '{1'b1, 1'b1, -1, TL_in}; end
+            end
+            S_CORNER: if (p_angle > 90 && p_angle < 180 && wh >= 24) begin
+                rq[0] = '{1'b1, 1'b0, -1, corner_v};
+                rq[1] = '{1'b1, 1'b1, -1, corner_v};
+            end
+            S_EF: if (!(ef_str == 0 || k >= ef_sz))    // side[k-1] (= edge[k]) <- filtered
+                rq[0] = '{1'b1, ef_side, int'(k) - 1, ef_out};
+            S_UP_A: if (k != 0) begin                  // upsampled pair for i = k-1, plus edge[-2] on the last step
+                rq[0] = '{1'b1, 1'b0, 2 * (int'(k) - 1) - 1, up_s};
+                rq[1] = '{1'b1, 1'b0, 2 * (int'(k) - 1), up_d2};
+                if (k == 9'd1) rq[2] = '{1'b1, 1'b0, -2, rA(-1)};
+            end
+            S_UP_L: if (k != 0) begin
+                rq[0] = '{1'b1, 1'b1, 2 * (int'(k) - 1) - 1, up_s};
+                rq[1] = '{1'b1, 1'b1, 2 * (int'(k) - 1), up_d2};
+                if (k == 9'd1) rq[2] = '{1'b1, 1'b1, -2, rL(-1)};
+            end
+            default: ;
+        endcase
+    end
+
     always_ff @(posedge clk) begin
         done      <= 1'b0;
         out_valid <= 1'b0;
@@ -424,16 +474,9 @@ module ipred #(
             S_IDLE: begin
                 if (edge_we) begin
                     case (edge_side)
-                        2'd0: wA(int'(edge_idx), edge_data);
-                        2'd1: wL(int'(edge_idx), edge_data);
+                        2'd0, 2'd1: ;                   // posted as edge-write requests below
                         default: TL_in <= edge_data;
                     endcase
-                end
-                if (edge_we4) begin                     // edge_idx is a multiple of 4: entries 4m+2 .. 4m+5
-                    A2[(int'(edge_idx) + EOFF) >> 2]     <= edge_data4[0 * PW +: PW];
-                    A3[(int'(edge_idx) + EOFF) >> 2]     <= edge_data4[1 * PW +: PW];
-                    A0[(int'(edge_idx) + EOFF) / 4 + 1]  <= edge_data4[2 * PW +: PW];
-                    A1[(int'(edge_idx) + EOFF) / 4 + 1]  <= edge_data4[3 * PW +: PW];
                 end
                 if (start) begin
                     l_mode <= mode; l_fi <= use_filter_intra; l_fimode <= filter_intra_mode;
@@ -445,7 +488,6 @@ module ipred #(
                     l_apx <= above_px; l_lpx <= left_px;
                     p_angle <= mode_to_angle(mode) + 9'(signed'({{6{angle_delta[2]}}, angle_delta}) * 3);
                     up_a <= 1'b0; up_l <= 1'b0;
-                    wA(-1, TL_in); wL(-1, TL_in);
                     busy  <= 1'b1;
                     state <= S_SETUP;
                 end
@@ -464,10 +506,6 @@ module ipred #(
                 end else state <= S_PIX;
             end
             S_CORNER: begin
-                if (p_angle > 90 && p_angle < 180 && wh >= 24) begin
-                    wA(-1, PW'((int'(rL(0)) * 5 + int'(rA(-1)) * 6 + int'(rA(0)) * 5 + 8) >> 4));
-                    wL(-1, PW'((int'(rL(0)) * 5 + int'(rA(-1)) * 6 + int'(rA(0)) * 5 + 8) >> 4));
-                end
                 // set up the above-edge filter pass (or the left one if there is no above)
                 if (l_ha) begin
                     ef_side <= 1'b0;
@@ -493,8 +531,6 @@ module ipred #(
                     end
                 end else begin
                     // side[k-1] (= edge[k]) <- filtered; remember its original for the next two steps
-                    if (ef_side) wL(int'(k) - 1, ef_out);
-                    else         wA(int'(k) - 1, ef_out);
                     o0 <= o1;
                     o1 <= ef_side ? rL(int'(k) - 1) : rA(int'(k) - 1);
                     k  <= k + 9'd1;
@@ -511,12 +547,7 @@ module ipred #(
                         state <= S_UP_L;
                     end
                 end else begin
-                    int i;
-                    i = int'(k) - 1;
-                    wA(2 * i - 1, up_s);
-                    wA(2 * i, up_d2);
-                    if (i == 0) begin
-                        wA(-2, rA(-1));
+                    if (k == 9'd1) begin
                         state <= S_UP_L; k <= 0;
                     end else k <= k - 9'd1;
                 end
@@ -532,12 +563,7 @@ module ipred #(
                         state <= S_PIX;
                     end
                 end else begin
-                    int i;
-                    i = int'(k) - 1;
-                    wL(2 * i - 1, up_s);
-                    wL(2 * i, up_d2);
-                    if (i == 0) begin
-                        wL(-2, rL(-1));
+                    if (k == 9'd1) begin
                         state <= S_PIX;
                     end else k <= k - 9'd1;
                 end
