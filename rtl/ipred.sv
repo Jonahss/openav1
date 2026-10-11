@@ -205,9 +205,10 @@ module ipred #(
         endcase
     endfunction
 
-    function automatic logic signed [5:0] fi_tap(input logic [2:0] m, input logic [2:0] pos, input logic [2:0] t);
-        logic signed [5:0] tab [5][8][7];
-        tab = '{
+    // filter-intra taps (spec 7.11.2.3 Intra_Filter_Taps), a module-level constant: as a function-local array
+    // initialised inside the function, Vivado folded the whole filter to zero (and dropped the patch buffer as
+    // "unused"), while simulation was fine.
+    localparam logic signed [5:0] FI_TAB [5][8][7] = '{
             '{'{-6,10,0,0,0,12,0}, '{-5,2,10,0,0,9,0}, '{-3,1,1,10,0,7,0}, '{-3,1,1,2,10,5,0},
               '{-4,6,0,0,0,2,12}, '{-3,2,6,0,0,2,9}, '{-3,2,2,6,0,2,7}, '{-3,1,2,2,6,3,5}},
             '{'{-10,16,0,0,0,10,0}, '{-6,0,16,0,0,6,0}, '{-4,0,0,16,0,4,0}, '{-2,0,0,0,16,2,0},
@@ -219,7 +220,8 @@ module ipred #(
             '{'{-12,14,0,0,0,14,0}, '{-10,0,14,0,0,12,0}, '{-9,0,0,14,0,11,0}, '{-8,0,0,0,14,10,0},
               '{-10,12,0,0,0,0,14}, '{-9,1,12,0,0,0,12}, '{-8,0,0,12,0,1,11}, '{-7,0,0,1,12,1,9}}
         };
-        fi_tap = (m < 3'd5 && t < 3'd7) ? tab[m][pos][t] : 6'sd0;
+    function automatic logic signed [5:0] fi_tap(input logic [2:0] m, input logic [2:0] pos, input logic [2:0] t);
+        fi_tap = (m < 3'd5 && t < 3'd7) ? FI_TAB[m][pos][t] : 6'sd0;
     endfunction
 
     function automatic int ai(input int idx); ai = idx + EOFF; endfunction
