@@ -290,7 +290,34 @@ module recon_top
     end
 
     // ================================================================ BlockDecoded flags + MaxLuma
-    logic bdf [0:2][0:33][0:33];                           // [plane][y+1][x+1], y,x in -1..32
+    // [plane][y+1] is a 34-bit row, bit x+1, for y,x in -1..32. Rows, not bits, are the unit of update: a
+    // transform block marks its area with up to 16 row ORs of a shifted mask. (Per-bit writes with computed
+    // indices were 256 decoders over 3,468 cells and synthesis never finished.)
+    logic [33:0] bdf [0:2][0:33];
+    // 5.11.3 clear_block_decoded_flags: the rows a superblock starts with (above row and left column available
+    // where the frame extends; the corner below the superblock's last row cleared)
+    logic [33:0] bdf_init [0:2][0:33];
+    always_comb begin
+        for (int p = 0; p < 3; p++) begin
+            logic sx, sy;
+            logic [MIW-1:0] sbw4, sbh4;
+            logic [5:0] lim_x, lim_y;
+            sx = (p != 0) && hdr.ssx; sy = (p != 0) && hdr.ssy;
+            sbw4 = (hdr.mi_col_end - sb_c) >> sx;
+            sbh4 = (hdr.mi_row_end - sb_r) >> sy;
+            lim_x = sb_size4 >> sx; lim_y = sb_size4 >> sy;
+            for (int yy = -1; yy <= 32; yy++) begin
+                logic [33:0] v;
+                v = '0;
+                if (yy <= int'(lim_y)) begin
+                    if (yy < 0) begin                                      // above row: decoded up to the frame edge
+                        for (int xx = -1; xx <= 32; xx++) if (xx <= int'(lim_x) && (xx < 0 || xx < int'(sbw4))) v[xx + 1] = 1'b1;
+                    end else if (yy < int'(sbh4) && yy != int'(lim_y)) v[0] = 1'b1;   // left column, not the corner below
+                end
+                bdf_init[p][yy + 1] = v;
+            end
+        end
+    end
     logic [5:0] sb_size4;
     assign sb_size4 = hdr.sb128 ? 6'd32 : 6'd16;
     logic [PXW-1:0] max_luma_w, max_luma_h;
@@ -331,8 +358,8 @@ module recon_top
         mode = (t.plane == 2'd0) ? b.ymode : (is_cfl ? DC_PRED : b.uvmode);
         have_l = ((t.plane == 2'd0) ? av_l : av_lc) || (t.x > base_x);
         have_a = ((t.plane == 2'd0) ? av_u : av_uc) || (t.y > base_y);
-        have_ar = bdf[t.plane][sb_row_p - 6'd1 + 6'd1][sb_col_p + 6'(step_x) + 6'd1];
-        have_bl = bdf[t.plane][sb_row_p + 6'(step_y) + 6'd1][sb_col_p - 6'd1 + 6'd1];
+        have_ar = bdf[t.plane][sb_row_p][sb_col_p + 6'(step_x) + 6'd1];
+        have_bl = bdf[t.plane][sb_row_p + 6'(step_y) + 6'd1][sb_col_p];
         above_lim = t.x + (have_ar ? PXW'(tw_px) * 2 : PXW'(tw_px)) - PXW'(1);
         if (above_lim > max_x) above_lim = max_x;
         left_lim = t.y + (have_bl ? PXW'(th_px) * 2 : PXW'(th_px)) - PXW'(1);
@@ -647,31 +674,11 @@ module recon_top
         tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0; mi_tx_we <= 1'b0;
         if (rst) begin
             rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0);
-            for (int p = 0; p < 3; p++) for (int yy = 0; yy < 34; yy++) for (int xx = 0; xx < 34; xx++) bdf[p][yy][xx] <= 1'b0;
+            for (int p = 0; p < 3; p++) for (int yy = 0; yy < 34; yy++) bdf[p][yy] <= '0;
         end else begin
             // 5.11.3 clear_block_decoded_flags at each superblock start
-            if (sb_start) begin
-                for (int p = 0; p < 3; p++) begin
-                    logic sx, sy;
-                    logic [MIW-1:0] sbw4, sbh4;
-                    logic [5:0] lim_x, lim_y;
-                    sx = (p != 0) && hdr.ssx; sy = (p != 0) && hdr.ssy;
-                    sbw4 = (hdr.mi_col_end - sb_c) >> sx;
-                    sbh4 = (hdr.mi_row_end - sb_r) >> sy;
-                    lim_x = sb_size4 >> sx; lim_y = sb_size4 >> sy;
-                    for (int yy = -1; yy <= 32; yy++)
-                        for (int xx = -1; xx <= 32; xx++) begin
-                            logic v;
-                            v = 1'b0;
-                            if (yy <= int'(lim_y) && xx <= int'(lim_x)) begin
-                                if (yy < 0 && xx < int'(sbw4)) v = 1'b1;
-                                else if (xx < 0 && yy < int'(sbh4)) v = 1'b1;
-                            end
-                            bdf[p][yy + 1][xx + 1] <= v;
-                        end
-                    bdf[p][int'(lim_y) + 1][0] <= 1'b0;
-                end
-            end
+            if (sb_start)
+                for (int p = 0; p < 3; p++) for (int yy = 0; yy < 34; yy++) bdf[p][yy] <= bdf_init[p][yy];
             case (rs)
                 R_IDLE: if (tx_take) begin
                     t <= ev_tx; rs <= R_SETUP;
@@ -758,10 +765,14 @@ module recon_top
                 R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_FIN; end
                 // ---- bookkeeping + ack
                 R_FIN: begin
-                    for (int yy = 0; yy < 16; yy++)
-                        for (int xx = 0; xx < 16; xx++)
-                            if (yy < int'(step_y) && xx < int'(step_x))
-                                bdf[t.plane][int'(sb_row_p) + yy + 1][int'(sb_col_p) + xx + 1] <= 1'b1;
+                    for (int yy = 0; yy < 16; yy++)                     // mark the block's area: step_y row ORs
+                        if (yy < int'(step_y)) begin
+                            logic [5:0] r;
+                            logic [33:0] base;
+                            r = sb_row_p + 6'(yy) + 6'd1;
+                            base = sb_start ? bdf_init[t.plane][r] : bdf[t.plane][r];
+                            bdf[t.plane][r] <= base | (((34'd1 << step_x) - 34'd1) << (sb_col_p + 6'd1));
+                        end
                     if (t.plane == 2'd0) begin max_luma_w <= t.x + PXW'(tw_px); max_luma_h <= t.y + PXW'(th_px); end
                     rs <= R_MIW;
                 end
