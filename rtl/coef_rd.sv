@@ -100,7 +100,15 @@ module coef_rd
     (* ram_style = "distributed" *) logic [3:0] lev [0:1023];
     logic [1023:0] lev_ok;
     function automatic logic [3:0] levv(input logic [9:0] a); levv = lev_ok[a] ? lev[a] : 4'd0; endfunction
-    logic [1023:0] nz [0:7];
+    // nz bitmap: per slot 32 rows of 32 coefficient flags. Row-valid flops (cleared with the slot) plus the row
+    // words in distributed RAM; a set reads its row word asynchronously, merges the bit and writes it back in the
+    // same cycle; a read ANDs the row-valid bit with the word bit. (As 8 x 1024 flops with per-bit writes and a
+    // random read: 8k flops and 15.6k LUTs.)
+    logic [31:0] nz_row_ok [0:7];
+    (* ram_style = "distributed" *) logic [31:0] nz_mem [0:255];      // {slot, row}
+    logic        nz_we;
+    logic [7:0]  nz_waddr;
+    logic [31:0] nz_wdata, nz_wcur;
     // quant_mem: block RAM, registered read; the non-zero mask is applied after the read register
     logic signed [20:0] quant_mem [0:8*1024-1];
     logic signed [20:0] q_raw; logic q_nz;
@@ -240,7 +248,7 @@ module coef_rd
         done_a <= 1'b0; done_b <= 1'b0;
         if (rst) begin
             st <= S_IDLE; nonconformant <= 1'b0;
-            for (int s = 0; s < 8; s++) nz[s] <= '0;
+            for (int s = 0; s < 8; s++) nz_row_ok[s] <= '0;
         end else begin
             case (st)
                 S_IDLE: begin
@@ -250,7 +258,7 @@ module coef_rd
                     end else if (start_b) begin
                         st <= B_EOBPT;
                         lev_ok <= '0;
-                        nz[w_slot] <= '0; cul <= 6'd0; dccat <= 2'd0; eob <= 11'd0;
+                        nz_row_ok[w_slot] <= '0; cul <= 6'd0; dccat <= 2'd0; eob <= 11'd0;
                     end
                 end
                 A_W: if (sq_done) begin
@@ -331,7 +339,7 @@ module coef_rd
                 P_STORE: begin
                     if (levv(pos) != 4'd0) begin
                         quant_mem[{w_slot, pos}] <= sign ? -21'(val20) : 21'(val20);
-                        nz[w_slot][pos] <= 1'b1;
+                        nz_row_ok[w_slot][pos[9:5]] <= 1'b1;        // the word itself is written through nz_we below
                         cul <= cul_sum > 7'd63 ? 6'd63 : cul_sum[5:0];
                         if (pos == 10'd0 && val20 != 20'd0) dccat <= sign ? 2'd1 : 2'd2;
                     end
@@ -356,9 +364,17 @@ module coef_rd
     assign cul_level = cul;
     assign dc_category = dccat;
 
+    // nz row-word write port: mirrors the P_STORE condition above
+    always_comb begin
+        nz_wcur  = nz_mem[{w_slot, pos[9:5]}];
+        nz_we    = !rst && (st == P_STORE) && (levv(pos) != 4'd0);
+        nz_waddr = {w_slot, pos[9:5]};
+        nz_wdata = (nz_row_ok[w_slot][pos[9:5]] ? nz_wcur : 32'd0) | (32'd1 << pos[4:0]);
+    end
+    always_ff @(posedge clk) if (nz_we) nz_mem[nz_waddr] <= nz_wdata;
     always_ff @(posedge clk) begin
         q_raw <= quant_mem[{q_slot, q_addr}];
-        q_nz <= nz[q_slot][q_addr];
+        q_nz <= nz_row_ok[q_slot][q_addr[9:5]] & nz_mem[{q_slot, q_addr[9:5]}][q_addr[4:0]];
     end
     assign q_data = q_nz ? q_raw : 21'sd0;
 endmodule

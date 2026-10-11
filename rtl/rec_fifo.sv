@@ -33,8 +33,10 @@ module rec_fifo
 );
     localparam int AW = $clog2(DEPTH);
     logic [1:0]  kind_q [0:DEPTH-1];
-    blk_rec_t    blk_q  [0:DEPTH-1];
-    tx_rec_t     tx_q   [0:DEPTH-1];
+    // record queues as flat vectors in distributed RAM (struct-typed arrays became 14k flops + read muxes)
+    localparam int BW = $bits(blk_rec_t), TXW = $bits(tx_rec_t);
+    (* ram_style = "distributed" *) logic [BW-1:0]  blk_q [0:DEPTH-1];
+    (* ram_style = "distributed" *) logic [TXW-1:0] tx_q  [0:DEPTH-1];
     logic [MIW-1:0] sbr_q  [0:DEPTH-1], sbc_q [0:DEPTH-1];
     logic [AW-1:0] wr, rd;
     logic [AW:0]   count;
@@ -47,8 +49,11 @@ module rec_fifo
     assign w_slot = tx_pushes;
     assign ev_valid = (count != '0);
     assign ev_kind = kind_q[rd];
-    assign ev_blk = blk_q[rd];
-    assign ev_tx = tx_q[rd];
+    assign ev_blk = blk_rec_t'(blk_q[rd]);
+    assign ev_tx = tx_rec_t'(tx_q[rd]);
+    // the queue memories in their own processes (one write port each, no reset: the RAM template)
+    always_ff @(posedge clk) if (push && push_kind == 2'd1 && !(rst || flush)) blk_q[wr] <= BW'(blk_rec);
+    always_ff @(posedge clk) if (push && push_kind == 2'd0 && !(rst || flush)) tx_q[wr] <= TXW'(tx_rec);
     assign ev_sb_r = sbr_q[rd];
     assign ev_sb_c = sbc_q[rd];
     always_ff @(posedge clk) begin
@@ -57,8 +62,6 @@ module rec_fifo
         end else begin
             if (push) begin
                 kind_q[wr] <= push_kind;
-                if (push_kind == 2'd1) blk_q[wr] <= blk_rec;
-                if (push_kind == 2'd0) tx_q[wr] <= tx_rec;
                 if (push_kind == 2'd2) begin sbr_q[wr] <= sb_r; sbc_q[wr] <= sb_c; end
                 wr <= wr + 1'b1;
                 if (push_kind == 2'd0) tx_pushes <= tx_pushes + 3'd1;
