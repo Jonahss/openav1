@@ -185,23 +185,23 @@ module ipred #(
         abs_diff = (a >= b) ? a - b : b - a;
     endfunction
 
-    function automatic logic [7:0] sm_weight(input logic [2:0] lg, input logic [5:0] i);
-        logic [7:0] w4 [4]; logic [7:0] w8 [8]; logic [7:0] w16 [16]; logic [7:0] w32 [32]; logic [7:0] w64 [64];
-        w4  = '{255, 149, 85, 64};
-        w8  = '{255, 197, 146, 105, 73, 50, 37, 32};
-        w16 = '{255, 225, 196, 170, 145, 123, 102, 84, 68, 54, 43, 33, 26, 20, 17, 16};
-        w32 = '{255, 240, 225, 210, 196, 182, 169, 157, 145, 133, 122, 111, 101, 92, 83, 74,
+    // smooth-prediction weights (spec 7.11.2.6 Sm_Weights_Tx_*), module-level constants (see FI_TAB below)
+    localparam logic [7:0] SMW4 [4] = '{255, 149, 85, 64};
+    localparam logic [7:0] SMW8 [8] = '{255, 197, 146, 105, 73, 50, 37, 32};
+    localparam logic [7:0] SMW16 [16] = '{255, 225, 196, 170, 145, 123, 102, 84, 68, 54, 43, 33, 26, 20, 17, 16};
+    localparam logic [7:0] SMW32 [32] = '{255, 240, 225, 210, 196, 182, 169, 157, 145, 133, 122, 111, 101, 92, 83, 74,
                 66, 59, 52, 45, 39, 34, 29, 25, 21, 17, 14, 12, 10, 9, 8, 8};
-        w64 = '{255, 248, 240, 233, 225, 218, 210, 203, 196, 189, 182, 176, 169, 163, 156,
+    localparam logic [7:0] SMW64 [64] = '{255, 248, 240, 233, 225, 218, 210, 203, 196, 189, 182, 176, 169, 163, 156,
                 150, 144, 138, 133, 127, 121, 116, 111, 106, 101, 96, 91, 86, 82, 77, 73, 69,
                 65, 61, 57, 54, 50, 47, 44, 41, 38, 35, 32, 29, 27, 25, 22, 20, 18, 16, 15,
                 13, 12, 10, 9, 8, 7, 6, 6, 5, 5, 4, 4, 4};
+    function automatic logic [7:0] sm_weight(input logic [2:0] lg, input logic [5:0] i);
         case (lg)
-            3'd2:    sm_weight = w4[i[1:0]];
-            3'd3:    sm_weight = w8[i[2:0]];
-            3'd4:    sm_weight = w16[i[3:0]];
-            3'd5:    sm_weight = w32[i[4:0]];
-            default: sm_weight = w64[i];
+            3'd2:    sm_weight = SMW4[i[1:0]];
+            3'd3:    sm_weight = SMW8[i[2:0]];
+            3'd4:    sm_weight = SMW16[i[3:0]];
+            3'd5:    sm_weight = SMW32[i[4:0]];
+            default: sm_weight = SMW64[i];
         endcase
     endfunction
 
@@ -256,7 +256,9 @@ module ipred #(
     logic [8*PW-1:0] fi_next_packed;
     function automatic logic [PW-1:0] fi_rd(input int r, input int c);
         logic [8*PW-1:0] wd;
-        wd = fi_buf[((r >> 1) & 15) * 8 + ((c >> 2) & 7)];
+        logic [6:0] a;
+        a  = {4'(r >> 1), 3'(c >> 2)};                   // entry = (row>>1)*8 + (col>>2), as bit fields
+        wd = fi_buf[a];
         case ((r & 1) * 4 + (c & 3))                     // lane select spelled out: Vivado dropped the buffer as
             0: fi_rd = wd[0 * PW +: PW];                 // "unused" behind a variable part-select of wd
             1: fi_rd = wd[1 * PW +: PW];
