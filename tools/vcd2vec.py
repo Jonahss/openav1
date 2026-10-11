@@ -17,9 +17,10 @@ a = ap.parse_args()
 ins = a.ins.split(','); outs = a.outs.split(',')
 want = set(ins + outs + [a.clk])
 
-code = {}       # id -> (name, width)
+code = {}       # id -> name
 width = {}
 scope = []
+per_scope = {}  # scope path -> {name: (ident, width)}
 with open(a.vcd) as f:
     # header
     for line in f:
@@ -29,11 +30,19 @@ with open(a.vcd) as f:
         elif t[0] == '$upscope': scope.pop()
         elif t[0] == '$var':
             w, ident, name = int(t[2]), t[3], t[4]
-            if '.'.join(scope) == a.scope and name in want and name not in width:
-                code[ident] = name; width[name] = w
+            if name in want:
+                per_scope.setdefault('.'.join(scope), {}).setdefault(name, (ident, w))
         elif t[0] == '$enddefinitions': break
-    missing = want - set(width)
-    if missing: sys.exit(f"signals not found under {a.scope}: {sorted(missing)}")
+    # the requested scope, or else the first scope that holds every wanted signal (Verilator puts the top's
+    # ports under the root scope in some versions and under the module in others)
+    candidates = [a.scope] + [sc for sc in per_scope if sc != a.scope]
+    chosen = next((sc for sc in candidates if sc in per_scope and want <= set(per_scope[sc])), None)
+    if chosen is None:
+        best = max(per_scope, key=lambda sc: len(per_scope[sc]), default=None)
+        sys.exit(f"no scope holds all signals; best is {best} missing {sorted(want - set(per_scope.get(best, {})))}")
+    if chosen != a.scope: print(f"(signals taken from scope {chosen})", file=sys.stderr)
+    for name, (ident, w) in per_scope[chosen].items():
+        code[ident] = name; width[name] = w
     for n in ins + outs: print(f"{n} {width[n]}", file=sys.stderr)
     val = {n: 0 for n in width}
     clk_id = next(i for i, n in code.items() if n == a.clk)
