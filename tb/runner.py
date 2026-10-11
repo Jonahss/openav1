@@ -1,5 +1,5 @@
 """cocotb 2.x runner: python tb/runner.py [top] [test_module]  (defaults: smoke / test_smoke)
-Set WAVES=1 to record an FST trace in the build dir (slow and large for long replays); WAVE_FMT=vcd for a VCD.
+Set WAVES=1 to record an FST trace in the build dir (slow and large for long replays); WAVE_FMT=vcd for a VCD; WAVE_DEPTH=1 traces only the top's ports (small, fast).
 TS_BUILD_ONLY=1 builds and exits; TS_TEST_DIR=<dir> runs the test there instead of the build dir, so several
 runs can share one build (keep it two levels below the repo, like build/<x>/, for the relative paths)."""
 import os, sys
@@ -32,7 +32,8 @@ if top in ("dec_top", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.ge
     params = {"FBX": int(os.environ["FBX"]), "FBY": int(os.environ.get("FBY", os.environ["FBX"]))}
 # SIM_FAST=1: optimise for simulation speed (Verilator -O3, compiler -O2, N threads); default is Verilator's -Os,
 # which compiles fastest. SIM_THREADS overrides the thread count (default: all cores).
-build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves and waves_fmt == "fst" else [])
+build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves and waves_fmt == "fst" else []) \
+             + (["--trace-depth", os.environ["WAVE_DEPTH"]] if waves and os.environ.get("WAVE_DEPTH") else [])
 if os.environ.get("SIM_FAST", "0") == "1":
     threads = int(os.environ.get("SIM_THREADS", str(os.cpu_count() or 1)))
     build_args += ["-O3", "--x-assign", "fast", "--x-initial", "fast", "-CFLAGS", "-O2", "--threads", str(threads), "-Wno-UNOPTTHREADS"]
