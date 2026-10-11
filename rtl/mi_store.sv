@@ -58,8 +58,8 @@ module mi_store
     // Each store is one always_ff holding only the write and the registered read of a flat vector array, with
     // plain address/data signals and the struct cast outside: the shape synthesis infers RAM from.
     localparam int IW = $bits(mi_lf_t), LW = $bits(lr_rec_t);
-    logic [IW-1:0] lf_info_a [0:N-1];
-    logic [IW-1:0] lf_info_b [0:N-1];
+    (* ram_style = "ultra" *) logic [IW-1:0] lf_info_a [0:N-1];
+    (* ram_style = "ultra" *) logic [IW-1:0] lf_info_b [0:N-1];
     logic          i_we; logic [ML2R+ML2C-1:0] i_waddr, i_raddr_a, i_raddr_b; logic [IW-1:0] i_wdata, i_rdata_a, i_rdata_b;
     always_ff @(posedge clk) begin
         if (i_we) lf_info_a[i_waddr] <= i_wdata;
@@ -72,9 +72,9 @@ module mi_store
     assign rd_info = mi_lf_t'(i_rdata_a);
     assign rd2_info = mi_lf_t'(i_rdata_b);
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
-    logic [4:0] lf_tx0 [0:N-1];
-    logic [4:0] lf_tx1 [0:N-1];
-    logic [4:0] lf_tx2 [0:N-1];
+    (* ram_style = "block" *) logic [4:0] lf_tx0 [0:N-1];
+    (* ram_style = "block" *) logic [4:0] lf_tx1 [0:N-1];
+    (* ram_style = "block" *) logic [4:0] lf_tx2 [0:N-1];
     logic t_we0, t_we1, t_we2; logic [ML2R+ML2C-1:0] t_waddr, t_raddr; logic [4:0] t_wdata, t_rdata0, t_rdata1, t_rdata2; logic [1:0] txr_plane_q;
     always_ff @(posedge clk) begin
         if (t_we0) lf_tx0[t_waddr] <= t_wdata;

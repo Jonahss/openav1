@@ -30,7 +30,7 @@ module mv_mem
     // only the write and the registered read of a flat vector array, addresses and data as plain signals, the
     // struct cast on outside). Anything fancier and the 2^(ML2R+ML2C) x 42-bit array becomes flops.
     localparam int EW = $bits(mv_ent_t);
-    logic [EW-1:0] mem [0:N-1];
+    (* ram_style = "ultra" *) logic [EW-1:0] mem [0:N-1];       // 2^15 x 42 at 1024x512: 5 UltraRAMs, not 42 BRAMs
     logic           m_we;
     logic [ML2R+ML2C-1:0] m_waddr, m_raddr;
     logic [EW-1:0]  m_wdata, m_rdata;
@@ -39,7 +39,13 @@ module mv_mem
         m_rdata <= mem[m_raddr];
     end
     assign rd_ent = mv_ent_t'(m_rdata);
-    logic [63:0][WC-1:0] written;      // packed: flops by construction (row clears + bit sets are no RAM template)
+    // "written" bitmap: 64 row words of WC bits in distributed RAM (one write port: a row clear writes zeros, a
+    // bit set writes the row word read asynchronously with the bit merged in, so both land in the same cycle the
+    // flop version did). As flops it grew with the frame width: 16k at 1024 wide, 32k at 1080p.
+    (* ram_style = "distributed" *) logic [WC-1:0] written [0:63];
+    logic          wb_we;
+    logic [5:0]    wb_addr;
+    logic [WC-1:0] wb_data, wb_cur;
     logic [MIW-1:0] w_rr, w_cc;        // position the area-fill writer stores this cycle
     logic        c_busy, w_busy;
     logic [MIW-1:0] c_row;
@@ -76,18 +82,20 @@ module mv_mem
                 else w_busy <= 1'b0;
             end
         end
-        rd_written <= written[rd_row[5:0]][rd_col[ML2C-1:0]];
+        rd_written <= written[rd_row[5:0]][rd_col[ML2C-1:0]];   // one async read port, bit select, registered
     end
     // the area-fill writer stores one entry per cycle while busy (the FSM above steps wi/wj over the block)
     assign w_rr = b_r + MIW'(wi); assign w_cc = b_c + MIW'(wj);
     assign m_we = w_busy && !rst;
     assign m_waddr = idx(w_rr, w_cc);
-    // the written bitmap has one writer process (a packed variable may not be driven from two always_ff blocks):
     // the clear engine zeroes a row, the area-fill sets a bit; the two never overlap (the tile decoder waits on busy)
-    always_ff @(posedge clk) begin
-        if (!rst && c_busy) written[c_row[5:0]] <= '0;
-        if (!rst && w_busy) written[w_rr[5:0]][w_cc[ML2C-1:0]] <= 1'b1;
+    always_comb begin
+        wb_cur  = written[w_rr[5:0]];
+        wb_we   = !rst && (c_busy || w_busy);
+        wb_addr = c_busy ? c_row[5:0] : w_rr[5:0];
+        wb_data = c_busy ? '0 : (wb_cur | (WC'(1) << w_cc[ML2C-1:0]));
     end
+    always_ff @(posedge clk) if (wb_we) written[wb_addr] <= wb_data;
     assign m_wdata = b_d;
     assign m_raddr = idx(rd_row, rd_col);
 endmodule
