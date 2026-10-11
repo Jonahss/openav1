@@ -66,22 +66,31 @@ module ipred #(
     (* ram_style = "distributed" *) logic [PW-1:0] L1 [0:BKD-1];
     (* ram_style = "distributed" *) logic [PW-1:0] L2 [0:BKD-1];
     (* ram_style = "distributed" *) logic [PW-1:0] L3 [0:BKD-1];
-    function automatic logic [PW-1:0] rA(input int idx);        // edge index -2 .. 257
-        case ((idx + EOFF) & 3)
-            0: rA = A0[(idx + EOFF) >> 2];
-            1: rA = A1[(idx + EOFF) >> 2];
-            2: rA = A2[(idx + EOFF) >> 2];
-            default: rA = A3[(idx + EOFF) >> 2];
-        endcase
-    endfunction
-    function automatic logic [PW-1:0] rL(input int idx);
-        case ((idx + EOFF) & 3)
-            0: rL = L0[(idx + EOFF) >> 2];
-            1: rL = L1[(idx + EOFF) >> 2];
-            2: rL = L2[(idx + EOFF) >> 2];
-            default: rL = L3[(idx + EOFF) >> 2];
-        endcase
-    endfunction
+    // Edge read ports: NRP per side. Every port is read every clock at the address the sequencer state puts on it
+    // (rp_addr, below); each consumer takes its values from its own ports. Reading the banks through a function
+    // from many sites let Vivado merge the reads onto shared ports, and the netlist read zeros (LESSONS 2026-10-11).
+    localparam int NRP = 8;
+    logic signed [9:0] rpA_a [NRP], rpL_a [NRP];        // edge index -2 .. 257
+    logic [9:0]        rp_eA [NRP], rp_eL [NRP];        // + EOFF: bank = [1:0], bank address = [8:2]
+    logic [PW-1:0]     rpA_d [NRP], rpL_d [NRP];
+    always_comb begin
+        for (int q = 0; q < NRP; q++) begin
+            rp_eA[q] = 10'(rpA_a[q] + 10'sd2);
+            rp_eL[q] = 10'(rpL_a[q] + 10'sd2);
+            case (rp_eA[q][1:0])
+                2'd0: rpA_d[q] = A0[rp_eA[q][8:2]];
+                2'd1: rpA_d[q] = A1[rp_eA[q][8:2]];
+                2'd2: rpA_d[q] = A2[rp_eA[q][8:2]];
+                default: rpA_d[q] = A3[rp_eA[q][8:2]];
+            endcase
+            case (rp_eL[q][1:0])
+                2'd0: rpL_d[q] = L0[rp_eL[q][8:2]];
+                2'd1: rpL_d[q] = L1[rp_eL[q][8:2]];
+                2'd2: rpL_d[q] = L2[rp_eL[q][8:2]];
+                default: rpL_d[q] = L3[rp_eL[q][8:2]];
+            endcase
+        end
+    end
     // Edge writes: each write site of the sequencer posts a request (side, edge index, value) into its own slot
     // for the current clock, and a bank takes the request addressed to it. So every bank has exactly one write
     // port (the LUT-RAM template) while the sequencer keeps its natural "write edge[k]" form. A later slot wins
@@ -271,72 +280,113 @@ module ipred #(
     end
 
     // ------------------------------------------------------------------ pixel datapath: pred[i][j]
-    function automatic logic [PW-1:0] pred_pix(input int i, input int j);
-        int tl, base, pl, pt, ptl, wy, wx, s, idx, shift, maxb, idx2, base2, shift2;
+    // Address half: the (up to) two above and two left reads a lane needs for pred[i][j], as {a0, a1, l0, l1};
+    // value half: the pixel from the fetched values. Split so that every bank read is an explicit port.
+    function automatic logic [39:0] pred_addr(input int i, input int j);
+        int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
+        base = 0; idx = 0; maxb = 0; idx2 = 0; base2 = 0; a0 = 0; a1 = 0; l0 = 0; l1 = 0;
+        if (l_mode == DC_PRED) begin
+        end else if (l_mode == PAETH_PRED) begin
+            a0 = j; l0 = i; a1 = -1;
+        end else if (l_mode == SMOOTH_PRED) begin
+            a0 = j; l0 = i; a1 = int'(w) - 1; l1 = int'(h) - 1;
+        end else if (l_mode == SMOOTH_V_PRED) begin
+            a0 = j; l1 = int'(h) - 1;
+        end else if (l_mode == SMOOTH_H_PRED) begin
+            l0 = i; a1 = int'(w) - 1;
+        end else if (p_angle == 9'd90) begin
+            a0 = j;
+        end else if (p_angle == 9'd180) begin
+            l0 = i;
+        end else if (p_angle < 9'd90) begin                                   // Z1
+            idx   = (i + 1) * int'(dx);
+            base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
+            maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
+            if (base < maxb) begin a0 = base; a1 = base + 1; end
+            else a0 = maxb;
+        end else if (p_angle < 9'd180) begin                                  // Z2
+            idx  = (j << 6) - (i + 1) * int'(dx);
+            base = idx >>> (6 - int'(up_a));
+            if (base >= -(1 << int'(up_a))) begin
+                a0 = base; a1 = base + 1;
+            end else begin
+                idx2  = (i << 6) - (j + 1) * int'(dy);
+                base2 = idx2 >>> (6 - int'(up_l));
+                l0 = base2; l1 = base2 + 1;
+            end
+        end else begin                                                        // Z3
+            idx   = (j + 1) * int'(dy);
+            base  = (idx >> (6 - int'(up_l))) + (i << int'(up_l));
+            l0 = base; l1 = base + 1;
+        end
+        return {10'(a0), 10'(a1), 10'(l0), 10'(l1)};
+    endfunction
+    function automatic logic [PW-1:0] pred_val(input int i, input int j,
+                                               input logic [PW-1:0] vA0, input logic [PW-1:0] vA1,
+                                               input logic [PW-1:0] vL0, input logic [PW-1:0] vL1);
+        int tl, base, pl, pt, ptl, wy, wx, s, idx, shift, maxb, idx2, shift2;
         logic [PW-1:0] pix_val;
         tl = 0; base = 0; pl = 0; pt = 0; ptl = 0; wy = 0; wx = 0; s = 0; idx = 0; shift = 0; maxb = 0;
-        idx2 = 0; base2 = 0; shift2 = 0;
+        idx2 = 0; shift2 = 0;
         pix_val = '0;
         if (l_mode == DC_PRED) begin
             pix_val = dc_val;
-        end else if (l_mode == PAETH_PRED) begin
-            tl   = int'(rA(-1));
-            base = int'(rA(j)) + int'(rL(i)) - tl;
-            pl  = base - int'(rL(i));  if (pl < 0) pl = -pl;
-            pt  = base - int'(rA(j));  if (pt < 0) pt = -pt;
-            ptl = base - tl;              if (ptl < 0) ptl = -ptl;
-            if (pl <= pt && pl <= ptl) pix_val = rL(i);
-            else if (pt <= ptl)        pix_val = rA(j);
+        end else if (l_mode == PAETH_PRED) begin                             // vA0 = A[j], vL0 = L[i], vA1 = A[-1]
+            tl   = int'(vA1);
+            base = int'(vA0) + int'(vL0) - tl;
+            pl  = base - int'(vL0);  if (pl < 0) pl = -pl;
+            pt  = base - int'(vA0);  if (pt < 0) pt = -pt;
+            ptl = base - tl;         if (ptl < 0) ptl = -ptl;
+            if (pl <= pt && pl <= ptl) pix_val = vL0;
+            else if (pt <= ptl)        pix_val = vA0;
             else                       pix_val = PW'(tl);
-        end else if (l_mode == SMOOTH_PRED) begin
+        end else if (l_mode == SMOOTH_PRED) begin                            // vA1 = A[w-1], vL1 = L[h-1]
             wy = int'(sm_weight(l_log2h, 6'(i)));
             wx = int'(sm_weight(l_log2w, 6'(j)));
-            s = wy * int'(rA(j)) + (256 - wy) * int'(rL(int'(h) - 1))
-              + wx * int'(rL(i)) + (256 - wx) * int'(rA(int'(w) - 1));
+            s = wy * int'(vA0) + (256 - wy) * int'(vL1) + wx * int'(vL0) + (256 - wx) * int'(vA1);
             pix_val = PW'((s + 256) >> 9);
         end else if (l_mode == SMOOTH_V_PRED) begin
             wy = int'(sm_weight(l_log2h, 6'(i)));
-            s = wy * int'(rA(j)) + (256 - wy) * int'(rL(int'(h) - 1));
+            s = wy * int'(vA0) + (256 - wy) * int'(vL1);
             pix_val = PW'((s + 128) >> 8);
         end else if (l_mode == SMOOTH_H_PRED) begin
             wx = int'(sm_weight(l_log2w, 6'(j)));
-            s = wx * int'(rL(i)) + (256 - wx) * int'(rA(int'(w) - 1));
+            s = wx * int'(vL0) + (256 - wx) * int'(vA1);
             pix_val = PW'((s + 128) >> 8);
         end else if (p_angle == 9'd90) begin
-            pix_val = rA(j);
+            pix_val = vA0;
         end else if (p_angle == 9'd180) begin
-            pix_val = rL(i);
-        end else if (p_angle < 9'd90) begin                                   // Z1
+            pix_val = vL0;
+        end else if (p_angle < 9'd90) begin                                   // Z1: vA0 = A[base] (or A[maxb]), vA1 = A[base+1]
             idx   = (i + 1) * int'(dx);
             base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
             shift = ((idx << int'(up_a)) >> 1) & 31;
             maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
             if (base < maxb)
-                pix_val = PW'((int'(rA(base)) * (32 - shift) + int'(rA(base + 1)) * shift + 16) >> 5);
+                pix_val = PW'((int'(vA0) * (32 - shift) + int'(vA1) * shift + 16) >> 5);
             else
-                pix_val = rA(maxb);
+                pix_val = vA0;
         end else if (p_angle < 9'd180) begin                                  // Z2
             idx  = (j << 6) - (i + 1) * int'(dx);
             base = idx >>> (6 - int'(up_a));
             if (base >= -(1 << int'(up_a))) begin
                 shift = ((idx << int'(up_a)) >> 1) & 31;
-                pix_val = PW'((int'(rA(base)) * (32 - shift) + int'(rA(base + 1)) * shift + 16) >> 5);
+                pix_val = PW'((int'(vA0) * (32 - shift) + int'(vA1) * shift + 16) >> 5);
             end else begin
                 idx2   = (i << 6) - (j + 1) * int'(dy);
-                base2  = idx2 >>> (6 - int'(up_l));
                 shift2 = ((idx2 << int'(up_l)) >> 1) & 31;
-                pix_val = PW'((int'(rL(base2)) * (32 - shift2) + int'(rL(base2 + 1)) * shift2 + 16) >> 5);
+                pix_val = PW'((int'(vL0) * (32 - shift2) + int'(vL1) * shift2 + 16) >> 5);
             end
         end else begin                                                        // Z3
             idx   = (j + 1) * int'(dy);
-            base  = (idx >> (6 - int'(up_l))) + (i << int'(up_l));
             shift = ((idx << int'(up_l)) >> 1) & 31;
-            pix_val = PW'((int'(rL(base)) * (32 - shift) + int'(rL(base + 1)) * shift + 16) >> 5);
+            pix_val = PW'((int'(vL0) * (32 - shift) + int'(vL1) * shift + 16) >> 5);
         end
         return pix_val;
     endfunction
     logic [PW-1:0] pix4 [4];
-    always_comb for (int l = 0; l < 4; l++) pix4[l] = l_fi ? fi_q_pix[l] : pred_pix(int'(py), int'(px) + l);
+    always_comb for (int l = 0; l < 4; l++)
+        pix4[l] = l_fi ? fi_q_pix[l] : pred_val(int'(py), int'(px) + l, rpA_d[2 * l], rpA_d[2 * l + 1], rpL_d[2 * l], rpL_d[2 * l + 1]);
 
     // filter-intra: the 4x2 patch at (i2 = py>>1, j4 = px>>2), from edges and already-predicted pixels
     logic [PW-1:0] fi_next [2][4];
@@ -344,17 +394,19 @@ module ipred #(
     // filter to a constant and dropped the patch buffer, while simulation matched dav1d)
     int p [7];
     int i2, j4, pr;
+    assign i2 = int'(py) >> 1;          // (own assigns: in the block below they would look to Verilator like a loop
+    assign j4 = int'(px) >> 2;          //  through the read ports)
     always_comb begin
-        i2 = int'(py) >> 1; j4 = int'(px) >> 2; pr = 0;
+        pr = 0;
         for (int t = 0; t < 7; t++) begin
             p[t] = 0;
             if (t < 5) begin
-                if (i2 == 0)                p[t] = int'(rA((j4 << 2) + t - 1));          // t=0 -> A[-1] = top-left
-                else if (j4 == 0 && t == 0) p[t] = int'(rL((i2 << 1) - 1));
+                if (i2 == 0)                p[t] = int'(rpA_d[t]);                        // A[4*j4+t-1] (t=0: top-left)
+                else if (j4 == 0 && t == 0) p[t] = int'(rpL_d[0]);                        // L[2*i2-1]
                 else if (t == 0)            p[t] = int'(fi_wupl[7 * PW +: PW]);            // row 2*i2-1, col 4*j4-1
                 else                        p[t] = int'(fi_wup[(3 + t) * PW +: PW]);       // row 2*i2-1, col 4*j4+t-1
             end else begin
-                if (j4 == 0) p[t] = int'(rL((i2 << 1) + t - 5));
+                if (j4 == 0) p[t] = int'(rpL_d[t - 4]);                                  // L[2*i2 + t-5]
                 else if (t == 5) p[t] = int'(fi_wleft[3 * PW +: PW]);                  // row 2*i2,   col 4*j4-1
                 else             p[t] = int'(fi_wleft[7 * PW +: PW]);                  // row 2*i2+1, col 4*j4-1
             end
@@ -385,37 +437,44 @@ module ipred #(
     endfunction
 
     logic [PW-1:0] ef_out;
-    function automatic logic [PW-1:0] ef_src(input int m, input int kk);
+    int ef_m0, ef_m1, ef_m3, ef_m4;                   // positions kk-2, kk-1, kk+1, kk+2 clamped to 0 .. sz-1
+    always_comb begin
+        ef_m0 = int'(k) - 2; ef_m1 = int'(k) - 1; ef_m3 = int'(k) + 1; ef_m4 = int'(k) + 2;
+        if (ef_m0 < 0) ef_m0 = 0; if (ef_m1 < 0) ef_m1 = 0;
+        if (ef_m3 > int'(ef_sz) - 1) ef_m3 = int'(ef_sz) - 1; if (ef_m4 > int'(ef_sz) - 1) ef_m4 = int'(ef_sz) - 1;
+    end
+    function automatic logic [PW-1:0] ef_src(input int m, input int kk, input int q);
         // original value of edge[m] at step kk: positions 1..kk-1 were overwritten (history o0/o1),
-        // position 0 (top-left) and positions >= kk are untouched in the array
+        // position 0 (top-left) and positions >= kk are untouched in the array (read port q holds edge[m-1])
         if (m >= 1 && m == kk - 1)      ef_src = o1;
         else if (m >= 1 && m == kk - 2) ef_src = o0;
-        else                            ef_src = ef_side ? rL(m - 1) : rA(m - 1);
+        else                            ef_src = ef_side ? rpL_d[q] : rpA_d[q];
     endfunction
-    always_comb begin
-        int m0, m1, m3, m4, kk, szi;
-        kk = int'(k); szi = int'(ef_sz);
-        m0 = kk - 2; m1 = kk - 1; m3 = kk + 1; m4 = kk + 2;
-        if (m0 < 0) m0 = 0; if (m1 < 0) m1 = 0;
-        if (m3 > szi - 1) m3 = szi - 1; if (m4 > szi - 1) m4 = szi - 1;
-        ef_out = ef_calc(ef_src(m0, kk), ef_src(m1, kk), ef_src(kk, kk), ef_src(m3, kk), ef_src(m4, kk), ef_str);
-    end
+    always_comb
+        ef_out = ef_calc(ef_src(ef_m0, int'(k), 0), ef_src(ef_m1, int'(k), 1), ef_src(int'(k), int'(k), 2),
+                         ef_src(ef_m3, int'(k), 3), ef_src(ef_m4, int'(k), 4), ef_str);
 
     // ------------------------------------------------------------------ upsample step (descending i)
     // dup[i]=buf[i-2] (i==0 -> buf[-1]), dup[i+1]=buf[i-1], dup[i+2]=buf[i], dup[i+3]=buf[i+1] (clamped to numPx-1).
     // Writes buf[2i-1] and buf[2i]. Processing i descending keeps every read original except buf[1] (saved).
     logic [PW-1:0] up_s, up_d2;
+    int up_i, up_i0, up_i3;                           // i = k-1 and the clamped tap positions i-2, i+1
+    always_comb begin
+        up_i  = int'(k) - 1;
+        up_i0 = (up_i - 2 < -1) ? -1 : up_i - 2;
+        up_i3 = (up_i + 1 > int'(ef_sz) - 1) ? int'(ef_sz) - 1 : up_i + 1;
+    end
     always_comb begin
         int i, n, s;
         logic [PW-1:0] d0, d1, d2, d3;
         logic side;
         s = 0; d0 = '0; d1 = '0; d2 = '0; d3 = '0;
         side = (state == S_UP_L);
-        i = int'(k) - 1; n = int'(ef_sz);
-        d0 = side ? rL((i - 2 < -1) ? -1 : i - 2) : rA((i - 2 < -1) ? -1 : i - 2);
-        d1 = side ? rL(i - 1) : rA(i - 1);
-        d2 = side ? rL(i) : rA(i);
-        d3 = side ? rL((i + 1 > n - 1) ? n - 1 : i + 1) : rA((i + 1 > n - 1) ? n - 1 : i + 1);
+        i = up_i; n = int'(ef_sz);
+        d0 = side ? rpL_d[0] : rpA_d[0];               // ports 0..3 hold buf[i-2], buf[i-1], buf[i], buf[i+1]
+        d1 = side ? rpL_d[1] : rpA_d[1];
+        d2 = side ? rpL_d[2] : rpA_d[2];
+        d3 = side ? rpL_d[3] : rpA_d[3];
         if (i - 2 == 1) d0 = up_save1;
         if (i - 1 == 1) d1 = up_save1;
         if (i == 1)     d2 = up_save1;
@@ -435,10 +494,39 @@ module ipred #(
             int kk;
             kk = int'(k) + l;
             if (kk < int'(dc_n)) begin
-                if (l_hl && kk < int'(h)) dc_part += 20'(rL(kk));
-                else                      dc_part += 20'(rA(kk - (l_hl ? int'(h) : 0)));
+                if (l_hl && kk < int'(h)) dc_part += 20'(rpL_d[l]);                     // port l holds L[kk]
+                else                      dc_part += 20'(rpA_d[l]);                     // or A[kk - h]
             end
         end
+    end
+    // ---- read-port addresses by state (ports not named read address 0, harmlessly)
+    always_comb begin
+        for (int q = 0; q < NRP; q++) begin rpA_a[q] = '0; rpL_a[q] = '0; end
+        case (state)
+            S_PIX: if (l_fi) begin                                  // filter-intra taps from the edges
+                for (int t = 0; t < 5; t++) rpA_a[t] = 10'((j4 << 2) + t - 1);
+                for (int t = 0; t < 3; t++) rpL_a[t] = 10'((i2 << 1) - 1 + t);
+            end else begin
+                for (int l = 0; l < 4; l++)
+                    {rpA_a[2 * l], rpA_a[2 * l + 1], rpL_a[2 * l], rpL_a[2 * l + 1]} = pred_addr(int'(py), int'(px) + l);
+            end
+            S_DC_SUM: for (int l = 0; l < 8; l++) begin                 // L[k+l] and A[k+l-h] (A side clamped at 0)
+                rpL_a[l] = 10'(int'(k) + l);
+                rpA_a[l] = (l_hl && int'(k) + l < int'(h)) ? 10'sd0 : 10'(int'(k) + l - (l_hl ? int'(h) : 0));
+            end
+            S_EF: begin                                                 // edge[m] = side[m-1] for m0 m1 k m3 m4; edge[k]
+                rpA_a[0] = 10'(ef_m0 - 1); rpA_a[1] = 10'(ef_m1 - 1); rpA_a[2] = 10'(int'(k) - 1);
+                rpA_a[3] = 10'(ef_m3 - 1); rpA_a[4] = 10'(ef_m4 - 1); rpA_a[5] = 10'(int'(k) - 1);
+                for (int q = 0; q < 6; q++) rpL_a[q] = rpA_a[q];
+            end
+            S_UP_A, S_UP_L: begin                                       // buf[i-2] buf[i-1] buf[i] buf[i+1]; buf[-1]; buf[1]
+                rpA_a[0] = 10'(up_i0); rpA_a[1] = 10'(up_i - 1); rpA_a[2] = 10'(up_i); rpA_a[3] = 10'(up_i3);
+                rpA_a[4] = -10'sd1; rpA_a[5] = 10'sd1;
+                for (int q = 0; q < 6; q++) rpL_a[q] = rpA_a[q];
+            end
+            S_CORNER: begin rpL_a[0] = 10'sd0; rpA_a[0] = -10'sd1; rpA_a[1] = 10'sd0; end   // L[0], A[-1], A[0]
+            default: ;
+        endcase
     end
     logic first_of_patch;           // filter-intra: an even row emits the freshly computed 4x2 patch's top row
     assign first_of_patch = l_fi && (py[0] == 1'b0);
@@ -446,7 +534,7 @@ module ipred #(
     // ------------------------------------------------------------------ sequencer
     // ------------------------------------------------------------------ edge-write requests (one slot per site)
     logic [PW-1:0] corner_v;                 // smoothed top-left for the directional corner case
-    assign corner_v = PW'((int'(rL(0)) * 5 + int'(rA(-1)) * 6 + int'(rA(0)) * 5 + 8) >> 4);
+    assign corner_v = PW'((int'(rpL_d[0]) * 5 + int'(rpA_d[0]) * 6 + int'(rpA_d[1]) * 5 + 8) >> 4);   // L[0], A[-1], A[0]
     task automatic post(input int slot, input logic side, input int idx, input logic [PW-1:0] d);
         rq_v[slot] = 1'b1; rq_side[slot] = side; rq_idx[slot] = 10'(idx); rq_d[slot] = d;
     endtask
@@ -469,12 +557,12 @@ module ipred #(
             S_UP_A: if (k != 0) begin                  // upsampled pair for i = k-1, plus edge[-2] on the last step
                 post(0, 1'b0, 2 * (int'(k) - 1) - 1, up_s);
                 post(1, 1'b0, 2 * (int'(k) - 1), up_d2);
-                if (k == 9'd1) post(2, 1'b0, -2, rA(-1));
+                if (k == 9'd1) post(2, 1'b0, -2, rpA_d[4]);     // A[-1] on port 4
             end
             S_UP_L: if (k != 0) begin
                 post(0, 1'b1, 2 * (int'(k) - 1) - 1, up_s);
                 post(1, 1'b1, 2 * (int'(k) - 1), up_d2);
-                if (k == 9'd1) post(2, 1'b1, -2, rL(-1));
+                if (k == 9'd1) post(2, 1'b1, -2, rpL_d[4]);
             end
             default: ;
         endcase
@@ -550,7 +638,7 @@ module ipred #(
                 end else begin
                     // side[k-1] (= edge[k]) <- filtered; remember its original for the next two steps
                     o0 <= o1;
-                    o1 <= ef_side ? rL(int'(k) - 1) : rA(int'(k) - 1);
+                    o1 <= ef_side ? rpL_d[5] : rpA_d[5];           // edge[k] = side[k-1], on port 5
                     k  <= k + 9'd1;
                 end
             end
@@ -560,7 +648,7 @@ module ipred #(
                         up_a  <= 1'b1;
                         ef_sz <= 9'(w) + (p_angle < 90 ? 9'(h) : 9'd0);
                         k     <= 9'(w) + (p_angle < 90 ? 9'(h) : 9'd0);
-                        up_save1 <= rA(1);
+                        up_save1 <= rpA_d[5];                      // A[1] on port 5
                     end else begin
                         state <= S_UP_L;
                     end
@@ -576,7 +664,7 @@ module ipred #(
                         up_l  <= 1'b1;
                         ef_sz <= 9'(h) + (p_angle > 180 ? 9'(w) : 9'd0);
                         k     <= 9'(h) + (p_angle > 180 ? 9'(w) : 9'd0);
-                        up_save1 <= rL(1);
+                        up_save1 <= rpL_d[5];
                     end else begin
                         state <= S_PIX;
                     end
