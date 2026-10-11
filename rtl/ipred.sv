@@ -257,22 +257,18 @@ module ipred #(
     // filter-intra: emitted pixels, one 4x2 patch (8 pixels) per entry, entry = (row>>1)*8 + (col>>2)
     (* ram_style = "distributed" *) logic [8*PW-1:0] fi_buf [0:127];   // one write, four lane reads: LUT RAM
     logic [8*PW-1:0] fi_next_packed;
-    function automatic logic [PW-1:0] fi_rd(input int r, input int c);
-        logic [8*PW-1:0] wd;
-        logic [6:0] a;
-        a  = {4'(r >> 1), 3'(c >> 2)};                   // entry = (row>>1)*8 + (col>>2), as bit fields
-        wd = fi_buf[a];
-        case ((r & 1) * 4 + (c & 3))                     // lane select spelled out: Vivado dropped the buffer as
-            0: fi_rd = wd[0 * PW +: PW];                 // "unused" behind a variable part-select of wd
-            1: fi_rd = wd[1 * PW +: PW];
-            2: fi_rd = wd[2 * PW +: PW];
-            3: fi_rd = wd[3 * PW +: PW];
-            4: fi_rd = wd[4 * PW +: PW];
-            5: fi_rd = wd[5 * PW +: PW];
-            6: fi_rd = wd[6 * PW +: PW];
-            default: fi_rd = wd[7 * PW +: PW];
-        endcase
-    endfunction
+    // Buffer reads as fixed ports: the current patch row for the four output lanes, and the three neighbouring
+    // words the next patch's taps come from. (Read through a function, Vivado dropped the buffer as unused and
+    // the hardware predicted zeros for the second row of every patch — caught by the gate-level replay.)
+    logic [8*PW-1:0] fi_wq, fi_wup, fi_wupl, fi_wleft;
+    logic [PW-1:0]   fi_q_pix [4];
+    always_comb begin
+        fi_wq    = fi_buf[{py[4:1], px[4:2]}];                               // patch (py>>1, px>>2)
+        fi_wup   = fi_buf[{4'(py[4:1] - 4'd1), px[4:2]}];                   // patch above
+        fi_wupl  = fi_buf[{4'(py[4:1] - 4'd1), 3'(px[4:2] - 3'd1)}];        // above-left
+        fi_wleft = fi_buf[{py[4:1], 3'(px[4:2] - 3'd1)}];                   // left
+        for (int l = 0; l < 4; l++) fi_q_pix[l] = py[0] ? fi_wq[(4 + l) * PW +: PW] : fi_wq[l * PW +: PW];
+    end
 
     // ------------------------------------------------------------------ pixel datapath: pred[i][j]
     function automatic logic [PW-1:0] pred_pix(input int i, input int j);
@@ -281,9 +277,7 @@ module ipred #(
         tl = 0; base = 0; pl = 0; pt = 0; ptl = 0; wy = 0; wx = 0; s = 0; idx = 0; shift = 0; maxb = 0;
         idx2 = 0; base2 = 0; shift2 = 0;
         pix_val = '0;
-        if (l_fi) begin
-            pix_val = fi_rd(i, j);
-        end else if (l_mode == DC_PRED) begin
+        if (l_mode == DC_PRED) begin
             pix_val = dc_val;
         end else if (l_mode == PAETH_PRED) begin
             tl   = int'(rA(-1));
@@ -342,7 +336,7 @@ module ipred #(
         return pix_val;
     endfunction
     logic [PW-1:0] pix4 [4];
-    always_comb for (int l = 0; l < 4; l++) pix4[l] = pred_pix(int'(py), int'(px) + l);
+    always_comb for (int l = 0; l < 4; l++) pix4[l] = l_fi ? fi_q_pix[l] : pred_pix(int'(py), int'(px) + l);
 
     // filter-intra: the 4x2 patch at (i2 = py>>1, j4 = px>>2), from edges and already-predicted pixels
     logic [PW-1:0] fi_next [2][4];
@@ -357,10 +351,12 @@ module ipred #(
             if (t < 5) begin
                 if (i2 == 0)                p[t] = int'(rA((j4 << 2) + t - 1));          // t=0 -> A[-1] = top-left
                 else if (j4 == 0 && t == 0) p[t] = int'(rL((i2 << 1) - 1));
-                else                        p[t] = int'(fi_rd((i2 << 1) - 1, (j4 << 2) + t - 1));
+                else if (t == 0)            p[t] = int'(fi_wupl[7 * PW +: PW]);            // row 2*i2-1, col 4*j4-1
+                else                        p[t] = int'(fi_wup[(3 + t) * PW +: PW]);       // row 2*i2-1, col 4*j4+t-1
             end else begin
                 if (j4 == 0) p[t] = int'(rL((i2 << 1) + t - 5));
-                else         p[t] = int'(fi_rd((i2 << 1) + t - 5, (j4 << 2) - 1));
+                else if (t == 5) p[t] = int'(fi_wleft[3 * PW +: PW]);                  // row 2*i2,   col 4*j4-1
+                else             p[t] = int'(fi_wleft[7 * PW +: PW]);                  // row 2*i2+1, col 4*j4-1
             end
         end
         for (int i1 = 0; i1 < 2; i1++)
