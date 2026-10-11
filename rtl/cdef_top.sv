@@ -176,24 +176,40 @@ module cdef_top
     logic pri_odd;
     assign pri_odd = pri_str[cs];                       // (priStr >> coeffShift) & 1
     // the filtered sample at (pi_, pj_) of the block, from the window (7.15.3)
-    function automatic logic [11:0] cdef_out(input logic [2:0] pi_, input logic [2:0] pj_);
+    // Neighbourhood of the four output samples (pi, pj .. pj+3): window rows pi .. pi+4 and columns pj .. pj+8
+    // (sample (pi, pj+l) sits at nb[2][l+2]; taps reach +-2). Selected once per group; every tap then reads it at
+    // an offset that is a constant per direction, so each tap is an 8-way mux instead of a 144-way one.
+    logic [11:0] nb    [0:4][0:8];
+    logic        nb_ok [0:4][0:8];
+    always_comb
+        for (int rr = 0; rr < 5; rr++)
+            for (int cc = 0; cc < 9; cc++) begin
+                nb[rr][cc]    = win[int'(pi) + rr][int'(pj) + cc];
+                nb_ok[rr][cc] = win_ok[int'(pi) + rr][int'(pj) + cc];
+            end
+    function automatic logic [11:0] cdef_out(input int l);
         logic [11:0] out_pix;
-
         logic signed [17:0] total;
         logic [11:0] mn, mx, ctr;
-        ctr = win[int'(pi_) + 2][int'(pj_) + 2];
+        ctr = nb[2][l + 2];
         total = 18'sd0; mn = ctr; mx = ctr;
         // taps: kind 0 primary direction, 1 dir - 2, 2 dir + 2; k 0..1; sign -/+
         for (int kind = 0; kind < 3; kind++)
             for (int k = 0; k < 2; k++)
                 for (int sg = 0; sg < 2; sg++) begin
-                    logic [2:0] tdir; logic signed [3:0] dy, dx; logic [3:0] ry, rx; logic [11:0] t;
-                    tdir = (kind == 0) ? dr : (kind == 1) ? dr - 3'd2 : dr + 3'd2;
-                    dy = (sg == 1) ? 4'(cdef_dy(tdir, 1'(k))) : -4'(cdef_dy(tdir, 1'(k)));
-                    dx = (sg == 1) ? 4'(cdef_dx(tdir, 1'(k))) : -4'(cdef_dx(tdir, 1'(k)));
-                    ry = 4'(int'(pi_) + 2 + int'(dy)); rx = 4'(int'(pj_) + 2 + int'(dx));
-                    t = win[ry][rx];
-                    if (win_ok[ry][rx]) begin
+                    logic [11:0] t; logic ok;
+                    t = '0; ok = 1'b0;
+                    case (dr)                               // constant offsets in every arm: an 8-way mux per tap
+                        3'd0: begin t = tap_at(0, kind, k, sg, l); ok = tap_ok(0, kind, k, sg, l); end
+                        3'd1: begin t = tap_at(1, kind, k, sg, l); ok = tap_ok(1, kind, k, sg, l); end
+                        3'd2: begin t = tap_at(2, kind, k, sg, l); ok = tap_ok(2, kind, k, sg, l); end
+                        3'd3: begin t = tap_at(3, kind, k, sg, l); ok = tap_ok(3, kind, k, sg, l); end
+                        3'd4: begin t = tap_at(4, kind, k, sg, l); ok = tap_ok(4, kind, k, sg, l); end
+                        3'd5: begin t = tap_at(5, kind, k, sg, l); ok = tap_ok(5, kind, k, sg, l); end
+                        3'd6: begin t = tap_at(6, kind, k, sg, l); ok = tap_ok(6, kind, k, sg, l); end
+                        default: begin t = tap_at(7, kind, k, sg, l); ok = tap_ok(7, kind, k, sg, l); end
+                    endcase
+                    if (ok) begin
                         total = total + ((kind == 0) ? 18'(pri_tap(pri_odd, 1'(k))) * 18'(constrain(13'(signed'({1'b0, t})) - 13'(signed'({1'b0, ctr})), pri_str, damping))
                                                      : 18'(sec_tap(pri_odd, 1'(k))) * 18'(constrain(13'(signed'({1'b0, t})) - 13'(signed'({1'b0, ctr})), sec_str, damping)));
                         if (t > mx) mx = t;
@@ -207,9 +223,26 @@ module cdef_top
             else if (v > 19'(signed'({7'b0, mx}))) cdef_out = mx;
             else cdef_out = 12'(v);
         end
-        endfunction
+    endfunction
+    // tap (kind, k, sign) of lane l for direction d, read from the neighbourhood: row 2 + dy, column l + 2 + dx
+    function automatic int tap_dy(input int d, input int kind, input int k, input int sg);
+        logic [2:0] tdir;
+        tdir = (kind == 0) ? 3'(d) : (kind == 1) ? 3'(d - 2) : 3'(d + 2);
+        tap_dy = (sg == 1) ? int'(cdef_dy(tdir, 1'(k))) : -int'(cdef_dy(tdir, 1'(k)));
+    endfunction
+    function automatic int tap_dx(input int d, input int kind, input int k, input int sg);
+        logic [2:0] tdir;
+        tdir = (kind == 0) ? 3'(d) : (kind == 1) ? 3'(d - 2) : 3'(d + 2);
+        tap_dx = (sg == 1) ? int'(cdef_dx(tdir, 1'(k))) : -int'(cdef_dx(tdir, 1'(k)));
+    endfunction
+    function automatic logic [11:0] tap_at(input int d, input int kind, input int k, input int sg, input int l);
+        tap_at = nb[2 + tap_dy(d, kind, k, sg)][l + 2 + tap_dx(d, kind, k, sg)];
+    endfunction
+    function automatic logic tap_ok(input int d, input int kind, input int k, input int sg, input int l);
+        tap_ok = nb_ok[2 + tap_dy(d, kind, k, sg)][l + 2 + tap_dx(d, kind, k, sg)];
+    endfunction
     logic [47:0] out4;                                 // samples (pi, pj .. pj+3)
-    always_comb for (int l = 0; l < 4; l++) out4[l * 12 +: 12] = cdef_out(pi, pj + 3'(l));
+    always_comb for (int l = 0; l < 4; l++) out4[l * 12 +: 12] = cdef_out(l);
     // copy path
     logic [5:0] cpi;
 
