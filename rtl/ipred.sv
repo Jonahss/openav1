@@ -217,6 +217,13 @@ module ipred #(
         endcase
     endfunction
 
+    function automatic logic [8:0] sm_w9(input logic [2:0] lg, input logic [5:0] i);      // weight, 9 bits
+        sm_w9 = {1'b0, sm_weight(lg, i)};
+    endfunction
+    function automatic logic [8:0] sm_w9c(input logic [2:0] lg, input logic [5:0] i);     // 256 - weight
+        sm_w9c = 9'd256 - {1'b0, sm_weight(lg, i)};
+    endfunction
+
     // filter-intra taps (spec 7.11.2.3 Intra_Filter_Taps), a module-level constant: as a function-local array
     // initialised inside the function, Vivado folded the whole filter to zero (and dropped the patch buffer as
     // "unused"), while simulation was fine.
@@ -341,18 +348,14 @@ module ipred #(
             else if (pt <= ptl)        pix_val = vA0;
             else                       pix_val = PW'(tl);
         end else if (l_mode == SMOOTH_PRED) begin                            // vA1 = A[w-1], vL1 = L[h-1]
-            wy = int'(sm_weight(l_log2h, 6'(i)));
-            wx = int'(sm_weight(l_log2w, 6'(j)));
-            s = wy * int'(vA0) + (256 - wy) * int'(vL1) + wx * int'(vL0) + (256 - wx) * int'(vA1);
-            pix_val = PW'((s + 256) >> 9);
+            // explicitly sized unsigned products (9 x 12 bits): as int arithmetic, the synthesised sum came out
+            // off by one in scattered lanes while simulation was exact (gate-level replay, 2026-10-11)
+            pix_val = PW'((23'(sm_w9(l_log2h, 6'(i)) * vA0) + 23'(sm_w9c(l_log2h, 6'(i)) * vL1)
+                         + 23'(sm_w9(l_log2w, 6'(j)) * vL0) + 23'(sm_w9c(l_log2w, 6'(j)) * vA1) + 23'd256) >> 9);
         end else if (l_mode == SMOOTH_V_PRED) begin
-            wy = int'(sm_weight(l_log2h, 6'(i)));
-            s = wy * int'(vA0) + (256 - wy) * int'(vL1);
-            pix_val = PW'((s + 128) >> 8);
+            pix_val = PW'((23'(sm_w9(l_log2h, 6'(i)) * vA0) + 23'(sm_w9c(l_log2h, 6'(i)) * vL1) + 23'd128) >> 8);
         end else if (l_mode == SMOOTH_H_PRED) begin
-            wx = int'(sm_weight(l_log2w, 6'(j)));
-            s = wx * int'(vL0) + (256 - wx) * int'(vA1);
-            pix_val = PW'((s + 128) >> 8);
+            pix_val = PW'((23'(sm_w9(l_log2w, 6'(j)) * vL0) + 23'(sm_w9c(l_log2w, 6'(j)) * vA1) + 23'd128) >> 8);
         end else if (p_angle == 9'd90) begin
             pix_val = vA0;
         end else if (p_angle == 9'd180) begin
