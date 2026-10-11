@@ -252,7 +252,7 @@ module ipred #(
     logic [5:0]    px, py;
 
     // filter-intra: emitted pixels, one 4x2 patch (8 pixels) per entry, entry = (row>>1)*8 + (col>>2)
-    (* ram_style = "distributed" *) logic [8*PW-1:0] fi_buf [128];   // one write, four lane reads: LUT RAM
+    (* ram_style = "distributed" *) logic [8*PW-1:0] fi_buf [0:127];   // one write, four lane reads: LUT RAM
     logic [8*PW-1:0] fi_next_packed;
     function automatic logic [PW-1:0] fi_rd(input int r, input int c);
         logic [8*PW-1:0] wd;
