@@ -11,7 +11,7 @@ import re, sys, argparse
 
 ap = argparse.ArgumentParser()
 ap.add_argument('src'); ap.add_argument('--clk', default='clk'); ap.add_argument('--param', action='append', default=[])
-ap.add_argument('--gate', default='')
+ap.add_argument('--gate', action='append', default=[], help='VALID:sig,sig — compare those outputs only when VALID is 1 in the recorded vector (repeatable; an output under several gates is compared when any is 1)')
 a = ap.parse_args()
 def strip(s): return re.sub(r'//[^\n]*', '', s)
 text = strip(open(a.src).read())
@@ -93,7 +93,11 @@ for decl in strip(ports).split(','):
     (ins if kind == 'input' else outs).append((pname, width, signed))
     port_struct[pname] = stype
 ins_v = [p for p in ins if p[0] != a.clk]
-gate_sig, gated = (a.gate.split(':')[0], a.gate.split(':')[1].split(',')) if a.gate else (None, [])
+gates = {}      # output -> [valid signals]
+for g in a.gate:
+    v, outs_g = g.split(':')
+    for o in outs_g.split(','): gates.setdefault(o, []).append(v)
+gated = list(gates)
 NI = sum(w for _, w, _ in ins_v); NO = sum(w for _, w, _ in outs)
 print(f"--in {','.join(p for p, _, _ in ins_v)} --out {','.join(p for p, _, _ in outs)}   # NI={NI} NO={NO}", file=sys.stderr)
 def decl(p, w, s): return f"logic {'signed ' if s else ''}{f'[{w-1}:0] ' if w > 1 else ''}{p};"
@@ -102,8 +106,10 @@ pos = {}; off = NO
 for p, w, _ in outs: off -= w; pos[p] = (off + w - 1, off)
 always = [p for p, _, _ in outs if p not in gated]
 cmp_always = ' || '.join(f"{p} !== vout[n][{pos[p][0]}:{pos[p][1]}]" for p in always) or '1\'b0'
-cmp_gated = ' || '.join(f"{p} !== vout[n][{pos[p][0]}:{pos[p][1]}]" for p in gated)
-gate_expr = f" || (vout[n][{pos[gate_sig][0]}] && ({cmp_gated}))" if gate_sig else ''
+def gate_term(p):
+    v = ' || '.join(f"vout[n][{pos[g][0]}]" for g in gates[p])
+    return f"(({v}) && {p} !== vout[n][{pos[p][0]}:{pos[p][1]}])"
+gate_expr = ''.join(f" || {gate_term(p)}" for p in gated)
 def conn(p, w, stype):
     if stype is None: return f'.{p}({p})'
     return ', '.join(f'.\\{nm} ({p}[{hi}:{lo}])' if hi != lo else f'.\\{nm} ({p}[{hi}])' for nm, hi, lo in leaf_fields(stype, p, w - 1))
