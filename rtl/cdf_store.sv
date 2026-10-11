@@ -26,8 +26,9 @@ module cdf_store
     input  logic [CDF_AW-1:0]   wb_addr,
     input  logic [245:0]        wb_data
 );
-    logic [245:0] mem     [0:CDF_ROWS-1];
-    logic [245:0] def_mem [0:CDF_ROWS-1];
+    // 1269 x 246 bits each: four UltraRAM columns apiece on the K26 (the auto choice was LUT RAM for mem, 5.6k LUTs)
+    (* ram_style = "ultra" *) logic [245:0] mem     [0:CDF_ROWS-1];
+    (* ram_style = "ultra" *) logic [245:0] def_mem [0:CDF_ROWS-1];
 
     always_ff @(posedge clk)
         if (def_we) def_mem[def_addr] <= def_data;
@@ -66,7 +67,16 @@ module cdf_store
     always_ff @(posedge clk)
         if (we) mem[wa] <= wd;
 
+    // Read: the memory's own output register (plain synchronous read, so it maps to the RAM's port register),
+    // plus a forwarding register for a same-cycle write-back of the row being read. Both hold until the next rd_en.
+    logic [245:0] rd_raw, fwd_d;
+    logic         fwd_v;
     always_ff @(posedge clk)
-        if (rd_en)
-            rd_data <= (we && wa == rd_addr) ? wd : mem[rd_addr];
+        if (rd_en) rd_raw <= mem[rd_addr];
+    always_ff @(posedge clk)
+        if (rd_en) begin
+            fwd_v <= we && wa == rd_addr;
+            fwd_d <= wd;
+        end
+    assign rd_data = fwd_v ? fwd_d : rd_raw;
 endmodule

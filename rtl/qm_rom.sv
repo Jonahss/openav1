@@ -7,7 +7,7 @@ module qm_rom #(
     input  logic [16:0] addr,                             // level * 6688 + plane * 3344 + Qm_Offset[txSz] + i * tw + j
     output logic [7:0]  data
 );
-    logic [7:0] mem [0:100319];
+    (* rom_style = "block" *) logic [7:0] mem [0:100319];     // 22 BRAM36 on the K26, not a LUT ROM
     initial $readmemh(HEX, mem);
     always_ff @(posedge clk) data <= mem[addr];
 endmodule
