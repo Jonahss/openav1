@@ -40,6 +40,7 @@ module mv_mem
     end
     assign rd_ent = mv_ent_t'(m_rdata);
     logic [63:0][WC-1:0] written;      // packed: flops by construction (row clears + bit sets are no RAM template)
+    logic [MIW-1:0] w_rr, w_cc;        // position the area-fill writer stores this cycle
     logic        c_busy, w_busy;
     logic [MIW-1:0] c_row;
     logic [5:0]  c_n;
@@ -49,7 +50,6 @@ module mv_mem
         else if (!c_busy) begin
             if (clr) begin c_busy <= 1'b1; c_row <= clr_row; c_n <= clr_n; end
         end else begin
-            written[c_row[5:0]] <= '0;
             c_row <= c_row + MIW'(1);
             if (c_n == 6'd1) c_busy <= 1'b0;
             c_n <= c_n - 6'd1;
@@ -69,9 +69,6 @@ module mv_mem
                 w_busy <= 1'b1; b_r <= w_r; b_c <= w_c; b_w <= w_bw4; b_h <= w_bh4; b_d <= w_data; wi <= 6'd0; wj <= 6'd0;
             end
         end else begin
-            logic [MIW-1:0] rr, cc;
-            rr = b_r + MIW'(wi); cc = b_c + MIW'(wj);
-            written[rr[5:0]][cc[ML2C-1:0]] <= 1'b1;
             if (wj + 6'd1 < b_w) wj <= wj + 6'd1;
             else begin
                 wj <= 6'd0;
@@ -82,8 +79,15 @@ module mv_mem
         rd_written <= written[rd_row[5:0]][rd_col[ML2C-1:0]];
     end
     // the area-fill writer stores one entry per cycle while busy (the FSM above steps wi/wj over the block)
+    assign w_rr = b_r + MIW'(wi); assign w_cc = b_c + MIW'(wj);
     assign m_we = w_busy && !rst;
-    assign m_waddr = idx(b_r + MIW'(wi), b_c + MIW'(wj));
+    assign m_waddr = idx(w_rr, w_cc);
+    // the written bitmap has one writer process (a packed variable may not be driven from two always_ff blocks):
+    // the clear engine zeroes a row, the area-fill sets a bit; the two never overlap (the tile decoder waits on busy)
+    always_ff @(posedge clk) begin
+        if (!rst && c_busy) written[c_row[5:0]] <= '0;
+        if (!rst && w_busy) written[w_rr[5:0]][w_cc[ML2C-1:0]] <= 1'b1;
+    end
     assign m_wdata = b_d;
     assign m_raddr = idx(rd_row, rd_col);
 endmodule
