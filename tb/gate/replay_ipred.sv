@@ -18,6 +18,17 @@ module replay_ipred;
     logic [6:0] above_px, left_px;
     logic busy, done, out_valid; logic [5:0] out_x, out_y; logic [47:0] out_pix4;
     ipred dut (.*);
+`ifdef RTL_CONTROL
+    // the RTL has no reset on its memories; Verilator starts them at zero, xsim at X (and X in a compare or a
+    // case select turns into a definite wrong value). Start the control run the way Verilator and the FPGA do.
+    initial begin
+        for (int i = 0; i < 65; i++) begin
+            dut.A0[i] = '0; dut.A1[i] = '0; dut.A2[i] = '0; dut.A3[i] = '0;
+            dut.L0[i] = '0; dut.L1[i] = '0; dut.L2[i] = '0; dut.L3[i] = '0;
+        end
+        for (int i = 0; i < 128; i++) dut.fi_buf[i] = '0;
+    end
+`endif
     int n, errs, cmp, fi_cycles, nz, nv;
     string vecfile;
     initial begin
