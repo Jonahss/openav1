@@ -93,6 +93,6 @@ module coef_top
 
     coef_rd u_coef (.clk, .rst, .cfg_tx, .cfg_ptype, .start_a, .az_ctx, .done_a, .all_zero,
                     .start_b, .tx_type, .dcs_ctx, .done_b, .eob_o, .cul_level, .dc_category, .nonconformant,
-                    .q_addr, .q_data,
+                    .w_slot(3'd0), .q_slot(3'd0), .q_addr, .q_data,          // one slot in this unit test
                     .sq_go(c_go), .sq_addr(c_addr), .sq_n(c_n), .sq_kind(c_kind), .sq_done(c_done), .sq_sym(c_sym));
 endmodule

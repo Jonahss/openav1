@@ -6,7 +6,7 @@
 //   context engine), signs, Golomb escapes. Produces Quant (readable through q_addr/q_data until the next
 //   start), eob, culLevel and dcCategory for the caller's context-array update.
 //
-// Storage: lev[1024] 4-bit saturated levels for the context neighbourhood reads (flops: 5 random reads
+// Storage: lev[1024] 4-bit saturated levels for the context neighbourhood reads (distributed RAM behind a valid bit
 // per coefficient), quant_mem[1024] 21-bit signed final coefficients (write-once, RAM) with an nz bitmask
 // so untouched positions read 0 without a clear pass.
 module coef_rd
@@ -95,9 +95,15 @@ module coef_rd
     logic [1:0]  dccat;
 
     // ---------------------------------------------------------------- level scratch and outputs
-    logic [3:0]  lev [0:1023];
+    // lev: the block's level map. Distributed RAM (one write per clock, several asynchronous reads for the
+    // neighbourhood) behind a valid bit per position that stands in for clearing the map at each block.
+    (* ram_style = "distributed" *) logic [3:0] lev [0:1023];
+    logic [1023:0] lev_ok;
+    function automatic logic [3:0] levv(input logic [9:0] a); levv = lev_ok[a] ? lev[a] : 4'd0; endfunction
     logic [1023:0] nz [0:7];
+    // quant_mem: block RAM, registered read; the non-zero mask is applied after the read register
     logic signed [20:0] quant_mem [0:8*1024-1];
+    logic signed [20:0] q_raw; logic q_nz;
 
     // scan ROM (default zig-zag scans); Mrow/Mcol are arithmetic
     logic [SCAN_ROM_AW-1:0] scan_addr;
@@ -145,7 +151,7 @@ module coef_rd
             nb_r[i]  = 6'(row) + 6'(d_r[i]);
             nb_c[i]  = 6'(col) + 6'(d_c[i]);
             nb_ok[i] = (nb_r[i] < (6'd1 << hlog)) && (nb_c[i] < (6'd1 << bwl));
-            nb_v[i]  = nb_ok[i] ? lev[(10'(nb_r[i][4:0]) << bwl) | 10'(nb_c[i][4:0])] : 4'd0;
+            nb_v[i]  = nb_ok[i] ? levv((10'(nb_r[i][4:0]) << bwl) | 10'(nb_c[i][4:0])) : 4'd0;
             mag3 += 5'(nb_v[i] > 4'd3 ? 4'd3 : nb_v[i]);
             if (i < 3) mag15 += 7'(nb_v[i]);
         end
@@ -207,7 +213,7 @@ module coef_rd
             B_XBIT:  begin sq_go = 1'b1; sq_kind = 2'd2; end
             L_CTX:   begin sq_go = 1'b1; sq_addr = (c == eob - 11'd1) ? a_base_eob : a_base; sq_n = (c == eob - 11'd1) ? 4'd2 : 4'd3; end
             L_BR:    begin sq_go = 1'b1; sq_addr = a_br; sq_n = 4'd3; end
-            P_CHK:   if (lev[pos] != 4'd0) begin sq_go = 1'b1; if (c == 11'd0) begin sq_addr = a_dc_sign; sq_n = 4'd1; end else sq_kind = 2'd2; end
+            P_CHK:   if (levv(pos) != 4'd0) begin sq_go = 1'b1; if (c == 11'd0) begin sq_addr = a_dc_sign; sq_n = 4'd1; end else sq_kind = 2'd2; end
             P_GLEN:  begin sq_go = 1'b1; sq_kind = 2'd2; end
             P_GDATA: begin sq_go = 1'b1; sq_kind = 2'd2; end
             default: ;
@@ -226,7 +232,7 @@ module coef_rd
         eob_from_pt = (4'(sq_sym) + 4'd1) < 4'd2 ? 11'(4'(sq_sym) + 4'd1) : (11'd1 << (4'(sq_sym) + 4'd1 - 4'd2)) + 11'd1;
     end
     logic [19:0] val20;
-    always_comb val20 = (lev[pos] == 4'd15) ? 20'(gx + 32'd14) : 20'(lev[pos]);
+    always_comb val20 = (levv(pos) == 4'd15) ? 20'(gx + 32'd14) : 20'(levv(pos));
     logic [6:0] cul_sum;
     always_comb cul_sum = 7'(cul) + 7'(val20 > 20'd63 ? 20'd63 : val20);
 
@@ -243,7 +249,7 @@ module coef_rd
                         nonconformant <= 1'b0;
                     end else if (start_b) begin
                         st <= B_EOBPT;
-                        for (int i = 0; i < 1024; i++) lev[i] <= 4'd0;
+                        lev_ok <= '0;
                         nz[w_slot] <= '0; cul <= 6'd0; dccat <= 2'd0; eob <= 11'd0;
                     end
                 end
@@ -289,7 +295,7 @@ module coef_rd
                     st <= (sq_sym < 4'd3 || br_i == 2'd3) ? L_STORE : L_BR;
                 end
                 L_STORE: begin
-                    lev[pos] <= level;
+                    lev[pos] <= level; lev_ok[pos] <= 1'b1;
                     if (c == 11'd0) begin c <= 11'd0; st <= P_SCAN; end
                     else begin c <= c - 11'd1; st <= L_POS; end
                 end
@@ -299,12 +305,12 @@ module coef_rd
                 P_POS2: st <= P_CHK;
                 P_CHK: begin
                     sign <= 1'b0; gx <= 32'd1; glen <= 6'd0;
-                    if (lev[pos] != 4'd0) st <= P_SIGN_W;
+                    if (levv(pos) != 4'd0) st <= P_SIGN_W;
                     else st <= P_STORE;
                 end
                 P_SIGN_W: if (sq_done) begin
                     sign <= sq_sym[0];
-                    st <= (lev[pos] == 4'd15) ? P_GLEN : P_STORE;
+                    st <= (levv(pos) == 4'd15) ? P_GLEN : P_STORE;
                 end
                 P_GLEN: begin glen <= glen + 6'd1; st <= P_GLEN_W; end
                 P_GLEN_W: if (sq_done) begin
@@ -323,7 +329,7 @@ module coef_rd
                     else begin gi <= gi - 6'd1; st <= P_GDATA; end
                 end
                 P_STORE: begin
-                    if (lev[pos] != 4'd0) begin
+                    if (levv(pos) != 4'd0) begin
                         quant_mem[{w_slot, pos}] <= sign ? -21'(val20) : 21'(val20);
                         nz[w_slot][pos] <= 1'b1;
                         cul <= cul_sum > 7'd63 ? 6'd63 : cul_sum[5:0];
@@ -350,6 +356,9 @@ module coef_rd
     assign cul_level = cul;
     assign dc_category = dccat;
 
-    always_ff @(posedge clk)
-        q_data <= nz[q_slot][q_addr] ? quant_mem[{q_slot, q_addr}] : 21'sd0;
+    always_ff @(posedge clk) begin
+        q_raw <= quant_mem[{q_slot, q_addr}];
+        q_nz <= nz[q_slot][q_addr];
+    end
+    assign q_data = q_nz ? q_raw : 21'sd0;
 endmodule
