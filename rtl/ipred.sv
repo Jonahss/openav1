@@ -87,8 +87,11 @@ module ipred #(
     // port (the LUT-RAM template) while the sequencer keeps its natural "write edge[k]" form. A later slot wins
     // over an earlier one, matching the statement order the sites had in the sequencer.
     localparam int NRQ = 7;
-    typedef struct { logic v; logic side; int idx; logic [PW-1:0] d; } ereq_t;
-    ereq_t rq [NRQ];
+    logic                 rq_v    [NRQ];   // request valid
+    logic                 rq_side [NRQ];   // 0 = above, 1 = left
+    logic signed [9:0]    rq_idx  [NRQ];   // edge index -2 .. 257
+    logic [PW-1:0]        rq_d    [NRQ];
+    logic [9:0]           rq_e    [NRQ];   // idx + EOFF (0 .. 259): bank = rq_e[1:0], address = rq_e[8:2]
     logic          bweA [4], bweL [4];
     logic [6:0]    bwaA [4], bwaL [4];
     logic [PW-1:0] bwdA [4], bwdL [4];
@@ -97,9 +100,9 @@ module ipred #(
             bweA[b] = 1'b0; bwaA[b] = '0; bwdA[b] = '0;
             bweL[b] = 1'b0; bwaL[b] = '0; bwdL[b] = '0;
             for (int r = 0; r < NRQ; r++)
-                if (rq[r].v && ((rq[r].idx + EOFF) & 3) == b) begin
-                    if (!rq[r].side) begin bweA[b] = 1'b1; bwaA[b] = 7'((rq[r].idx + EOFF) >> 2); bwdA[b] = rq[r].d; end
-                    else             begin bweL[b] = 1'b1; bwaL[b] = 7'((rq[r].idx + EOFF) >> 2); bwdL[b] = rq[r].d; end
+                if (rq_v[r] && rq_e[r][1:0] == 2'(b)) begin
+                    if (!rq_side[r]) begin bweA[b] = 1'b1; bwaA[b] = rq_e[r][8:2]; bwdA[b] = rq_d[r]; end
+                    else             begin bweL[b] = 1'b1; bwaL[b] = rq_e[r][8:2]; bwdL[b] = rq_d[r]; end
                 end
         end
     end
@@ -448,34 +451,38 @@ module ipred #(
     // ------------------------------------------------------------------ edge-write requests (one slot per site)
     logic [PW-1:0] corner_v;                 // smoothed top-left for the directional corner case
     assign corner_v = PW'((int'(rL(0)) * 5 + int'(rA(-1)) * 6 + int'(rA(0)) * 5 + 8) >> 4);
+    task automatic post(input int slot, input logic side, input int idx, input logic [PW-1:0] d);
+        rq_v[slot] = 1'b1; rq_side[slot] = side; rq_idx[slot] = 10'(idx); rq_d[slot] = d;
+    endtask
     always_comb begin
-        for (int r = 0; r < NRQ; r++) rq[r] = '{1'b0, 1'b0, 0, '0};
+        for (int r = 0; r < NRQ; r++) begin rq_v[r] = 1'b0; rq_side[r] = 1'b0; rq_idx[r] = '0; rq_d[r] = '0; end
         if (!rst) case (state)
             S_IDLE: begin
                 if (edge_we4)                            // edge_idx is a multiple of 4: entries idx .. idx+3
-                    for (int l = 0; l < 4; l++) rq[l] = '{1'b1, 1'b0, int'(edge_idx) + l, edge_data4[l * PW +: PW]};
-                if (edge_we && edge_side == 2'd0) rq[4] = '{1'b1, 1'b0, int'(edge_idx), edge_data};
-                if (edge_we && edge_side == 2'd1) rq[4] = '{1'b1, 1'b1, int'(edge_idx), edge_data};
-                if (start) begin rq[5] = '{1'b1, 1'b0, -1, TL_in}; rq[6] = '{1'b1, 1'b1, -1, TL_in}; end
+                    for (int l = 0; l < 4; l++) post(l, 1'b0, int'(edge_idx) + l, edge_data4[l * PW +: PW]);
+                if (edge_we && edge_side == 2'd0) post(4, 1'b0, int'(edge_idx), edge_data);
+                if (edge_we && edge_side == 2'd1) post(4, 1'b1, int'(edge_idx), edge_data);
+                if (start) begin post(5, 1'b0, -1, TL_in); post(6, 1'b1, -1, TL_in); end
             end
             S_CORNER: if (p_angle > 90 && p_angle < 180 && wh >= 24) begin
-                rq[0] = '{1'b1, 1'b0, -1, corner_v};
-                rq[1] = '{1'b1, 1'b1, -1, corner_v};
+                post(0, 1'b0, -1, corner_v);
+                post(1, 1'b1, -1, corner_v);
             end
             S_EF: if (!(ef_str == 0 || k >= ef_sz))    // side[k-1] (= edge[k]) <- filtered
-                rq[0] = '{1'b1, ef_side, int'(k) - 1, ef_out};
+                post(0, ef_side, int'(k) - 1, ef_out);
             S_UP_A: if (k != 0) begin                  // upsampled pair for i = k-1, plus edge[-2] on the last step
-                rq[0] = '{1'b1, 1'b0, 2 * (int'(k) - 1) - 1, up_s};
-                rq[1] = '{1'b1, 1'b0, 2 * (int'(k) - 1), up_d2};
-                if (k == 9'd1) rq[2] = '{1'b1, 1'b0, -2, rA(-1)};
+                post(0, 1'b0, 2 * (int'(k) - 1) - 1, up_s);
+                post(1, 1'b0, 2 * (int'(k) - 1), up_d2);
+                if (k == 9'd1) post(2, 1'b0, -2, rA(-1));
             end
             S_UP_L: if (k != 0) begin
-                rq[0] = '{1'b1, 1'b1, 2 * (int'(k) - 1) - 1, up_s};
-                rq[1] = '{1'b1, 1'b1, 2 * (int'(k) - 1), up_d2};
-                if (k == 9'd1) rq[2] = '{1'b1, 1'b1, -2, rL(-1)};
+                post(0, 1'b1, 2 * (int'(k) - 1) - 1, up_s);
+                post(1, 1'b1, 2 * (int'(k) - 1), up_d2);
+                if (k == 9'd1) post(2, 1'b1, -2, rL(-1));
             end
             default: ;
         endcase
+        for (int r = 0; r < NRQ; r++) rq_e[r] = 10'(rq_idx[r] + 10'sd2);
     end
 
     always_ff @(posedge clk) begin
