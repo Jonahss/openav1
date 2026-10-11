@@ -343,9 +343,11 @@ module ipred #(
 
     // filter-intra: the 4x2 patch at (i2 = py>>1, j4 = px>>2), from edges and already-predicted pixels
     logic [PW-1:0] fi_next [2][4];
+    // (the taps p[], i2, j4 and pr live at module scope: declared inside this block, Vivado folded the whole
+    // filter to a constant and dropped the patch buffer, while simulation matched dav1d)
+    int p [7];
+    int i2, j4, pr;
     always_comb begin
-        int p [7];
-        int i2, j4, pr;
         i2 = int'(py) >> 1; j4 = int'(px) >> 2; pr = 0;
         for (int t = 0; t < 7; t++) begin
             p[t] = 0;
