@@ -29,7 +29,7 @@ module replay_ipred;
         for (int i = 0; i < 128; i++) dut.fi_buf[i] = '0;
     end
 `endif
-    int n, errs, cmp, fi_cycles, nz, nv;
+    int n, errs, cmp, fi_cycles, nz, nv, preroll;
     string vecfile;
     initial begin
         if (!$value$plusargs("vec=%s", vecfile)) vecfile = "vectors.hex";
@@ -47,6 +47,8 @@ module replay_ipred;
     endtask
     initial begin
         errs = 0; cmp = 0; fi_cycles = 0; nz = 0; nv = 0;
+        if (!$value$plusargs("preroll=%d", preroll)) preroll = 15;   // the funcsim netlist holds GSR for 100 ns
+        for (int i = 0; i < preroll; i++) begin drive(vin[0]); #5 clk = 1; #5 clk = 0; end
         n = 0;
         while (n < MAXV && vin[n] !== 'x) begin
             drive(vin[n]);
