@@ -1,5 +1,7 @@
 """cocotb 2.x runner: python tb/runner.py [top] [test_module]  (defaults: smoke / test_smoke)
-Set WAVES=1 to record an FST trace in the build dir (slow and large for long replays)."""
+Set WAVES=1 to record an FST trace in the build dir (slow and large for long replays).
+TS_BUILD_ONLY=1 builds and exits; TS_TEST_DIR=<dir> runs the test there instead of the build dir, so several
+runs can share one build (keep it two levels below the repo, like build/<x>/, for the relative paths)."""
 import os, sys
 from pathlib import Path
 from cocotb_tools.runner import get_runner
@@ -38,5 +40,8 @@ if os.environ.get("SIM_FAST", "0") == "1":
 build_dir = ROOT / "build" / (top + (f"_fb{params['FBX']}x{params['FBY']}" if params else ""))
 r.build(sources=sources, hdl_toplevel=top, parameters=params,
         build_dir=build_dir, build_args=build_args, waves=waves)
+if os.environ.get("TS_BUILD_ONLY") == "1":
+    sys.exit(0)
+test_dir = Path(os.environ["TS_TEST_DIR"]).resolve() if os.environ.get("TS_TEST_DIR") else build_dir
 plusargs = [f"+vis={os.environ['TS_VIS']}"] if os.environ.get("TS_VIS") else []   # decode-progress trace (docs/vis-trace.md)
-r.test(hdl_toplevel=top, test_module=mod, build_dir=build_dir, waves=waves, plusargs=plusargs)
+r.test(hdl_toplevel=top, test_module=mod, build_dir=build_dir, test_dir=test_dir, waves=waves, plusargs=plusargs)
