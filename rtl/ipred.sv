@@ -595,7 +595,7 @@ module ipred #(
             end
             S_PIX: begin
                 if (first_of_patch)
-                    fi_buf[(int'(py) >> 1) * 8 + (int'(px) >> 2)] <= fi_next_packed;
+                    fi_buf[{py[4:1], px[4:2]}] <= fi_next_packed;   // filter-intra blocks are at most 32x32
                 for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= first_of_patch ? fi_next[0][l] : pix4[l];
                 out_valid <= 1'b1;
                 out_x <= px; out_y <= py;
