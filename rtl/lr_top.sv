@@ -4,10 +4,17 @@
 // (4 rows, 4 >> subY in a subsampled plane) per plane at a time: the band's window rows (band rows plus 3
 // above and 3 below, through the source rule) are kept in a ring of 16 line buffers tagged with (source, row)
 // so a row is read from the frame buffers only when it is not already present; then every unit column
-// segment of the band is filtered from the line buffers with one output sample per clock (Wiener: seven
-// horizontal 7-tap filters and the vertical 7-tap filter in one cycle; copy: one write per clock) or, for
-// the self-guided filter, one box-sum position (a2 / b2) per clock per pass followed by one output per clock.
+// segment of the band is filtered with four output samples per clock (Wiener: 4 x 7 horizontal 7-tap
+// filters and the vertical 7-tap filter in one cycle; copy: one 4-wide write per clock) or, for the
+// self-guided filter, one box-sum position (a2 / b2) per clock per pass followed by four outputs per clock.
 // Same ports as the block-at-a-time version it replaces; the Python model (tb/lr_model.py) is the oracle.
+//
+// Storage (v3, the mappable version): the line buffers are block RAMs of 4-sample words, read one word per
+// line per clock. The filters never touch them directly: a sliding window of 12 columns (three words) x 10
+// window rows in registers is filled from the line buffers as the column position advances, with the
+// picture's edge samples replicated into the columns outside the plane, so every tap is a fixed window
+// position and the filter datapath is pure arithmetic. (The previous version indexed a 16 x W register
+// array at some 200 random columns per clock and synthesised to 622k LUTs.)
 module lr_top
   import syn_pkg::*;
   import lr_pkg::*;
@@ -48,9 +55,10 @@ module lr_top
 
     typedef enum logic [4:0] {
         L_IDLE, L_BAND, L_ROWS, L_LOAD, L_LOAD_LAST, L_UNIT, L_REC, L_DECIDE,
-        L_COPY, L_WIEN, L_AB, L_PASS_NEXT, L_BLEND, L_UNIT_NEXT, L_BAND_NEXT, L_DONE
+        L_COPY, L_WIEN, L_AB, L_PASS_NEXT, L_BLEND, L_UNIT_NEXT, L_BAND_NEXT, L_DONE,
+        L_WPRO                                                 // window prologue before a compute row
     } st_t;
-    st_t st;
+    st_t st, st_after;                                         // compute state the prologue leads to
 
     // ---------------------------------------------------------------- band geometry (luma row ly, plane)
     logic [PXW-1:0] ly;
@@ -104,7 +112,24 @@ module lr_top
         else if (ry > stripe_end) begin src = 1'b1; if (ry > stripe_end + PXS'(2)) ry = stripe_end + PXS'(2); end
         row_rule = {src, PXW'(ry)};
     endfunction
-    logic [11:0] ring [0:RING-1][0:W-1];
+    // ---- line buffers: RING block RAMs of W/4 words x 4 samples, written by the loader (one aligned group of 4
+    // per clock), read every clock at one common word address (the window fill picks the rows it needs)
+    localparam int GW = FBX - 2;                           // word (group) address width
+    logic           lb_we;
+    logic [3:0]     lb_wslot;
+    logic [GW-1:0]  lb_waddr, lb_raddr;
+    logic [47:0]    lb_wdata;
+    logic [47:0]    lb_rdata [0:RING-1];
+    genvar gs;
+    generate
+        for (gs = 0; gs < RING; gs++) begin : g_line
+            logic [47:0] mem [0:(1 << GW) - 1];
+            always_ff @(posedge clk) begin
+                if (lb_we && lb_wslot == 4'(gs)) mem[lb_waddr] <= lb_wdata;
+                lb_rdata[gs] <= mem[lb_raddr];
+            end
+        end
+    endgenerate
     logic [PXW-1:0] ring_row [0:RING-1];
     logic        ring_src [0:RING-1];
     logic        ring_ok  [0:RING-1];
@@ -121,10 +146,60 @@ module lr_top
         r = row_rule(kk);
         slot_of = r[3:0];
     endfunction
-    function automatic logic [PXW-1:0] clampx(input logic signed [PXS-1:0] xx);
-        clampx = (xx < 0) ? PXW'(0) : (xx > PXS'(signed'({2'b0, plane_end_x}))) ? plane_end_x : PXW'(xx);
-    endfunction
     logic [PXW-1:0] lx;                                    // load column
+
+    // ---------------------------------------------------------------- sliding window
+    // win[k][c]: window row k (0 .. hh+5), column c of 12 = plane column 4 (wg - 1) + c, where wg is the group
+    // (4 columns) the compute phase is at. Columns outside the plane hold the edge sample (replicated at fill
+    // time), so a tap at a fixed (k, c) is already the clamped sample the spec asks for.
+    //   Wiener lane l tap t (column x + l - 3 + t):  c = l + t + 1
+    //   box position ax = 4 wg + a, offset dx:       c = 4 + a + dx
+    //   source sample of lane l:                     c = 4 + l
+    // The line RAMs are read every clock at group wg + 2 (virtual: clamped to the plane, fixed up per lane),
+    // so a shift (wg -> wg + 1) can take the landing word as the new right-hand group. A prologue of four
+    // clocks (L_WPRO) fills the three groups wg - 1, wg, wg + 1 at the start of each compute row.
+    logic [11:0] win [0:9][0:11];
+    logic win_shift;                                       // compute phase moves to the next group this clock
+    logic signed [PXS-1:0] wg;                             // current group (may be -1 for the box phase)
+    logic signed [PXS-1:0] rq_g, ld_g;                     // group requested this clock / landing this clock
+    logic [1:0]  pro;                                      // prologue step
+    logic [GW:0] last_g;                                   // last group of the plane
+    logic [1:0]  last_lane;                                // lane of plane_end_x in it
+    assign last_g = (GW + 1)'(plane_end_x >> 2);
+    assign last_lane = plane_end_x[1:0];
+    always_comb begin
+        // the word to land next clock: the prologue's three groups, then the one the next shift will need (two
+        // ahead of the group current at that shift: three ahead when shifting every clock, two in the box phase)
+        rq_g = (st == L_WPRO) ? wg - PXS'(1) + PXS'(signed'({1'b0, pro})) : wg + PXS'(2) + PXS'(signed'({1'b0, win_shift}));
+        lb_raddr = (rq_g < 0) ? GW'(0) : (rq_g > PXS'(signed'({1'b0, last_g}))) ? GW'(last_g) : GW'(rq_g);
+    end
+    // the landing word of window row k, with the edge replication for a virtual group ld_g
+    function automatic logic [47:0] land(input logic [47:0] w, input logic signed [PXS-1:0] g);
+        logic [47:0] r;
+        for (int l = 0; l < 4; l++) begin
+            if (g < 0) r[l * 12 +: 12] = w[0 +: 12];                                           // left of the plane: column 0
+            else if (g > PXS'(signed'({1'b0, last_g})) || (g == PXS'(signed'({1'b0, last_g})) && 2'(l) > last_lane))
+                r[l * 12 +: 12] = w[last_lane * 12 +: 12];                                     // right of the plane: plane_end_x
+            else r[l * 12 +: 12] = w[l * 12 +: 12];
+        end
+        return r;
+    endfunction
+    logic [47:0] land_k [0:9];
+    always_comb for (int kk = 0; kk < 10; kk++) land_k[kk] = land(lb_rdata[slot_of(4'(kk))], ld_g);
+    always_ff @(posedge clk) begin
+        ld_g <= rq_g;
+        if (st == L_WPRO) begin
+            // pro = 1, 2, 3: groups wg - 1, wg, wg + 1 land into window thirds 0, 1, 2
+            if (pro != 2'd0)
+                for (int kk = 0; kk < 10; kk++)
+                    for (int l = 0; l < 4; l++) win[kk][4 * (int'(pro) - 1) + l] <= land_k[kk][l * 12 +: 12];
+        end else if (win_shift) begin
+            for (int kk = 0; kk < 10; kk++) begin
+                for (int c = 0; c < 8; c++) win[kk][c] <= win[kk][c + 4];
+                for (int l = 0; l < 4; l++) win[kk][8 + l] <= land_k[kk][l * 12 +: 12];
+            end
+        end
+    end
 
     // ---------------------------------------------------------------- unit segment
     logic [PXW-1:0] uc, seg_x0, seg_x1, x;
@@ -161,8 +236,8 @@ module lr_top
         w_offset = 21'sd1 <<< (bd + 4'd7 - round0 - 4'd1);
         w_limit = (21'sd1 <<< (bd + 4'd8 - round0)) - 21'sd1;
     end
-    // Wiener output at column xx of output row i (7.17.4)
-    function automatic logic [11:0] wien_at(input logic [PXW-1:0] xx);
+    // Wiener output of lane (column x + lane) of output row i (7.17.4), from the window
+    function automatic logic [11:0] wien_at(input logic [1:0] lane);
         logic [11:0] wien_out;
 
         logic signed [30:0] vmac;
@@ -170,11 +245,9 @@ module lr_top
         for (int r = 0; r < 7; r++) begin
             logic signed [30:0] hmac, v;
             logic signed [20:0] hv;
-            logic [3:0] sl;
             hmac = 31'sd0;
-            sl = slot_of(4'(int'(i) + r));
             for (int t = 0; t < 7; t++)
-                hmac = hmac + 31'(hf[t]) * 31'(signed'({19'b0, ring[sl][FBX'(clampx(PXS'(signed'({2'b0, xx})) - PXS'(3) + PXS'(t)))]}));
+                hmac = hmac + 31'(hf[t]) * 31'(signed'({19'b0, win[int'(i) + r][int'(lane) + t + 1]}));
             v = (hmac + (31'sd1 <<< (round0 - 4'd1))) >>> round0;
             hv = (v < -31'(w_offset)) ? -w_offset : (v > 31'(w_limit) - 31'(w_offset)) ? 21'(w_limit - w_offset) : 21'(v);
             vmac = vmac + 31'(vf[r]) * 31'(hv);
@@ -210,8 +283,8 @@ module lr_top
         for (int dy = -2; dy <= 2; dy++)
             for (int dx = -2; dx <= 2; dx++) begin
                 logic [11:0] c;
-                // block row (ai - 1) + dy -> window row k = (ai - 1) + dy + 3
-                c = ring[slot_of(4'(int'(ai) + 2 + dy))][FBX'(clampx(ax + PXS'(dx)))];
+                // block row (ai - 1) + dy -> window row k = (ai - 1) + dy + 3; column ax + dx = 4 wg + a + dx
+                c = win[int'(ai) + 2 + dy][4 + int'(ax[1:0]) + dx];
                 if (dy >= -int'(r_p) && dy <= int'(r_p) && dx >= -int'(r_p) && dx <= int'(r_p)) begin
                     box_a = box_a + 30'(c) * 30'(c);
                     box_b = box_b + 18'(c);
@@ -255,13 +328,13 @@ module lr_top
         v = 41'(fa) * 41'(pix) + 41'(fb);
         f_of = 24'((v + (41'd1 << (4'd8 + shift - 4'd4 - 4'd1))) >> (4'd8 + shift - 4'd4));
     endfunction
-    function automatic logic [11:0] src_at(input logic [PXW-1:0] xx);   // source sample of output (i, xx): window row i + 3
-        return ring[slot_of(4'(int'(i) + 3))][xx[FBX-1:0]];
+    function automatic logic [11:0] src_at(input logic [1:0] lane);   // source sample of output (i, x + lane): window row i + 3
+        return win[int'(i) + 3][4 + int'(lane)];
     endfunction
-    function automatic logic [11:0] sgr_at(input logic [PXW-1:0] xx);   // self-guided blend at column xx (7.17.3)
+    function automatic logic [11:0] sgr_at(input logic [1:0] lane, input logic [PXW-1:0] xx);   // self-guided blend at column xx (7.17.3)
         logic [11:0] cur_pix, sgr_out;
         logic signed [8:0] w0, w1; logic signed [9:0] w2; logic signed [35:0] v; logic [16:0] u; logic signed [35:0] sv;
-        cur_pix = src_at(xx);
+        cur_pix = src_at(lane);
         w0 = 9'(signed'(rec.xqd[7:0])); w1 = 9'(signed'(rec.xqd[15:8])); w2 = 10'sd128 - 10'(w0) - 10'(w1);
         u = 17'(cur_pix) << 4;
         v = 36'(w1) * 36'(signed'({19'b0, u}));
@@ -278,7 +351,7 @@ module lr_top
             logic [PXW-1:0] xx;
             xx = x + PXW'(l);
             out_be[l] = (xx <= seg_x1);
-            out4[l * 12 +: 12] = (st == L_COPY) ? src_at(xx) : (st == L_WIEN) ? wien_at(xx) : sgr_at(xx);
+            out4[l * 12 +: 12] = (st == L_COPY) ? src_at(2'(l)) : (st == L_WIEN) ? wien_at(2'(l)) : sgr_at(2'(l), xx);
         end
     end
 
@@ -286,6 +359,10 @@ module lr_top
     logic ld_pend;                                      // a load read is in flight (lands this cycle)
     logic [PXW-1:0] ld_x;                                  // its x (aligned group of 4)
     always_comb begin
+        lb_we = ld_pend; lb_wslot = k_slot; lb_waddr = GW'(ld_x >> 2);
+        for (int l = 0; l < 4; l++) lb_wdata[l * 12 +: 12] = k_rule[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
+        // the compute phases move to the next group: output states every clock, the box phase at a group's last column
+        win_shift = (st == L_COPY || st == L_WIEN || st == L_BLEND) || (st == L_AB && ax[1:0] == 2'd3);
         s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule[PXW-1:0]);
         d_we = 1'b0; d_plane = plane; d_x = FBX'(x); d_y = FBY'(y0 + PXW'(i)); d_wdata = 12'd0;
         d4_we = 1'b0; d4_be = out_be; d4_wdata = out4;
@@ -298,13 +375,14 @@ module lr_top
     assign busy = (st != L_IDLE);
 
     // ---------------------------------------------------------------- FSM
+    // a compute row starts with the window prologue: wg = the group of its first column, then the state after
+    task automatic start_row(input logic signed [PXS-1:0] first_col, input st_t next);
+        wg <= first_col >>> 2; pro <= 2'd0; st_after <= next; st <= L_WPRO;
+    endtask
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        if (ld_pend)                                                      // the group issued last cycle lands
-            for (int l = 0; l < 4; l++)
-                if (ld_x + PXW'(l) <= plane_end_x)
-                    ring[k_slot][ld_x[FBX-1:0] + FBX'(l)] <= k_rule[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
-        ld_pend <= 1'b0;
+        ld_pend <= 1'b0;                                                  // (the landing group is written by lb_we)
+        if (win_shift) wg <= wg + PXS'(1);
         if (rst) begin
             st <= L_IDLE;
             for (int s = 0; s < RING; s++) ring_ok[s] <= 1'b0;
@@ -336,19 +414,23 @@ module lr_top
             L_DECIDE: begin
                 i <= 3'd0; x <= seg_x0; pss <= 1'b0;
                 if (hh == 3'd0) st <= L_UNIT_NEXT;
-                else if (ftype == RESTORE_NONE || lrr_rec.lr_type == RESTORE_NONE) st <= L_COPY;
-                else if (lrr_rec.lr_type == RESTORE_WIENER) st <= L_WIEN;
+                else if (ftype == RESTORE_NONE || lrr_rec.lr_type == RESTORE_NONE) start_row(PXS'(signed'({2'b0, seg_x0})), L_COPY);
+                else if (lrr_rec.lr_type == RESTORE_WIENER) start_row(PXS'(signed'({2'b0, seg_x0})), L_WIEN);
                 else begin
-                    if (sp[15:14] != 2'd0) begin pss <= 1'b0; ai <= 3'd0; ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1); st <= L_AB; end
-                    else if (sp[6:5] != 2'd0) begin pss <= 1'b1; ai <= 3'd0; ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1); st <= L_AB; end
-                    else st <= L_BLEND;
+                    if (sp[15:14] != 2'd0) begin pss <= 1'b0; ai <= 3'd0; ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1); start_row(PXS'(signed'({2'b0, seg_x0})) - PXS'(1), L_AB); end
+                    else if (sp[6:5] != 2'd0) begin pss <= 1'b1; ai <= 3'd0; ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1); start_row(PXS'(signed'({2'b0, seg_x0})) - PXS'(1), L_AB); end
+                    else start_row(PXS'(signed'({2'b0, seg_x0})), L_BLEND);
                 end
+            end
+            L_WPRO: begin                                                     // four clocks: request wg-1, wg, wg+1; the last lands
+                if (pro == 2'd3) st <= st_after;
+                pro <= pro + 2'd1;
             end
             L_COPY, L_WIEN, L_BLEND: begin                                    // four output samples per clock
                 if (x + PXW'(4) <= seg_x1) x <= x + PXW'(4);
                 else begin
                     x <= seg_x0;
-                    if (i + 3'd1 < hh) i <= i + 3'd1;
+                    if (i + 3'd1 < hh) begin i <= i + 3'd1; start_row(PXS'(signed'({2'b0, seg_x0})), st); end
                     else st <= L_UNIT_NEXT;
                 end
             end
@@ -357,13 +439,13 @@ module lr_top
                 if (ax < PXS'(signed'({2'b0, seg_x1})) + PXS'(1)) ax <= ax + PXS'(1);
                 else begin
                     ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1);
-                    if (ai + 3'd1 < 3'(hh) + 3'd2) ai <= ai + 3'd1;
+                    if (ai + 3'd1 < 3'(hh) + 3'd2) begin ai <= ai + 3'd1; start_row(PXS'(signed'({2'b0, seg_x0})) - PXS'(1), L_AB); end
                     else st <= L_PASS_NEXT;
                 end
             end
             L_PASS_NEXT: begin
-                if (!pss && sp[6:5] != 2'd0) begin pss <= 1'b1; ai <= 3'd0; ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1); st <= L_AB; end
-                else begin i <= 3'd0; x <= seg_x0; st <= L_BLEND; end
+                if (!pss && sp[6:5] != 2'd0) begin pss <= 1'b1; ai <= 3'd0; ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1); start_row(PXS'(signed'({2'b0, seg_x0})) - PXS'(1), L_AB); end
+                else begin i <= 3'd0; x <= seg_x0; start_row(PXS'(signed'({2'b0, seg_x0})), L_BLEND); end
             end
             L_UNIT_NEXT: begin
                 if (uc + PXW'(1) < unit_cols) begin uc <= uc + PXW'(1); st <= L_UNIT; end
