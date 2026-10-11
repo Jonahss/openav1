@@ -71,6 +71,10 @@ module mi_store
     end
     assign rd_info = mi_lf_t'(i_rdata_a);
     assign rd2_info = mi_lf_t'(i_rdata_b);
+    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
+    logic [4:0] lf_tx0 [0:N-1];
+    logic [4:0] lf_tx1 [0:N-1];
+    logic [4:0] lf_tx2 [0:N-1];
     logic t_we0, t_we1, t_we2; logic [ML2R+ML2C-1:0] t_waddr, t_raddr; logic [4:0] t_wdata, t_rdata0, t_rdata1, t_rdata2; logic [1:0] txr_plane_q;
     always_ff @(posedge clk) begin
         if (t_we0) lf_tx0[t_waddr] <= t_wdata;
@@ -86,9 +90,6 @@ module mi_store
     end
     always_ff @(posedge clk) txr_plane_q <= txr_plane;
     assign txr_sz = (txr_plane_q == 2'd0) ? t_rdata0 : (txr_plane_q == 2'd1) ? t_rdata1 : t_rdata2;
-    logic [4:0] lf_tx0 [0:N-1];
-    logic [4:0] lf_tx1 [0:N-1];
-    logic [4:0] lf_tx2 [0:N-1];
 
     function automatic logic [ML2R+ML2C-1:0] idx(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
         idx = {ML2R'(row), ML2C'(col)};

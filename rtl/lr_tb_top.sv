@@ -31,6 +31,7 @@ module lr_tb_top
                    .cdr_row64(SBW'(0)), .cdr_col64(SBW'(0)), .cdr_val(cdr_val_u),
                    .lr_we, .lr_rec, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec);
     logic s0_re, s1_re, d_we; logic [1:0] s_plane, d_plane; logic [FBX-1:0] s_x, d_x; logic [FBY-1:0] s_y, d_y; logic [11:0] s0_rdata, s1_rdata, d_wdata;
+    logic [47:0] u0_4, u1_4, u2_4, d4_wdata; logic d4_we; logic [3:0] d4_be;
     lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start, .ly_first(PXW'(0)), .ly_last(hdr.frame_height - PXW'(1)), .busy, .done, .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
                                          .s0_re, .s1_re, .s_plane, .s_x, .s_y, .s0_rdata, .s1_rdata, .s0_rdata4(u0_4), .s1_rdata4(u1_4), .d4_we, .d4_be, .d4_wdata, .d_we, .d_plane, .d_x, .d_y, .d_wdata);
     logic [11:0] u0, u1, u2;
@@ -38,7 +39,6 @@ module lr_tb_top
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_h0 (.we1(!busy && h_we && !h_buf), .plane1(h_plane), .x1(h_x), .y1(h_y), .d1(h_wdata),
                                                 .we4(1'b0), .plane4(2'd0), .x4('0), .y4('0), .d4('0),
                                                 .we(w_h0_we), .be(w_h0_be), .plane(w_h0_pl), .x(w_h0_x), .y(w_h0_y), .data(w_h0_d));
-    logic [47:0] u0_4, u1_4, u2_4, d4_wdata; logic d4_we; logic [3:0] d4_be;
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb0 (.clk, .re(busy && s0_re), .r_plane(s_plane), .r_x(s_x), .r_y(s_y), .rdata(s0_rdata), .rdata4(u0_4),
                                                                         .we(w_h0_we), .w_be(w_h0_be), .w_plane(w_h0_pl), .w_x(w_h0_x), .w_y(w_h0_y), .w_data(w_h0_d),
                                                                         .h_plane(2'd0), .h_x('0), .h_y('0), .h_rdata(u0));

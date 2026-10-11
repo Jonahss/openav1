@@ -168,6 +168,20 @@ module recon_top
     assign ib_rx1 = ib_clip(ib_x0 + PXS'(signed'({7'b0, ib_j})) + PXS'(1), ib_lastx);
     assign ib_ry0 = ib_clip(ib_y0 + PXS'(signed'({7'b0, ib_i})), ib_lasty);
     assign ib_ry1 = ib_clip(ib_y0 + PXS'(signed'({7'b0, ib_i})) + PXS'(1), ib_lasty);
+    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
+    typedef enum logic [4:0] {
+        R_IDLE, R_SETUP,
+        R_PAL, R_PAL_LAST,
+        R_EDGE, R_IP_START, R_IP_W,
+        R_CFL_L, R_CFL_D, R_CFL_START, R_CFL_W,
+        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST,
+        R_FIN, R_MIW
+    } rst_t;
+    rst_t rs;
+    logic sb_start, blk_take;
+    logic [MIW-1:0] sb_r, sb_c;
+    logic [5:0] sb_size4;
+    logic [11:0] pix_max;
     logic [11:0] ib_out;
     always_comb begin
         logic [19:0] a0, a1;
@@ -318,7 +332,6 @@ module recon_top
             end
         end
     end
-    logic [5:0] sb_size4;
     assign sb_size4 = hdr.sb128 ? 6'd32 : 6'd16;
     logic [PXW-1:0] max_luma_w, max_luma_h;
 
@@ -437,15 +450,6 @@ module recon_top
     qm_rom u_qm (.clk, .addr(qm_addr), .data(qm_data));
 
     // ================================================================ per-transform-block FSM
-    typedef enum logic [4:0] {
-        R_IDLE, R_SETUP,
-        R_PAL, R_PAL_LAST,
-        R_EDGE, R_IP_START, R_IP_W,
-        R_CFL_L, R_CFL_D, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST,
-        R_FIN, R_MIW
-    } rst_t;
-    rst_t rs;
     logic tx_ack;                                          // registered: the transform block was fully written (R_MIW)
     // cycle counters per transform-FSM state and per block-FSM state (simulation profiling; read through the
     // hierarchy by the testbench, never reset except by rst)
@@ -460,8 +464,7 @@ module recon_top
             perf_bst[bst] <= perf_bst[bst] + 32'd1;
         end
     end
-    logic sb_start, blk_take, tx_take, tx_pop;
-    logic [MIW-1:0] sb_r, sb_c;
+    logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
     assign sb_r = ev_sb_r; assign sb_c = ev_sb_c;
     assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE);
@@ -515,7 +518,6 @@ module recon_top
     assign mid = 12'(13'd1 << (hdr.bit_depth - 4'd1));
     assign mid_m1 = mid - 12'd1;
     assign mid_p1 = mid + 12'd1;
-    logic [11:0] pix_max;
     assign pix_max = 12'((13'd1 << hdr.bit_depth) - 13'd1);
 
     // edge entry k -> (side, idx, is_const, const value, read coordinates)

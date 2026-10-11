@@ -152,6 +152,9 @@ module tile_syntax
     logic bq_go; logic [CDF_AW-1:0] bq_addr; logic [3:0] bq_n; logic [1:0] bq_kind;
     // motion info of the frame (intra block copy)
     logic mvm_we, mvm_busy, mvm_clr, mvr_written; logic [MIW-1:0] mvm_r, mvm_c, mvr_row, mvr_col; logic [5:0] mvm_bw4, mvm_bh4; mv_ent_t mvm_data, mvr_ent;
+    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
+    logic [MIW-1:0] sb_r, sb_c;
+    logic [5:0]  sb4;                          // 16 or 32
     mv_mem #(.ML2R(ML2R), .ML2C(ML2C)) u_mvm (.clk, .rst, .we(mvm_we), .w_r(mvm_r), .w_c(mvm_c), .w_bw4(mvm_bw4), .w_bh4(mvm_bh4),
                                               .w_data(mvm_data), .busy(mvm_busy), .clr(mvm_clr), .clr_row(sb_r), .clr_n(sb4),
                                               .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
@@ -196,8 +199,6 @@ module tile_syntax
         if (rst) perf_st <= '{default: 32'd0};
         else perf_st[st] <= perf_st[st] + 32'd1;
     end
-    logic [MIW-1:0] sb_r, sb_c;
-    logic [5:0]  sb4;                          // 16 or 32
     assign sb4 = hdr.sb128 ? 6'd32 : 6'd16;
     logic [5:0] half4, quarter4;
     logic [4:0] sub_size, split_size;

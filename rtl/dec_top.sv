@@ -79,11 +79,15 @@ module dec_top
     // event queue: the syntax decoder runs ahead of reconstruction; a palette block is released (blk_ack) only
     // once reconstruction has drained the queue, because its colour map lives in the syntax stage
     logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
+    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
+    logic rc_busy, cdef_en, sr_sub;
+    logic [MIW-1:0] cd_rd_row, cd_rd_col; logic [SBW-1:0] cdr_row64, cdr_col64; logic [3:0] cdr_val; mi_lf_t cd_rd_info;
+    logic [11:0] lf_rdata, cd_rdata, lr0_rdata, sr0_rdata, lr1_rdata, sr1_rdata; logic [47:0] lf_rdata4, cd_rdata4;
     rec_fifo u_q (.clk, .rst, .flush(tile_start), .sb_start, .sb_r, .sb_c, .blk_info, .blk_rec, .tx_done, .tx_rec, .tx_ack, .w_slot(q_slot_w),
                   .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight);
     assign blk_ack = pal_hold && !ev_valid && !rc_busy;
 
-    logic fb_re, fb_we, rc_busy; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
+    logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
     logic fb2_we; logic [1:0] fb2_plane; logic [FBX-1:0] fb2_x; logic [FBY-1:0] fb2_y; logic [11:0] fb2_wdata;
     logic fb4_we; logic [1:0] fb4_plane; logic [FBX-1:0] fb4_x; logic [FBY-1:0] fb4_y; logic [47:0] fb4_wdata, fb_rdata4;
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
@@ -121,7 +125,6 @@ module dec_top
                                          .fb_re(lf_re), .fb_we(lf_we), .fb_plane(lf_plane), .fb_x(lf_x), .fb_y(lf_y), .fb_wdata(lf_wdata), .fb_rdata(lf_rdata),
                                          .fb_rdata4(lf_rdata4), .fb4_we(lf4_we), .fb4_x(lf4_x), .fb4_y(lf4_y), .fb4_wdata(lf4_wdata));
     // CDEF: reads the deblocked frame (fb0, shared port while cdef_busy), writes CdefFrame (fb1)
-    logic [MIW-1:0] cd_rd_row, cd_rd_col; logic [SBW-1:0] cdr_row64, cdr_col64; logic [3:0] cdr_val; mi_lf_t cd_rd_info;
     logic cd_re, cd_we; logic [1:0] cd_plane, cd_dplane; logic [FBX-1:0] cd_x, cd_dx; logic [FBY-1:0] cd_y, cd_dy; logic [11:0] cd_wdata;
     logic cd4_we; logic [1:0] cd4_plane; logic [FBX-1:0] cd4_x; logic [FBY-1:0] cd4_y; logic [47:0] cd4_wdata;
     cdef_top #(.FBX(FBX), .FBY(FBY)) u_cdef (.clk, .rst, .hdr, .ch, .start(cdef_start_i), .row_first(cd_row_first), .row_last(cd_row_last), .busy(cdef_busy), .done(cdef_done),
@@ -152,7 +155,6 @@ module dec_top
     logic [11:0] h_rdata0, h_rdata1, h_rdata2;
     // ---- frame buffers, one port per stage (no sharing: the stages may run concurrently)
     // fb0 = pre-filter / deblocked frame. reads: recon, LF, CDEF, LR source 0 (and source 1 when CDEF did not run), SR; writes: recon, LF, SR
-    logic [11:0] lf_rdata, cd_rdata, lr0_rdata, sr0_rdata, lr1_rdata, sr1_rdata; logic [47:0] lf_rdata4, cd_rdata4;
     logic [4:0] fb0_re; logic [9:0] fb0_rplane; logic [5*FBX-1:0] fb0_rx; logic [5*FBY-1:0] fb0_ry; logic [59:0] fb0_rdata; logic [239:0] fb0_rdata4;
     logic [2:0] fb0_we; logic [11:0] fb0_be; logic [5:0] fb0_wplane; logic [3*FBX-1:0] fb0_wx; logic [3*FBY-1:0] fb0_wy; logic [143:0] fb0_wdata;
     logic [47:0] unused_rd4;
@@ -218,7 +220,7 @@ module dec_top
     logic [4:0]  sb_shift;                                // log2(mi rows per superblock row)
     logic [SBW-1:0]  n_rows, n_stripes;
     logic [7:0]  row_cnt [0:NSBR-1];
-    logic        cdef_en, sr_en, lr_en, sr_sub, seq_active, rows_seen;
+    logic        sr_en, lr_en, seq_active, rows_seen;
     // frame geometry and stage enables follow the live header (the host loads it with the first tile, after frame_start)
     assign n_rows = SBW'((hdr.mi_rows + (MIW'(1) << sb_shift) - MIW'(1)) >> sb_shift);
     assign n_stripes = SBW'(((hdr.frame_height + PXW'(7)) >> 6) + PXW'(1));
