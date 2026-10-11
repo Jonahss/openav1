@@ -14,7 +14,9 @@
 // window rows in registers is filled from the line buffers as the column position advances, with the
 // picture's edge samples replicated into the columns outside the plane, so every tap is a fixed window
 // position and the filter datapath is pure arithmetic. (The previous version indexed a 16 x W register
-// array at some 200 random columns per clock and synthesised to 622k LUTs.)
+// array at some 200 random columns per clock and synthesised to 622k LUTs.) The self-guided A/B tables
+// (two passes x six rows x W+2 positions) are stored the same way: 12 line RAMs of 4-position words, written
+// as the box phase completes each word, read into a second window that moves with the output column.
 module lr_top
   import syn_pkg::*;
   import lr_pkg::*;
@@ -310,19 +312,69 @@ module lr_top
         a2_v = a2;
         b2_v = 22'((b2 + (43'd1 << 11)) >> 12);
     end
-    // A/B of both passes over the band: rows 0..5 (block row + 1), columns indexed by plane x + 1
-    logic [8:0]  A [0:1][0:5][0:W+1];
-    logic [21:0] B [0:1][0:5][0:W+1];
-    // F for output (i, x) of pass p, then the blend
-    function automatic logic [23:0] f_of(input logic p, input logic [2:0] fi, input logic [PXW-1:0] fx, input logic [11:0] pix);
+    // A/B of both passes over the band: rows 0..5 (block row + 1), positions indexed by plane x + 1.
+    // 12 line RAMs (pass, row) of 4-position words {a2, b2} x 4; the box phase accumulates a word and writes it
+    // at its last position (or the row's end); the blend reads them through a window like the pixel one.
+    localparam int ABW = 31;                               // {a2[8:0], b2[21:0]}
+    logic             ab_we;
+    logic [3:0]       ab_wline;                            // pass * 6 + row
+    logic [GW:0]      ab_waddr, ab_raddr;                  // positions reach W + 1: one word more than the pixels
+    logic [4*ABW-1:0] ab_wdata;
+    logic [4*ABW-1:0] ab_rdata [0:11];
+    genvar ga;
+    generate
+        for (ga = 0; ga < 12; ga++) begin : g_ab
+            logic [4*ABW-1:0] mem [0:(1 << GW)];
+            always_ff @(posedge clk) begin
+                if (ab_we && ab_wline == 4'(ga)) mem[ab_waddr] <= ab_wdata;
+                ab_rdata[ga] <= mem[ab_raddr];
+            end
+        end
+    endgenerate
+    logic [4*ABW-1:0] ab_acc;                              // the word being built, one position per clock
+    logic [PXS-1:0]   ab_idx;                              // position index of the box position: ax + 1
+    assign ab_idx = ax + PXS'(1);
+    always_comb begin
+        ab_we = (st == L_AB) && (ab_idx[1:0] == 2'd3 || ax >= PXS'(signed'({2'b0, seg_x1})) + PXS'(1));
+        ab_wline = 4'(pss) * 4'd6 + 4'(ai);
+        ab_waddr = (GW + 1)'(ab_idx >>> 2);
+        ab_wdata = ab_acc;                                 // earlier positions of the word, plus the newest at its lane
+        ab_wdata[ABW * int'(ab_idx[1:0]) +: ABW] = {a2_v, b2_v};
+        ab_raddr = (rq_g < 0) ? (GW + 1)'(0) : (rq_g > PXS'(1 << GW)) ? (GW + 1)'(1 << GW) : (GW + 1)'(rq_g);
+    end
+    always_ff @(posedge clk)
+        if (st == L_AB) ab_acc[ABW * int'(ab_idx[1:0]) +: ABW] <= {a2_v, b2_v};
+    // the A/B window: [pass][row][12 columns] = positions 4 (wg - 1) + c; f_of for lane l, offset dx reads
+    // position x + l + 1 + dx = column 4 + l + 1 + dx
+    logic [8:0]  awin [0:1][0:5][0:11];
+    logic [21:0] bwin [0:1][0:5][0:11];
+    always_ff @(posedge clk) begin
+        if (st == L_WPRO) begin
+            if (pro != 2'd0)
+                for (int pp = 0; pp < 2; pp++) for (int rr = 0; rr < 6; rr++) for (int l = 0; l < 4; l++) begin
+                    awin[pp][rr][4 * (int'(pro) - 1) + l] <= ab_rdata[pp * 6 + rr][l * ABW + 22 +: 9];
+                    bwin[pp][rr][4 * (int'(pro) - 1) + l] <= ab_rdata[pp * 6 + rr][l * ABW +: 22];
+                end
+        end else if (win_shift) begin
+            for (int pp = 0; pp < 2; pp++) for (int rr = 0; rr < 6; rr++) begin
+                for (int c = 0; c < 8; c++) begin awin[pp][rr][c] <= awin[pp][rr][c + 4]; bwin[pp][rr][c] <= bwin[pp][rr][c + 4]; end
+                for (int l = 0; l < 4; l++) begin
+                    awin[pp][rr][8 + l] <= ab_rdata[pp * 6 + rr][l * ABW + 22 +: 9];
+                    bwin[pp][rr][8 + l] <= ab_rdata[pp * 6 + rr][l * ABW +: 22];
+                end
+            end
+        end
+    end
+    // F for output (i, x + lane) of pass p, then the blend
+    function automatic logic [23:0] f_of(input logic p, input logic [2:0] fi, input logic [1:0] lane, input logic [11:0] pix);
         logic [15:0] fa; logic [28:0] fb; logic [3:0] wgt; logic [3:0] shift; logic [40:0] v;
         fa = 16'd0; fb = 29'd0;
         for (int dy = -1; dy <= 1; dy++)
             for (int dx = -1; dx <= 1; dx++) begin
                 if (!p) wgt = (((int'(fi) + dy) & 1) != 0) ? ((dx == 0) ? 4'd6 : 4'd5) : 4'd0;
                 else wgt = (dx == 0 || dy == 0) ? 4'd4 : 4'd3;
-                fa = fa + 16'(wgt) * 16'(A[p][3'(int'(fi) + 1 + dy)][int'(fx) + 1 + dx]);
-                fb = fb + 29'(wgt) * 29'(B[p][3'(int'(fi) + 1 + dy)][int'(fx) + 1 + dx]);
+                fa = fa + 16'(wgt) * 16'(awin[p][int'(fi) + 1 + dy][5 + int'(lane) + dx]);
+                fb = fb + 29'(wgt) * 29'(bwin[p][int'(fi) + 1 + dy][5 + int'(lane) + dx]);
             end
         shift = (!p && fi[0]) ? 4'd4 : 4'd5;
         v = 41'(fa) * 41'(pix) + 41'(fb);
@@ -331,15 +383,15 @@ module lr_top
     function automatic logic [11:0] src_at(input logic [1:0] lane);   // source sample of output (i, x + lane): window row i + 3
         return win[int'(i) + 3][4 + int'(lane)];
     endfunction
-    function automatic logic [11:0] sgr_at(input logic [1:0] lane, input logic [PXW-1:0] xx);   // self-guided blend at column xx (7.17.3)
+    function automatic logic [11:0] sgr_at(input logic [1:0] lane);   // self-guided blend of lane (column x + lane) (7.17.3)
         logic [11:0] cur_pix, sgr_out;
         logic signed [8:0] w0, w1; logic signed [9:0] w2; logic signed [35:0] v; logic [16:0] u; logic signed [35:0] sv;
         cur_pix = src_at(lane);
         w0 = 9'(signed'(rec.xqd[7:0])); w1 = 9'(signed'(rec.xqd[15:8])); w2 = 10'sd128 - 10'(w0) - 10'(w1);
         u = 17'(cur_pix) << 4;
         v = 36'(w1) * 36'(signed'({19'b0, u}));
-        v = v + 36'(w0) * ((sp[15:14] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b0, i, xx, cur_pix)})) : 36'(signed'({19'b0, u})));
-        v = v + 36'(w2) * ((sp[6:5] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b1, i, xx, cur_pix)})) : 36'(signed'({19'b0, u})));
+        v = v + 36'(w0) * ((sp[15:14] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b0, i, lane, cur_pix)})) : 36'(signed'({19'b0, u})));
+        v = v + 36'(w2) * ((sp[6:5] != 2'd0) ? 36'(signed'({12'b0, f_of(1'b1, i, lane, cur_pix)})) : 36'(signed'({19'b0, u})));
         sv = (v + 36'sd1024) >>> 11;
         sgr_out = (sv < 0) ? 12'd0 : (sv > 36'(signed'({24'b0, 12'((13'd1 << bd) - 13'd1)}))) ? 12'((13'd1 << bd) - 13'd1) : 12'(sv);
         return sgr_out;
@@ -351,7 +403,7 @@ module lr_top
             logic [PXW-1:0] xx;
             xx = x + PXW'(l);
             out_be[l] = (xx <= seg_x1);
-            out4[l * 12 +: 12] = (st == L_COPY) ? src_at(2'(l)) : (st == L_WIEN) ? wien_at(2'(l)) : sgr_at(2'(l), xx);
+            out4[l * 12 +: 12] = (st == L_COPY) ? src_at(2'(l)) : (st == L_WIEN) ? wien_at(2'(l)) : sgr_at(2'(l));
         end
     end
 
@@ -435,7 +487,6 @@ module lr_top
                 end
             end
             L_AB: begin                                                       // one box position per clock
-                A[pss][ai][(FBX + 1)'(ax + PXS'(1))] <= a2_v; B[pss][ai][(FBX + 1)'(ax + PXS'(1))] <= b2_v;
                 if (ax < PXS'(signed'({2'b0, seg_x1})) + PXS'(1)) ax <= ax + PXS'(1);
                 else begin
                     ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1);
