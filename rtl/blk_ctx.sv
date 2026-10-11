@@ -7,8 +7,12 @@
 //   * above/left palette colours (indexed by col&31 / row&31; only consulted inside the same 64x64)
 //   * Above/LeftLevelContext + Above/LeftDcContext per plane (coefficient contexts), packed 16 per word
 // Reads are one-shot requests (blk_req / tx_req) answered a few cycles later; writes are multi-cycle
-// (one word per cycle) with a busy flag. Word packing: 16 4x4 units per word so any aligned block or
-// transform block touches at most 2 words per row.
+// with a busy flag. Word packing: 16 4x4 units per word so any aligned block or transform block touches at
+// most 2 words per row.
+// Storage (v2, mappable): the three big arrays (segment strip, above records, above level contexts) are
+// block RAMs with one write port and one registered read port; every access is sequenced (a query reads
+// its words one per clock, a partial-word update is read-then-write over two clocks) and the tile-start
+// clear of the level contexts is a valid bit per word. The small per-superblock arrays stay registers.
 module blk_ctx
   import blk_tables_pkg::*;
   import syn_pkg::*;
@@ -70,13 +74,39 @@ module blk_ctx
     localparam int WORDS = 1 << CAW;
 
     // ------------------------------------------------------------------ storage
+    // RAMs (one write, one registered read each): the segment strip [row(5)][word(CAW)] x 16 x 3b, the above
+    // records per word, the above level contexts {plane, word} x 16 x {dc[1:0], lvl[5:0]}
+    logic [47:0]         seg_strip [0:32*WORDS-1];
+    logic                sg_we; logic [CAW+4:0] sg_waddr, sg_raddr; logic [47:0] sg_wdata, sg_rdata;
+    always_ff @(posedge clk) begin
+        if (sg_we) seg_strip[sg_waddr] <= sg_wdata;
+        sg_rdata <= seg_strip[sg_raddr];
+    end
     logic [16*REC_W-1:0] above_rec [0:WORDS-1];
+    logic                ar_we; logic [CAW-1:0] ar_waddr, ar_raddr; logic [16*REC_W-1:0] ar_wdata, ar_rdata;
+    always_ff @(posedge clk) begin
+        if (ar_we) above_rec[ar_waddr] <= ar_wdata;
+        ar_rdata <= above_rec[ar_raddr];
+    end
+    logic [127:0]        a_lvl [0:3*WORDS-1];
+    logic                al_we; logic [CAW+1:0] al_waddr, al_raddr; logic [127:0] al_wdata, al_rdata_m, al_rdata;
+    logic [3*WORDS-1:0]  al_ok;                             // word written since the tile start (clear_above = all 0)
+    logic                al_ok_q;
+    always_ff @(posedge clk) begin
+        if (al_we) a_lvl[al_waddr] <= al_wdata;
+        al_rdata_m <= a_lvl[al_raddr];
+        al_ok_q <= al_ok[al_raddr];
+    end
+    assign al_rdata = al_ok_q ? al_rdata_m : 128'd0;
+    always_ff @(posedge clk) begin
+        if (clear_above) al_ok <= '0;
+        else if (al_we) al_ok[al_waddr] <= 1'b1;
+    end
+    // registers: left records, segment ids of the previous superblock row's last row, palettes, left levels
     logic [16*REC_W-1:0] left_rec  [0:1];
-    logic [47:0]         seg_strip [0:32*WORDS-1];           // [row(5)][word(CAW)] x 16 x 3b
     logic [47:0]         seg_prev  [0:WORDS-1];
     logic [95:0]         a_pal [0:1][0:31];                  // plane, col & 31
     logic [95:0]         l_pal [0:1][0:31];
-    logic [127:0]        a_lvl [0:2][0:WORDS-1];             // plane, word: 16 x {dc[1:0], lvl[5:0]}
     logic [127:0]        l_lvl [0:2][0:1];
 
     // ------------------------------------------------------------------ helpers
@@ -97,8 +127,10 @@ module blk_ctx
     assign rm1 = q_r - MIW'(1);
     assign cm1 = q_c - MIW'(1);
 
-    typedef enum logic [2:0] {Q_IDLE, Q_WAIT, Q_RD, Q_OUT} q_t;
+    typedef enum logic [2:0] {Q_IDLE, Q_WAIT, Q_RD, Q_RD1, Q_RD2, Q_RD3, Q_OUT} q_t;
     q_t qst;
+    logic q_top;                               // the block sits on the superblock's top row: row r-1 is in seg_prev
+    assign q_top = ((q_r[4:0] & sbm) == 5'd0);
     logic w_idle;                              // no block-end write in flight (declared below)
     logic [16*REC_W-1:0] a_word, l_word, a_word1, l_word1;
     logic [47:0] seg_w_u, seg_w_ul, seg_w_l;
@@ -114,20 +146,19 @@ module blk_ctx
                 qst <= Q_WAIT;
             end
             Q_WAIT: if (w_idle) qst <= Q_RD;
+            // RAM reads one word per clock (addresses in the port mux below), landing the clock after:
+            //   Q_RD: strip(u), above(c)     Q_RD1: strip(ul), above(c+1)     Q_RD2: strip(l)     Q_RD3: last lands
             Q_RD: begin
-                // memory reads (addresses from q_*)
-                a_word  <= above_rec[q_c[CAW+3:4]];
-                a_word1 <= above_rec[q_c[CAW+3:4] + CAW'(1)];
                 l_word  <= left_rec[q_r[4]];
                 l_word1 <= left_rec[~q_r[4]];
-                // row r-1 is inside the current superblock row unless the block sits on the superblock's top row
-                seg_w_u  <= ((q_r[4:0] & sbm) != 5'd0) ? seg_strip[{rm1[4:0] & sbm, q_c[CAW+3:4]}] : seg_prev[q_c[CAW+3:4]];
-                seg_w_ul <= ((q_r[4:0] & sbm) != 5'd0) ? seg_strip[{rm1[4:0] & sbm, cm1[CAW+3:4]}] : seg_prev[cm1[CAW+3:4]];
-                seg_w_l  <= seg_strip[{q_r[4:0] & sbm, cm1[CAW+3:4]}];
+                if (q_top) begin seg_w_u <= seg_prev[q_c[CAW+3:4]]; seg_w_ul <= seg_prev[cm1[CAW+3:4]]; end
                 ap_y <= a_pal[0][q_c[4:0]]; ap_u <= a_pal[1][q_c[4:0]];
                 lp_y <= l_pal[0][q_r[4:0]]; lp_u <= l_pal[1][q_r[4:0]];
-                qst <= Q_OUT;
+                qst <= Q_RD1;
             end
+            Q_RD1: begin if (!q_top) seg_w_u <= sg_rdata; a_word <= ar_rdata; qst <= Q_RD2; end
+            Q_RD2: begin if (!q_top) seg_w_ul <= sg_rdata; a_word1 <= ar_rdata; qst <= Q_RD3; end
+            Q_RD3: begin seg_w_l <= sg_rdata; qst <= Q_OUT; end
             Q_OUT: begin
                 nb_valid <= 1'b1;
                 qst <= Q_IDLE;
@@ -176,7 +207,7 @@ module blk_ctx
     // ------------------------------------------------------------------ block end write FSM
     // rows: seg strip words for each of bh4 rows (1 or 2 words); above records (1 or 2 words); left records
     // (1 or 2 words); palette colours per column (bw4, only if any palette) and per row (bh4).
-    typedef enum logic [2:0] {W_IDLE, W_SEG, W_AREC, W_LREC, W_PALA, W_PALL, W_SBROW} w_t;
+    typedef enum logic [3:0] {W_IDLE, W_SEG, W_SEG_W, W_AREC, W_AREC_W, W_LREC, W_PALA, W_PALL, W_SBROW, W_SBROW_W} w_t;
     w_t wst;
     logic [5:0]  wi;                            // row / column counter
     logic        wj;                            // word half (0/1) for 32-wide blocks
@@ -236,16 +267,18 @@ module blk_ctx
                     wr_r <= q_r; wr_c <= q_c; wr_bw4 <= q_bw4; wr_bh4 <= q_bh4; wseg <= w_seg;
                     wi <= 6'd0; wj <= 1'b0;
                     wst <= W_SEG;
-                end else if (sbrow_end || sbrow_pend) begin
-                    sbrow_pend <= 1'b0;
+                end else if ((sbrow_end || sbrow_pend) && (qst == Q_IDLE || qst == Q_WAIT || qst == Q_OUT)) begin
+                    sbrow_pend <= 1'b0;                    // (a query's reads share the strip RAM port: let them finish)
                     cp_i <= '0; wst <= W_SBROW;
                 end
             end
-            W_SEG: begin
+            W_SEG: begin                                   // the word is read this clock (address below), merged next
                 if (sbrow_end) sbrow_pend <= 1'b1;
-                if (wrow < mi_rows)
-                    seg_strip[{wrow[4:0] & sbm, wcol_word}] <= merge_seg(seg_strip[{wrow[4:0] & sbm, wcol_word}],
-                                                                        wj ? 4'd0 : wr_c[3:0], n_cols_word, wseg);
+                wst <= W_SEG_W;
+            end
+            W_SEG_W: begin
+                if (sbrow_end) sbrow_pend <= 1'b1;
+                wst <= W_SEG;
                 if (wr_bw4 > 6'd16 && !wj) wj <= 1'b1;
                 else begin
                     wj <= 1'b0;
@@ -253,10 +286,13 @@ module blk_ctx
                     else wi <= wi + 6'd1;
                 end
             end
-            W_AREC: begin
+            W_AREC: begin                                  // read the record word, merge and write next clock
                 if (sbrow_end) sbrow_pend <= 1'b1;
-                above_rec[wcol_word] <= merge_rec(above_rec[wcol_word], wj ? 4'd0 : wr_c[3:0], n_cols_word, wrec, wvartx, wtx_col, wj ? 5'd16 : 5'd0);
-                if (wr_bw4 > 6'd16 && !wj) wj <= 1'b1;
+                wst <= W_AREC_W;
+            end
+            W_AREC_W: begin
+                if (sbrow_end) sbrow_pend <= 1'b1;
+                if (wr_bw4 > 6'd16 && !wj) begin wj <= 1'b1; wst <= W_AREC; end
                 else begin wj <= 1'b0; wst <= W_LREC; end
             end
             W_LREC: begin
@@ -279,12 +315,34 @@ module blk_ctx
                 if (wi + 6'd1 >= wr_bh4) begin wi <= 6'd0; wst <= W_IDLE; end
                 else wi <= wi + 6'd1;
             end
-            W_SBROW: begin                                 // seg_prev := last row of the superblock row
-                seg_prev[cp_i] <= seg_strip[{sbm, cp_i}];
-                if (cp_i == CAW'(WORDS - 1)) wst <= W_IDLE;
+            W_SBROW: begin                                 // seg_prev := last row of the superblock row: read word cp_i,
+                wst <= W_SBROW_W;                          // it lands next clock
+            end
+            W_SBROW_W: begin
+                seg_prev[cp_i] <= sg_rdata;
+                if (cp_i == CAW'(WORDS - 1)) wst <= W_IDLE; else wst <= W_SBROW;
                 cp_i <= cp_i + 1'b1;
             end
             default: wst <= W_IDLE;
+        endcase
+    end
+
+    // ---- segment strip and above record RAM ports: the write FSM owns them while busy, queries otherwise
+    always_comb begin
+        sg_we = 1'b0; sg_waddr = {wrow[4:0] & sbm, wcol_word}; sg_wdata = merge_seg(sg_rdata, wj ? 4'd0 : wr_c[3:0], n_cols_word, wseg);
+        ar_we = 1'b0; ar_waddr = wcol_word; ar_wdata = merge_rec(ar_rdata, wj ? 4'd0 : wr_c[3:0], n_cols_word, wrec, wvartx, wtx_col, wj ? 5'd16 : 5'd0);
+        sg_raddr = {wrow[4:0] & sbm, wcol_word}; ar_raddr = wcol_word;
+        case (wst)
+            W_SEG_W:  sg_we = (wrow < mi_rows);
+            W_AREC_W: ar_we = 1'b1;
+            W_SBROW, W_SBROW_W: sg_raddr = {sbm, cp_i};
+            default: ;
+        endcase
+        case (qst)
+            Q_RD:  begin sg_raddr = {rm1[4:0] & sbm, q_c[CAW+3:4]};  ar_raddr = q_c[CAW+3:4]; end
+            Q_RD1: begin sg_raddr = {rm1[4:0] & sbm, cm1[CAW+3:4]};  ar_raddr = q_c[CAW+3:4] + CAW'(1); end
+            Q_RD2: sg_raddr = {q_r[4:0] & sbm, cm1[CAW+3:4]};
+            default: ;
         endcase
     end
 
@@ -296,9 +354,9 @@ module blk_ctx
     logic [5:0]  t_w4, t_h4;
     logic [4:0]  t_sz, t_bs;
     logic [127:0] t_aw, t_lw;
-    typedef enum logic [1:0] {T_IDLE, T_RD, T_OUT} t_t;
+    typedef enum logic [2:0] {T_IDLE, T_RD, T_RD2, T_OUT, T_LW} t_t;   // T_LW: level write, word read the clock before
     t_t tst;
-    logic t_pend;
+    logic t_pend, t_we_pend, rbc_pend;
     logic [MIW-1:0] max_x4, max_y4;
     assign max_x4 = (t_plane != 2'd0 && ssx) ? (mi_cols >> 1) : mi_cols;
     assign max_y4 = (t_plane != 2'd0 && ssy) ? (mi_rows >> 1) : mi_rows;
@@ -367,7 +425,7 @@ module blk_ctx
     endfunction
 
     // reset_block_context: zero the block's above columns / left rows in every plane (multi-cycle)
-    typedef enum logic [2:0] {R_IDLE, R_A, R_L} r_t;
+    typedef enum logic [2:0] {R_IDLE, R_A, R_A_W, R_L} r_t;
     r_t rstt;
     logic [1:0] rp;
     logic       rj;
@@ -384,13 +442,24 @@ module blk_ctx
     end
     logic tbusy;
     assign tbusy = (tst != T_IDLE) || (rstt != R_IDLE);
+    logic [7:0] t_wd;                          // {dc category, cul level} being written in T_LW
+    // ---- above level context RAM port: the reset engine, the level write, the context read
+    always_comb begin
+        al_we = 1'b0; al_waddr = {t_plane, t_x4[CAW+3:4]}; al_raddr = {t_plane, t_x4[CAW+3:4]};
+        al_wdata = merge_lvl(al_rdata, t_x4[3:0], 6'(t_w4), t_wd);
+        case (rstt)
+            R_A:   al_raddr = {rp, rc0[CAW+3:4] + CAW'(rj)};
+            R_A_W: begin al_we = 1'b1; al_waddr = {rp, rc0[CAW+3:4] + CAW'(rj)};
+                         al_wdata = merge_lvl(al_rdata, rj ? 4'd0 : rc0[3:0], rn_c > 6'd16 ? 6'd16 : rn_c, 8'd0); end
+            default: if (tst == T_LW) al_we = 1'b1;
+        endcase
+    end
 
     always_ff @(posedge clk) begin
         tx_valid <= 1'b0;
         if (rst) begin
-            tst <= T_IDLE; rstt <= R_IDLE; t_pend <= 1'b0;
+            tst <= T_IDLE; rstt <= R_IDLE; t_pend <= 1'b0; t_we_pend <= 1'b0; rbc_pend <= 1'b0;
         end else begin
-            if (clear_above) for (int p = 0; p < 3; p++) for (int w = 0; w < WORDS; w++) a_lvl[p][w] <= '0;
             if (clear_left)  for (int p = 0; p < 3; p++) begin l_lvl[p][0] <= '0; l_lvl[p][1] <= '0; end
             case (tst)
                 T_IDLE: if (tx_req || t_pend) begin
@@ -400,16 +469,20 @@ module blk_ctx
                     end
                     if (rstt == R_IDLE && !rbc_we) begin t_pend <= 1'b0; tst <= T_RD; end
                     else t_pend <= 1'b1;
-                end else if (tx_we) begin
-                    a_lvl[t_plane][t_x4[CAW+3:4]] <= merge_lvl(a_lvl[t_plane][t_x4[CAW+3:4]], t_x4[3:0],
-                                                               6'(t_w4), {w_dccat, w_cul});
-                    l_lvl[t_plane][t_y4[4]] <= merge_lvl(l_lvl[t_plane][t_y4[4]], t_y4[3:0], 6'(t_h4), {w_dccat, w_cul});
+                end else if (tx_we || t_we_pend) begin     // the above word is read this clock (address below), merged and
+                    if (tx_we) begin
+                        l_lvl[t_plane][t_y4[4]] <= merge_lvl(l_lvl[t_plane][t_y4[4]], t_y4[3:0], 6'(t_h4), {w_dccat, w_cul});
+                        t_wd <= {w_dccat, w_cul};          // written in T_LW
+                    end
+                    if (rstt == R_IDLE && !rbc_we) begin t_we_pend <= 1'b0; tst <= T_LW; end
+                    else t_we_pend <= 1'b1;                // the reset engine owns the level RAM: write afterwards
                 end
-                T_RD: begin
-                    t_aw <= a_lvl[t_plane][t_x4[CAW+3:4]];
+                T_LW: tst <= T_IDLE;
+                T_RD: begin                                // above word read this clock, lands in T_RD2
                     t_lw <= l_lvl[t_plane][t_y4[4]];
-                    tst <= T_OUT;
+                    tst <= T_RD2;
                 end
+                T_RD2: begin t_aw <= al_rdata; tst <= T_OUT; end
                 T_OUT: begin
                     az_ctx <= az_now;
                     dcs_ctx <= (dcs_wide < 0) ? 2'd1 : (dcs_wide > 0) ? 2'd2 : 2'd0;
@@ -420,12 +493,14 @@ module blk_ctx
             endcase
             // reset_block_context
             case (rstt)
-                R_IDLE: if (rbc_we) begin rp <= 2'd0; rj <= 1'b0; rb_r <= q_r; rb_c <= q_c; rb_bw4 <= q_bw4; rb_bh4 <= q_bh4; rb_hc <= hc; rstt <= R_A; end
-                R_A: begin
-                    // above: columns rc0 .. rc0+rn_c-1 (aligned; up to 2 words)
-                    a_lvl[rp][rc0[CAW+3:4] + CAW'(rj)] <= merge_lvl(a_lvl[rp][rc0[CAW+3:4] + CAW'(rj)],
-                                                                    rj ? 4'd0 : rc0[3:0], rn_c > 6'd16 ? 6'd16 : rn_c, 8'd0);
-                    if (rn_c > 6'd16 && !rj) rj <= 1'b1;
+                R_IDLE: begin
+                    if (rbc_we) begin rb_r <= q_r; rb_c <= q_c; rb_bw4 <= q_bw4; rb_bh4 <= q_bh4; rb_hc <= hc; end
+                    if ((rbc_we || rbc_pend) && tst != T_LW && !t_we_pend) begin rbc_pend <= 1'b0; rp <= 2'd0; rj <= 1'b0; rstt <= R_A; end
+                    else if (rbc_we) rbc_pend <= 1'b1;     // a level write is using the RAM: start afterwards
+                end
+                R_A: rstt <= R_A_W;                        // above: columns rc0 .. rc0+rn_c-1 (aligned; up to 2 words):
+                R_A_W: begin                               // word read in R_A, zeroed entries written here
+                    if (rn_c > 6'd16 && !rj) begin rj <= 1'b1; rstt <= R_A; end
                     else begin rj <= 1'b0; rstt <= R_L; end
                 end
                 R_L: begin
