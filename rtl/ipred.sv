@@ -253,7 +253,7 @@ module ipred #(
 
     // ------------------------------------------------------------------ control state
     typedef enum logic [3:0] {
-        S_IDLE, S_SETUP, S_CORNER, S_EF, S_UP_A, S_UP_L, S_DC_SUM, S_PIX, S_DONE
+        S_IDLE, S_SETUP, S_CORNER, S_EF, S_UP_A, S_UP_L, S_DC_SUM, S_PIX, S_FI2, S_DONE
     } state_t;
     state_t state;
 
@@ -395,8 +395,13 @@ module ipred #(
     logic [PW-1:0] fi_next [2][4];
     // (the taps p[], i2, j4 and pr live at module scope: declared inside this block, Vivado folded the whole
     // filter to a constant and dropped the patch buffer, while simulation matched dav1d)
+    // A filter-intra patch takes two cycles: S_PIX forms the 56 tap products (buffer read, tap mux, one
+    // multiply) into fi_m_r, and S_FI2 sums, rounds and clips them, writes the patch and emits its top row.
+    // Done in one cycle the products-and-sum were a seven-deep DSP cascade into fi_buf, the block's worst path
+    // (-7 ns at 100 MHz, balanced tree or not: Vivado chains the adders through the DSP post-adders).
     int p [7];
-    int fi_m [2][4][7];                 // the taps' products, per output (summed as a tree below)
+    int fi_m [2][4][7];                 // the taps' products, per output (this cycle)
+    logic signed [PW+6:0] fi_m_r [2][4][7];   // ... registered (|tap| < 32, so PW+6 bits hold the product)
     int i2, j4, pr;
     assign i2 = int'(py) >> 1;          // (own assigns: in the block below they would look to Verilator like a loop
     assign j4 = int'(px) >> 2;          //  through the read ports)
@@ -417,11 +422,10 @@ module ipred #(
         end
         for (int i1 = 0; i1 < 2; i1++)
             for (int j1 = 0; j1 < 4; j1++) begin
-                // the seven products summed as a balanced tree (accumulated in sequence they became a seven-deep
-                // DSP cascade: the block's worst path)
                 for (int t = 0; t < 7; t++) fi_m[i1][j1][t] = int'(fi_tap(l_fimode, 3'((i1 << 2) + j1), 3'(t))) * p[t];
-                pr = ((fi_m[i1][j1][0] + fi_m[i1][j1][1]) + (fi_m[i1][j1][2] + fi_m[i1][j1][3]))
-                   + ((fi_m[i1][j1][4] + fi_m[i1][j1][5]) + fi_m[i1][j1][6]);
+                // second cycle: the registered products summed
+                pr = 0;
+                for (int t = 0; t < 7; t++) pr += int'(fi_m_r[i1][j1][t]);
                 if (pr >= 0) pr = (pr + 8) >> 4; else pr = -((-pr + 8) >> 4);   // Round2Signed(pr, 4)
                 fi_next[i1][j1] = clip1i(pr, pix_max);
             end
@@ -692,11 +696,28 @@ module ipred #(
                 end
             end
             S_PIX: begin
-                if (first_of_patch)
-                    fi_buf[{py[4:1], px[4:2]}] <= fi_next_packed;   // filter-intra blocks are at most 32x32
-                for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= first_of_patch ? fi_next[0][l] : pix4[l];
+                if (first_of_patch) begin                           // filter-intra, even row: products this cycle
+                    for (int i1 = 0; i1 < 2; i1++)
+                        for (int j1 = 0; j1 < 4; j1++)
+                            for (int t = 0; t < 7; t++) fi_m_r[i1][j1][t] <= (PW + 7)'(fi_m[i1][j1][t]);
+                    state <= S_FI2;
+                end else begin
+                    for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= pix4[l];
+                    out_valid <= 1'b1;
+                    out_x <= px; out_y <= py;
+                    if (px + 7'd4 >= w) begin
+                        px <= 0;
+                        if (py + 7'd1 == h) state <= S_DONE;
+                        else py <= py + 6'd1;
+                    end else px <= px + 6'd4;
+                end
+            end
+            S_FI2: begin                                            // the patch, summed: stored and its top row emitted
+                fi_buf[{py[4:1], px[4:2]}] <= fi_next_packed;       // filter-intra blocks are at most 32x32
+                for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= fi_next[0][l];
                 out_valid <= 1'b1;
                 out_x <= px; out_y <= py;
+                state <= S_PIX;
                 if (px + 7'd4 >= w) begin
                     px <= 0;
                     if (py + 7'd1 == h) state <= S_DONE;
