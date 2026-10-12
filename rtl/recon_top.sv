@@ -345,6 +345,8 @@ module recon_top
     logic [4:0]  step_x, step_y;                           // in 4x4 units
     logic [MIW-1:0] mi_row, mi_col;                           // luma MI position of the tx block
     logic [5:0]  sb_row_p, sb_col_p;                       // (row & sbMask) >> sub, plane units
+    logic [33:0] fin_mask;                                 // the transform block's columns as bdf bits (x+1): one shifter
+    assign fin_mask = ((34'd1 << step_x) - 34'd1) << (sb_col_p + 6'd1);
     logic [PXW-1:0] max_x, max_y;                             // last valid pixel index in the plane
     logic [PXW-1:0] base_x, base_y;                           // block origin in plane pixels
     logic        is_pal, is_cfl;
@@ -768,14 +770,13 @@ module recon_top
                 R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_FIN; end
                 // ---- bookkeeping + ack
                 R_FIN: begin
-                    for (int yy = 0; yy < 16; yy++)                     // mark the block's area: step_y row ORs
-                        if (yy < int'(step_y)) begin
-                            logic [5:0] r;
-                            logic [33:0] base;
-                            r = sb_row_p + 6'(yy) + 6'd1;
-                            base = sb_start ? bdf_init[t.plane][r] : bdf[t.plane][r];
-                            bdf[t.plane][r] <= base | (((34'd1 << step_x) - 34'd1) << (sb_col_p + 6'd1));
-                        end
+                    // mark the block's area: every row decides statically whether it is one of the block's
+                    // step_y rows and ORs in the one shared column mask (dynamic row indices made 16 row
+                    // decoders and 16 shifters: 64k LUTs)
+                    for (int p = 0; p < 3; p++)
+                        for (int yy = 0; yy < 34; yy++)
+                            if (p == int'(t.plane) && yy >= int'(sb_row_p) + 1 && yy < int'(sb_row_p) + 1 + int'(step_y))
+                                bdf[p][yy] <= (sb_start ? bdf_init[p][yy] : bdf[p][yy]) | fin_mask;
                     if (t.plane == 2'd0) begin max_luma_w <= t.x + PXW'(tw_px); max_luma_h <= t.y + PXW'(th_px); end
                     rs <= R_MIW;
                 end
