@@ -74,7 +74,7 @@ module mv_mem
             if (we) begin
                 w_busy <= 1'b1; b_r <= w_r; b_c <= w_c; b_w <= w_bw4; b_h <= w_bh4; b_d <= w_data; wi <= 6'd0; wj <= 6'd0;
             end
-        end else begin
+        end else if (!c_busy) begin             // the fill pauses while the clear engine holds the bitmap's write port
             if (wj + 6'd1 < b_w) wj <= wj + 6'd1;
             else begin
                 wj <= 6'd0;
@@ -86,9 +86,11 @@ module mv_mem
     end
     // the area-fill writer stores one entry per cycle while busy (the FSM above steps wi/wj over the block)
     assign w_rr = b_r + MIW'(wi); assign w_cc = b_c + MIW'(wj);
-    assign m_we = w_busy && !rst;
+    assign m_we = w_busy && !c_busy && !rst;
     assign m_waddr = idx(w_rr, w_cc);
-    // the clear engine zeroes a row, the area-fill sets a bit; the two never overlap (the tile decoder waits on busy)
+    // The clear engine zeroes a row, the area-fill sets a bit. The bitmap has one write port, so the fill pauses
+    // while a clear runs: a clear starting during a fill took the port and the fill's bits for those cycles were
+    // lost (2026-10-11, tall Argon streams: the clear and the fill do overlap, busy covers both).
     always_comb begin
         wb_cur  = written[w_rr[5:0]];
         wb_we   = !rst && (c_busy || w_busy);
