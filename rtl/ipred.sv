@@ -267,6 +267,22 @@ module ipred #(
     logic [19:0]   dc_sum, dc_part;   // running sum and the sum of the next (up to) 8 edge samples
     logic [8:0]    dc_n;              // number of edge samples summed
     logic [PW-1:0] dc_val;
+    // Both edges: (sum + (w+h)/2) / (w+h). With m = min(w, h), w+h = m * {2, 3, 5} (ratios 1:1, 2:1, 4:1), so
+    // the division is a shift by log2 m followed by an exact division by 2, 3 or 5, done as a multiply by a
+    // scaled reciprocal (exact for all x < 65536; x < 20480 here). The general 20-bit division by one of the
+    // twelve possible sizes was 41 CARRY8 levels, the block's worst path.
+    logic [2:0]    dc_lmin, dc_ratio;
+    logic [19:0]   dc_x;
+    logic [31:0]   dc_q3, dc_q5;
+    logic [PW-1:0] dc_both;
+    always_comb begin
+        dc_lmin  = (l_log2w < l_log2h) ? l_log2w : l_log2h;
+        dc_ratio = (l_log2w < l_log2h) ? l_log2h - l_log2w : l_log2w - l_log2h;   // 0, 1, 2 -> divisor 2, 3, 5
+        dc_x     = (dc_sum + 20'(wh >> 1)) >> dc_lmin;
+        dc_q3    = (32'(dc_x[15:0]) * 32'd43691) >> 17;                             // x / 3
+        dc_q5    = (32'(dc_x[15:0]) * 32'd52429) >> 18;                             // x / 5
+        dc_both  = (dc_ratio == 3'd0) ? PW'(dc_x >> 1) : (dc_ratio == 3'd1) ? PW'(dc_q3) : PW'(dc_q5);
+    end
 
     logic [5:0]    px, py;
 
@@ -689,7 +705,7 @@ module ipred #(
                 if (k < dc_n) begin dc_sum <= dc_sum + dc_part; k <= k + 9'd8; end
                 else begin
                     // both edges: (sum + (w+h)/2) / (w+h), an exact integer division by one of 12 possible sizes
-                    if (l_hl && l_ha) dc_val <= PW'((dc_sum + 20'(wh >> 1)) / 20'(wh));
+                    if (l_hl && l_ha) dc_val <= dc_both;
                     else if (l_hl)    dc_val <= PW'((dc_sum + 20'(h >> 1)) >> l_log2h);
                     else              dc_val <= PW'((dc_sum + 20'(w >> 1)) >> l_log2w);
                     state <= S_PIX;
