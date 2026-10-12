@@ -46,7 +46,7 @@ module cdef_top
 );
     typedef enum logic [4:0] {
         C_IDLE, C_BLK, C_RD_IDX, C_RD_S0, C_RD_S1, C_RD_S2, C_RD_S3, C_DECIDE,
-        C_PLANE, C_WIN, C_WIN_LAST, C_DIR_A, C_DIR_B, C_DIR, C_PIX,
+        C_PLANE, C_WIN, C_WIN_LAST, C_DIR_A, C_DIR_B, C_DIR_C, C_DIR, C_PIX,
         C_COPY_RD, C_COPY_WR, C_NEXT
     } st_t;
     st_t st;
@@ -116,7 +116,7 @@ module cdef_top
                 part[7][(i >> 1) + j] = part[7][(i >> 1) + j] + s;
             end
     end
-    // The search is pipelined over two extra luma states (C_DIR_A, C_DIR_B): the partial sums are registered
+    // The search is pipelined over three extra luma states (C_DIR_A, C_DIR_B, C_DIR_C): the partial sums are registered
     // from the complete window, the costs from the registered partial sums, and C_DIR picks the direction from
     // the registered costs. As one cone (window -> sums -> squares -> costs -> best -> strength) it was 21 ns.
     logic signed [15:0] part_r [0:7][0:14];
@@ -146,14 +146,15 @@ module cdef_top
     end
     logic signed [42:0] cost_r [0:7];
     always_ff @(posedge clk) for (int d = 0; d < 8; d++) cost_r[d] <= cost[d];
-    logic [2:0]  best_dir_c;
-    logic signed [42:0] best_cost_c;
-    logic [31:0] var_c;
+    logic [2:0]  best_dir_w, best_dir_c;
+    logic signed [42:0] best_cost_w;
+    logic [31:0] var_w, var_c;
     always_comb begin
-        best_cost_c = 43'sd0; best_dir_c = 3'd0;
-        for (int d = 0; d < 8; d++) if (cost_r[d] > best_cost_c) begin best_cost_c = cost_r[d]; best_dir_c = 3'(d); end
-        var_c = 32'((best_cost_c - cost_r[(best_dir_c + 3'd4) & 3'd7]) >>> 10);
+        best_cost_w = 43'sd0; best_dir_w = 3'd0;
+        for (int d = 0; d < 8; d++) if (cost_r[d] > best_cost_w) begin best_cost_w = cost_r[d]; best_dir_w = 3'(d); end
+        var_w = 32'((best_cost_w - cost_r[(best_dir_w + 3'd4) & 3'd7]) >>> 10);
     end
+    always_ff @(posedge clk) begin best_dir_c <= best_dir_w; var_c <= var_w; end   // third stage (C_DIR_C)
     logic [2:0]  ydir;
     logic [31:0] var_;
 
@@ -309,7 +310,8 @@ module cdef_top
             end
             C_WIN_LAST: st <= (fplane == 2'd0) ? C_DIR_A : C_DIR;   // the last read lands here; luma searches
             C_DIR_A: st <= C_DIR_B;                      // partial sums registered from the complete window
-            C_DIR_B: st <= C_DIR;                        // costs registered
+            C_DIR_B: st <= C_DIR_C;                      // costs registered
+            C_DIR_C: st <= C_DIR;                        // best direction and variance registered
             // ---- direction (luma) and strengths, one cycle
             C_DIR: begin
                 logic [5:0] sv; logic [3:0] pri, sec; logic [11:0] ps; logic [3:0] var_str; logic [31:0] v6;
