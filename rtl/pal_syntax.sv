@@ -123,12 +123,14 @@ module pal_syntax
     endfunction
 
     // 8-entry bubble sorting network (entries >= n hold 12'hFFF so they sink to the end)
+    // Odd-even transposition sort: eight rounds of up to four independent compare-exchanges, so the network is
+    // eight compare-exchanges deep (a bubble sort's seven passes were 28 deep in series: tile_syntax's worst path).
     function automatic logic [95:0] sort8(input logic [95:0] v);
         logic [11:0] a [8];
         logic [11:0] t;
         for (int k = 0; k < 8; k++) a[k] = v[12 * k +: 12];
-        for (int p = 0; p < 7; p++)
-            for (int k = 0; k < 7 - p; k++)
+        for (int r = 0; r < 8; r++)
+            for (int k = r % 2; k < 7; k += 2)
                 if (a[k] > a[k + 1]) begin t = a[k]; a[k] = a[k + 1]; a[k + 1] = t; end
         for (int k = 0; k < 8; k++) sort8[12 * k +: 12] = a[k];
     endfunction
