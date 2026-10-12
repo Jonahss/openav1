@@ -110,6 +110,11 @@ def gate_term(p):
     v = ' || '.join(f"vout[n][{pos[g][0]}]" for g in gates[p])
     return f"(({v}) && {p} !== vout[n][{pos[p][0]}:{pos[p][1]}])"
 gate_expr = ''.join(f" || {gate_term(p)}" for p in gated)
+# the same gates for the X-masked compare: a mask that is 0 over a gated output while its strobes are low
+gmask_body = ''.join("        gmask[%d:%d] = {%d{(%s)}};\n" % (pos[p][0], pos[p][1], pos[p][0] - pos[p][1] + 1,
+                     ' || '.join("e[%d]" % pos[g][0] for g in gates[p])) for p in gated)
+gmask_fn = ("    function automatic logic [NO-1:0] gmask(input logic [NO-1:0] e);   // 0 over outputs that are don't-care this cycle\n"
+            "        gmask = '1;\n" + gmask_body + "    endfunction\n")
 def conn(p, w, stype):
     if stype is None: return f'.{p}({p})'
     return ', '.join(f'.\\{nm} ({p}[{hi}:{lo}])' if hi != lo else f'.\\{nm} ({p}[{hi}])' for nm, hi, lo in leaf_fields(stype, p, w - 1))
@@ -146,7 +151,7 @@ module replay_{name};
     function automatic logic [NO-1:0] xbits(input logic [NO-1:0] v);   // 1 where v is X or Z
         for (int b = 0; b < NO; b++) xbits[b] = (v[b] === 1'bx || v[b] === 1'bz);
     endfunction
-    initial begin
+{gmask_fn}    initial begin
         errs = 0; cmp = 0; n = 0;
         for (int i = 0; i < preroll; i++) begin
             {{{', '.join(p for p, _, _ in ins_v)}}} = vin[0];
@@ -157,7 +162,7 @@ module replay_{name};
             #4;
             if (n > 2) begin
                 cmp++;
-                if (xmask ? ((({{{', '.join(p for p, _, _ in outs)}}} ^ vout[n]) & ~xbits({{{', '.join(p for p, _, _ in outs)}}})) !== '0)
+                if (xmask ? ((({{{', '.join(p for p, _, _ in outs)}}} ^ vout[n]) & ~xbits({{{', '.join(p for p, _, _ in outs)}}}) & gmask(vout[n])) !== '0)
                           : ({cmp_always}{gate_expr})) begin
                     errs++;
                     if (errs <= 100000) $display("MISMATCH cycle %0d: got %h exp %h", n, {{{', '.join(p for p, _, _ in outs)}}}, vout[n]);
