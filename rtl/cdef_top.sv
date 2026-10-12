@@ -44,9 +44,9 @@ module cdef_top
     output logic [FBY-1:0] dst4_y,
     output logic [47:0] dst4_wdata
 );
-    typedef enum logic [3:0] {
+    typedef enum logic [4:0] {
         C_IDLE, C_BLK, C_RD_IDX, C_RD_S0, C_RD_S1, C_RD_S2, C_RD_S3, C_DECIDE,
-        C_PLANE, C_WIN, C_WIN_LAST, C_DIR, C_PIX,
+        C_PLANE, C_WIN, C_WIN_LAST, C_DIR_A, C_DIR_B, C_DIR, C_PIX,
         C_COPY_RD, C_COPY_WR, C_NEXT
     } st_t;
     st_t st;
@@ -116,6 +116,11 @@ module cdef_top
                 part[7][(i >> 1) + j] = part[7][(i >> 1) + j] + s;
             end
     end
+    // The search is pipelined over two extra luma states (C_DIR_A, C_DIR_B): the partial sums are registered
+    // from the complete window, the costs from the registered partial sums, and C_DIR picks the direction from
+    // the registered costs. As one cone (window -> sums -> squares -> costs -> best -> strength) it was 21 ns.
+    logic signed [15:0] part_r [0:7][0:14];
+    always_ff @(posedge clk) for (int d = 0; d < 8; d++) for (int k = 0; k < 15; k++) part_r[d][k] <= part[d][k];
     function automatic logic signed [42:0] sq(input logic signed [15:0] p);
         sq = 43'(p) * 43'(p);
     endfunction
@@ -123,29 +128,31 @@ module cdef_top
     always_comb begin
         for (int d = 0; d < 8; d++) cost[d] = 43'sd0;
         for (int i = 0; i < 8; i++) begin
-            cost[2] = cost[2] + sq(part[2][i]) * 43'sd105;
-            cost[6] = cost[6] + sq(part[6][i]) * 43'sd105;
+            cost[2] = cost[2] + sq(part_r[2][i]) * 43'sd105;
+            cost[6] = cost[6] + sq(part_r[6][i]) * 43'sd105;
         end
         for (int i = 0; i < 7; i++) begin
-            cost[0] = cost[0] + (sq(part[0][i]) + sq(part[0][14 - i])) * 43'(signed'({33'b0, div_table(4'(i + 1))}));
-            cost[4] = cost[4] + (sq(part[4][i]) + sq(part[4][14 - i])) * 43'(signed'({33'b0, div_table(4'(i + 1))}));
+            cost[0] = cost[0] + (sq(part_r[0][i]) + sq(part_r[0][14 - i])) * 43'(signed'({33'b0, div_table(4'(i + 1))}));
+            cost[4] = cost[4] + (sq(part_r[4][i]) + sq(part_r[4][14 - i])) * 43'(signed'({33'b0, div_table(4'(i + 1))}));
         end
-        cost[0] = cost[0] + sq(part[0][7]) * 43'sd105;
-        cost[4] = cost[4] + sq(part[4][7]) * 43'sd105;
+        cost[0] = cost[0] + sq(part_r[0][7]) * 43'sd105;
+        cost[4] = cost[4] + sq(part_r[4][7]) * 43'sd105;
         for (int o = 0; o < 4; o++) begin
             int d;
             d = 2 * o + 1;
-            for (int j = 0; j < 5; j++) cost[d] = cost[d] + sq(part[d][3 + j]) * 43'sd105;
-            for (int j = 0; j < 3; j++) cost[d] = cost[d] + (sq(part[d][j]) + sq(part[d][10 - j])) * 43'(signed'({33'b0, div_table(4'(2 * j + 2))}));
+            for (int j = 0; j < 5; j++) cost[d] = cost[d] + sq(part_r[d][3 + j]) * 43'sd105;
+            for (int j = 0; j < 3; j++) cost[d] = cost[d] + (sq(part_r[d][j]) + sq(part_r[d][10 - j])) * 43'(signed'({33'b0, div_table(4'(2 * j + 2))}));
         end
     end
+    logic signed [42:0] cost_r [0:7];
+    always_ff @(posedge clk) for (int d = 0; d < 8; d++) cost_r[d] <= cost[d];
     logic [2:0]  best_dir_c;
     logic signed [42:0] best_cost_c;
     logic [31:0] var_c;
     always_comb begin
         best_cost_c = 43'sd0; best_dir_c = 3'd0;
-        for (int d = 0; d < 8; d++) if (cost[d] > best_cost_c) begin best_cost_c = cost[d]; best_dir_c = 3'(d); end
-        var_c = 32'((best_cost_c - cost[(best_dir_c + 3'd4) & 3'd7]) >>> 10);
+        for (int d = 0; d < 8; d++) if (cost_r[d] > best_cost_c) begin best_cost_c = cost_r[d]; best_dir_c = 3'(d); end
+        var_c = 32'((best_cost_c - cost_r[(best_dir_c + 3'd4) & 3'd7]) >>> 10);
     end
     logic [2:0]  ydir;
     logic [31:0] var_;
@@ -300,7 +307,9 @@ module cdef_top
                     else st <= C_WIN_LAST;
                 end
             end
-            C_WIN_LAST: st <= C_DIR;                     // the last read lands here
+            C_WIN_LAST: st <= (fplane == 2'd0) ? C_DIR_A : C_DIR;   // the last read lands here; luma searches
+            C_DIR_A: st <= C_DIR_B;                      // partial sums registered from the complete window
+            C_DIR_B: st <= C_DIR;                        // costs registered
             // ---- direction (luma) and strengths, one cycle
             C_DIR: begin
                 logic [5:0] sv; logic [3:0] pri, sec; logic [11:0] ps; logic [3:0] var_str; logic [31:0] v6;
