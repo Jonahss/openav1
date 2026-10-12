@@ -56,6 +56,16 @@ module replay_lf_top;
     function automatic logic [NO-1:0] xbits(input logic [NO-1:0] v);   // 1 where v is X or Z
         for (int b = 0; b < NO; b++) xbits[b] = (v[b] === 1'bx || v[b] === 1'bz);
     endfunction
+    function automatic logic [NO-1:0] gmask(input logic [NO-1:0] e);   // 0 over outputs that are don't-care this cycle
+        gmask = '1;
+        gmask[79:68] = {12{(e[101])}};
+        gmask[100:99] = {2{(e[101] || e[102])}};
+        gmask[98:89] = {10{(e[101] || e[102])}};
+        gmask[88:80] = {9{(e[101] || e[102])}};
+        gmask[66:57] = {10{(e[67])}};
+        gmask[56:48] = {9{(e[67])}};
+        gmask[47:0] = {48{(e[67])}};
+    endfunction
     initial begin
         errs = 0; cmp = 0; n = 0;
         for (int i = 0; i < preroll; i++) begin
@@ -67,7 +77,7 @@ module replay_lf_top;
             #4;
             if (n > 2) begin
                 cmp++;
-                if (xmask ? ((({busy, done, rd_row, rd_col, txr_plane, txr_row, txr_col, fb_re, fb_we, fb_plane, fb_x, fb_y, fb_wdata, fb4_we, fb4_x, fb4_y, fb4_wdata} ^ vout[n]) & ~xbits({busy, done, rd_row, rd_col, txr_plane, txr_row, txr_col, fb_re, fb_we, fb_plane, fb_x, fb_y, fb_wdata, fb4_we, fb4_x, fb4_y, fb4_wdata})) !== '0)
+                if (xmask ? ((({busy, done, rd_row, rd_col, txr_plane, txr_row, txr_col, fb_re, fb_we, fb_plane, fb_x, fb_y, fb_wdata, fb4_we, fb4_x, fb4_y, fb4_wdata} ^ vout[n]) & ~xbits({busy, done, rd_row, rd_col, txr_plane, txr_row, txr_col, fb_re, fb_we, fb_plane, fb_x, fb_y, fb_wdata, fb4_we, fb4_x, fb4_y, fb4_wdata}) & gmask(vout[n])) !== '0)
                           : (busy !== vout[n][158:158] || done !== vout[n][157:157] || rd_row !== vout[n][156:144] || rd_col !== vout[n][143:131] || txr_plane !== vout[n][130:129] || txr_row !== vout[n][128:116] || txr_col !== vout[n][115:103] || fb_re !== vout[n][102:102] || fb_we !== vout[n][101:101] || fb4_we !== vout[n][67:67] || ((vout[n][101]) && fb_wdata !== vout[n][79:68]) || ((vout[n][101] || vout[n][102]) && fb_plane !== vout[n][100:99]) || ((vout[n][101] || vout[n][102]) && fb_x !== vout[n][98:89]) || ((vout[n][101] || vout[n][102]) && fb_y !== vout[n][88:80]) || ((vout[n][67]) && fb4_x !== vout[n][66:57]) || ((vout[n][67]) && fb4_y !== vout[n][56:48]) || ((vout[n][67]) && fb4_wdata !== vout[n][47:0]))) begin
                     errs++;
                     if (errs <= 100000) $display("MISMATCH cycle %0d: got %h exp %h", n, {busy, done, rd_row, rd_col, txr_plane, txr_row, txr_col, fb_re, fb_we, fb_plane, fb_x, fb_y, fb_wdata, fb4_we, fb4_x, fb4_y, fb4_wdata}, vout[n]);
