@@ -361,17 +361,23 @@ module blk_ctx
     assign max_x4 = (t_plane != 2'd0 && ssx) ? (mi_cols >> 1) : mi_cols;
     assign max_y4 = (t_plane != 2'd0 && ssy) ? (mi_rows >> 1) : mi_rows;
 
+    // The context aggregates (max level, nonzero, dc-sign sum over the block's above and left entries) are
+    // computed from the above word as it lands from the RAM (al_rdata, T_RD2) and the already-read left word,
+    // and registered; T_OUT derives the contexts from the registers. (Computed in T_OUT from t_aw, the
+    // 16-entry max trees plus the context compare chain were tile_syntax's worst path, 44 LUT levels.)
     logic [7:0] top_max, left_max;
     logic       above_nz, left_nz;
     logic [3:0] dcs_sum;                        // biased by 8
     logic [7:0] bw, bh;
     logic [6:0] tw, th;
+    logic [7:0] top_max_r, left_max_r;
+    logic       above_nz_r, left_nz_r;
     always_comb begin
         top_max = 8'd0; left_max = 8'd0; above_nz = 1'b0; left_nz = 1'b0; dcs_sum = 4'd8;
         for (int k = 0; k < 16; k++) begin
             logic [7:0] ae, le;
             logic a_in, l_in;
-            ae = t_aw[8*k +: 8]; le = t_lw[8*k +: 8];
+            ae = al_rdata[8*k +: 8]; le = t_lw[8*k +: 8];
             a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & ~MIW'(15)) + MIW'(k) < max_x4);
             l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & ~MIW'(15)) + MIW'(k) < max_y4);
             if (a_in) begin
@@ -391,25 +397,25 @@ module blk_ctx
     always_comb begin
         if (t_plane == 2'd0) begin
             if (bw == 8'(tw) && bh == 8'(th)) az_now = 4'd0;
-            else if (top_max == 0 && left_max == 0) az_now = 4'd1;
-            else if (top_max == 0 || left_max == 0) az_now = 4'd2 + 4'((top_max > left_max ? top_max : left_max) > 8'd3);
-            else if ((top_max > left_max ? top_max : left_max) <= 8'd3) az_now = 4'd4;
-            else if ((top_max < left_max ? top_max : left_max) <= 8'd3) az_now = 4'd5;
+            else if (top_max_r == 0 && left_max_r == 0) az_now = 4'd1;
+            else if (top_max_r == 0 || left_max_r == 0) az_now = 4'd2 + 4'((top_max_r > left_max_r ? top_max_r : left_max_r) > 8'd3);
+            else if ((top_max_r > left_max_r ? top_max_r : left_max_r) <= 8'd3) az_now = 4'd4;
+            else if ((top_max_r < left_max_r ? top_max_r : left_max_r) <= 8'd3) az_now = 4'd5;
             else az_now = 4'd6;
         end else begin
-            az_now = 4'd7 + 4'(above_nz) + 4'(left_nz) + ((16'(bw) * 16'(bh) > 16'(tw) * 16'(th)) ? 4'd3 : 4'd0);
+            az_now = 4'd7 + 4'(above_nz_r) + 4'(left_nz_r) + ((16'(bw) * 16'(bh) > 16'(tw) * 16'(th)) ? 4'd3 : 4'd0);
         end
     end
 
     // dc_sign ctx: (sum < 0) ? 1 : (sum > 0) ? 2 : 0  where sum = dcs_sum - 8 ... but the spec counts over w4+h4 <= 32
     // entries; dcs_sum is 4 bits biased by 8 -> can wrap for large blocks. Use a wider accumulator.
-    logic signed [7:0] dcs_wide;
+    logic signed [7:0] dcs_wide, dcs_wide_r;
     always_comb begin
         dcs_wide = 8'sd0;
         for (int k = 0; k < 16; k++) begin
             logic [7:0] ae, le;
             logic a_in, l_in;
-            ae = t_aw[8*k +: 8]; le = t_lw[8*k +: 8];
+            ae = al_rdata[8*k +: 8]; le = t_lw[8*k +: 8];
             a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & ~MIW'(15)) + MIW'(k) < max_x4);
             l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & ~MIW'(15)) + MIW'(k) < max_y4);
             if (a_in) begin if (ae[7:6] == 2'd1) dcs_wide = dcs_wide - 8'sd1; else if (ae[7:6] == 2'd2) dcs_wide = dcs_wide + 8'sd1; end
@@ -482,10 +488,14 @@ module blk_ctx
                     t_lw <= l_lvl[t_plane][t_y4[4]];
                     tst <= T_RD2;
                 end
-                T_RD2: begin t_aw <= al_rdata; tst <= T_OUT; end
+                T_RD2: begin
+                    t_aw <= al_rdata; tst <= T_OUT;
+                    top_max_r <= top_max; left_max_r <= left_max; above_nz_r <= above_nz; left_nz_r <= left_nz;
+                    dcs_wide_r <= dcs_wide;
+                end
                 T_OUT: begin
                     az_ctx <= az_now;
-                    dcs_ctx <= (dcs_wide < 0) ? 2'd1 : (dcs_wide > 0) ? 2'd2 : 2'd0;
+                    dcs_ctx <= (dcs_wide_r < 0) ? 2'd1 : (dcs_wide_r > 0) ? 2'd2 : 2'd0;
                     tx_valid <= 1'b1;
                     tst <= T_IDLE;
                 end
