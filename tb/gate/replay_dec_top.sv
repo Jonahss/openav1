@@ -65,11 +65,12 @@ module replay_dec_top;
 `else
     dec_top dut (.*);
 `endif
-    int n, errs, cmp, xmask, preroll;
+    int n, errs, cmp, xmask, preroll, maxerr;
     string vecfile;
     initial begin
         if (!$value$plusargs("vec=%s", vecfile)) vecfile = "vectors.hex";
-        if (!$value$plusargs("xmask=%d", xmask)) xmask = 0;    // 1: X bits of the DUT are don't-care (RTL control)
+        if (!$value$plusargs("xmask=%d", xmask)) xmask = 0;
+        if (!$value$plusargs("maxerr=%d", maxerr)) maxerr = 100000;   // how many MISMATCH lines to print    // 1: X bits of the DUT are don't-care (RTL control)
         if (!$value$plusargs("preroll=%d", preroll)) preroll = 15;   // cycles of vector 0 before the replay: the
                                                                      // funcsim netlist holds GSR for the first 100 ns
         for (int i = 0; i < MAXV; i++) vin[i] = 'x;
@@ -93,7 +94,7 @@ module replay_dec_top;
                 if (xmask ? ((({in_ready, tile_busy, tile_done, tile_done_lvl, unsupported, perf_syn_stall, perf_rec_idle, frame_busy, frame_done, frame_done_lvl, lf_busy, lf_done, cdef_busy, cdef_done, sr_busy, sr_done, lr_busy, lr_done_o, blk_done, blk_rec, tx_done, tx_rec, lr_done, lr_rec, h_rdata} ^ vout[n]) & ~xbits({in_ready, tile_busy, tile_done, tile_done_lvl, unsupported, perf_syn_stall, perf_rec_idle, frame_busy, frame_done, frame_done_lvl, lf_busy, lf_done, cdef_busy, cdef_done, sr_busy, sr_done, lr_busy, lr_done_o, blk_done, blk_rec, tx_done, tx_rec, lr_done, lr_rec, h_rdata})) !== '0)
                           : (in_ready !== vout[n][684:684] || tile_busy !== vout[n][683:683] || tile_done !== vout[n][682:682] || tile_done_lvl !== vout[n][681:681] || unsupported !== vout[n][680:680] || perf_syn_stall !== vout[n][679:648] || perf_rec_idle !== vout[n][647:616] || frame_busy !== vout[n][615:615] || frame_done !== vout[n][614:614] || frame_done_lvl !== vout[n][613:613] || lf_busy !== vout[n][612:612] || lf_done !== vout[n][611:611] || cdef_busy !== vout[n][610:610] || cdef_done !== vout[n][609:609] || sr_busy !== vout[n][608:608] || sr_done !== vout[n][607:607] || lr_busy !== vout[n][606:606] || lr_done_o !== vout[n][605:605] || blk_done !== vout[n][604:604] || blk_rec !== vout[n][603:155] || tx_done !== vout[n][154:154] || tx_rec !== vout[n][153:97] || lr_done !== vout[n][96:96] || lr_rec !== vout[n][95:12] || h_rdata !== vout[n][11:0])) begin
                     errs++;
-                    if (errs <= 100000) $display("MISMATCH cycle %0d: got %h exp %h", n, {in_ready, tile_busy, tile_done, tile_done_lvl, unsupported, perf_syn_stall, perf_rec_idle, frame_busy, frame_done, frame_done_lvl, lf_busy, lf_done, cdef_busy, cdef_done, sr_busy, sr_done, lr_busy, lr_done_o, blk_done, blk_rec, tx_done, tx_rec, lr_done, lr_rec, h_rdata}, vout[n]);
+                    if (errs <= maxerr) $display("MISMATCH cycle %0d: got %h exp %h", n, {in_ready, tile_busy, tile_done, tile_done_lvl, unsupported, perf_syn_stall, perf_rec_idle, frame_busy, frame_done, frame_done_lvl, lf_busy, lf_done, cdef_busy, cdef_done, sr_busy, sr_done, lr_busy, lr_done_o, blk_done, blk_rec, tx_done, tx_rec, lr_done, lr_rec, h_rdata}, vout[n]);
                 end
             end
             #1 clk = 1; #5 clk = 0;

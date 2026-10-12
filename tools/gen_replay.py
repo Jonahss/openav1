@@ -138,11 +138,12 @@ module replay_{name};
 `else
     {name} dut (.*);
 `endif
-    int n, errs, cmp, xmask, preroll;
+    int n, errs, cmp, xmask, preroll, maxerr;
     string vecfile;
     initial begin
         if (!$value$plusargs("vec=%s", vecfile)) vecfile = "vectors.hex";
-        if (!$value$plusargs("xmask=%d", xmask)) xmask = 0;    // 1: X bits of the DUT are don't-care (RTL control)
+        if (!$value$plusargs("xmask=%d", xmask)) xmask = 0;
+        if (!$value$plusargs("maxerr=%d", maxerr)) maxerr = 100000;   // how many MISMATCH lines to print    // 1: X bits of the DUT are don't-care (RTL control)
         if (!$value$plusargs("preroll=%d", preroll)) preroll = 15;   // cycles of vector 0 before the replay: the
                                                                      // funcsim netlist holds GSR for the first 100 ns
         for (int i = 0; i < MAXV; i++) vin[i] = 'x;
@@ -166,7 +167,7 @@ module replay_{name};
                 if (xmask ? ((({{{', '.join(p for p, _, _ in outs)}}} ^ vout[n]) & ~xbits({{{', '.join(p for p, _, _ in outs)}}}) & gmask(vout[n])) !== '0)
                           : ({cmp_always}{gate_expr})) begin
                     errs++;
-                    if (errs <= 100000) $display("MISMATCH cycle %0d: got %h exp %h", n, {{{', '.join(p for p, _, _ in outs)}}}, vout[n]);
+                    if (errs <= maxerr) $display("MISMATCH cycle %0d: got %h exp %h", n, {{{', '.join(p for p, _, _ in outs)}}}, vout[n]);
                 end
             end
             #1 {a.clk} = 1; #5 {a.clk} = 0;
