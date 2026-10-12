@@ -148,6 +148,10 @@ module ipred #(
     logic [16:0] idx_i_r, idx_i_eff;
     logic [16:0] idx_j_r [4], idx_j_eff [4];
     logic        pix_first;
+    // Z1's edge limit (w+h-1) << up_a is constant over a block: registered (it was computed in front of the
+    // edge-RAM address compare every cycle; w, h, up_a are stable at least a cycle before the first S_PIX).
+    logic [9:0]  maxb_r;
+    always_ff @(posedge clk) maxb_r <= 10'((int'(w) + int'(h) - 1) << int'(up_a));
     always_comb begin
         idx_i_eff = pix_first ? 17'(dx) : idx_i_r;
         for (int l = 0; l < 4; l++) idx_j_eff[l] = pix_first ? 17'((l + 1) * int'(dy)) : idx_j_r[l];
@@ -336,7 +340,7 @@ module ipred #(
         end else if (p_angle < 9'd90) begin                                   // Z1
             idx   = idx_i;
             base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
-            maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
+            maxb  = int'(maxb_r);
             if (base < maxb) begin a0 = base; a1 = base + 1; end
             else a0 = maxb;
         end else if (p_angle < 9'd180) begin                                  // Z2
@@ -380,7 +384,7 @@ module ipred #(
                 idx   = idx_i;
                 base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
                 shift = ((idx << int'(up_a)) >> 1) & 31;
-                maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
+                maxb  = int'(maxb_r);
                 inr   = base < maxb;
                 p0 = 23'(int'(vA0) * (32 - shift)); p1 = 23'(int'(vA1) * shift);
             end else if (p_angle < 9'd180) begin                              // Z2
