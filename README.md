@@ -125,6 +125,8 @@ Every block is parameterised so throughput trades against area (butterfly slots,
 4. KV260 bring-up: software header parser and driver on the ARM side, first pictures on a screen.
 5. Inter prediction.
 
+Deferred items and the reasoning behind them: [docs/FUTURE.md](docs/FUTURE.md).
+
 ## License
 
 Apache License 2.0 (see `LICENSE`). Copyright 2026 Jonah Stiennon and contributors. The AV1 specification
