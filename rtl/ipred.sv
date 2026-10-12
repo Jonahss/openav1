@@ -140,6 +140,18 @@ module ipred #(
     logic [8:0]  p_angle;
     logic        up_a, up_l;
     logic [10:0] dx, dy;
+    // The directional index products (i+1)*dx (per row) and (j+1)*dy (per lane) are kept in registers and
+    // stepped as the position advances (+dx per row, +4*dy per lane step), instead of multiplied every cycle in
+    // front of the edge-RAM address (a DSP into the read address was the block's worst path, -2.9 ns at 100 MHz).
+    // pix_first marks the first S_PIX cycle of a block, when the registers are not yet valid: (0+1)*dx = dx and
+    // (l+1)*dy are used directly (dx/dy are registered in S_SETUP, the cycle before at the earliest).
+    logic [16:0] idx_i_r, idx_i_eff;
+    logic [16:0] idx_j_r [4], idx_j_eff [4];
+    logic        pix_first;
+    always_comb begin
+        idx_i_eff = pix_first ? 17'(dx) : idx_i_r;
+        for (int l = 0; l < 4; l++) idx_j_eff[l] = pix_first ? 17'((l + 1) * int'(dy)) : idx_j_r[l];
+    end
     logic [PW-1:0] pix_max;
     assign pix_max = PW'((1 << l_bd) - 1);
     wire is_dir = !l_fi && (l_mode >= 4'd1) && (l_mode <= 4'd8);
@@ -305,7 +317,7 @@ module ipred #(
     // ------------------------------------------------------------------ pixel datapath: pred[i][j]
     // Address half: the (up to) two above and two left reads a lane needs for pred[i][j], as {a0, a1, l0, l1};
     // value half: the pixel from the fetched values. Split so that every bank read is an explicit port.
-    function automatic logic [39:0] pred_addr(input int i, input int j);
+    function automatic logic [39:0] pred_addr(input int i, input int j, input int idx_i, input int idx_j);
         int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
         base = 0; idx = 0; maxb = 0; idx2 = 0; base2 = 0; a0 = 0; a1 = 0; l0 = 0; l1 = 0;
         if (l_mode == DC_PRED) begin
@@ -322,23 +334,23 @@ module ipred #(
         end else if (p_angle == 9'd180) begin
             l0 = i;
         end else if (p_angle < 9'd90) begin                                   // Z1
-            idx   = (i + 1) * int'(dx);
+            idx   = idx_i;
             base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
             maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
             if (base < maxb) begin a0 = base; a1 = base + 1; end
             else a0 = maxb;
         end else if (p_angle < 9'd180) begin                                  // Z2
-            idx  = (j << 6) - (i + 1) * int'(dx);
+            idx  = (j << 6) - idx_i;
             base = idx >>> (6 - int'(up_a));
             if (base >= -(1 << int'(up_a))) begin
                 a0 = base; a1 = base + 1;
             end else begin
-                idx2  = (i << 6) - (j + 1) * int'(dy);
+                idx2  = (i << 6) - idx_j;
                 base2 = idx2 >>> (6 - int'(up_l));
                 l0 = base2; l1 = base2 + 1;
             end
         end else begin                                                        // Z3
-            idx   = (j + 1) * int'(dy);
+            idx   = idx_j;
             base  = (idx >> (6 - int'(up_l))) + (i << int'(up_l));
             l0 = base; l1 = base + 1;
         end
@@ -350,7 +362,7 @@ module ipred #(
     // sums, clip) the lanes were a four-deep DSP cascade into out_pix4, the block's worst path (-3.6 ns at 100 MHz).
     // Outputs therefore land one cycle after S_PIX, and S_DRAIN lets the last one out before done.
     localparam int PREPW = 4 * 23 + 3 * PW + 1;
-    function automatic logic [PREPW-1:0] pred_prep(input int i, input int j,
+    function automatic logic [PREPW-1:0] pred_prep(input int i, input int j, input int idx_i, input int idx_j,
                                                    input logic [PW-1:0] vA0, input logic [PW-1:0] vA1,
                                                    input logic [PW-1:0] vL0, input logic [PW-1:0] vL1);
         int base, idx, shift, maxb, idx2, shift2;
@@ -365,25 +377,25 @@ module ipred #(
             p2 = 23'(sm_w9(l_log2w, 6'(j)) * vL0);  p3 = 23'(sm_w9c(l_log2w, 6'(j)) * vA1);     // vA1 = A[w-1]
         end else if (l_mode != DC_PRED && l_mode != PAETH_PRED && p_angle != 9'd90 && p_angle != 9'd180) begin
             if (p_angle < 9'd90) begin                                        // Z1: vA0 = A[base] (or A[maxb]), vA1 = A[base+1]
-                idx   = (i + 1) * int'(dx);
+                idx   = idx_i;
                 base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
                 shift = ((idx << int'(up_a)) >> 1) & 31;
                 maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
                 inr   = base < maxb;
                 p0 = 23'(int'(vA0) * (32 - shift)); p1 = 23'(int'(vA1) * shift);
             end else if (p_angle < 9'd180) begin                              // Z2
-                idx  = (j << 6) - (i + 1) * int'(dx);
+                idx  = (j << 6) - idx_i;
                 base = idx >>> (6 - int'(up_a));
                 if (base >= -(1 << int'(up_a))) begin
                     shift = ((idx << int'(up_a)) >> 1) & 31;
                     p0 = 23'(int'(vA0) * (32 - shift)); p1 = 23'(int'(vA1) * shift);
                 end else begin
-                    idx2   = (i << 6) - (j + 1) * int'(dy);
+                    idx2   = (i << 6) - idx_j;
                     shift2 = ((idx2 << int'(up_l)) >> 1) & 31;
                     p0 = 23'(int'(vL0) * (32 - shift2)); p1 = 23'(int'(vL1) * shift2);
                 end
             end else begin                                                    // Z3
-                idx   = (j + 1) * int'(dy);
+                idx   = idx_j;
                 shift = ((idx << int'(up_l)) >> 1) & 31;
                 p0 = 23'(int'(vL0) * (32 - shift)); p1 = 23'(int'(vL1) * shift);
             end
@@ -427,7 +439,8 @@ module ipred #(
     endfunction
     logic [PREPW-1:0] prep4 [4];                 // stage 1, this cycle
     always_comb for (int l = 0; l < 4; l++)
-        prep4[l] = pred_prep(int'(py), int'(px) + l, rpA_d[2 * l], rpA_d[2 * l + 1], rpL_d[2 * l], rpL_d[2 * l + 1]);
+        prep4[l] = pred_prep(int'(py), int'(px) + l, int'(idx_i_eff), int'(idx_j_eff[l]),
+                             rpA_d[2 * l], rpA_d[2 * l + 1], rpL_d[2 * l], rpL_d[2 * l + 1]);
     // stage-1 registers: either a lane's prepared operands or a ready pixel (filter-intra rows)
     logic             s_valid, s_raw;
     logic [5:0]       s_x, s_y;
@@ -567,7 +580,8 @@ module ipred #(
                 for (int t = 0; t < 3; t++) rpL_a[t] = 10'((i2 << 1) - 1 + t);
             end else begin
                 for (int l = 0; l < 4; l++)
-                    {rpA_a[2 * l], rpA_a[2 * l + 1], rpL_a[2 * l], rpL_a[2 * l + 1]} = pred_addr(int'(py), int'(px) + l);
+                    {rpA_a[2 * l], rpA_a[2 * l + 1], rpL_a[2 * l], rpL_a[2 * l + 1]} =
+                        pred_addr(int'(py), int'(px) + l, int'(idx_i_eff), int'(idx_j_eff[l]));
             end
             S_DC_SUM: for (int l = 0; l < 8; l++) begin                 // L[k+l] and A[k+l-h] (A side clamped at 0)
                 rpL_a[l] = 10'(int'(k) + l);
@@ -631,6 +645,7 @@ module ipred #(
     always_ff @(posedge clk) begin
         done      <= 1'b0;
         s_valid   <= 1'b0;
+        if (state != S_PIX && state != S_FI2) pix_first <= 1'b1;
         if (rst) begin
             state <= S_IDLE;
             busy  <= 1'b0;
@@ -754,11 +769,18 @@ module ipred #(
                     s_raw <= l_fi;                                  // filter-intra odd rows: read back from the patch buffer
                     s_valid <= 1'b1;
                     s_x <= px; s_y <= py;
+                    pix_first <= 1'b0;
                     if (px + 7'd4 >= w) begin
                         px <= 0;
+                        idx_i_r <= idx_i_eff + 17'(dx);
+                        for (int l = 0; l < 4; l++) idx_j_r[l] <= 17'((l + 1) * int'(dy));
                         if (py + 7'd1 == h) state <= S_DRAIN;
                         else py <= py + 6'd1;
-                    end else px <= px + 6'd4;
+                    end else begin
+                        px <= px + 6'd4;
+                        idx_i_r <= idx_i_eff;
+                        for (int l = 0; l < 4; l++) idx_j_r[l] <= idx_j_eff[l] + (17'(dy) << 2);
+                    end
                 end
             end
             S_FI2: begin                                            // the patch, summed: stored and its top row emitted
@@ -768,11 +790,18 @@ module ipred #(
                 s_valid <= 1'b1;
                 s_x <= px; s_y <= py;
                 state <= S_PIX;
+                pix_first <= 1'b0;
                 if (px + 7'd4 >= w) begin
                     px <= 0;
+                    idx_i_r <= idx_i_eff + 17'(dx);
+                    for (int l = 0; l < 4; l++) idx_j_r[l] <= 17'((l + 1) * int'(dy));
                     if (py + 7'd1 == h) state <= S_DRAIN;
                     else py <= py + 6'd1;
-                end else px <= px + 6'd4;
+                end else begin
+                    px <= px + 6'd4;
+                    idx_i_r <= idx_i_eff;
+                    for (int l = 0; l < 4; l++) idx_j_r[l] <= idx_j_eff[l] + (17'(dy) << 2);
+                end
             end
             S_DRAIN: state <= S_DONE;                               // the last pixels leave stage 2 before done
             S_DONE: begin
