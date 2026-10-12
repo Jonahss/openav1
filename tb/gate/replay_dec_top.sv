@@ -5,7 +5,7 @@
 module replay_dec_top;
     localparam int NI = 1188;
     localparam int NO = 685;
-    localparam int MAXV = 400000;
+    localparam int MAXV = 800000;
     logic [NI-1:0] vin [0:MAXV-1];
     logic [NO-1:0] vout [0:MAXV-1];
     logic clk = 0;
