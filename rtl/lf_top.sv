@@ -216,13 +216,21 @@ module lf_top
     function automatic logic signed [13:0] c4(input logic signed [15:0] v, input logic signed [13:0] lo, input logic signed [13:0] hi);
         c4 = (v < 16'(lo)) ? lo : (v > 16'(hi)) ? hi : 14'(v);
     endfunction
+    // The narrow filter's first half (the hev-gated difference and the 3*(q0-p0) clamp chain) is formed in the
+    // decision stage from the next column's samples and registered: the remaining chain (filter1/2, the four
+    // outputs) fits the filter cycle. (All seven steps in one cycle were the block's last path over 10 ns.)
+    logic signed [13:0] pn_s1, pn_s0, qn_s0, qn_s1, filt_a_n, filt_a_r;
+    always_comb begin
+        pn_s1 = 14'(pn[1]) - off_s; pn_s0 = 14'(pn[0]) - off_s; qn_s0 = 14'(qn[0]) - off_s; qn_s1 = 14'(qn[1]) - off_s;
+        filt_a_n = hev ? c4(16'(pn_s1) - 16'(qn_s1), lo_s, hi_s) : 14'sd0;
+        filt_a_n = c4(16'(filt_a_n) + 16'sd3 * (16'(qn_s0) - 16'(pn_s0)), lo_s, hi_s);
+    end
     always_comb begin
         off_s = 14'(13'd128 << bd8);
         lo_s = -(14'sd1 <<< (hdr.bit_depth - 4'd1));
         hi_s = (14'sd1 <<< (hdr.bit_depth - 4'd1)) - 14'sd1;
         ps1 = 14'(p[1]) - off_s; ps0 = 14'(p[0]) - off_s; qs0 = 14'(q[0]) - off_s; qs1 = 14'(q[1]) - off_s;
-        filt = hev_r ? c4(16'(ps1) - 16'(qs1), lo_s, hi_s) : 14'sd0;
-        filt = c4(16'(filt) + 16'sd3 * (16'(qs0) - 16'(ps0)), lo_s, hi_s);
+        filt = filt_a_r;                                                     // formed in the decision stage (below)
         filter1 = c4(16'(filt) + 16'sd4, lo_s, hi_s) >>> 3;
         filter2 = c4(16'(filt) + 16'sd3, lo_s, hi_s) >>> 3;
         nq0 = 12'(c4(16'(qs0) - 16'(filter1), lo_s, hi_s) + off_s);
@@ -263,7 +271,7 @@ module lf_top
         else if (filter_size == 5'd8 || !flat2) fmode = F_WIDE8;
         else fmode = F_WIDE16;
     end
-    always_ff @(posedge clk) begin fmode_r <= fmode; hev_r <= hev; end
+    always_ff @(posedge clk) begin fmode_r <= fmode; hev_r <= hev; filt_a_r <= filt_a_n; end
     logic [11:0] out_pix;
     logic        out_valid;                             // this k is modified
     logic signed [4:0] f_lo, f_hi;                      // range of modified positions for the decided filter
