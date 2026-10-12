@@ -361,59 +361,65 @@ module blk_ctx
     assign max_x4 = (t_plane != 2'd0 && ssx) ? (mi_cols >> 1) : mi_cols;
     assign max_y4 = (t_plane != 2'd0 && ssy) ? (mi_rows >> 1) : mi_rows;
 
+    // The context aggregates (max level, nonzero, dc-sign sum over the block's above and left entries) are
+    // computed from the above word as it lands from the RAM (al_rdata, T_RD2) and the already-read left word,
+    // and registered; T_OUT derives the contexts from the registers. (Computed in T_OUT from t_aw, the
+    // 16-entry max trees plus the context compare chain were tile_syntax's worst path, 44 LUT levels.)
     logic [7:0] top_max, left_max;
     logic       above_nz, left_nz;
-    logic [3:0] dcs_sum;                        // biased by 8
     logic [7:0] bw, bh;
     logic [6:0] tw, th;
+    logic [7:0] top_max_r, left_max_r;
+    logic       above_nz_r, left_nz_r;
+    // Which entries of the above and left words belong to the block: the range masks depend only on the request,
+    // so they are formed in T_RD, the cycle before the above word lands.
+    logic [15:0] a_msk_c, l_msk_c, a_msk, l_msk;
+    always_comb for (int k = 0; k < 16; k++) begin
+        a_msk_c[k] = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & ~MIW'(15)) + MIW'(k) < max_x4);
+        l_msk_c[k] = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & ~MIW'(15)) + MIW'(k) < max_y4);
+    end
+    // The aggregates as balanced trees over the masked entries. (As a loop carrying a running maximum they were a
+    // 16-deep compare chain behind the RAM output, 38 LUT levels: tile_syntax's worst path.)
+    function automatic logic [5:0] mx(input logic [5:0] a, input logic [5:0] b);
+        mx = (a > b) ? a : b;
+    endfunction
+    function automatic logic [5:0] max16(input logic [95:0] v);       // sixteen 6-bit entries
+        logic [5:0] m8 [8];
+        logic [5:0] m4 [4];
+        logic [5:0] m2 [2];
+        for (int k = 0; k < 8; k++) m8[k] = mx(v[12 * k +: 6], v[12 * k + 6 +: 6]);
+        for (int k = 0; k < 4; k++) m4[k] = mx(m8[2 * k], m8[2 * k + 1]);
+        for (int k = 0; k < 2; k++) m2[k] = mx(m4[2 * k], m4[2 * k + 1]);
+        max16 = mx(m2[0], m2[1]);
+    endfunction
+    logic [95:0] a_lv, l_lv;                    // the entries' levels, zero outside the block
+    logic [15:0] a_nzb, l_nzb, a_plus, a_minus, l_plus, l_minus;
+    logic signed [7:0] dcs_wide, dcs_wide_r;    // dc-sign sum over the block's entries (+1 code 2, -1 code 1)
     always_comb begin
-        top_max = 8'd0; left_max = 8'd0; above_nz = 1'b0; left_nz = 1'b0; dcs_sum = 4'd8;
         for (int k = 0; k < 16; k++) begin
             logic [7:0] ae, le;
-            logic a_in, l_in;
-            ae = t_aw[8*k +: 8]; le = t_lw[8*k +: 8];
-            a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & ~MIW'(15)) + MIW'(k) < max_x4);
-            l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & ~MIW'(15)) + MIW'(k) < max_y4);
-            if (a_in) begin
-                if (8'(ae[5:0]) > top_max) top_max = 8'(ae[5:0]);
-                if (ae != 8'd0) above_nz = 1'b1;
-                if (ae[7:6] == 2'd1) dcs_sum = dcs_sum - 4'd1; else if (ae[7:6] == 2'd2) dcs_sum = dcs_sum + 4'd1;
-            end
-            if (l_in) begin
-                if (8'(le[5:0]) > left_max) left_max = 8'(le[5:0]);
-                if (le != 8'd0) left_nz = 1'b1;
-                if (le[7:6] == 2'd1) dcs_sum = dcs_sum - 4'd1; else if (le[7:6] == 2'd2) dcs_sum = dcs_sum + 4'd1;
-            end
+            ae = al_rdata[8*k +: 8]; le = t_lw[8*k +: 8];
+            a_lv[6*k +: 6] = a_msk[k] ? ae[5:0] : 6'd0;   l_lv[6*k +: 6] = l_msk[k] ? le[5:0] : 6'd0;
+            a_nzb[k]   = a_msk[k] && (ae != 8'd0);         l_nzb[k]   = l_msk[k] && (le != 8'd0);
+            a_plus[k]  = a_msk[k] && (ae[7:6] == 2'd2);    l_plus[k]  = l_msk[k] && (le[7:6] == 2'd2);
+            a_minus[k] = a_msk[k] && (ae[7:6] == 2'd1);    l_minus[k] = l_msk[k] && (le[7:6] == 2'd1);
         end
+        top_max = 8'(max16(a_lv)); left_max = 8'(max16(l_lv));
+        above_nz = |a_nzb; left_nz = |l_nzb;
+        dcs_wide = 8'($countones({a_plus, l_plus})) - 8'($countones({a_minus, l_minus}));
         bw = blk_w(t_bs); bh = blk_h(t_bs); tw = tx_width(t_sz); th = tx_height(t_sz);
     end
     logic [3:0] az_now;
     always_comb begin
         if (t_plane == 2'd0) begin
             if (bw == 8'(tw) && bh == 8'(th)) az_now = 4'd0;
-            else if (top_max == 0 && left_max == 0) az_now = 4'd1;
-            else if (top_max == 0 || left_max == 0) az_now = 4'd2 + 4'((top_max > left_max ? top_max : left_max) > 8'd3);
-            else if ((top_max > left_max ? top_max : left_max) <= 8'd3) az_now = 4'd4;
-            else if ((top_max < left_max ? top_max : left_max) <= 8'd3) az_now = 4'd5;
+            else if (top_max_r == 0 && left_max_r == 0) az_now = 4'd1;
+            else if (top_max_r == 0 || left_max_r == 0) az_now = 4'd2 + 4'((top_max_r > left_max_r ? top_max_r : left_max_r) > 8'd3);
+            else if ((top_max_r > left_max_r ? top_max_r : left_max_r) <= 8'd3) az_now = 4'd4;
+            else if ((top_max_r < left_max_r ? top_max_r : left_max_r) <= 8'd3) az_now = 4'd5;
             else az_now = 4'd6;
         end else begin
-            az_now = 4'd7 + 4'(above_nz) + 4'(left_nz) + ((16'(bw) * 16'(bh) > 16'(tw) * 16'(th)) ? 4'd3 : 4'd0);
-        end
-    end
-
-    // dc_sign ctx: (sum < 0) ? 1 : (sum > 0) ? 2 : 0  where sum = dcs_sum - 8 ... but the spec counts over w4+h4 <= 32
-    // entries; dcs_sum is 4 bits biased by 8 -> can wrap for large blocks. Use a wider accumulator.
-    logic signed [7:0] dcs_wide;
-    always_comb begin
-        dcs_wide = 8'sd0;
-        for (int k = 0; k < 16; k++) begin
-            logic [7:0] ae, le;
-            logic a_in, l_in;
-            ae = t_aw[8*k +: 8]; le = t_lw[8*k +: 8];
-            a_in = (k >= int'(t_x4[3:0])) && (k < int'(t_x4[3:0]) + int'(t_w4)) && ((t_x4 & ~MIW'(15)) + MIW'(k) < max_x4);
-            l_in = (k >= int'(t_y4[3:0])) && (k < int'(t_y4[3:0]) + int'(t_h4)) && ((t_y4 & ~MIW'(15)) + MIW'(k) < max_y4);
-            if (a_in) begin if (ae[7:6] == 2'd1) dcs_wide = dcs_wide - 8'sd1; else if (ae[7:6] == 2'd2) dcs_wide = dcs_wide + 8'sd1; end
-            if (l_in) begin if (le[7:6] == 2'd1) dcs_wide = dcs_wide - 8'sd1; else if (le[7:6] == 2'd2) dcs_wide = dcs_wide + 8'sd1; end
+            az_now = 4'd7 + 4'(above_nz_r) + 4'(left_nz_r) + ((16'(bw) * 16'(bh) > 16'(tw) * 16'(th)) ? 4'd3 : 4'd0);
         end
     end
 
@@ -480,12 +486,17 @@ module blk_ctx
                 T_LW: tst <= T_IDLE;
                 T_RD: begin                                // above word read this clock, lands in T_RD2
                     t_lw <= l_lvl[t_plane][t_y4[4]];
+                    a_msk <= a_msk_c; l_msk <= l_msk_c;
                     tst <= T_RD2;
                 end
-                T_RD2: begin t_aw <= al_rdata; tst <= T_OUT; end
+                T_RD2: begin
+                    t_aw <= al_rdata; tst <= T_OUT;
+                    top_max_r <= top_max; left_max_r <= left_max; above_nz_r <= above_nz; left_nz_r <= left_nz;
+                    dcs_wide_r <= dcs_wide;
+                end
                 T_OUT: begin
                     az_ctx <= az_now;
-                    dcs_ctx <= (dcs_wide < 0) ? 2'd1 : (dcs_wide > 0) ? 2'd2 : 2'd0;
+                    dcs_ctx <= (dcs_wide_r < 0) ? 2'd1 : (dcs_wide_r > 0) ? 2'd2 : 2'd0;
                     tx_valid <= 1'b1;
                     tst <= T_IDLE;
                 end

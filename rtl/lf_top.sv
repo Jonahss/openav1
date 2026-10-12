@@ -79,7 +79,9 @@ module lf_top
     logic [12:0] colout [0:3][0:11];
     logic        any_mod;
     logic signed [4:0] f_lo_all, f_hi_all;                // union of the columns' modified ranges
-    logic [11:0] pix_a [0:13];                            // samples the filter datapath works on
+    logic [11:0] pix_a [0:13];                            // samples the filter datapath works on (registered)
+    logic [11:0] pix_n [0:13];                            // the column decided this cycle, filtered the next
+    logic [1:0]  cc_n;
     logic [PXW-1:0] sx, sy;                                // sample position
 
     always_comb begin
@@ -162,38 +164,48 @@ module lf_top
     assign bd8 = hdr.bit_depth - 4'd8;
     logic [12:0] p [0:6];
     logic [12:0] q [0:6];
-    always_comb for (int m = 0; m < 14; m++) pix_a[m] = pss ? pixc[cc][m] : pix[m];
+    // Two stages per column, skewed: the decision (hev, masks, filter mode) is taken on the next column's samples
+    // (pix_n: column 0 as L_S_CALC is entered, cc+1 while it runs; the single column of a vertical edge throughout)
+    // and registered with the samples (pix_a, fmode_r, hev_r); the filters work from the registers. Column mux,
+    // decision and the narrow filter's clamp chain in one cycle into colout were the block's worst path (-2.6 ns).
+    assign cc_n = (st == L_S_CALC) ? cc + 2'd1 : 2'd0;
+    always_comb for (int m = 0; m < 14; m++) pix_n[m] = pss ? pixc[cc_n][m] : pix[m];
+    always_ff @(posedge clk) pix_a <= pix_n;
+    logic [12:0] pn [0:6];
+    logic [12:0] qn [0:6];
+    always_comb for (int j = 0; j < 7; j++) begin pn[j] = 13'(pix_n[6 - j]); qn[j] = 13'(pix_n[7 + j]); end
     always_comb for (int j = 0; j < 7; j++) begin p[j] = 13'(pix_a[6 - j]); q[j] = 13'(pix_a[7 + j]); end
     function automatic logic [12:0] adiff(input logic [12:0] a, input logic [12:0] b);
         adiff = (a > b) ? a - b : b - a;
     endfunction
     logic [4:0]  filter_len;
     logic        hev, filter_mask, flat, flat2;
+    logic        hev_r;                          // hev of the column being filtered (registered)
     logic [15:0] thresh_bd, limit_bd, blimit_bd, one_bd;
     always_comb begin
         filter_len = (filter_size == 5'd4) ? 5'd4 : (plane != 2'd0) ? 5'd6 : (filter_size == 5'd8) ? 5'd8 : 5'd16;
         thresh_bd = 16'(thresh) << bd8; limit_bd = 16'(limit) << bd8; blimit_bd = 16'(blimit) << bd8; one_bd = 16'd1 << bd8;
-        hev = (16'(adiff(p[1], p[0])) > thresh_bd) || (16'(adiff(q[1], q[0])) > thresh_bd);
+        hev = (16'(adiff(pn[1], pn[0])) > thresh_bd) || (16'(adiff(qn[1], qn[0])) > thresh_bd);
         begin
             logic m;
-            m = (16'(adiff(p[1], p[0])) > limit_bd) || (16'(adiff(q[1], q[0])) > limit_bd) ||
-                ((16'(adiff(p[0], q[0])) * 2 + (16'(adiff(p[1], q[1])) >> 1)) > blimit_bd);
-            if (filter_len >= 5'd6) m = m || (16'(adiff(p[2], p[1])) > limit_bd) || (16'(adiff(q[2], q[1])) > limit_bd);
-            if (filter_len >= 5'd8) m = m || (16'(adiff(p[3], p[2])) > limit_bd) || (16'(adiff(q[3], q[2])) > limit_bd);
+            m = (16'(adiff(pn[1], pn[0])) > limit_bd) || (16'(adiff(qn[1], qn[0])) > limit_bd) ||
+                ((16'(adiff(pn[0], qn[0])) * 2 + (16'(adiff(pn[1], qn[1])) >> 1)) > blimit_bd);
+            if (filter_len >= 5'd6) m = m || (16'(adiff(pn[2], pn[1])) > limit_bd) || (16'(adiff(qn[2], qn[1])) > limit_bd);
+            if (filter_len >= 5'd8) m = m || (16'(adiff(pn[3], pn[2])) > limit_bd) || (16'(adiff(qn[3], qn[2])) > limit_bd);
             filter_mask = !m;
         end
         begin
             logic m;
-            m = (16'(adiff(p[1], p[0])) > one_bd) || (16'(adiff(q[1], q[0])) > one_bd) ||
-                (16'(adiff(p[2], p[0])) > one_bd) || (16'(adiff(q[2], q[0])) > one_bd);
-            if (filter_len >= 5'd8) m = m || (16'(adiff(p[3], p[0])) > one_bd) || (16'(adiff(q[3], q[0])) > one_bd);
+            m = (16'(adiff(pn[1], pn[0])) > one_bd) || (16'(adiff(qn[1], qn[0])) > one_bd) ||
+                (16'(adiff(pn[2], pn[0])) > one_bd) || (16'(adiff(qn[2], qn[0])) > one_bd);
+            if (filter_len >= 5'd8) m = m || (16'(adiff(pn[3], pn[0])) > one_bd) || (16'(adiff(qn[3], qn[0])) > one_bd);
             flat = (filter_size >= 5'd8) && !m;
         end
         begin
             logic m;
-            m = (16'(adiff(p[6], p[0])) > one_bd) || (16'(adiff(q[6], q[0])) > one_bd) ||
-                (16'(adiff(p[5], p[0])) > one_bd) || (16'(adiff(q[5], q[0])) > one_bd) ||
-                (16'(adiff(p[4], p[0])) > one_bd) || (16'(adiff(q[4], q[0])) > one_bd);
+            m = (16'(adiff(pn[6], pn[0])) > one_bd) || (16'(adiff(qn[6], qn[0])) > one_bd) ||
+                (16'(adiff(pn[5], pn[0])) > one_bd) || (16'(adiff(qn[5], qn[0])) > one_bd) ||
+                (16'(adiff(pn[4], pn[0])) > one_bd) || (16'(adiff(qn[4], qn[0])) > one_bd);
             flat2 = (filter_size >= 5'd16) && !m;
         end
     end
@@ -209,7 +221,7 @@ module lf_top
         lo_s = -(14'sd1 <<< (hdr.bit_depth - 4'd1));
         hi_s = (14'sd1 <<< (hdr.bit_depth - 4'd1)) - 14'sd1;
         ps1 = 14'(p[1]) - off_s; ps0 = 14'(p[0]) - off_s; qs0 = 14'(q[0]) - off_s; qs1 = 14'(q[1]) - off_s;
-        filt = hev ? c4(16'(ps1) - 16'(qs1), lo_s, hi_s) : 14'sd0;
+        filt = hev_r ? c4(16'(ps1) - 16'(qs1), lo_s, hi_s) : 14'sd0;
         filt = c4(16'(filt) + 16'sd3 * (16'(qs0) - 16'(ps0)), lo_s, hi_s);
         filter1 = c4(16'(filt) + 16'sd4, lo_s, hi_s) >>> 3;
         filter2 = c4(16'(filt) + 16'sd3, lo_s, hi_s) >>> 3;
@@ -244,18 +256,19 @@ module lf_top
     end
     // decision + output pixel for write position k
     typedef enum logic [1:0] {F_NONE, F_NARROW, F_WIDE8, F_WIDE16} fmode_t;
-    fmode_t fmode;
+    fmode_t fmode, fmode_r;
     always_comb begin
         if (!filter_mask) fmode = F_NONE;
         else if (filter_size == 5'd4 || !flat) fmode = F_NARROW;
         else if (filter_size == 5'd8 || !flat2) fmode = F_WIDE8;
         else fmode = F_WIDE16;
     end
+    always_ff @(posedge clk) begin fmode_r <= fmode; hev_r <= hev; end
     logic [11:0] out_pix;
     logic        out_valid;                             // this k is modified
     logic signed [4:0] f_lo, f_hi;                      // range of modified positions for the decided filter
     always_comb begin
-        case (fmode)
+        case (fmode_r)
             F_NARROW: begin f_lo = -5'sd2; f_hi = 5'sd1; end
             F_WIDE8:  begin f_lo = (plane == 2'd0) ? -5'sd3 : -5'sd2; f_hi = (plane == 2'd0) ? 5'sd2 : 5'sd1; end
             F_WIDE16: begin f_lo = -5'sd6; f_hi = 5'sd5; end
@@ -265,13 +278,13 @@ module lf_top
     function automatic logic [12:0] lf_out(input logic signed [4:0] k);   // {modified, value} of position k
         logic [11:0] o; logic v;
         o = 12'd0; v = 1'b0;
-        case (fmode)
+        case (fmode_r)
             F_NARROW: begin
                 case (k)
                     5'sd0:  begin o = nq0; v = 1'b1; end
                     -5'sd1: begin o = np0; v = 1'b1; end
-                    5'sd1:  begin o = nq1; v = !hev; end
-                    -5'sd2: begin o = np1; v = !hev; end
+                    5'sd1:  begin o = nq1; v = !hev_r; end
+                    -5'sd2: begin o = np1; v = !hev_r; end
                     default: ;
                 endcase
             end
@@ -381,18 +394,18 @@ module lf_top
             L_S_CALC: begin                              // samples settled: decide, then write only the modified positions
                 if (pss) begin                           // one column per cycle; then the union of modified rows
                     for (int k = -6; k <= 5; k++) colout[cc][k + 6] <= lf_out(5'(k));
-                    if (fmode != F_NONE) begin
+                    if (fmode_r != F_NONE) begin
                         any_mod <= 1'b1;
                         if (f_lo < f_lo_all) f_lo_all <= f_lo;
                         if (f_hi > f_hi_all) f_hi_all <= f_hi;
                     end
                     if (cc != 2'd3) cc <= cc + 2'd1;
-                    else if (any_mod || fmode != F_NONE) begin
-                        wk <= (fmode != F_NONE && f_lo < f_lo_all) ? f_lo : f_lo_all;
-                        w_hi <= (fmode != F_NONE && f_hi > f_hi_all) ? f_hi : f_hi_all;
+                    else if (any_mod || fmode_r != F_NONE) begin
+                        wk <= (fmode_r != F_NONE && f_lo < f_lo_all) ? f_lo : f_lo_all;
+                        w_hi <= (fmode_r != F_NONE && f_hi > f_hi_all) ? f_hi : f_hi_all;
                         st <= L_S_WR;
                     end else begin kk <= 4'd0; st <= L_NEXT; end
-                end else if (fmode == F_NONE) begin
+                end else if (fmode_r == F_NONE) begin
                     kk <= 4'd0;
                     if (i4 == 2'd3) st <= L_NEXT;
                     else begin i4 <= i4 + 2'd1; st <= L_S_RD; end
