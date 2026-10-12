@@ -279,34 +279,38 @@ module lr_top
     // box position: A/B row ai (0 .. hh+1 = block row -1 .. hh), column ax (seg_x0-1 .. seg_x1+1)
     logic [2:0]  ai;
     logic signed [PXS-1:0] ax;
-    logic [29:0] box_a; logic [17:0] box_b;
+    // box sums as five per-row partial sums (the window reads, the squares and four adds per row); the pipeline's
+    // first stage registers them and its second adds the rows, so no stage holds the whole 25-term tree
+    logic [27:0] row_a [0:4]; logic [15:0] row_b [0:4];
     always_comb begin
-        box_a = 30'd0; box_b = 18'd0;
-        for (int dy = -2; dy <= 2; dy++)
+        for (int dy = -2; dy <= 2; dy++) begin
+            row_a[dy + 2] = 28'd0; row_b[dy + 2] = 16'd0;
             for (int dx = -2; dx <= 2; dx++) begin
                 logic [11:0] c;
                 // block row (ai - 1) + dy -> window row k = (ai - 1) + dy + 3; column ax + dx = 4 wg + a + dx
                 c = win[int'(ai) + 2 + dy][4 + int'(ax[1:0]) + dx];
                 if (dy >= -int'(r_p) && dy <= int'(r_p) && dx >= -int'(r_p) && dx <= int'(r_p)) begin
-                    box_a = box_a + 30'(c) * 30'(c);
-                    box_b = box_b + 18'(c);
+                    row_a[dy + 2] = row_a[dy + 2] + 28'(c) * 28'(c);
+                    row_b[dy + 2] = row_b[dy + 2] + 16'(c);
                 end
             end
+        end
     end
-    // A/B pipeline: five registered stages between the window and the A/B line RAM. As one combinational cone
+    // A/B pipeline: six registered stages between the window and the A/B line RAM. As one combinational cone
     // (25 squares, a_r*n - d_r^2, p*s, the a2 ROM and two more multiplies) it was the decoder's worst path, 30 ns.
     // Every stage carries its position (idx = ax + 1), row, pass and "last position of the row" flag, so the
-    // writes below land exactly as before, five clocks later; the sequencer drains the pipe before the blend.
-    localparam int ABP = 5;
+    // writes below land exactly as before, six clocks later; the sequencer drains the pipe before the blend.
+    localparam int ABP = 6;
     logic        pv [1:ABP]; logic plast [1:ABP]; logic ppss [1:ABP];
     logic [2:0]  pai [1:ABP]; logic [PXS-1:0] pidx [1:ABP];
+    logic [27:0] p0_row_a [0:4]; logic [15:0] p0_row_b [0:4];
     logic [29:0] p1_box_a; logic [17:0] p1_box_b;
     logic [36:0] p2_p;     logic [17:0] p2_box_b;
     logic [28:0] p3_z;     logic [17:0] p3_box_b;
     logic [8:0]  p4_a2;    logic [26:0] p4_m1;             // (256 - a2) * box_b
     logic [8:0]  p5_a2;    logic [21:0] p5_b2;
     logic        abp_busy;
-    assign abp_busy = pv[1] || pv[2] || pv[3] || pv[4] || pv[5];
+    assign abp_busy = pv[1] || pv[2] || pv[3] || pv[4] || pv[5] || pv[6];
     // per-pass constants recomputed from the carried pass bit (pss flips while the pipe still drains a pass)
     function automatic logic [11:0] s_of(input logic ps);  return sgr_s(rec.sgr_set, ps); endfunction
     function automatic logic [1:0]  r_of(input logic ps);  return ps ? sp[6:5] : sp[15:14]; endfunction
@@ -316,29 +320,33 @@ module lr_top
             pv[1] <= (st == L_AB);
             for (int q = 2; q <= ABP; q++) pv[q] <= pv[q - 1];
         end
-        // stage 1: box sums of position (ai, ax)
+        // stage 1: the five row partial sums of position (ai, ax)
         plast[1] <= (ax >= PXS'(signed'({2'b0, seg_x1})) + PXS'(1)); ppss[1] <= pss; pai[1] <= ai; pidx[1] <= ax + PXS'(1);
-        p1_box_a <= box_a; p1_box_b <= box_b;
-        // stage 2: p = max(0, a_r * n - d_r^2)
+        for (int r = 0; r < 5; r++) begin p0_row_a[r] <= row_a[r]; p0_row_b[r] <= row_b[r]; end
+        // stage 2: the box sums
+        p1_box_a <= 30'(p0_row_a[0]) + 30'(p0_row_a[1]) + 30'(p0_row_a[2]) + 30'(p0_row_a[3]) + 30'(p0_row_a[4]);
+        p1_box_b <= 18'(p0_row_b[0]) + 18'(p0_row_b[1]) + 18'(p0_row_b[2]) + 18'(p0_row_b[3]) + 18'(p0_row_b[4]);
+        plast[2] <= plast[1]; ppss[2] <= ppss[1]; pai[2] <= pai[1]; pidx[2] <= pidx[1];
+        // stage 3: p = max(0, a_r * n - d_r^2)
         begin
             logic [29:0] a_r; logic [17:0] d_r; logic [29:0] an; logic [35:0] dd; logic [5:0] n_1;
             a_r = (p1_box_a + (30'd1 << (2 * (bd - 4'd8))) / 2) >> (2 * (bd - 4'd8));
             if (bd == 4'd8) a_r = p1_box_a;
             d_r = (bd == 4'd8) ? p1_box_b : ((p1_box_b + (18'd1 << (bd - 4'd9))) >> (bd - 4'd8));
-            n_1 = (r_of(ppss[1]) == 2'd1) ? 6'd9 : 6'd25;
+            n_1 = (r_of(ppss[2]) == 2'd1) ? 6'd9 : 6'd25;
             an = a_r * 30'(n_1);
             dd = 36'(d_r) * 36'(d_r);
             p2_p <= (36'(an) > dd) ? 37'(36'(an) - dd) : 37'd0;
         end
-        plast[2] <= plast[1]; ppss[2] <= ppss[1]; pai[2] <= pai[1]; pidx[2] <= pidx[1]; p2_box_b <= p1_box_b;
-        // stage 3: z = (p * s + 2^19) >> 20
+        plast[3] <= plast[2]; ppss[3] <= ppss[2]; pai[3] <= pai[2]; pidx[3] <= pidx[2]; p2_box_b <= p1_box_b;
+        // stage 4: z = (p * s + 2^19) >> 20
         begin
             logic [48:0] pz;
-            pz = 49'(p2_p) * 49'(s_of(ppss[2]));
+            pz = 49'(p2_p) * 49'(s_of(ppss[3]));
             p3_z <= 29'((pz + (49'd1 << 19)) >> 20);
         end
-        plast[3] <= plast[2]; ppss[3] <= ppss[2]; pai[3] <= pai[2]; pidx[3] <= pidx[2]; p3_box_b <= p2_box_b;
-        // stage 4: a2 from the ROM, m1 = (256 - a2) * box_b
+        plast[4] <= plast[3]; ppss[4] <= ppss[3]; pai[4] <= pai[3]; pidx[4] <= pidx[3]; p3_box_b <= p2_box_b;
+        // stage 5: a2 from the ROM, m1 = (256 - a2) * box_b
         begin
             logic [8:0] a2;
             if (p3_z >= 29'd255) a2 = 9'd256;
@@ -347,15 +355,15 @@ module lr_top
             p4_a2 <= a2;
             p4_m1 <= 27'(9'd256 - a2) * 27'(p3_box_b);
         end
-        plast[4] <= plast[3]; ppss[4] <= ppss[3]; pai[4] <= pai[3]; pidx[4] <= pidx[3];
-        // stage 5: b2 = (m1 * one_over_n + 2^11) >> 12
+        plast[5] <= plast[4]; ppss[5] <= ppss[4]; pai[5] <= pai[4]; pidx[5] <= pidx[4];
+        // stage 6: b2 = (m1 * one_over_n + 2^11) >> 12
         begin
             logic [42:0] b2;
-            b2 = 43'(p4_m1) * 43'(sgr_one_over_n(r_of(ppss[4])));
+            b2 = 43'(p4_m1) * 43'(sgr_one_over_n(r_of(ppss[5])));
             p5_b2 <= 22'((b2 + (43'd1 << 11)) >> 12);
         end
         p5_a2 <= p4_a2;
-        plast[5] <= plast[4]; ppss[5] <= ppss[4]; pai[5] <= pai[4]; pidx[5] <= pidx[4];
+        plast[6] <= plast[5]; ppss[6] <= ppss[5]; pai[6] <= pai[5]; pidx[6] <= pidx[5];
     end
     // A/B of both passes over the band: rows 0..5 (block row + 1), positions indexed by plane x + 1.
     // 12 line RAMs (pass, row) of 4-position words {a2, b2} x 4; the box phase accumulates a word and writes it
