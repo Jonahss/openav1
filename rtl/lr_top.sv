@@ -57,7 +57,7 @@ module lr_top
 
     typedef enum logic [4:0] {
         L_IDLE, L_BAND, L_ROWS, L_LOAD, L_LOAD_LAST, L_UNIT, L_REC, L_DECIDE,
-        L_COPY, L_WIEN, L_AB, L_PASS_NEXT, L_BLEND, L_UNIT_NEXT, L_BAND_NEXT, L_DONE,
+        L_COPY, L_WIEN, L_AB, L_AB_DRAIN, L_PASS_NEXT, L_BLEND, L_UNIT_NEXT, L_BAND_NEXT, L_DONE,
         L_WPRO                                                 // window prologue before a compute row
     } st_t;
     st_t st, st_after;                                         // compute state the prologue leads to
@@ -293,24 +293,69 @@ module lr_top
                 end
             end
     end
-    logic [8:0]  a2_v; logic [21:0] b2_v;
-    always_comb begin
-        logic [29:0] a_r; logic [17:0] d_r; logic [29:0] an; logic [35:0] dd; logic [36:0] p; logic [48:0] pz; logic [28:0] z;
-        logic [8:0] a2; logic [42:0] b2;
-        a_r = (box_a + (30'd1 << (2 * (bd - 4'd8))) / 2) >> (2 * (bd - 4'd8));
-        if (bd == 4'd8) a_r = box_a;
-        d_r = (bd == 4'd8) ? box_b : ((box_b + (18'd1 << (bd - 4'd9))) >> (bd - 4'd8));
-        an = a_r * 30'(n_p);
-        dd = 36'(d_r) * 36'(d_r);
-        p = (36'(an) > dd) ? 37'(36'(an) - dd) : 37'd0;
-        pz = 49'(p) * 49'(s_val);
-        z = 29'((pz + (49'd1 << 19)) >> 20);
-        if (z >= 29'd255) a2 = 9'd256;
-        else if (z == 29'd0) a2 = 9'd1;
-        else a2 = sgr_a2(8'(z));
-        b2 = 43'(9'd256 - a2) * 43'(box_b) * 43'(one_over_n);
-        a2_v = a2;
-        b2_v = 22'((b2 + (43'd1 << 11)) >> 12);
+    // A/B pipeline: five registered stages between the window and the A/B line RAM. As one combinational cone
+    // (25 squares, a_r*n - d_r^2, p*s, the a2 ROM and two more multiplies) it was the decoder's worst path, 30 ns.
+    // Every stage carries its position (idx = ax + 1), row, pass and "last position of the row" flag, so the
+    // writes below land exactly as before, five clocks later; the sequencer drains the pipe before the blend.
+    localparam int ABP = 5;
+    logic        pv [1:ABP]; logic plast [1:ABP]; logic ppss [1:ABP];
+    logic [2:0]  pai [1:ABP]; logic [PXS-1:0] pidx [1:ABP];
+    logic [29:0] p1_box_a; logic [17:0] p1_box_b;
+    logic [36:0] p2_p;     logic [17:0] p2_box_b;
+    logic [28:0] p3_z;     logic [17:0] p3_box_b;
+    logic [8:0]  p4_a2;    logic [26:0] p4_m1;             // (256 - a2) * box_b
+    logic [8:0]  p5_a2;    logic [21:0] p5_b2;
+    logic        abp_busy;
+    assign abp_busy = pv[1] || pv[2] || pv[3] || pv[4] || pv[5];
+    // per-pass constants recomputed from the carried pass bit (pss flips while the pipe still drains a pass)
+    function automatic logic [11:0] s_of(input logic ps);  return sgr_s(rec.sgr_set, ps); endfunction
+    function automatic logic [1:0]  r_of(input logic ps);  return ps ? sp[6:5] : sp[15:14]; endfunction
+    always_ff @(posedge clk) begin
+        if (rst) for (int q = 1; q <= ABP; q++) pv[q] <= 1'b0;
+        else begin
+            pv[1] <= (st == L_AB);
+            for (int q = 2; q <= ABP; q++) pv[q] <= pv[q - 1];
+        end
+        // stage 1: box sums of position (ai, ax)
+        plast[1] <= (ax >= PXS'(signed'({2'b0, seg_x1})) + PXS'(1)); ppss[1] <= pss; pai[1] <= ai; pidx[1] <= ax + PXS'(1);
+        p1_box_a <= box_a; p1_box_b <= box_b;
+        // stage 2: p = max(0, a_r * n - d_r^2)
+        begin
+            logic [29:0] a_r; logic [17:0] d_r; logic [29:0] an; logic [35:0] dd; logic [5:0] n_1;
+            a_r = (p1_box_a + (30'd1 << (2 * (bd - 4'd8))) / 2) >> (2 * (bd - 4'd8));
+            if (bd == 4'd8) a_r = p1_box_a;
+            d_r = (bd == 4'd8) ? p1_box_b : ((p1_box_b + (18'd1 << (bd - 4'd9))) >> (bd - 4'd8));
+            n_1 = (r_of(ppss[1]) == 2'd1) ? 6'd9 : 6'd25;
+            an = a_r * 30'(n_1);
+            dd = 36'(d_r) * 36'(d_r);
+            p2_p <= (36'(an) > dd) ? 37'(36'(an) - dd) : 37'd0;
+        end
+        plast[2] <= plast[1]; ppss[2] <= ppss[1]; pai[2] <= pai[1]; pidx[2] <= pidx[1]; p2_box_b <= p1_box_b;
+        // stage 3: z = (p * s + 2^19) >> 20
+        begin
+            logic [48:0] pz;
+            pz = 49'(p2_p) * 49'(s_of(ppss[2]));
+            p3_z <= 29'((pz + (49'd1 << 19)) >> 20);
+        end
+        plast[3] <= plast[2]; ppss[3] <= ppss[2]; pai[3] <= pai[2]; pidx[3] <= pidx[2]; p3_box_b <= p2_box_b;
+        // stage 4: a2 from the ROM, m1 = (256 - a2) * box_b
+        begin
+            logic [8:0] a2;
+            if (p3_z >= 29'd255) a2 = 9'd256;
+            else if (p3_z == 29'd0) a2 = 9'd1;
+            else a2 = sgr_a2(8'(p3_z));
+            p4_a2 <= a2;
+            p4_m1 <= 27'(9'd256 - a2) * 27'(p3_box_b);
+        end
+        plast[4] <= plast[3]; ppss[4] <= ppss[3]; pai[4] <= pai[3]; pidx[4] <= pidx[3];
+        // stage 5: b2 = (m1 * one_over_n + 2^11) >> 12
+        begin
+            logic [42:0] b2;
+            b2 = 43'(p4_m1) * 43'(sgr_one_over_n(r_of(ppss[4])));
+            p5_b2 <= 22'((b2 + (43'd1 << 11)) >> 12);
+        end
+        p5_a2 <= p4_a2;
+        plast[5] <= plast[4]; ppss[5] <= ppss[4]; pai[5] <= pai[4]; pidx[5] <= pidx[4];
     end
     // A/B of both passes over the band: rows 0..5 (block row + 1), positions indexed by plane x + 1.
     // 12 line RAMs (pass, row) of 4-position words {a2, b2} x 4; the box phase accumulates a word and writes it
@@ -332,18 +377,18 @@ module lr_top
         end
     endgenerate
     logic [4*ABW-1:0] ab_acc;                              // the word being built, one position per clock
-    logic [PXS-1:0]   ab_idx;                              // position index of the box position: ax + 1
-    assign ab_idx = ax + PXS'(1);
+    logic [PXS-1:0]   ab_idx;                              // position index of the box position leaving the pipe
+    assign ab_idx = pidx[ABP];
     always_comb begin
-        ab_we = (st == L_AB) && (ab_idx[1:0] == 2'd3 || ax >= PXS'(signed'({2'b0, seg_x1})) + PXS'(1));
-        ab_wline = 4'(pss) * 4'd6 + 4'(ai);
+        ab_we = pv[ABP] && (ab_idx[1:0] == 2'd3 || plast[ABP]);
+        ab_wline = 4'(ppss[ABP]) * 4'd6 + 4'(pai[ABP]);
         ab_waddr = (GW + 1)'(ab_idx >>> 2);
         ab_wdata = ab_acc;                                 // earlier positions of the word, plus the newest at its lane
-        ab_wdata[ABW * int'(ab_idx[1:0]) +: ABW] = {a2_v, b2_v};
+        ab_wdata[ABW * int'(ab_idx[1:0]) +: ABW] = {p5_a2, p5_b2};
         ab_raddr = (rq_g < 0) ? (GW + 1)'(0) : (rq_g > PXS'(1 << GW)) ? (GW + 1)'(1 << GW) : (GW + 1)'(rq_g);
     end
     always_ff @(posedge clk)
-        if (st == L_AB) ab_acc[ABW * int'(ab_idx[1:0]) +: ABW] <= {a2_v, b2_v};
+        if (pv[ABP]) ab_acc[ABW * int'(ab_idx[1:0]) +: ABW] <= {p5_a2, p5_b2};
     // the A/B window: [pass][row][12 columns] = positions 4 (wg - 1) + c; f_of for lane l, offset dx reads
     // position x + l + 1 + dx = column 4 + l + 1 + dx
     logic [8:0]  awin [0:1][0:5][0:11];
@@ -491,9 +536,10 @@ module lr_top
                 else begin
                     ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1);
                     if (ai + 3'd1 < 3'(hh) + 3'd2) begin ai <= ai + 3'd1; start_row(PXS'(signed'({2'b0, seg_x0})) - PXS'(1), L_AB); end
-                    else st <= L_PASS_NEXT;
+                    else st <= L_AB_DRAIN;
                 end
             end
+            L_AB_DRAIN: if (!abp_busy) st <= L_PASS_NEXT;                 // the last positions land in the A/B RAM
             L_PASS_NEXT: begin
                 if (!pss && sp[6:5] != 2'd0) begin pss <= 1'b1; ai <= 3'd0; ax <= PXS'(signed'({2'b0, seg_x0})) - PXS'(1); start_row(PXS'(signed'({2'b0, seg_x0})) - PXS'(1), L_AB); end
                 else begin i <= 3'd0; x <= seg_x0; start_row(PXS'(signed'({2'b0, seg_x0})), L_BLEND); end
