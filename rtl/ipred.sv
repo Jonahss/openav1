@@ -253,7 +253,7 @@ module ipred #(
 
     // ------------------------------------------------------------------ control state
     typedef enum logic [3:0] {
-        S_IDLE, S_SETUP, S_CORNER, S_EF, S_UP_A, S_UP_L, S_DC_SUM, S_PIX, S_FI2, S_DONE
+        S_IDLE, S_SETUP, S_CORNER, S_EF, S_UP_A, S_UP_L, S_DC_SUM, S_PIX, S_FI2, S_DRAIN, S_DONE
     } state_t;
     state_t state;
 
@@ -344,68 +344,100 @@ module ipred #(
         end
         return {10'(a0), 10'(a1), 10'(l0), 10'(l1)};
     endfunction
-    function automatic logic [PW-1:0] pred_val(input int i, input int j,
-                                               input logic [PW-1:0] vA0, input logic [PW-1:0] vA1,
-                                               input logic [PW-1:0] vL0, input logic [PW-1:0] vL1);
-        int tl, base, pl, pt, ptl, wy, wx, s, idx, shift, maxb, idx2, shift2;
-        logic [PW-1:0] pix_val;
-        tl = 0; base = 0; pl = 0; pt = 0; ptl = 0; wy = 0; wx = 0; s = 0; idx = 0; shift = 0; maxb = 0;
-        idx2 = 0; shift2 = 0;
-        pix_val = '0;
-        if (l_mode == DC_PRED) begin
-            pix_val = dc_val;
-        end else if (l_mode == PAETH_PRED) begin                             // vA0 = A[j], vL0 = L[i], vA1 = A[-1]
-            tl   = int'(vA1);
-            base = int'(vA0) + int'(vL0) - tl;
-            pl  = base - int'(vL0);  if (pl < 0) pl = -pl;
-            pt  = base - int'(vA0);  if (pt < 0) pt = -pt;
-            ptl = base - tl;         if (ptl < 0) ptl = -ptl;
-            if (pl <= pt && pl <= ptl) pix_val = vL0;
-            else if (pt <= ptl)        pix_val = vA0;
-            else                       pix_val = PW'(tl);
-        end else if (l_mode == SMOOTH_PRED) begin                            // vA1 = A[w-1], vL1 = L[h-1]
+    // The pixel datapath is two stages. Stage 1 (the S_PIX cycle) fetches a lane's edge values and forms its
+    // products: the smooth weights times the four values, or the directional interpolation's two products.
+    // Stage 2 sums, rounds and selects, into the output register. In one cycle (edge read, mode mux, products,
+    // sums, clip) the lanes were a four-deep DSP cascade into out_pix4, the block's worst path (-3.6 ns at 100 MHz).
+    // Outputs therefore land one cycle after S_PIX, and S_DRAIN lets the last one out before done.
+    localparam int PREPW = 4 * 23 + 3 * PW + 1;
+    function automatic logic [PREPW-1:0] pred_prep(input int i, input int j,
+                                                   input logic [PW-1:0] vA0, input logic [PW-1:0] vA1,
+                                                   input logic [PW-1:0] vL0, input logic [PW-1:0] vL1);
+        int base, idx, shift, maxb, idx2, shift2;
+        logic [22:0] p0, p1, p2, p3;
+        logic        inr;                       // Z1: base < maxb (interpolate; otherwise the pixel is A[maxb] = vA0)
+        base = 0; idx = 0; shift = 0; maxb = 0; idx2 = 0; shift2 = 0;
+        p0 = '0; p1 = '0; p2 = '0; p3 = '0; inr = 1'b0;
+        if (l_mode == SMOOTH_PRED || l_mode == SMOOTH_V_PRED || l_mode == SMOOTH_H_PRED) begin
             // explicitly sized unsigned products (9 x 12 bits): as int arithmetic, the synthesised sum came out
             // off by one in scattered lanes while simulation was exact (gate-level replay, 2026-10-11)
-            pix_val = PW'((23'(sm_w9(l_log2h, 6'(i)) * vA0) + 23'(sm_w9c(l_log2h, 6'(i)) * vL1)
-                         + 23'(sm_w9(l_log2w, 6'(j)) * vL0) + 23'(sm_w9c(l_log2w, 6'(j)) * vA1) + 23'd256) >> 9);
-        end else if (l_mode == SMOOTH_V_PRED) begin
-            pix_val = PW'((23'(sm_w9(l_log2h, 6'(i)) * vA0) + 23'(sm_w9c(l_log2h, 6'(i)) * vL1) + 23'd128) >> 8);
-        end else if (l_mode == SMOOTH_H_PRED) begin
-            pix_val = PW'((23'(sm_w9(l_log2w, 6'(j)) * vL0) + 23'(sm_w9c(l_log2w, 6'(j)) * vA1) + 23'd128) >> 8);
-        end else if (p_angle == 9'd90) begin
-            pix_val = vA0;
-        end else if (p_angle == 9'd180) begin
-            pix_val = vL0;
-        end else if (p_angle < 9'd90) begin                                   // Z1: vA0 = A[base] (or A[maxb]), vA1 = A[base+1]
-            idx   = (i + 1) * int'(dx);
-            base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
-            shift = ((idx << int'(up_a)) >> 1) & 31;
-            maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
-            if (base < maxb)
-                pix_val = PW'((int'(vA0) * (32 - shift) + int'(vA1) * shift + 16) >> 5);
-            else
-                pix_val = vA0;
-        end else if (p_angle < 9'd180) begin                                  // Z2
-            idx  = (j << 6) - (i + 1) * int'(dx);
-            base = idx >>> (6 - int'(up_a));
-            if (base >= -(1 << int'(up_a))) begin
+            p0 = 23'(sm_w9(l_log2h, 6'(i)) * vA0);  p1 = 23'(sm_w9c(l_log2h, 6'(i)) * vL1);     // vL1 = L[h-1]
+            p2 = 23'(sm_w9(l_log2w, 6'(j)) * vL0);  p3 = 23'(sm_w9c(l_log2w, 6'(j)) * vA1);     // vA1 = A[w-1]
+        end else if (l_mode != DC_PRED && l_mode != PAETH_PRED && p_angle != 9'd90 && p_angle != 9'd180) begin
+            if (p_angle < 9'd90) begin                                        // Z1: vA0 = A[base] (or A[maxb]), vA1 = A[base+1]
+                idx   = (i + 1) * int'(dx);
+                base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
                 shift = ((idx << int'(up_a)) >> 1) & 31;
-                pix_val = PW'((int'(vA0) * (32 - shift) + int'(vA1) * shift + 16) >> 5);
-            end else begin
-                idx2   = (i << 6) - (j + 1) * int'(dy);
-                shift2 = ((idx2 << int'(up_l)) >> 1) & 31;
-                pix_val = PW'((int'(vL0) * (32 - shift2) + int'(vL1) * shift2 + 16) >> 5);
+                maxb  = (int'(w) + int'(h) - 1) << int'(up_a);
+                inr   = base < maxb;
+                p0 = 23'(int'(vA0) * (32 - shift)); p1 = 23'(int'(vA1) * shift);
+            end else if (p_angle < 9'd180) begin                              // Z2
+                idx  = (j << 6) - (i + 1) * int'(dx);
+                base = idx >>> (6 - int'(up_a));
+                if (base >= -(1 << int'(up_a))) begin
+                    shift = ((idx << int'(up_a)) >> 1) & 31;
+                    p0 = 23'(int'(vA0) * (32 - shift)); p1 = 23'(int'(vA1) * shift);
+                end else begin
+                    idx2   = (i << 6) - (j + 1) * int'(dy);
+                    shift2 = ((idx2 << int'(up_l)) >> 1) & 31;
+                    p0 = 23'(int'(vL0) * (32 - shift2)); p1 = 23'(int'(vL1) * shift2);
+                end
+            end else begin                                                    // Z3
+                idx   = (j + 1) * int'(dy);
+                shift = ((idx << int'(up_l)) >> 1) & 31;
+                p0 = 23'(int'(vL0) * (32 - shift)); p1 = 23'(int'(vL1) * shift);
             end
-        end else begin                                                        // Z3
-            idx   = (j + 1) * int'(dy);
-            shift = ((idx << int'(up_l)) >> 1) & 31;
-            pix_val = PW'((int'(vL0) * (32 - shift) + int'(vL1) * shift + 16) >> 5);
+        end
+        return {p0, p1, p2, p3, vA0, vL0, vA1, inr};
+    endfunction
+    function automatic logic [PW-1:0] pred_fin(input logic [PREPW-1:0] r);
+        logic [22:0] p0, p1, p2, p3;
+        logic [PW-1:0] a0, l0, a1, pix_val;
+        logic inr;
+        int tl, base, pl, pt, ptl;
+        {p0, p1, p2, p3, a0, l0, a1, inr} = r;
+        tl = 0; base = 0; pl = 0; pt = 0; ptl = 0; pix_val = '0;
+        if (l_mode == DC_PRED) begin
+            pix_val = dc_val;
+        end else if (l_mode == PAETH_PRED) begin                             // a0 = A[j], l0 = L[i], a1 = A[-1]
+            tl   = int'(a1);
+            base = int'(a0) + int'(l0) - tl;
+            pl  = base - int'(l0);  if (pl < 0) pl = -pl;
+            pt  = base - int'(a0);  if (pt < 0) pt = -pt;
+            ptl = base - tl;        if (ptl < 0) ptl = -ptl;
+            if (pl <= pt && pl <= ptl) pix_val = l0;
+            else if (pt <= ptl)        pix_val = a0;
+            else                       pix_val = PW'(tl);
+        end else if (l_mode == SMOOTH_PRED) begin
+            pix_val = PW'((p0 + p1 + p2 + p3 + 23'd256) >> 9);
+        end else if (l_mode == SMOOTH_V_PRED) begin
+            pix_val = PW'((p0 + p1 + 23'd128) >> 8);
+        end else if (l_mode == SMOOTH_H_PRED) begin
+            pix_val = PW'((p2 + p3 + 23'd128) >> 8);
+        end else if (p_angle == 9'd90) begin
+            pix_val = a0;
+        end else if (p_angle == 9'd180) begin
+            pix_val = l0;
+        end else if (p_angle < 9'd90 && !inr) begin                          // Z1 beyond the edge: A[maxb]
+            pix_val = a0;
+        end else begin
+            pix_val = PW'((p0 + p1 + 23'd16) >> 5);
         end
         return pix_val;
     endfunction
-    logic [PW-1:0] pix4 [4];
+    logic [PREPW-1:0] prep4 [4];                 // stage 1, this cycle
     always_comb for (int l = 0; l < 4; l++)
-        pix4[l] = l_fi ? fi_q_pix[l] : pred_val(int'(py), int'(px) + l, rpA_d[2 * l], rpA_d[2 * l + 1], rpL_d[2 * l], rpL_d[2 * l + 1]);
+        prep4[l] = pred_prep(int'(py), int'(px) + l, rpA_d[2 * l], rpA_d[2 * l + 1], rpL_d[2 * l], rpL_d[2 * l + 1]);
+    // stage-1 registers: either a lane's prepared operands or a ready pixel (filter-intra rows)
+    logic             s_valid, s_raw;
+    logic [5:0]       s_x, s_y;
+    logic [PREPW-1:0] s_prep [4];
+    logic [PW-1:0]    s_pix [4];
+    always_ff @(posedge clk) begin                // stage 2
+        out_valid <= s_valid && !rst;
+        out_x <= s_x; out_y <= s_y;
+        for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= s_raw ? s_pix[l] : pred_fin(s_prep[l]);
+    end
 
     // filter-intra: the 4x2 patch at (i2 = py>>1, j4 = px>>2), from edges and already-predicted pixels
     logic [PW-1:0] fi_next [2][4];
@@ -598,7 +630,7 @@ module ipred #(
 
     always_ff @(posedge clk) begin
         done      <= 1'b0;
-        out_valid <= 1'b0;
+        s_valid   <= 1'b0;
         if (rst) begin
             state <= S_IDLE;
             busy  <= 1'b0;
@@ -718,28 +750,31 @@ module ipred #(
                             for (int t = 0; t < 7; t++) fi_m_r[i1][j1][t] <= (PW + 7)'(fi_m[i1][j1][t]);
                     state <= S_FI2;
                 end else begin
-                    for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= pix4[l];
-                    out_valid <= 1'b1;
-                    out_x <= px; out_y <= py;
+                    for (int l = 0; l < 4; l++) begin s_prep[l] <= prep4[l]; s_pix[l] <= fi_q_pix[l]; end
+                    s_raw <= l_fi;                                  // filter-intra odd rows: read back from the patch buffer
+                    s_valid <= 1'b1;
+                    s_x <= px; s_y <= py;
                     if (px + 7'd4 >= w) begin
                         px <= 0;
-                        if (py + 7'd1 == h) state <= S_DONE;
+                        if (py + 7'd1 == h) state <= S_DRAIN;
                         else py <= py + 6'd1;
                     end else px <= px + 6'd4;
                 end
             end
             S_FI2: begin                                            // the patch, summed: stored and its top row emitted
                 fi_buf[{py[4:1], px[4:2]}] <= fi_next_packed;       // filter-intra blocks are at most 32x32
-                for (int l = 0; l < 4; l++) out_pix4[l*PW +: PW] <= fi_next[0][l];
-                out_valid <= 1'b1;
-                out_x <= px; out_y <= py;
+                for (int l = 0; l < 4; l++) s_pix[l] <= fi_next[0][l];
+                s_raw <= 1'b1;
+                s_valid <= 1'b1;
+                s_x <= px; s_y <= py;
                 state <= S_PIX;
                 if (px + 7'd4 >= w) begin
                     px <= 0;
-                    if (py + 7'd1 == h) state <= S_DONE;
+                    if (py + 7'd1 == h) state <= S_DRAIN;
                     else py <= py + 6'd1;
                 end else px <= px + 6'd4;
             end
+            S_DRAIN: state <= S_DONE;                               // the last pixels leave stage 2 before done
             S_DONE: begin
                 done  <= 1'b1;
                 busy  <= 1'b0;
