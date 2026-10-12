@@ -34,7 +34,7 @@ module sr_top
     localparam int SUPERRES_EXTRA_BITS = 8;
     localparam int FILTER_BITS = 7;
 
-    typedef enum logic [2:0] {S_IDLE, S_PLANE, S_RD, S_RD_LAST, S_OUT, S_NEXT, S_DONE} st_t;
+    typedef enum logic [3:0] {S_IDLE, S_PLANE, S_DIV, S_INIT1, S_INIT2, S_RD, S_RD_LAST, S_OUT, S_NEXT, S_DONE} st_t;
     st_t st;
     logic        sub_x, sub_y;
     logic [PXW-1:0] up_w, plane_h, max_x;
@@ -48,8 +48,7 @@ module sr_top
 
     // per-plane geometry (7.16)
     logic [PXW-1:0] g_down, g_up, g_h, g_maxx;
-    logic [31:0] g_step;
-    logic signed [31:0] g_err, g_num, g_q, g_init;
+    logic signed [31:0] g_num;
     always_comb begin
         sub_x = (plane != 2'd0) && hdr.ssx;
         sub_y = (plane != 2'd0) && hdr.ssy;
@@ -57,13 +56,24 @@ module sr_top
         g_up = (hdr.upscaled_width + PXW'(sub_x)) >> sub_x;
         g_h = (lh.frame_height + PXW'(sub_y)) >> sub_y;
         g_maxx = PXW'(((PXW'(hdr.mi_cols) >> sub_x) << 2) - PXW'(1));
-        g_step = ((32'(g_down) << SUPERRES_SCALE_BITS) + 32'(g_up >> 1)) / 32'(g_up);
-        g_err = $signed(32'(g_up) * g_step) - $signed(32'(g_down) << SUPERRES_SCALE_BITS);
         g_num = -$signed((32'(g_up) - 32'(g_down)) << (SUPERRES_SCALE_BITS - 1)) + $signed(32'(g_up >> 1));
-        // truncating (C) divisions of possibly negative numerators
-        g_q = (g_num < 0) ? -$signed((32'(-g_num)) / 32'(g_up)) : $signed(32'(g_num) / 32'(g_up));
-        g_init = g_q + 32'sd128 - ((g_err < 0) ? -$signed(32'(-g_err) >> 1) : $signed(32'(g_err) >> 1));
     end
+    // stepX = (down << 14 + up/2) / up and the truncating q = num / up (num possibly negative) are two 32-bit
+    // divisions, once per plane: a shared restoring divider, one quotient bit per cycle (S_DIV, 32 cycles each).
+    // Combinational, the two dividers into init_subpel were the decoder's worst path (-19.5 ns at 100 MHz).
+    logic [PXW-1:0] dv_down, dv_up;
+    logic [31:0] dv_num, dv_quo, dv_num2;
+    logic [32:0] dv_rem;
+    logic [5:0]  dv_cnt;
+    logic        dv_phase, dv_neg2;          // phase 0: stepX; phase 1: |num| / up, sign dv_neg2
+    logic [31:0] dv_q2;
+    logic [32:0] dv_rem_sh;
+    logic        dv_ge;
+    always_comb begin
+        dv_rem_sh = {dv_rem[31:0], dv_num[31]};
+        dv_ge = dv_rem_sh >= 33'(dv_up);
+    end
+    logic signed [31:0] sr_err;              // up * stepX - (down << 14)
 
     // output sample: 8 taps around srcXPx from the line buffer
     logic signed [31:0] src_px;
@@ -98,9 +108,32 @@ module sr_top
         else case (st)
             S_IDLE: if (start) begin plane <= 2'd0; st <= S_PLANE; end
             S_PLANE: begin
-                up_w <= g_up; plane_h <= g_h; max_x <= g_maxx; step_x <= g_step;
-                init_subpel <= g_init & 32'sd16383;
+                up_w <= g_up; plane_h <= g_h; max_x <= g_maxx;
                 y <= ly_first >> sub_y; x <= PXW'(0);
+                dv_down <= g_down; dv_up <= g_up;
+                dv_num <= (32'(g_down) << SUPERRES_SCALE_BITS) + 32'(g_up >> 1);
+                dv_num2 <= (g_num < 0) ? 32'(-g_num) : 32'(g_num); dv_neg2 <= (g_num < 0);
+                dv_rem <= '0; dv_quo <= '0; dv_cnt <= 6'd0; dv_phase <= 1'b0;
+                st <= S_DIV;
+            end
+            S_DIV: begin                                        // one quotient bit per cycle, MSB first
+                dv_rem <= dv_ge ? dv_rem_sh - 33'(dv_up) : dv_rem_sh;
+                dv_num <= {dv_num[30:0], 1'b0};
+                dv_quo <= {dv_quo[30:0], dv_ge};
+                if (dv_cnt != 6'd31) dv_cnt <= dv_cnt + 6'd1;
+                else begin
+                    dv_cnt <= 6'd0; dv_rem <= '0; dv_quo <= '0;
+                    if (!dv_phase) begin step_x <= {dv_quo[30:0], dv_ge}; dv_num <= dv_num2; dv_phase <= 1'b1; end
+                    else begin dv_q2 <= {dv_quo[30:0], dv_ge}; st <= S_INIT1; end
+                end
+            end
+            S_INIT1: begin                                      // err = up * stepX - (down << 14)
+                sr_err <= $signed(32'(dv_up) * step_x) - $signed(32'(dv_down) << SUPERRES_SCALE_BITS);
+                st <= S_INIT2;
+            end
+            S_INIT2: begin                                      // initialSubpelX = (q + 128 - err/2) & 16383, C truncation
+                init_subpel <= ((dv_neg2 ? -$signed(dv_q2) : $signed(dv_q2)) + 32'sd128
+                                - ((sr_err < 0) ? -$signed(32'(-sr_err) >> 1) : $signed(32'(sr_err) >> 1))) & 32'sd16383;
                 st <= S_RD;
             end
             // copy row y into the line buffer (the read lands one cycle after its address): all MiCols * 4
