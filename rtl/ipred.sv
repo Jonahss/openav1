@@ -396,6 +396,7 @@ module ipred #(
     // (the taps p[], i2, j4 and pr live at module scope: declared inside this block, Vivado folded the whole
     // filter to a constant and dropped the patch buffer, while simulation matched dav1d)
     int p [7];
+    int fi_m [2][4][7];                 // the taps' products, per output (summed as a tree below)
     int i2, j4, pr;
     assign i2 = int'(py) >> 1;          // (own assigns: in the block below they would look to Verilator like a loop
     assign j4 = int'(px) >> 2;          //  through the read ports)
@@ -416,8 +417,11 @@ module ipred #(
         end
         for (int i1 = 0; i1 < 2; i1++)
             for (int j1 = 0; j1 < 4; j1++) begin
-                pr = 0;
-                for (int t = 0; t < 7; t++) pr += int'(fi_tap(l_fimode, 3'((i1 << 2) + j1), 3'(t))) * p[t];
+                // the seven products summed as a balanced tree (accumulated in sequence they became a seven-deep
+                // DSP cascade: the block's worst path)
+                for (int t = 0; t < 7; t++) fi_m[i1][j1][t] = int'(fi_tap(l_fimode, 3'((i1 << 2) + j1), 3'(t))) * p[t];
+                pr = ((fi_m[i1][j1][0] + fi_m[i1][j1][1]) + (fi_m[i1][j1][2] + fi_m[i1][j1][3]))
+                   + ((fi_m[i1][j1][4] + fi_m[i1][j1][5]) + fi_m[i1][j1][6]);
                 if (pr >= 0) pr = (pr + 8) >> 4; else pr = -((-pr + 8) >> 4);   // Round2Signed(pr, 4)
                 fi_next[i1][j1] = clip1i(pr, pix_max);
             end
