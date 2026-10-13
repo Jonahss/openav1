@@ -8,8 +8,8 @@ module itx_row #(
     input  logic [1:0]       kind,       // 0 ADST4, 1 identity, 2 WHT
     input  logic [2:0]       n,          // log2 length (identity 2..5)
     input  logic [1:0]       wht_shift,  // 2 for rows, 0 for columns
-    input  logic [64*TW-1:0] in_vec,
-    output logic [64*TW-1:0] out_vec
+    input  logic [32*TW-1:0] in_vec,    // lanes 0 .. 31 (the longest of these transforms is identity 32)
+    output logic [32*TW-1:0] out_vec
 );
     logic signed [TW-1:0] T [32];
     always_comb for (int i = 0; i < 32; i++) T[i] = in_vec[i*TW +: TW];

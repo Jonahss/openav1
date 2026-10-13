@@ -193,6 +193,7 @@ module itx2d #(
     logic [6:0] w, h;
     logic       rect;                  // |log2W - log2H| == 1
     logic [1:0] l_rowshift;
+    logic [1:0] row_cls_l, col_cls_l;   // latched 1D classes
     logic [4:0] row_clamp, col_clamp;
     assign w = 7'd1 << l_log2w;
     assign h = 7'd1 << l_log2h;
@@ -215,8 +216,7 @@ module itx2d #(
     assign count    = col ? w : h;
     assign real_cnt = col ? w : ((h > 7'd32) ? 7'd32 : h);
 
-    logic [1:0] row_cls_l, col_cls_l;   // latched 1D classes
-    typedef enum logic [2:0] { S_IDLE, S_GSZ, S_LD, S_GO, S_RUN, S_ST, S_DONE } state_t;
+    typedef enum logic [2:0] { S_IDLE, S_GSZ, S_LD, S_GO, S_RUN, S_ST, S_STRM, S_DONE } state_t;
     state_t     state;
     logic [6:0] idx;                    // first row / column of the current group
     logic [4:0] g;                      // rows loaded / stored so far in this group
@@ -240,11 +240,15 @@ module itx2d #(
     itx_lvl #(.TW(TW)) u_lvl (.clk, .rst, .start(e_start), .prog(e_prog), .r(e_r), .in_vec(pk_in),
                               .busy(e_busy), .done(e_done), .out_vec(e_out));
     logic [64*TW-1:0] ld_vec_f;         // the loaded row as a flat vector
+    // streamed rows (ADST4 / identity / WHT): a 3-stage pipeline, one row per clock —
+    //   1 read row ri -> ld_row   2 ld_row -> itx_row -> st_row   3 st_row -> round/clamp -> write row st_i
     logic [1:0]       rk;               // row unit kind: 0 ADST4, 1 identity, 2 WHT
-    logic [64*TW-1:0] rw_out;
-    logic [64*TW-1:0] st_row;           // streamed row, registered at load, stored the next cycle
+    logic [32*TW-1:0] rw_out;
+    logic [32*TW-1:0] ld_row, st_row;
+    logic             ld_v, st_v, ld_zero;
+    logic [6:0]       ri, ld_i, st_i;
     assign rk = l_lossless ? 2'd2 : (cls_l == 2'd2) ? 2'd1 : 2'd0;
-    itx_row #(.TW(TW)) u_row (.kind(rk), .n(n_l), .wht_shift(col ? 2'd0 : 2'd2), .in_vec(ld_vec_f), .out_vec(rw_out));
+    itx_row #(.TW(TW)) u_row (.kind(rk), .n(n_l), .wht_shift(col ? 2'd0 : 2'd2), .in_vec(ld_row), .out_vec(rw_out));
 
     // Round2 helper with a variable shift (0..4)
     function automatic logic signed [TW-1:0] round2v(input logic signed [TW-1:0] x, input logic [2:0] sh);
@@ -279,6 +283,7 @@ module itx2d #(
     // read port select: the sequencer while loading, the residual port otherwise
     always_comb begin
         if (state == S_LD) begin rd_col = col; rd_s = cur[5:0]; end
+        else if (state == S_STRM) begin rd_col = col; rd_s = ri[5:0]; end
         else begin rd_col = 1'b0; rd_s = res_addr[11:6]; end
     end
     assign res_data = rd_vec[res_addr[5:0]];
@@ -288,10 +293,10 @@ module itx2d #(
     logic [TW-1:0] st_vec [64];
     always_comb begin
         for (int j = 0; j < 64; j++) st_vec[j] = '0;
-        if (zero_grp) begin
+        if (state == S_STRM) begin
+            for (int j = 0; j < 32; j++) st_vec[j] = st_row[j*TW +: TW];
+        end else if (zero_grp) begin
             ;                                               // rows >= 32: zeros
-        end else if (stream) begin
-            for (int j = 0; j < 64; j++) st_vec[j] = st_row[j*TW +: TW];
         end else begin
             case (n_l)
                 3'd2:    for (int j = 0; j < 4;  j++) st_vec[j] = pk_out[(60 + j)*TW +: TW];
@@ -308,16 +313,17 @@ module itx2d #(
     // column range, the column store rounds by 4 (0 when lossless) without clamp.
     always_comb begin
         logic [2:0] st_sh;
-        wr_col = col; wr_s = cur[5:0]; wr_en = '0;
+        wr_col = col; wr_s = (state == S_STRM) ? st_i[5:0] : cur[5:0]; wr_en = '0;
         st_sh  = col ? (l_lossless ? 3'd0 : 3'd4) : 3'(l_rowshift);
         for (int k = 0; k < 64; k++) begin
             logic signed [TW-1:0] v;
             v = round2v(signed'(st_vec[k]), st_sh);
             if (!col) v = (v < clip_lo) ? clip_lo : (v > clip_hi) ? clip_hi : v;
-            wr_vec[k] = (state == S_ST) ? v : '0;
+            wr_vec[k] = (state == S_ST || state == S_STRM) ? v : '0;
         end
         case (state)
-            S_ST: wr_en = (cur < count) ? '1 : '0;
+            S_ST:   wr_en = (cur < count) ? '1 : '0;
+            S_STRM: wr_en = st_v ? '1 : '0;
             S_IDLE: if (coef_we && !busy) begin
                 wr_col = 1'b0;
                 wr_s = {1'b0, coef_addr[9:5]};
@@ -376,11 +382,26 @@ module itx2d #(
                     idx      <= idx_next;
                     first    <= 1'b0;
                     g        <= '0;
-                    state    <= zero_grp_next ? S_ST : S_LD;
+                    state    <= stream ? S_STRM : zero_grp_next ? S_ST : S_LD;
+                    ri <= '0; ld_v <= 1'b0; st_v <= 1'b0;
                 end
                 // ---- load the rows of the group: shift into pk_in from the top (engine) or through itx_row (stream)
+                // ---- streamed rows: the whole pass, one row per clock through the 3-stage pipeline
+                S_STRM: begin
+                    ld_row  <= ld_vec_f[32*TW-1:0];
+                    ld_v    <= (ri < count);
+                    ld_i    <= ri;
+                    ld_zero <= !col && (ri >= 7'd32);
+                    ri      <= ri + 7'd1;
+                    st_row  <= ld_zero ? '0 : rw_out;
+                    st_v    <= ld_v;
+                    st_i    <= ld_i;
+                    if (ri >= count && !ld_v && !st_v) begin      // all rows read, pipeline drained
+                        if (col) state <= S_DONE;
+                        else begin col <= 1'b1; first <= 1'b1; state <= S_GSZ; end
+                    end
+                end
                 S_LD: begin
-                    st_row <= rw_out;
                     case (n_l)
                         3'd2:    pk_in <= {ld_vec_f[4*TW-1:0],  pk_in[64*TW-1:4*TW]};
                         3'd3:    pk_in <= {ld_vec_f[8*TW-1:0],  pk_in[64*TW-1:8*TW]};
@@ -390,7 +411,7 @@ module itx2d #(
                     endcase
                     if (g + 5'd1 == gsz) begin
                         g     <= '0;
-                        state <= stream ? S_ST : S_GO;
+                        state <= S_GO;
                     end else g <= g + 5'd1;
                 end
                 S_GO: begin e_start <= 1'b1; state <= S_RUN; end
