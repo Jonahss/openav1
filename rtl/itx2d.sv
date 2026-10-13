@@ -261,24 +261,26 @@ module itx2d #(
     always_comb for (int l = 0; l < 4; l++) res_data4[l*TW +: TW] = rd_vec[{res_addr[5:2], 2'(l)}];
 
     // write port: stored lane vector (row or column cur) or one coefficient while idle
+    // One shared round-and-clamp datapath for both store states (itx-wb, 2026-10-13): the row store rounds by
+    // l_rowshift and clamps to the column range, the column store rounds by 4 (0 when lossless) without clamp.
+    // Written as two loops in a case, Vivado built both datapaths and muxed them per bank.
     always_comb begin
+        logic [2:0] st_sh;
+        logic       st_vec;
         wr_col = 1'b0; wr_s = cur[5:0]; wr_en = '0;
-        for (int k = 0; k < 64; k++) wr_vec[k] = '0;
+        st_sh  = (state == S_CST) ? (l_lossless ? 3'd0 : 3'd4) : 3'(l_rowshift);
+        st_vec = (state == S_RST && !zero_grp) || state == S_CST;
+        for (int k = 0; k < 64; k++) begin
+            logic signed [TW-1:0] v;
+            v = round2v(e_out[lane][k*TW +: TW], st_sh);
+            if (state == S_RST) v = (v < clip_lo) ? clip_lo : (v > clip_hi) ? clip_hi : v;
+            wr_vec[k] = st_vec ? v : '0;
+        end
         case (state)
-            S_RST: begin
-                wr_en = (cur < h) ? '1 : '0;
-                if (!zero_grp)
-                    for (int j = 0; j < 64; j++) begin
-                        logic signed [TW-1:0] v;
-                        v = round2v(e_out[lane][j*TW +: TW], 3'(l_rowshift));
-                        v = (v < clip_lo) ? clip_lo : (v > clip_hi) ? clip_hi : v;
-                        wr_vec[j] = v;
-                    end
-            end
+            S_RST: wr_en = (cur < h) ? '1 : '0;
             S_CST: begin
                 wr_col = 1'b1;
                 wr_en = (cur < w) ? '1 : '0;
-                for (int i = 0; i < 64; i++) wr_vec[i] = round2v(e_out[lane][i*TW +: TW], l_lossless ? 3'd0 : 3'd4);
             end
             S_IDLE: if (coef_we && !busy) begin
                 wr_s = {1'b0, coef_addr[9:5]};
