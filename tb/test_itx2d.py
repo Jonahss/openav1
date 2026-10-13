@@ -1,5 +1,5 @@
 """Fuzz the 2D inverse transform block against the spec model, over all 19 transform sizes and the
-transform types the spec allows for each. Env: ITX2D_ITERS per size (default 6), ITX2D_SEED.
+transform types the spec allows for each. Env: ITX2D_ITERS per size (default 6), ITX2D_SEED, ITX2D_SIZES / ITX2D_TYPES (comma lists) to narrow.
 """
 import os
 import random
@@ -53,10 +53,13 @@ async def fuzz_vs_model(dut):
     await RisingEdge(dut.clk)
 
     checked = 0
-    for tx_sz in range(19):
+    sizes = [int(x) for x in os.environ.get("ITX2D_SIZES", "").split(",") if x] or list(range(19))
+    only_types = [int(x) for x in os.environ.get("ITX2D_TYPES", "").split(",") if x]
+    for tx_sz in sizes:
         lw, lh = m.TX_WIDTH_LOG2[tx_sz], m.TX_HEIGHT_LOG2[tx_sz]
         w, h = 1 << lw, 1 << lh
         types = allowed_types(tx_sz)
+        if only_types: types = [t for t in types if t in only_types] or types
         good = 0
         while good < iters:
             lossless = (tx_sz == 0 and rng.random() < 0.25)
@@ -117,6 +120,8 @@ async def fuzz_vs_model(dut):
                     got[i][j] = to_signed(int(dut.res_data.value))
             if got != exp:
                 bad = [(i, j, got[i][j], exp[i][j]) for i in range(h) for j in range(w) if got[i][j] != exp[i][j]]
+                rows_h = sorted({i for (i, j, e, g) in bad}); cols_h = sorted({j for (i, j, e, g) in bad})
+                dut._log.error(f"mismatch rows {rows_h[:40]}{'...' if len(rows_h) > 40 else ''} cols {cols_h[:40]}{'...' if len(cols_h) > 40 else ''}")
                 raise AssertionError(f"tx_sz {tx_sz} ({w}x{h}) type {tx_type} bd {bd} lossless {lossless}: "
                                      f"{len(bad)} mismatches, first {bad[:6]}")
             good += 1
