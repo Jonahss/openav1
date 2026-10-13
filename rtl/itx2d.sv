@@ -127,9 +127,33 @@ module itx2d #(
     logic       rd_col;                 // 0: row s, 1: column s
     logic [5:0] rd_s;
     vec_t       rd_vec;                 // element k (column j = k in row mode, row i = k in column mode)
+    // The rotations by s are explicit 6-stage log rotators (2:1 muxes, 2^st words per stage): written as
+    // indexed lookups, Vivado built 64 independent 64:1 muxes per bit (~10k LUTs each way, 2026-10-13).
+    function automatic vec_t rot_left(input vec_t v, input logic [5:0] s);   // out[k] = in[(k + s) mod 64]
+        vec_t t;
+        t = v;
+        for (int st = 0; st < 6; st++) if (s[st]) begin
+            vec_t u;
+            for (int k = 0; k < 64; k++) u[k] = t[(k + (1 << st)) % 64];
+            t = u;
+        end
+        return t;
+    endfunction
+    function automatic vec_t rot_right(input vec_t v, input logic [5:0] s);  // out[b] = in[(b - s) mod 64]
+        vec_t t;
+        t = v;
+        for (int st = 0; st < 6; st++) if (s[st]) begin
+            vec_t u;
+            for (int k = 0; k < 64; k++) u[k] = t[(k + 64 - (1 << st)) % 64];
+            t = u;
+        end
+        return t;
+    endfunction
     always_comb begin
+        vec_t rdat;
         for (int b = 0; b < 64; b++) tm_raddr[b] = rd_col ? 6'(b - 32'(rd_s)) : rd_s;
-        for (int k = 0; k < 64; k++) rd_vec[k] = tm_rdata[6'(k + 32'(rd_s))];   // rotate left by s
+        for (int b = 0; b < 64; b++) rdat[b] = tm_rdata[b];
+        rd_vec = rot_left(rdat, rd_s);                                      // rotate left by s
     end
     // write side: a vector (row or column s) with per-element enables, from the store states or the coefficient port
     logic        wr_col;
@@ -137,12 +161,14 @@ module itx2d #(
     logic [63:0] wr_en;
     vec_t        wr_vec;
     always_comb begin
+        vec_t wdat;
+        wdat = rot_right(wr_vec, wr_s);                                     // element b - s lands in bank b
         for (int b = 0; b < 64; b++) begin
             logic [5:0] k;
-            k = 6'(b - 32'(wr_s));                                  // element that lands in bank b (rotate right by s)
+            k = 6'(b - 32'(wr_s));
             tm_we[b]    = wr_en[k];
             tm_waddr[b] = wr_col ? k : wr_s;
-            tm_wdata[b] = wr_vec[k];
+            tm_wdata[b] = wdat[b];
         end
     end
 
