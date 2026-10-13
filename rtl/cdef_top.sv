@@ -123,29 +123,35 @@ module cdef_top
     logic signed [15:0] part_r [0:7][0:14];
     always_ff @(posedge clk) for (int d = 0; d < 8; d++) for (int k = 0; k < 15; k++) part_r[d][k] <= part[d][k];
     (* use_dsp = "yes" *) logic signed [31:0] sq_r [0:7][0:14];     // |part| < 2^15, so the square fits 31 bits
-    always_ff @(posedge clk) for (int d = 0; d < 8; d++) for (int k = 0; k < 15; k++) sq_r[d][k] <= part_r[d][k] * part_r[d][k];
+    // only the partial sums the costs use are squared: d = 0, 4 all 15; d = 2, 6 the first 8; odd d the first 11
+    always_ff @(posedge clk) for (int d = 0; d < 8; d++) for (int k = 0; k < 15; k++)
+        if (d % 4 == 0 || (d % 2 == 0 && k < 8) || (d % 2 == 1 && k < 11)) sq_r[d][k] <= part_r[d][k] * part_r[d][k];
     function automatic logic signed [42:0] sq(input logic signed [31:0] q);
         sq = 43'(q);
     endfunction
     logic signed [42:0] cost [0:7];
+    // The squares sharing the weight 105 are summed first and multiplied once (34 constant multiplies instead of
+    // 120: the Div_Table shift-add trees on 31-bit squares were ~12k LUTs); integer arithmetic, so bit-identical.
     always_comb begin
-        for (int d = 0; d < 8; d++) cost[d] = 43'sd0;
+        logic signed [42:0] s105 [0:7];
+        for (int d = 0; d < 8; d++) begin cost[d] = 43'sd0; s105[d] = 43'sd0; end
         for (int i = 0; i < 8; i++) begin
-            cost[2] = cost[2] + sq(sq_r[2][i]) * 43'sd105;
-            cost[6] = cost[6] + sq(sq_r[6][i]) * 43'sd105;
+            s105[2] = s105[2] + sq(sq_r[2][i]);
+            s105[6] = s105[6] + sq(sq_r[6][i]);
         end
         for (int i = 0; i < 7; i++) begin
             cost[0] = cost[0] + (sq(sq_r[0][i]) + sq(sq_r[0][14 - i])) * 43'(signed'({33'b0, div_table(4'(i + 1))}));
             cost[4] = cost[4] + (sq(sq_r[4][i]) + sq(sq_r[4][14 - i])) * 43'(signed'({33'b0, div_table(4'(i + 1))}));
         end
-        cost[0] = cost[0] + sq(sq_r[0][7]) * 43'sd105;
-        cost[4] = cost[4] + sq(sq_r[4][7]) * 43'sd105;
+        s105[0] = sq(sq_r[0][7]);
+        s105[4] = sq(sq_r[4][7]);
         for (int o = 0; o < 4; o++) begin
             int d;
             d = 2 * o + 1;
-            for (int j = 0; j < 5; j++) cost[d] = cost[d] + sq(sq_r[d][3 + j]) * 43'sd105;
+            for (int j = 0; j < 5; j++) s105[d] = s105[d] + sq(sq_r[d][3 + j]);
             for (int j = 0; j < 3; j++) cost[d] = cost[d] + (sq(sq_r[d][j]) + sq(sq_r[d][10 - j])) * 43'(signed'({33'b0, div_table(4'(2 * j + 2))}));
         end
+        for (int d = 0; d < 8; d++) cost[d] = cost[d] + s105[d] * 43'sd105;
     end
     logic signed [42:0] cost_r [0:7];
     always_ff @(posedge clk) for (int d = 0; d < 8; d++) cost_r[d] <= cost[d];
