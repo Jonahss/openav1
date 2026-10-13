@@ -7,6 +7,7 @@ import re
 import sys
 
 src = open(sys.argv[1]).read()
+src = re.sub(r"//[^\n]*", "", src)        # drop line comments: a ';' inside one ended the header early (sr_top, 2026-10-13)
 m = re.search(r"^\s*module\s+\w+.*?\)\s*;", src, re.S | re.M)
 if not m:
     sys.exit(f"{sys.argv[1]}: no module header found")
