@@ -308,32 +308,39 @@ module recon_top
     // [plane][y+1] is a 34-bit row, bit x+1, for y,x in -1..32. Rows, not bits, are the unit of update: a
     // transform block marks its area with up to 16 row ORs of a shifted mask. (Per-bit writes with computed
     // indices were 256 decoders over 3,468 cells and synthesis never finished.)
-    logic [33:0] bdf [0:2][0:33];
-    // 5.11.3 clear_block_decoded_flags: the rows a superblock starts with (above row and left column available
-    // where the frame extends; the corner below the superblock's last row cleared)
-    logic [33:0] bdf_init [0:2][0:33];
-    always_comb begin
-        for (int p = 0; p < 3; p++) begin
-            logic sx, sy;
-            logic [MIW-1:0] sbw4, sbh4;
-            logic [5:0] lim_x, lim_y;
-            sx = (p != 0) && hdr.ssx; sy = (p != 0) && hdr.ssy;
-            sbw4 = (hdr.mi_col_end - sb_c) >> sx;
-            sbh4 = (hdr.mi_row_end - sb_r) >> sy;
-            lim_x = sb_size4 >> sx; lim_y = sb_size4 >> sy;
-            for (int yy = -1; yy <= 32; yy++) begin
-                logic [33:0] v;
-                v = '0;
-                if (yy <= int'(lim_y)) begin
-                    if (yy < 0) begin                                      // above row: decoded up to the frame edge
-                        for (int xx = -1; xx <= 32; xx++) if (xx <= int'(lim_x) && (xx < 0 || xx < int'(sbw4))) v[xx + 1] = 1'b1;
-                    end else if (yy < int'(sbh4) && yy != int'(lim_y)) v[0] = 1'b1;   // left column, not the corner below
-                end
-                bdf_init[p][yy + 1] = v;
-            end
-        end
-    end
+    // [plane][y+1] is a 34-bit row, bit x+1, for y,x in -1..32: 102 rows (plane*34 + y+1) in a dual-read
+    // distributed RAM. A row not written since the superblock start reads as its 5.11.3 initial value
+    // (bdf_wr tracks that), so sb_start clears 102 bits, not 102 rows. A transform block marks its area in
+    // R_FIN with one read-modify-write per row (step_y clocks). Was 3,468 flip-flops of OR/mux logic (5k LUTs,
+    // 2026-10-13); before that, per-bit writes with computed indices never finished synthesis.
+    (* ram_style = "distributed" *) logic [33:0] bdf_m [0:127];
+    logic [101:0] bdf_wr;
+    logic [6:0]   bdf_a_rd, bdf_a_bl, bdf_a_fin;      // row addresses: read port A (above-right / FIN rmw), below-left, FIN write
+    logic [5:0]   bdf_y_rd;
+    logic [33:0]  bdf_row_a, bdf_row_bl;
+    logic [4:0]   fy;                                  // FIN row counter
     assign sb_size4 = hdr.sb128 ? 6'd32 : 6'd16;
+    // 5.11.3 clear_block_decoded_flags: the row a superblock starts with (above row decoded up to the frame
+    // edge; left column available where the frame extends, the corner below the superblock's last row cleared)
+    function automatic logic [33:0] bdf_init_row(input logic [1:0] p, input logic [5:0] yy1);   // yy1 = y+1
+        logic sx, sy;
+        logic [MIW-1:0] sbw4, sbh4;
+        logic [5:0] lim_x, lim_y;
+        logic [33:0] v;
+        int yy;
+        sx = (p != 0) && hdr.ssx; sy = (p != 0) && hdr.ssy;
+        sbw4 = (hdr.mi_col_end - sb_c) >> sx;
+        sbh4 = (hdr.mi_row_end - sb_r) >> sy;
+        lim_x = sb_size4 >> sx; lim_y = sb_size4 >> sy;
+        yy = int'(yy1) - 1;
+        v = '0;
+        if (yy <= int'(lim_y)) begin
+            if (yy < 0) begin
+                for (int xx = -1; xx <= 32; xx++) if (xx <= int'(lim_x) && (xx < 0 || xx < int'(sbw4))) v[xx + 1] = 1'b1;
+            end else if (yy < int'(sbh4) && yy != int'(lim_y)) v[0] = 1'b1;
+        end
+        return v;
+    endfunction
     logic [PXW-1:0] max_luma_w, max_luma_h;
 
     // ================================================================ transform-block state
@@ -353,6 +360,25 @@ module recon_top
     logic [3:0]  mode;
     logic        have_l, have_a, have_ar, have_bl;
     logic [PXW-1:0] above_lim, left_lim;
+    always_comb begin
+        bdf_y_rd  = (rs == R_FIN) ? 6'(sb_row_p + 6'd1 + 6'(fy)) : sb_row_p;
+        bdf_a_rd  = 7'(t.plane) * 7'd34 + 7'(bdf_y_rd);
+        bdf_a_bl  = 7'(t.plane) * 7'd34 + 7'(sb_row_p) + 7'(step_y) + 7'd1;
+        bdf_a_fin = bdf_a_rd;
+        bdf_row_a  = bdf_wr[bdf_a_rd] ? bdf_m[bdf_a_rd] : bdf_init_row(t.plane, bdf_y_rd);
+        bdf_row_bl = bdf_wr[bdf_a_bl] ? bdf_m[bdf_a_bl] : bdf_init_row(t.plane, 6'(sb_row_p + 6'(step_y) + 6'd1));
+    end
+    always_ff @(posedge clk) if (rs == R_FIN) bdf_m[bdf_a_fin] <= bdf_row_a | fin_mask;
+    // availability beyond the block (above-right, below-left) from the flags, and the sample limits
+    // (its own block: geometry -> flag rows -> availability, no scheduling cycle)
+    always_comb begin
+        have_ar = bdf_row_a[sb_col_p + 6'(step_x) + 6'd1];     // read port A shows row sb_row_p outside R_FIN
+        have_bl = bdf_row_bl[sb_col_p];
+        above_lim = t.x + (have_ar ? PXW'(tw_px) * 2 : PXW'(tw_px)) - PXW'(1);
+        if (above_lim > max_x) above_lim = max_x;
+        left_lim = t.y + (have_bl ? PXW'(th_px) * 2 : PXW'(th_px)) - PXW'(1);
+        if (left_lim > max_y) left_lim = max_y;
+    end
     logic [6:0]  above_px, left_px;
     logic [95:0] pal_cols;
     always_comb begin
@@ -374,12 +400,6 @@ module recon_top
         mode = (t.plane == 2'd0) ? b.ymode : (is_cfl ? DC_PRED : b.uvmode);
         have_l = ((t.plane == 2'd0) ? av_l : av_lc) || (t.x > base_x);
         have_a = ((t.plane == 2'd0) ? av_u : av_uc) || (t.y > base_y);
-        have_ar = bdf[t.plane][sb_row_p][sb_col_p + 6'(step_x) + 6'd1];
-        have_bl = bdf[t.plane][sb_row_p + 6'(step_y) + 6'd1][sb_col_p];
-        above_lim = t.x + (have_ar ? PXW'(tw_px) * 2 : PXW'(tw_px)) - PXW'(1);
-        if (above_lim > max_x) above_lim = max_x;
-        left_lim = t.y + (have_bl ? PXW'(th_px) * 2 : PXW'(th_px)) - PXW'(1);
-        if (left_lim > max_y) left_lim = max_y;
         above_px = (PXW'(tw_px) < max_x - t.x + PXW'(1)) ? tw_px : 7'(max_x - t.x + PXW'(1));
         left_px  = (PXW'(th_px) < max_y - t.y + PXW'(1)) ? th_px : 7'(max_y - t.y + PXW'(1));
         pal_cols = (t.plane == 2'd0) ? b.col_y : (t.plane == 2'd1) ? b.col_u : b.col_v;
@@ -689,11 +709,10 @@ module recon_top
         tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0; mi_tx_we <= 1'b0;
         if (rst) begin
             rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0);
-            for (int p = 0; p < 3; p++) for (int yy = 0; yy < 34; yy++) bdf[p][yy] <= '0;
+            bdf_wr <= '0; fy <= '0;
         end else begin
             // 5.11.3 clear_block_decoded_flags at each superblock start
-            if (sb_start)
-                for (int p = 0; p < 3; p++) for (int yy = 0; yy < 34; yy++) bdf[p][yy] <= bdf_init[p][yy];
+            if (sb_start) bdf_wr <= '0;
             case (rs)
                 R_IDLE: if (tx_take) begin
                     t <= ev_tx; rs <= R_SETUP;
@@ -781,15 +800,12 @@ module recon_top
                 R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_FIN; end
                 // ---- bookkeeping + ack
                 R_FIN: begin
-                    // mark the block's area: every row decides statically whether it is one of the block's
-                    // step_y rows and ORs in the one shared column mask (dynamic row indices made 16 row
-                    // decoders and 16 shifters: 64k LUTs)
-                    for (int p = 0; p < 3; p++)
-                        for (int yy = 0; yy < 34; yy++)
-                            if (p == int'(t.plane) && yy >= int'(sb_row_p) + 1 && yy < int'(sb_row_p) + 1 + int'(step_y))
-                                bdf[p][yy] <= (sb_start ? bdf_init[p][yy] : bdf[p][yy]) | fin_mask;
+                    // mark the block's area: one row per clock, rows sb_row_p+1 .. sb_row_p+step_y (the RAM write
+                    // and the row read on port A follow fy above)
+                    bdf_wr[bdf_a_fin] <= 1'b1;
                     if (t.plane == 2'd0) begin max_luma_w <= t.x + PXW'(tw_px); max_luma_h <= t.y + PXW'(th_px); end
-                    rs <= R_MIW;
+                    if (fy + 5'd1 >= step_y) begin fy <= '0; rs <= R_MIW; end
+                    else fy <= fy + 5'd1;
                 end
                 R_MIW: if (!mi_tx_busy && !mi_tx_we) begin       // LoopfilterTxSizes over the transform block's area
                     mi_tx_we <= 1'b1; tx_ack <= 1'b1; rs <= R_IDLE;
