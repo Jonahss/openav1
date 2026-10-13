@@ -26,3 +26,13 @@ Alternatives considered and rejected for now:
 xsim's RTL evaluation of lr_top and tile_syntax differs from Verilator's (the Vivado netlists match Verilator).
 Likely xsim's always_comb is not sensitive to module-scope reads inside functions. Check what Yosys does before
 the ASIC flow.
+
+## Transform stage: transpose rotators and pack/unpack muxes (noted 2026-10-13)
+
+After the level-folded engine (`docs/itx-level-engine.md`) the transform stage is ~51k LUTs in the decoder:
+engine 18k, transpose memory ~20k (of which the two 64-lane log rotators ~15k), pack/unpack shift muxes ~5k,
+load/store paths ~4k, streamed-row unit 1k. The rotators are the inherent cost of one-cycle row and column
+access to the skewed 64-bank memory; a different memory organisation (e.g. half-width banks with two-cycle
+column access, or keeping blocks of up to 64 coefficients inside the engine and transposing by lane permutation)
+would trade cycles for those LUTs. The wrapper is also sequential per group (load, run, store); the memory has
+separate read and write ports, so the store of group k could overlap the load of group k+1.
