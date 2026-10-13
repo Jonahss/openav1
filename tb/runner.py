@@ -13,7 +13,7 @@ waves = os.environ.get("WAVES", "0") == "1"
 waves_fmt = os.environ.get("WAVE_FMT", "fst")      # fst, or vcd (needs neither lz4 nor a working FST writer)
 sys.path.insert(0, str(ROOT / "tb"))
 r = get_runner("verilator")
-EXTRA = {"itx1d": ["itx_ucode.sv", "cos128_lut.sv"], "itx_lvl": ["itx_pair.sv"], "itx2d": ["itx_pair.sv", "itx_lvl.sv", "itx_row.sv"],
+EXTRA = {"itx_lvl": ["itx_pair.sv"], "itx2d": ["itx_pair.sv", "itx_lvl.sv", "itx_row.sv"],
          "coef_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv", "sym_seq.sv", "coef_rd.sv"],
          "tile_syntax": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                          "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv"],

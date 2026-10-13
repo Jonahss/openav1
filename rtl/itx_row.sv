@@ -1,7 +1,7 @@
 // openav1 — the one-row 1D transforms that are not butterfly networks: ADST4 (spec 7.13.2.6), identity
 // (7.13.2.15) and WHT (7.13.2.10). Combinational on one row (lanes 0 .. N-1 of in_vec); itx2d streams rows
 // through it one per clock, while the DCT / ADST8 / ADST16 rows go through the level engine (itx_lvl).
-// Same arithmetic as the dedicated single-cycle ops of the microcoded itx1d. Lanes beyond the transform are 0.
+// Same arithmetic as the dedicated single-cycle ops of the retired microcoded itx1d engine. Lanes beyond the transform are 0.
 module itx_row #(
     parameter int TW = 20
 ) (

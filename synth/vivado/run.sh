@@ -23,7 +23,7 @@ generics="$generics$extra"
 mkdir -p "$out"
 # rtl in dependency order; keep in step with the dec_top entry of tb/runner.py (packages first, leaves before users)
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq coef_rd blk_ctx
-       pal_syntax mv_mem mv_stack blk_syntax lr_syntax tile_syntax itx_ucode cos128_lut itx1d itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
+       pal_syntax mv_mem mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
        frame_mem_w recon_top cdef_pkg lr_pkg mi_store rec_fifo lf_top cdef_top lr_top sr_top dec_top"
 sources="$here/frame_mem_bb.sv"
 mkdir -p "$out/stubs"

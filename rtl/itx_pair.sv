@@ -1,6 +1,6 @@
 // openav1 — one pair unit of the level-folded inverse transform engine (rtl/itx_lvl.sv): the spec's B
 // (rotation by cos128/sin128 with Round2 12, optional output swap) or H (Hadamard with clamp to r bits,
-// flip swaps the roles of a and b), same arithmetic as the slot datapath of the microcoded itx1d.
+// flip swaps the roles of a and b), same arithmetic as the slot datapath of the retired microcoded itx1d engine (git history before 2026-10-13).
 //   mode 0: idle (outputs don't care)   1: B   2: H
 module itx_pair #(
     parameter int TW = 20
