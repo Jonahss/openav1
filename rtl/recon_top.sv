@@ -319,6 +319,7 @@ module recon_top
     logic [5:0]   bdf_y_rd;
     logic [33:0]  bdf_row_a, bdf_row_bl;
     logic [4:0]   fy;                                  // FIN row counter
+    logic [MIW-1:0] l_sb_r, l_sb_c;                    // the superblock's position, latched at sb_start (sb_r/sb_c are the event head's)
     assign sb_size4 = hdr.sb128 ? 6'd32 : 6'd16;
     // 5.11.3 clear_block_decoded_flags: the row a superblock starts with (above row decoded up to the frame
     // edge; left column available where the frame extends, the corner below the superblock's last row cleared)
@@ -329,8 +330,8 @@ module recon_top
         logic [33:0] v;
         int yy;
         sx = (p != 0) && hdr.ssx; sy = (p != 0) && hdr.ssy;
-        sbw4 = (hdr.mi_col_end - sb_c) >> sx;
-        sbh4 = (hdr.mi_row_end - sb_r) >> sy;
+        sbw4 = (hdr.mi_col_end - l_sb_c) >> sx;
+        sbh4 = (hdr.mi_row_end - l_sb_r) >> sy;
         lim_x = sb_size4 >> sx; lim_y = sb_size4 >> sy;
         yy = int'(yy1) - 1;
         v = '0;
@@ -709,10 +710,10 @@ module recon_top
         tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0; mi_tx_we <= 1'b0;
         if (rst) begin
             rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0);
-            bdf_wr <= '0; fy <= '0;
+            bdf_wr <= '0; fy <= '0; l_sb_r <= '0; l_sb_c <= '0;
         end else begin
             // 5.11.3 clear_block_decoded_flags at each superblock start
-            if (sb_start) bdf_wr <= '0;
+            if (sb_start) begin bdf_wr <= '0; l_sb_r <= sb_r; l_sb_c <= sb_c; end
             case (rs)
                 R_IDLE: if (tx_take) begin
                     t <= ev_tx; rs <= R_SETUP;
