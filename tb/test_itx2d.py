@@ -85,9 +85,16 @@ async def fuzz_vs_model(dut):
             if any(not m.fits(v, TW) for row in exp for v in row):
                 continue
 
-            # load coefficients (only the non-zero 32x32 corner exists in hardware)
+            # load coefficients as the decoder does: clear, then only the non-zero ones (the valid bitmap is
+            # sparse per row; 2026-10-13: a dense load hid a wrong-row valid-bit index in the streamed path)
+            dut.coef_clr.value = 1
+            await RisingEdge(dut.clk)
+            await Timer(1, "ns")
+            dut.coef_clr.value = 0
             for i in range(nz_h):
                 for j in range(nz_w):
+                    if deq[i][j] == 0:
+                        continue
                     dut.coef_we.value = 1
                     dut.coef_addr.value = i * 32 + j
                     dut.coef_data.value = deq[i][j] & MASK

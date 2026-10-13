@@ -265,17 +265,19 @@ module itx2d #(
     // loaded vector for the current row / column: row cur of the coefficients (valid bits, size, rectangular
     // pre-scale) or column cur of the residuals (rows below h)
     vec_t ld_vec;
+    logic [6:0] ld_idx;                 // the row / column being read: the stream index or the group's cur
+    assign ld_idx = (state == S_STRM) ? ri : cur;
     always_comb begin
         for (int k = 0; k < 64; k++) begin
             logic signed [TW-1:0]  c;
             logic signed [TW+12:0] p;
             c = '0; p = '0;
             if (!col) begin
-                c = (cur < 7'd32 && cur < h && k < 32 && k < 32'(w) && cv[cur[4:0]][k[4:0]]) ? signed'(rd_vec[k]) : '0;
+                c = (ld_idx < 7'd32 && ld_idx < h && k < 32 && k < 32'(w) && cv[ld_idx[4:0]][k[4:0]]) ? signed'(rd_vec[k]) : '0;
                 p = c * 13'sd2896;
                 ld_vec[k] = rect ? TW'((p + (TW+13)'(2048)) >>> 12) : TW'(c);
             end else begin
-                ld_vec[k] = (k < 32'(h) && cur < w) ? rd_vec[k] : '0;
+                ld_vec[k] = (k < 32'(h) && ld_idx < w) ? rd_vec[k] : '0;
             end
             ld_vec_f[k*TW +: TW] = ld_vec[k];
         end
