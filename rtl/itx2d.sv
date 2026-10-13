@@ -22,6 +22,14 @@
 // cycle; the next group follows. Row groups at i >= 32 are all-zero and written without a transform.
 // Cost per block ~ ceil(h/NLANES) x (rowprog + 2 NLANES + 1) + ceil(w/NLANES) x (colprog + 2 NLANES + 1) + 2.
 //
+// v5 (tm16, 2026-10-13): the transpose memory is 4 banks of 16 lanes instead of 64 banks of one element, so
+// the two rotations are 4-word (2-bit) rotations instead of 64-element ones (~10k LUTs less). Rows are still
+// one access each (word k of row i is bank (k + i) mod 4 at address i); columns are accessed as 16-column x
+// 4-row tiles (word ro of tile (jg, t) is bank (jg + ro) mod 4 at address 4t + ro), so the column pass loads
+// and stores four rows per clock: the tile's columns scatter into the column-packed engine vector and gather
+// back out of it. Rows of a group are placed directly into their slot and stored from the bottom slot while
+// the vector shifts down, so rows store in order.
+//
 // v4 (level engine, 2026-10-13): the NLANES microcoded itx1d engines are replaced by one itx_lvl engine that
 // executes a spec level per clock on 32 fixed pair units and packs 64/N rows of an N-point transform into its
 // 64 lanes. Rows of a group shift into pk_in one per clock (row g ends in slot g from the top), the engine
@@ -114,68 +122,56 @@ module itx2d #(
     endfunction
 
     // ---------------------------------------------------------------- transpose memory
-    // 64 banks x 64 entries x TW. Row/column access: element k of the vector is bank (k + s) mod 64, where s is
-    // the row index (row mode: every bank at address s) or the column index (column mode: bank b at address
-    // (b - s) mod 64). Distributed RAM: synchronous write, asynchronous read, so the residual read port below
-    // stays combinational as before.
+    // 4 banks x 16 lanes x 64 entries x TW (distributed RAM, synchronous write, asynchronous read). Element
+    // (i, j) lives in bank (j/16 + i) mod 4, lane j mod 16, address i. Two access shapes, both one clock:
+    //   row i:         word k (= j/16) from bank (k + i) mod 4 at address i          -> rd_vec[k*16 + l] = (i, 16k + l)
+    //   tile (jg, t):  word ro from bank (jg + ro) mod 4 at address 4t + ro           -> rd_vec[ro*16 + l] = (4t + ro, 16jg + l)
+    // so with s = i mod 4 (rows) or jg (tiles), word k is bank (k + s) mod 4: one 4:1 word rotation each way.
     typedef logic [TW-1:0] vec_t [64];
-    logic          tm_we [64];
-    logic [5:0]    tm_waddr [64], tm_raddr [64];
-    logic [TW-1:0] tm_wdata [64], tm_rdata [64];
-    genvar gb;
+    logic          tm_we [4][16];
+    logic [5:0]    tm_waddr [4], tm_raddr [4];
+    logic [TW-1:0] tm_wdata [4][16], tm_rdata [4][16];
+    genvar gb, gl;
     generate
-        for (gb = 0; gb < 64; gb++) begin : g_bank
-            (* ram_style = "distributed" *) logic [TW-1:0] mem [0:63];
-            always_ff @(posedge clk) if (tm_we[gb]) mem[tm_waddr[gb]] <= tm_wdata[gb];
-            assign tm_rdata[gb] = mem[tm_raddr[gb]];
+        for (gb = 0; gb < 4; gb++) begin : g_bank
+            for (gl = 0; gl < 16; gl++) begin : g_lane
+                (* ram_style = "distributed" *) logic [TW-1:0] mem [0:63];
+                always_ff @(posedge clk) if (tm_we[gb][gl]) mem[tm_waddr[gb]] <= tm_wdata[gb][gl];
+                assign tm_rdata[gb][gl] = mem[tm_raddr[gb]];
+            end
         end
     endgenerate
-    // read side: mode/index chosen by the sequencer (loading a group) or the residual port (otherwise)
-    logic       rd_col;                 // 0: row s, 1: column s
-    logic [5:0] rd_s;
-    vec_t       rd_vec;                 // element k (column j = k in row mode, row i = k in column mode)
-    // The rotations by s are explicit 6-stage log rotators (2:1 muxes, 2^st words per stage): written as
-    // indexed lookups, Vivado built 64 independent 64:1 muxes per bit (~10k LUTs each way, 2026-10-13).
-    function automatic vec_t rot_left(input vec_t v, input logic [5:0] s);   // out[k] = in[(k + s) mod 64]
-        vec_t t;
-        t = v;
-        for (int st = 0; st < 6; st++) if (s[st]) begin
-            vec_t u;
-            for (int k = 0; k < 64; k++) u[k] = t[(k + (1 << st)) % 64];
-            t = u;
-        end
-        return t;
-    endfunction
-    function automatic vec_t rot_right(input vec_t v, input logic [5:0] s);  // out[b] = in[(b - s) mod 64]
-        vec_t t;
-        t = v;
-        for (int st = 0; st < 6; st++) if (s[st]) begin
-            vec_t u;
-            for (int k = 0; k < 64; k++) u[k] = t[(k + 64 - (1 << st)) % 64];
-            t = u;
-        end
-        return t;
-    endfunction
+    // read side: mode/index chosen by the sequencer (loading) or the residual port (otherwise)
+    logic       rd_tile;                // 0: row rd_i, 1: tile (rd_jg, rd_t)
+    logic [5:0] rd_i;
+    logic [1:0] rd_jg;
+    logic [3:0] rd_t;
+    vec_t       rd_vec;
     always_comb begin
-        vec_t rdat;
-        for (int b = 0; b < 64; b++) tm_raddr[b] = rd_col ? 6'(b - 32'(rd_s)) : rd_s;
-        for (int b = 0; b < 64; b++) rdat[b] = tm_rdata[b];
-        rd_vec = rot_left(rdat, rd_s);                                      // rotate left by s
+        logic [1:0] s;
+        s = rd_tile ? rd_jg : rd_i[1:0];
+        for (int b = 0; b < 4; b++) tm_raddr[b] = rd_tile ? {rd_t, 2'(b - 32'(rd_jg))} : rd_i;
+        for (int k = 0; k < 4; k++)
+            for (int l = 0; l < 16; l++) rd_vec[k*16 + l] = tm_rdata[2'(k + 32'(s))][l];
     end
-    // write side: a vector (row or column s) with per-element enables, from the store states or the coefficient port
-    logic        wr_col;
-    logic [5:0]  wr_s;
+    // write side: a row or a tile with per-element enables
+    logic        wr_tile;
+    logic [5:0]  wr_i;
+    logic [1:0]  wr_jg;
+    logic [3:0]  wr_t;
     logic [63:0] wr_en;
     vec_t        wr_vec;
     always_comb begin
-        vec_t wdat;
-        wdat = rot_right(wr_vec, wr_s);                                     // element b - s lands in bank b
-        for (int b = 0; b < 64; b++) begin
-            logic [5:0] k;
-            k = 6'(b - 32'(wr_s));
-            tm_we[b]    = wr_en[k];
-            tm_waddr[b] = wr_col ? k : wr_s;
-            tm_wdata[b] = wdat[b];
+        logic [1:0] s;
+        s = wr_tile ? wr_jg : wr_i[1:0];
+        for (int b = 0; b < 4; b++) begin
+            logic [1:0] k;
+            k = 2'(b - 32'(s));
+            tm_waddr[b] = wr_tile ? {wr_t, k} : wr_i;
+            for (int l = 0; l < 16; l++) begin
+                tm_wdata[b][l] = wr_vec[32'(k)*16 + l];
+                tm_we[b][l]    = wr_en[32'(k)*16 + l];
+            end
         end
     end
 
@@ -201,7 +197,8 @@ module itx2d #(
     assign col_clamp = (5'(l_bd) + 5'd6 > 5'd16) ? 5'(l_bd) + 5'd6 : 5'd16;
 
     // ---------------------------------------------------------------- level engine + row unit
-    // The pass being executed: N = row length (w for rows, h for columns), G = rows per engine vector.
+    // The pass being executed: N = row length (w for rows, h for columns), G = rows / columns per engine vector,
+    // nt = tiles per column (N/4).
     logic       col;                    // 0: row pass, 1: column pass
     logic [2:0] n_l;                    // log2 N for this pass
     logic [1:0] cls_l;                  // 0 DCT, 1 ADST, 2 identity
@@ -209,26 +206,27 @@ module itx2d #(
     logic [6:0] gmax;                   // 64 >> n_l
     logic [6:0] count;                  // vectors in this pass: h (rows) or w (columns)
     logic [6:0] real_cnt;               // rows that get a transform: rows >= 32 are all-zero (columns: all)
+    logic [4:0] nt;                     // tiles per column: N / 4
     assign n_l      = col ? l_log2h : l_log2w;
     assign cls_l    = col ? col_cls_l : row_cls_l;
     assign stream   = l_lossless || cls_l == 2'd2 || (cls_l == 2'd1 && n_l == 3'd2);
     assign gmax     = stream ? 7'd1 : (7'd64 >> n_l);
     assign count    = col ? w : h;
     assign real_cnt = col ? w : ((h > 7'd32) ? 7'd32 : h);
+    assign nt       = col ? 5'(5'd1 << (n_l - 3'd2)) : 5'd1;
 
     typedef enum logic [2:0] { S_IDLE, S_GSZ, S_LD, S_GO, S_RUN, S_ST, S_STRM, S_DONE } state_t;
     state_t     state;
     logic [6:0] idx;                    // first row / column of the current group
-    logic [4:0] g;                      // rows loaded / stored so far in this group
-    logic [4:0] gsz;                    // rows in this group: min(gmax, real_cnt - idx), or the zero rows
+    logic [4:0] g;                      // rows (or tiles) loaded / stored so far in this group
+    logic [4:0] gsz;                    // rows / columns in this group: min(gmax, real_cnt - idx), or the zero rows
     logic       zero_grp;               // row group at idx >= 32: stored as zeros, no transform
-    logic [6:0] cur;                    // row / column handled this cycle
-    always_comb begin
-        if (state == S_ST && !stream && !zero_grp) cur = idx + 7'(gsz) - 7'd1 - 7'(g);   // top slot first
-        else cur = idx + 7'(g);
-    end
+    logic [6:0] cur;                    // row handled this cycle (row pass)
+    assign cur = idx + 7'(g);
+    logic [3:0] c0;                     // first column of the group within its 16-column tile group
+    assign c0 = idx[3:0];
 
-    logic [64*TW-1:0] pk_in, pk_out;    // packed engine input (shift-in from the top) / output (shift-out)
+    logic [64*TW-1:0] pk_in, pk_out;    // packed engine input / output
     logic             e_start, e_busy, e_done;
     logic [2:0]       e_prog;
     logic [4:0]       e_r;
@@ -240,13 +238,14 @@ module itx2d #(
     itx_lvl #(.TW(TW)) u_lvl (.clk, .rst, .start(e_start), .prog(e_prog), .r(e_r), .in_vec(pk_in),
                               .busy(e_busy), .done(e_done), .out_vec(e_out));
     logic [64*TW-1:0] ld_vec_f;         // the loaded row as a flat vector
-    // streamed rows (ADST4 / identity / WHT): a 3-stage pipeline, one row per clock —
-    //   1 read row ri -> ld_row   2 ld_row -> itx_row -> st_row   3 st_row -> round/clamp -> write row st_i
+    // streamed rows / columns (ADST4 / identity / WHT): a 3-stage pipeline, nt clocks per vector —
+    //   1 read row ri (or the nt tiles of column ri) -> ld_row   2 ld_row -> itx_row -> st_row   3 st_row -> write
     logic [1:0]       rk;               // row unit kind: 0 ADST4, 1 identity, 2 WHT
     logic [32*TW-1:0] rw_out;
     logic [32*TW-1:0] ld_row, st_row;
     logic             ld_v, st_v, ld_zero;
     logic [6:0]       ri, ld_i, st_i;
+    logic [3:0]       tc, tw;           // tile counters: reads of column ri, writes of column st_i
     assign rk = l_lossless ? 2'd2 : (cls_l == 2'd2) ? 2'd1 : 2'd0;
     itx_row #(.TW(TW)) u_row (.kind(rk), .n(n_l), .wht_shift(col ? 2'd0 : 2'd2), .in_vec(ld_row), .out_vec(rw_out));
 
@@ -262,60 +261,102 @@ module itx2d #(
     assign clip_lo = -(TW'(1) <<< (col_clamp - 5'd1));
     assign clip_hi =  (TW'(1) <<< (col_clamp - 5'd1)) - TW'(1);
 
-    // loaded vector for the current row / column: row cur of the coefficients (valid bits, size, rectangular
-    // pre-scale) or column cur of the residuals (rows below h)
+    // loaded row (row pass): row ld_idx of the coefficients (valid bits, size, rectangular pre-scale)
     vec_t ld_vec;
-    logic [6:0] ld_idx;                 // the row / column being read: the stream index or the group's cur
+    logic [6:0] ld_idx;                 // the row being read: the stream index or the group's cur
     assign ld_idx = (state == S_STRM) ? ri : cur;
     always_comb begin
         for (int k = 0; k < 64; k++) begin
             logic signed [TW-1:0]  c;
             logic signed [TW+12:0] p;
-            c = '0; p = '0;
-            if (!col) begin
-                c = (ld_idx < 7'd32 && ld_idx < h && k < 32 && k < 32'(w) && cv[ld_idx[4:0]][k[4:0]]) ? signed'(rd_vec[k]) : '0;
-                p = c * 13'sd2896;
-                ld_vec[k] = rect ? TW'((p + (TW+13)'(2048)) >>> 12) : TW'(c);
-            end else begin
-                ld_vec[k] = (k < 32'(h) && ld_idx < w) ? rd_vec[k] : '0;
-            end
+            c = (ld_idx < 7'd32 && ld_idx < h && k < 32 && k < 32'(w) && cv[ld_idx[4:0]][k[4:0]]) ? signed'(rd_vec[k]) : '0;
+            p = c * 13'sd2896;
+            ld_vec[k] = rect ? TW'((p + (TW+13)'(2048)) >>> 12) : TW'(c);
             ld_vec_f[k*TW +: TW] = ld_vec[k];
         end
     end
+    // loaded tile (column pass): window of the group's G columns (c0 .. c0+G-1 of the tile), W[c*4 + ro] =
+    // element (4t + ro, idx + c). c0 is a multiple of gmax, so each size needs only its own small mux.
+    logic [TW-1:0] wnd [64];
+    always_comb begin
+        for (int k = 0; k < 64; k++) wnd[k] = '0;
+        for (int ro = 0; ro < 4; ro++)
+            case (n_l)
+                3'd2:    for (int c = 0; c < 16; c++) wnd[c*4 + ro] = rd_vec[ro*16 + c];
+                3'd3:    for (int c = 0; c < 8;  c++) wnd[c*4 + ro] = rd_vec[ro*16 + 32'({c0[3], 3'(c)})];
+                3'd4:    for (int c = 0; c < 4;  c++) wnd[c*4 + ro] = rd_vec[ro*16 + 32'({c0[3:2], 2'(c)})];
+                3'd5:    for (int c = 0; c < 2;  c++) wnd[c*4 + ro] = rd_vec[ro*16 + 32'({c0[3:1], 1'(c)})];
+                default:                               wnd[ro]       = rd_vec[ro*16 + 32'(c0)];
+            endcase
+    end
+    // streamed column: the four rows of column ri in the tile just read
+    logic [TW-1:0] cpart [4];
+    always_comb for (int ro = 0; ro < 4; ro++) cpart[ro] = rd_vec[ro*16 + 32'(ri[3:0])];
     // read port select: the sequencer while loading, the residual port otherwise
     always_comb begin
-        if (state == S_LD) begin rd_col = col; rd_s = cur[5:0]; end
-        else if (state == S_STRM) begin rd_col = col; rd_s = ri[5:0]; end
-        else begin rd_col = 1'b0; rd_s = res_addr[11:6]; end
+        rd_tile = 1'b0; rd_i = res_addr[11:6]; rd_jg = 2'd0; rd_t = 4'd0;
+        if (state == S_LD) begin
+            if (col) begin rd_tile = 1'b1; rd_jg = idx[5:4]; rd_t = 4'(g); end
+            else rd_i = cur[5:0];
+        end else if (state == S_STRM) begin
+            if (col) begin rd_tile = 1'b1; rd_jg = ri[5:4]; rd_t = tc; end
+            else rd_i = ri[5:0];
+        end
     end
     assign res_data = rd_vec[res_addr[5:0]];
     always_comb for (int l = 0; l < 4; l++) res_data4[l*TW +: TW] = rd_vec[{res_addr[5:2], 2'(l)}];
 
-    // the row being stored: the top slot of pk_out (lanes 64-N .. 63), the streamed row, or zeros
+    // the vector being stored: rows from the bottom slot of pk_out, tiles gathered from pk_out
+    // (U[c*4 + ro] = pk_out[c*N + ro] after the t-th shift by 4) and placed at lanes ro*16 + c0 + c, the
+    // streamed row / column chunk, or zeros
     logic [TW-1:0] st_vec [64];
+    logic [TW-1:0] ugat [64];
     always_comb begin
+        for (int k = 0; k < 64; k++) ugat[k] = '0;
+        for (int ro = 0; ro < 4; ro++)
+            case (n_l)
+                3'd2:    for (int c = 0; c < 16; c++) ugat[c*4 + ro] = pk_out[(c*4 + ro)*TW +: TW];
+                3'd3:    for (int c = 0; c < 8;  c++) ugat[c*4 + ro] = pk_out[(c*8 + ro)*TW +: TW];
+                3'd4:    for (int c = 0; c < 4;  c++) ugat[c*4 + ro] = pk_out[(c*16 + ro)*TW +: TW];
+                3'd5:    for (int c = 0; c < 2;  c++) ugat[c*4 + ro] = pk_out[(c*32 + ro)*TW +: TW];
+                default:                               ugat[ro]       = pk_out[ro*TW +: TW];
+            endcase
         for (int j = 0; j < 64; j++) st_vec[j] = '0;
         if (state == S_STRM) begin
-            for (int j = 0; j < 32; j++) st_vec[j] = st_row[j*TW +: TW];
+            if (col) begin
+                for (int ro = 0; ro < 4; ro++)
+                    for (int l = 0; l < 16; l++) st_vec[ro*16 + l] = st_row[(32'(tw)*4 + ro)*TW +: TW];   // lane st_i[3:0] enabled
+            end else begin
+                for (int j = 0; j < 32; j++) st_vec[j] = st_row[j*TW +: TW];
+            end
         end else if (zero_grp) begin
             ;                                               // rows >= 32: zeros
+        end else if (col) begin
+            for (int ro = 0; ro < 4; ro++)
+                case (n_l)
+                    3'd2:    for (int c = 0; c < 16; c++) st_vec[ro*16 + c] = ugat[c*4 + ro];
+                    3'd3:    for (int c = 0; c < 8;  c++) st_vec[ro*16 + 32'({c0[3], 3'(c)})] = ugat[c*4 + ro];
+                    3'd4:    for (int c = 0; c < 4;  c++) st_vec[ro*16 + 32'({c0[3:2], 2'(c)})] = ugat[c*4 + ro];
+                    3'd5:    for (int c = 0; c < 2;  c++) st_vec[ro*16 + 32'({c0[3:1], 1'(c)})] = ugat[c*4 + ro];
+                    default:                               st_vec[ro*16 + 32'(c0)] = ugat[ro];
+                endcase
         end else begin
             case (n_l)
-                3'd2:    for (int j = 0; j < 4;  j++) st_vec[j] = pk_out[(60 + j)*TW +: TW];
-                3'd3:    for (int j = 0; j < 8;  j++) st_vec[j] = pk_out[(56 + j)*TW +: TW];
-                3'd4:    for (int j = 0; j < 16; j++) st_vec[j] = pk_out[(48 + j)*TW +: TW];
-                3'd5:    for (int j = 0; j < 32; j++) st_vec[j] = pk_out[(32 + j)*TW +: TW];
+                3'd2:    for (int j = 0; j < 4;  j++) st_vec[j] = pk_out[j*TW +: TW];
+                3'd3:    for (int j = 0; j < 8;  j++) st_vec[j] = pk_out[j*TW +: TW];
+                3'd4:    for (int j = 0; j < 16; j++) st_vec[j] = pk_out[j*TW +: TW];
+                3'd5:    for (int j = 0; j < 32; j++) st_vec[j] = pk_out[j*TW +: TW];
                 default: for (int j = 0; j < 64; j++) st_vec[j] = pk_out[j*TW +: TW];
             endcase
         end
     end
 
-    // write port: the stored row / column (rounded, and clamped after the row pass) or one coefficient while idle.
+    // write port: the stored row / tile (rounded, and clamped after the row pass) or one coefficient while idle.
     // One shared round2v/clamp datapath for both passes: the row store rounds by l_rowshift and clamps to the
     // column range, the column store rounds by 4 (0 when lossless) without clamp.
     always_comb begin
         logic [2:0] st_sh;
-        wr_col = col; wr_s = (state == S_STRM) ? st_i[5:0] : cur[5:0]; wr_en = '0;
+        wr_tile = 1'b0; wr_i = cur[5:0]; wr_jg = idx[5:4]; wr_t = 4'(g); wr_en = '0;
         st_sh  = col ? (l_lossless ? 3'd0 : 3'd4) : 3'(l_rowshift);
         for (int k = 0; k < 64; k++) begin
             logic signed [TW-1:0] v;
@@ -324,11 +365,24 @@ module itx2d #(
             wr_vec[k] = (state == S_ST || state == S_STRM) ? v : '0;
         end
         case (state)
-            S_ST:   wr_en = (cur < count) ? '1 : '0;
-            S_STRM: wr_en = st_v ? '1 : '0;
+            S_ST: begin
+                if (col) begin                                      // tile g of the group's G columns
+                    wr_tile = 1'b1;
+                    for (int ro = 0; ro < 4; ro++)
+                        for (int l = 0; l < 16; l++) wr_en[ro*16 + l] = (l >= 32'(c0)) && (l < 32'(c0) + 32'(gsz));
+                end else wr_en = (cur < count) ? '1 : '0;
+            end
+            S_STRM: begin
+                if (col) begin
+                    wr_tile = 1'b1; wr_jg = st_i[5:4]; wr_t = tw;
+                    for (int ro = 0; ro < 4; ro++) wr_en[ro*16 + 32'(st_i[3:0])] = st_v;
+                end else begin
+                    wr_i = st_i[5:0];
+                    wr_en = st_v ? '1 : '0;
+                end
+            end
             S_IDLE: if (coef_we && !busy) begin
-                wr_col = 1'b0;
-                wr_s = {1'b0, coef_addr[9:5]};
+                wr_i = {1'b0, coef_addr[9:5]};
                 wr_en[6'(coef_addr[4:0])] = 1'b1;
                 wr_vec[6'(coef_addr[4:0])] = coef_data;
             end
@@ -341,8 +395,10 @@ module itx2d #(
     logic [6:0] idx_next;
     logic       zero_grp_next;
     logic [4:0] gsz_next;
+    logic [4:0] glim;                   // loads / stores per group: rows (gsz) or tiles (nt)
     assign idx_next      = first ? 7'd0 : idx + 7'(gsz);
     assign zero_grp_next = !col && (idx_next >= 7'd32);
+    assign glim          = col ? nt : gsz;
     always_comb begin
         if (zero_grp_next) gsz_next = 5'(((count - idx_next) < gmax) ? (count - idx_next) : gmax);
         else               gsz_next = 5'(((real_cnt - idx_next) < gmax) ? (real_cnt - idx_next) : gmax);
@@ -385,49 +441,63 @@ module itx2d #(
                     first    <= 1'b0;
                     g        <= '0;
                     state    <= stream ? S_STRM : zero_grp_next ? S_ST : S_LD;
-                    ri <= '0; ld_v <= 1'b0; st_v <= 1'b0;
+                    ri <= '0; ld_v <= 1'b0; st_v <= 1'b0; tc <= '0; tw <= '0;
                 end
-                // ---- load the rows of the group: shift into pk_in from the top (engine) or through itx_row (stream)
-                // ---- streamed rows: the whole pass, one row per clock through the 3-stage pipeline
+                // ---- streamed rows / columns: the whole pass through the 3-stage pipeline, nt clocks per vector
                 S_STRM: begin
-                    ld_row  <= ld_vec_f[32*TW-1:0];
-                    ld_v    <= (ri < count);
-                    ld_i    <= ri;
-                    ld_zero <= !col && (ri >= 7'd32);
-                    ri      <= ri + 7'd1;
-                    st_row  <= ld_zero ? '0 : rw_out;
-                    st_v    <= ld_v;
-                    st_i    <= ld_i;
-                    if (ri >= count && !ld_v && !st_v) begin      // all rows read, pipeline drained
+                    // stage 1: a row, or chunk tc (rows 4tc .. 4tc+3) of column ri
+                    if (col) begin
+                        for (int k = 0; k < 32; k++) if ((k >> 2) == 32'(tc)) ld_row[k*TW +: TW] <= cpart[k & 3];
+                    end else ld_row <= ld_vec_f[32*TW-1:0];
+                    ld_v <= 1'b0;
+                    if (tc + 4'd1 >= 4'(nt)) begin
+                        tc      <= '0;
+                        ld_v    <= (ri < count);
+                        ld_i    <= ri;
+                        ld_zero <= !col && (ri >= 7'd32);
+                        ri      <= ri + 7'd1;
+                    end else tc <= tc + 4'd1;
+                    // stage 2: the vector is complete the clock after its last chunk
+                    if (ld_v) begin st_row <= ld_zero ? '0 : rw_out; st_i <= ld_i; st_v <= 1'b1; tw <= '0; end
+                    // stage 3: write chunk tw of column st_i (one clock for a row)
+                    else if (st_v) begin
+                        if (tw + 4'd1 >= 4'(nt)) begin st_v <= 1'b0; tw <= '0; end
+                        else tw <= tw + 4'd1;
+                    end
+                    if (ri >= count && !ld_v && !st_v && tc == 4'd0) begin   // all vectors read, pipeline drained
                         if (col) state <= S_DONE;
                         else begin col <= 1'b1; first <= 1'b1; state <= S_GSZ; end
                     end
                 end
+                // ---- load the group: row g into slot g, or tile g scattered into the column slots
                 S_LD: begin
-                    case (n_l)
-                        3'd2:    pk_in <= {ld_vec_f[4*TW-1:0],  pk_in[64*TW-1:4*TW]};
-                        3'd3:    pk_in <= {ld_vec_f[8*TW-1:0],  pk_in[64*TW-1:8*TW]};
-                        3'd4:    pk_in <= {ld_vec_f[16*TW-1:0], pk_in[64*TW-1:16*TW]};
-                        3'd5:    pk_in <= {ld_vec_f[32*TW-1:0], pk_in[64*TW-1:32*TW]};
-                        default: pk_in <= ld_vec_f;
-                    endcase
-                    if (g + 5'd1 == gsz) begin
+                    for (int L = 0; L < 64; L++) begin
+                        logic [5:0] slot, off;
+                        slot = 6'(L >> n_l); off = 6'(L & ((32'd1 << n_l) - 1));
+                        if (col) begin
+                            if ((off >> 2) == 6'(g)) pk_in[L*TW +: TW] <= wnd[32'(slot)*4 + 32'(off & 6'd3)];
+                        end else begin
+                            if (slot == 6'(g)) pk_in[L*TW +: TW] <= ld_vec_f[32'(off)*TW +: TW];
+                        end
+                    end
+                    if (g + 5'd1 >= glim) begin
                         g     <= '0;
                         state <= S_GO;
                     end else g <= g + 5'd1;
                 end
                 S_GO: begin e_start <= 1'b1; state <= S_RUN; end
                 S_RUN: if (e_done) begin pk_out <= e_out; state <= S_ST; end
-                // ---- store the rows of the group (top slot first; the streamed row; or zeros)
+                // ---- store the group: rows from the bottom slot (shift down by N), tiles (shift down by 4)
                 S_ST: begin
-                    case (n_l)
-                        3'd2:    pk_out <= {pk_out[60*TW-1:0], {(4*TW){1'b0}}};
-                        3'd3:    pk_out <= {pk_out[56*TW-1:0], {(8*TW){1'b0}}};
-                        3'd4:    pk_out <= {pk_out[48*TW-1:0], {(16*TW){1'b0}}};
-                        3'd5:    pk_out <= {pk_out[32*TW-1:0], {(32*TW){1'b0}}};
+                    if (col) pk_out <= pk_out >> (4*TW);
+                    else case (n_l)
+                        3'd2:    pk_out <= pk_out >> (4*TW);
+                        3'd3:    pk_out <= pk_out >> (8*TW);
+                        3'd4:    pk_out <= pk_out >> (16*TW);
+                        3'd5:    pk_out <= pk_out >> (32*TW);
                         default: pk_out <= '0;
                     endcase
-                    if (g + 5'd1 == gsz) begin
+                    if (g + 5'd1 >= glim) begin
                         g <= '0;
                         if (idx_next >= count) begin
                             if (col) state <= S_DONE;
