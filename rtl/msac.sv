@@ -120,23 +120,26 @@ module msac (
 
     // symbol = first k with SymbolValue >= cur[k]  (spec loop: continue while SymbolValue < cur)
     logic [3:0]  sym;
-    logic [15:0] cur_sym, cur_prev;
     always_comb begin
         sym = 4'd15;
         for (int k = 15; k >= 0; k--) if (!(val < cur[k])) sym = 4'(k);
-        cur_sym  = cur[sym];
-        cur_prev = (sym == 4'd0) ? rng : cur[sym - 4'd1];
     end
 
-    // ---- stage 1 -> stage 2 registers: the symbol, its range boundaries, the row and its adaptation inputs
+    // ---- stage 1 -> stage 2 registers: the symbol, every candidate boundary (the two the symbol needs are
+    // picked in stage 2, off the compare chain), the row and its adaptation inputs
     logic        s1_v;
     logic [3:0]  s1_sym, s1_n;
-    logic [15:0] s1_cur_sym, s1_cur_prev;
+    logic [15:0] s1_cur [16];
     logic [15:0] s1_icdf [15];
     logic [5:0]  s1_cnt;
     logic        s1_upd;
     int          s1_n_int;
     assign s1_n_int = {28'd0, s1_n};
+    logic [15:0] s1_cur_sym, s1_cur_prev;
+    always_comb begin
+        s1_cur_sym  = s1_cur[s1_sym];
+        s1_cur_prev = (s1_sym == 4'd0) ? rng : s1_cur[s1_sym - 4'd1];    // rng: still the pre-symbol range during stage 2
+    end
 
     // Renormalise (stage 2): bits = 15 - FloorLog2(newRange) = leading zeros of the 16-bit range.
     logic [15:0] rng_new, val_new;
@@ -220,7 +223,7 @@ module msac (
                 end
                 S_READY: begin
                     if (accept) begin                        // stage 1: the symbol
-                        s1_v <= 1'b1; s1_sym <= sym; s1_cur_sym <= cur_sym; s1_cur_prev <= cur_prev;
+                        s1_v <= 1'b1; s1_sym <= sym; s1_cur <= cur;
                         s1_icdf <= icdf; s1_cnt <= cnt_eff; s1_n <= n_eff; s1_upd <= do_update;
                         resp_valid <= 1'b1;
                         resp_sym   <= sym;

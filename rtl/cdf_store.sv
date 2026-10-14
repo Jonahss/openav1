@@ -29,9 +29,11 @@ module cdf_store
     input  logic                wb_pre,
     input  logic [CDF_AW-1:0]   wb_pre_addr
 );
-    // 1269 x 246 bits each: four UltraRAM columns apiece on the K26 (the auto choice was LUT RAM for mem, 5.6k LUTs)
-    (* ram_style = "ultra" *) logic [245:0] mem     [0:CDF_ROWS-1];
-    (* ram_style = "ultra" *) logic [245:0] def_mem [0:CDF_ROWS-1];
+    // 1269 x 246 bits each. Block RAM (14 BRAM36 apiece on the K26): the working store's read is the start of
+    // the symbol loop and a BRAM's clock-to-out is a third of an UltraRAM's with its cascade (the auto choice
+    // was LUT RAM, 5.6k LUTs; UltraRAM was used until 2026-10-14).
+    (* ram_style = "block" *) logic [245:0] mem     [0:CDF_ROWS-1];
+    (* ram_style = "block" *) logic [245:0] def_mem [0:CDF_ROWS-1];
 
     always_ff @(posedge clk)
         if (def_we) def_mem[def_addr] <= def_data;
