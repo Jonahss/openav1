@@ -35,16 +35,11 @@ module dec_host
     parameter int FRAME_URAM = 1,
     parameter int FIFO_LW = 10               // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
 ) (
-    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi, ASSOCIATED_RESET aresetn" *)
     input  logic        clk,
-    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk2x CLK" *)
     input  logic        clk2x,
     input  logic        phase,
-    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 aresetn RST" *)
-    (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
     input  logic        aresetn,
-    // AXI4-Lite slave (the block-design flow infers the interface from the s_axi_ names, fpga/kv260/build.tcl)
+    // AXI4-Lite slave (the block design wraps this in fpga/kv260/dec_host_v.v, which carries the interface attributes)
     input  logic [11:0] s_axi_awaddr,
     input  logic        s_axi_awvalid,
     output logic        s_axi_awready,

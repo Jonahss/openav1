@@ -11,6 +11,7 @@ create_project -force kv260 $out/proj -part $part
 set_property target_language Verilog [current_project]
 add_files -norecurse $::env(KV260_SOURCES)
 set_property file_type SystemVerilog [get_files -filter {NAME =~ *.sv}]
+set_property file_type Verilog [get_files -filter {NAME =~ *_v.v}]
 add_files -fileset constrs_1 -norecurse $root/fpga/kv260/sys.xdc
 update_compile_order -fileset sources_1
 
@@ -35,9 +36,9 @@ set_property -dict [list \
 set rst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst]
 set sc [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc]
 set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $sc
-set host [create_bd_cell -type module -reference dec_host host]
+set host [create_bd_cell -type module -reference dec_host_v host]
 set_property -dict [list CONFIG.FBX {9} CONFIG.FBY {9} CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1}] $host
-set pg [create_bd_cell -type module -reference phase_gen pg]
+set pg [create_bd_cell -type module -reference phase_gen_v pg]
 
 connect_bd_net [get_bd_pins ps/pl_clk0] [get_bd_pins clkgen/clk_in1]
 connect_bd_net [get_bd_pins ps/pl_resetn0] [get_bd_pins rst/ext_reset_in]

@@ -25,6 +25,7 @@ for f in $files; do
         *) sources="$sources $root/rtl/$f.sv" ;;
     esac
 done
+sources="$sources $here/dec_host_v.v $here/phase_gen_v.v"       # Verilog shells: the module-reference flow wants a Verilog top
 export KV260_SOURCES=$sources
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): the runs execute in
 # proj/kv260.runs/<run>/, so proj/rtl must be the rtl directory
