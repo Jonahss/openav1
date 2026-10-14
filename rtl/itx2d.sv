@@ -471,15 +471,45 @@ module itx2d #(
                 end
                 // ---- load the group: row g into slot g, or tile g scattered into the column slots
                 S_LD: begin
-                    for (int L = 0; L < 64; L++) begin
-                        logic [5:0] slot, off;
-                        slot = 6'(L >> n_l); off = 6'(L & ((32'd1 << n_l) - 1));
-                        if (col) begin
-                            if ((off >> 2) == 6'(g)) pk_in[L*TW +: TW] <= wnd[32'(slot)*4 + 32'(off & 6'd3)];
-                        end else begin
-                            if (slot == 6'(g)) pk_in[L*TW +: TW] <= ld_vec_f[32'(off)*TW +: TW];
+                    // constant indices per size (a runtime shift here made Vivado build 64:1 muxes per lane)
+                    case (n_l)
+                        3'd2: for (int L = 0; L < 64; L++) begin           // N = 4: slot L >> 2, offset L & 3
+                            if (col) begin
+                                if ((((L & 3) >> 2)) == 32'(g)) pk_in[L*TW +: TW] <= wnd[(L >> 2)*4 + (L & 3)];
+                            end else begin
+                                if ((L >> 2) == 32'(g)) pk_in[L*TW +: TW] <= ld_vec_f[(L & 3)*TW +: TW];
+                            end
                         end
-                    end
+                        3'd3: for (int L = 0; L < 64; L++) begin           // N = 8: slot L >> 3, offset L & 7
+                            if (col) begin
+                                if ((((L & 7) >> 2)) == 32'(g)) pk_in[L*TW +: TW] <= wnd[(L >> 3)*4 + (L & 3)];
+                            end else begin
+                                if ((L >> 3) == 32'(g)) pk_in[L*TW +: TW] <= ld_vec_f[(L & 7)*TW +: TW];
+                            end
+                        end
+                        3'd4: for (int L = 0; L < 64; L++) begin           // N = 16: slot L >> 4, offset L & 15
+                            if (col) begin
+                                if ((((L & 15) >> 2)) == 32'(g)) pk_in[L*TW +: TW] <= wnd[(L >> 4)*4 + (L & 3)];
+                            end else begin
+                                if ((L >> 4) == 32'(g)) pk_in[L*TW +: TW] <= ld_vec_f[(L & 15)*TW +: TW];
+                            end
+                        end
+                        3'd5: for (int L = 0; L < 64; L++) begin           // N = 32: slot L >> 5, offset L & 31
+                            if (col) begin
+                                if ((((L & 31) >> 2)) == 32'(g)) pk_in[L*TW +: TW] <= wnd[(L >> 5)*4 + (L & 3)];
+                            end else begin
+                                if ((L >> 5) == 32'(g)) pk_in[L*TW +: TW] <= ld_vec_f[(L & 31)*TW +: TW];
+                            end
+                        end
+                        3'd6: for (int L = 0; L < 64; L++) begin           // N = 64: slot L >> 6, offset L & 63
+                            if (col) begin
+                                if ((((L & 63) >> 2)) == 32'(g)) pk_in[L*TW +: TW] <= wnd[(L >> 6)*4 + (L & 3)];
+                            end else begin
+                                if ((L >> 6) == 32'(g)) pk_in[L*TW +: TW] <= ld_vec_f[(L & 63)*TW +: TW];
+                            end
+                        end
+                        default: ;
+                    endcase
                     if (g + 5'd1 >= glim) begin
                         g     <= '0;
                         state <= S_GO;
