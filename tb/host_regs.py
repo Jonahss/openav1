@@ -127,8 +127,12 @@ class HostError(Exception):
 class HostDecoder:
     """Drives one register file (regs.rd(addr) / regs.wr(addr, value), each one 32-bit bus transfer) through a
     frame the way tb/test_dec_host.py does in simulation. Synchronous: meant for software on the PS."""
-    def __init__(self, regs, poll_timeout=30.0, log=None):
+    def __init__(self, regs, poll_timeout=30.0, log=None, fast=None):
+        """fast: an optional bulk backend (tools/kv260/hostlib.py over the C helper) with write_seq(addrs, vals),
+        push(data, timeout) -> bytes pushed or -1, poll(addr, mask, value, timeout) -> value or None, and
+        read_plane(plane, W, H, bd8) -> rows; the protocol stays here, only the word moving goes there."""
         self.r = regs
+        self.fast = fast
         self.poll_timeout = poll_timeout
         self.log = log or (lambda s: None)
         self.stats = dict(frames=0, tiles=0, bytes=0, pixels=0, writes=0, reads=0)
@@ -146,7 +150,22 @@ class HostDecoder:
         for i, w in enumerate(words(v, nwords)):
             self.wr(base + 4 * i, w)
 
+    def write_seq(self, pairs):
+        """(address, value) pairs in order."""
+        if self.fast is not None:
+            self.fast.write_seq([a for a, _ in pairs], [v for _, v in pairs])
+            self.stats["writes"] += len(pairs)
+        else:
+            for a, v in pairs:
+                self.wr(a, v)
+
     def poll(self, a, mask, value, what):
+        if self.fast is not None:
+            v = self.fast.poll(a, mask, value, self.poll_timeout)
+            self.stats["reads"] += 1
+            if v is None:
+                raise HostError(f"{what}: timeout after {self.poll_timeout}s (0x{a:03x} reads 0x{self.rd(a):08x})")
+            return v
         t0 = time.monotonic()
         while True:
             v = self.rd(a)
@@ -170,15 +189,22 @@ class HostDecoder:
     # -- stages
     def run_tile(self, th, data, tag, dec=None):
         """Headers, CDF defaults, start, the tile bytes, end of stream; returns when the tile is decoded."""
-        self.write_wide(R_HDR, pack(HDR_FIELDS, hdr_vals(th, dec, 0)), HDR_WORDS)
-        self.write_wide(R_RH, pack(REC_FIELDS, rec_vals(th)), RH_WORDS)
+        seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th, dec, 0)), HDR_WORDS))]
+        seq += [(R_RH + 4 * i, w) for i, w in enumerate(words(pack(REC_FIELDS, rec_vals(th)), RH_WORDS))]
         for i, row in enumerate(M.default_rows(th.base_q_idx)):
-            self.write_wide(R_DEF, row, 8)
-            self.wr(R_DEF_ADDR, i)
-        self.wr(R_START, START_TILE)
+            seq += [(R_DEF + 4 * k, w) for k, w in enumerate(words(row, 8))]
+            seq.append((R_DEF_ADDR, i))
+        seq.append((R_START, START_TILE))
+        self.write_seq(seq)
         pos = 0
         n_words = (len(data) + 3) // 4
         t0 = time.monotonic()
+        if self.fast is not None:
+            n = self.fast.push(data, self.poll_timeout)
+            if n != len(data):
+                raise HostError(f"{tag}: the tile FIFO never freed a word ({n} of {len(data)} bytes pushed)")
+            self.stats["writes"] += n_words
+            pos = len(data)
         while pos < len(data):
             free = self.rd(R_STATUS) >> 16
             if free == 0:
@@ -252,6 +278,11 @@ class HostDecoder:
 
     def read_plane(self, hdr, plane, visible=True, packed=True):
         W, H = plane_size(hdr, plane, visible)
+        if self.fast is not None and packed:
+            rows = self.fast.read_plane(plane, W, H, hdr.BitDepth == 8)
+            self.stats["reads"] += H * (W // (4 if hdr.BitDepth == 8 else 2) + 2)
+            self.stats["pixels"] += W * H
+            return rows
         rows = [self.read_row(hdr, plane, y, W, packed) for y in range(H)]
         self.stats["pixels"] += W * H
         return rows
