@@ -52,14 +52,16 @@ module frame_mem_uram #(
     endfunction
 
     // ---------------------------------------------------------------- the RAM (clk2x domain)
-    // Slot schedule per clk cycle (clk2x edges E_a mid-cycle, E_b aligned with the next clk edge):
-    //   E_a: port A reads read-port 0, port B reads read-port 1 (or the host when read-port 1 is idle); the
-    //        write requests are captured into clk2x registers.
-    //   E_b: port A writes write-port 0, port B writes write-port 1 (from the captured requests).
-    // So a request issued at a clk edge has half a cycle to reach the RAM, read data has half a cycle to reach
-    // the clk-domain capture at the next clk edge (one-cycle latency, as the model), a write issued in cycle t
-    // is visible to reads from cycle t+1 on, and a read in the same cycle as a write to the same word sees the
-    // old data: exactly the model's semantics. phase = 1 at E_a, 0 at E_b (from the clock generator).
+    // Slot schedule per clk cycle (clk2x edges: E_b aligned with the clk edge that ends the cycle, E_a mid-cycle):
+    //   E_b (phase 0): port A reads read-port 0, port B reads read-port 1 (or the host when read-port 1 is
+    //        idle) — the same edge at which the model samples a request; the write requests are captured into
+    //        clk2x registers at this edge too.
+    //   E_a (phase 1): port A writes write-port 0, port B writes write-port 1 from the captured requests.
+    // So every decoder-side path is a full clk cycle (request flops at one clk edge, sampled at the next: a
+    // 2-cycle multicycle path in clk2x terms, see synth/vivado), read data is valid for the whole next cycle
+    // (one-cycle latency, as the model), a write issued in cycle t lands mid-cycle t+1 and is visible to the
+    // reads sampled at the end of t+1, and a read in the same cycle as a write to the same word sees the old
+    // data: exactly the model's semantics. phase = 1 at E_a, 0 at E_b (from the clock generator).
     // The RAM: 72-bit words, 9 bytes of 8 bits; lane l = bytes 2l, 2l+1 (bits 16l .. 16l+15, sample in the low 12),
     // byte 8 unused. Vivado's inference accepts UltraRAM only for full-word no-change writes (probed 2026-10-13:
     // read-first and per-byte enables are both "invalid write mode"), but the URAM288 primitive has byte-write
@@ -104,12 +106,12 @@ module frame_mem_uram #(
     assign {wx1, wx0} = w_x; assign {wy1, wy0} = w_y;
     logic host_slot;                                         // the host read takes read-port 1's slot when idle
     assign host_slot = !re[1];
-    // write requests captured at E_a, applied at E_b
+    // write requests captured at E_b (the clk edge), applied at E_a
     logic           wq_we [2];
     logic [8:0]     wq_bwe [2];
     logic [AW-1:0]  wq_addr [2];
     logic [71:0]    wq_d [2];
-    always_ff @(posedge clk2x) if (phase) begin
+    always_ff @(posedge clk2x) if (!phase) begin
         wq_we[0] <= we[0]; wq_we[1] <= we[1];
         wq_addr[0] <= waddr(w_plane[1:0], wx0, wy0);
         wq_addr[1] <= waddr(w_plane[3:2], wx1, wy1);
@@ -120,21 +122,21 @@ module frame_mem_uram #(
         end
     end
     always_comb begin
-        if (phase) begin                                     // E_a: reads (no byte enabled)
+        if (!phase) begin                                    // E_b: reads (no byte enabled)
             a_en = re[0];               a_addr = waddr(r_plane[1:0], rx0, ry0); a_d = '0; a_bwe = '0;
             b_en = re[1] || host_slot;  b_d = '0; b_bwe = '0;
             b_addr = host_slot ? waddr(h_plane, h_x, h_y) : waddr(r_plane[3:2], rx1, ry1);
-        end else begin                                       // E_b: writes
+        end else begin                                       // E_a: writes
             a_en = wq_we[0] && (|wq_bwe[0]); a_addr = wq_addr[0]; a_d = wq_d[0]; a_bwe = wq_bwe[0];
             b_en = wq_we[1] && (|wq_bwe[1]); b_addr = wq_addr[1]; b_d = wq_d[1]; b_bwe = wq_bwe[1];
         end
     end
 
-    // ---------------------------------------------------------------- results back into the clk domain
-    // a_q / b_q hold the E_a read data until the E_b access updates them; rq0 / rq1 capture them at E_b (the
-    // clk-aligned edge) and are stable for the following clk cycle, which is when the model's data is valid.
+    // ---------------------------------------------------------------- results into the clk domain
+    // a_q / b_q are updated at E_b (reads) and hold through E_a (the writes are "no change"), so they are the
+    // model's rdata for the whole next clk cycle.
     logic [71:0] rq0, rq1;
-    always_ff @(posedge clk2x) if (!phase) begin rq0 <= a_q; rq1 <= b_q; end
+    assign rq0 = a_q; assign rq1 = b_q;
     logic [1:0]  rx0l, rx1l, hxl;
     always_ff @(posedge clk) begin
         rx0l <= rx0[1:0]; rx1l <= rx1[1:0]; hxl <= h_x[1:0];
