@@ -10,11 +10,12 @@ if {[llength [get_ports -quiet clk2x]]} { set_property HD.CLK_SRC BUFGCTRL_X0Y1 
 # clk2x edge and everything that consumes it samples at a clk-aligned edge: the decoder at clk (covered by the
 # clk2x -> clk multicycle in clk.xdc) and the memory's own write-request capture at the next clk-aligned clk2x
 # edge. So a path from a URAM output into the clk2x domain (read data -> recon add -> write request) has a full
-# clk cycle, not a clk2x one. The primitives only exist after synthesis, hence the constraint lives here.
-set urams [get_cells -quiet -hier -filter {REF_NAME == URAM288}]
-if {[llength $urams]} {
-    set_multicycle_path -setup 2 -from $urams -to [get_clocks clk2x]
-    set_multicycle_path -hold 1 -from $urams -to [get_clocks clk2x]
+# clk cycle, not a clk2x one. The launching cells are the UltraRAMs and the XPM's column-select registers (both
+# loaded by a read at the clk-aligned edge); they only exist after synthesis, hence the constraint lives here.
+set fmregs [get_cells -quiet -hier -filter {NAME =~ *u_fb/u_ram/* && IS_SEQUENTIAL}]
+if {[llength $fmregs]} {
+    set_multicycle_path -setup 2 -from $fmregs -to [get_clocks clk2x]
+    set_multicycle_path -hold 1 -from $fmregs -to [get_clocks clk2x]
 }
 opt_design
 place_design
