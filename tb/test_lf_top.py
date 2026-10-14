@@ -23,19 +23,10 @@ import recon_model as rm                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 
-LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
-    ("frame_width", TT.PXW), ("frame_height", TT.PXW), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
-    ("ref_delta_intra", 7), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
+from host_regs import LF_FIELDS, lf_vals   # noqa: E402,F401
 MI_FIELDS = [("bsize", 5), ("skip", 1), ("seg", 3), ("delta_lf", 28)]
 
 
-def lf_vals(th):
-    return dict(frame_width=th.FrameWidth, frame_height=th.FrameHeight,
-                level=sum((th.loop_filter_level[i] & 63) << (6 * i) for i in range(4)),
-                sharpness=th.loop_filter_sharpness, delta_enabled=th.loop_filter_delta_enabled,
-                ref_delta_intra=th.loop_filter_ref_deltas[0], delta_lf_multi=th.delta_lf_multi,
-                seg_lf_en=sum((th.FeatureEnabled[s][1 + i] & 1) << (8 * i + s) for i in range(4) for s in range(8)),
-                seg_lf_data=sum((th.FeatureData[s][1 + i] & 0x7F) << (7 * (8 * i + s)) for i in range(4) for s in range(8)))
 
 
 async def preload(dut, hdr, planes, state):

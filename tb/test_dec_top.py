@@ -30,18 +30,7 @@ import xcheck_frame as xf               # noqa: E402
 
 STAGE = os.environ.get("TS_STAGE", "recon")      # recon | lf | cdef | lr : how far the RTL and the model go before comparing
 
-REC_FIELDS = [  # syn_pkg::rec_hdr_t order (MSB first)
-    ("enable_intra_edge_filter", 1), ("dq_ydc", 7), ("dq_udc", 7), ("dq_uac", 7), ("dq_vdc", 7), ("dq_vac", 7),
-    ("seg_altq_en", 8), ("seg_altq", 72), ("using_qmatrix", 1), ("qm_level", 96)]
-
-
-def rec_vals(th):
-    return dict(enable_intra_edge_filter=th.enable_intra_edge_filter,
-                dq_ydc=th.DeltaQYDc, dq_udc=th.DeltaQUDc, dq_uac=th.DeltaQUAc, dq_vdc=th.DeltaQVDc, dq_vac=th.DeltaQVac if hasattr(th, "DeltaQVac") else th.DeltaQVAc,
-                seg_altq_en=sum((th.FeatureEnabled[s][0] & 1) << s for s in range(8)),
-                seg_altq=sum((th.FeatureData[s][0] & 0x1FF) << (9 * s) for s in range(8)),
-                using_qmatrix=th.using_qmatrix,
-                qm_level=sum((th.SegQMLevel[p][s] & 0xF) << ((p * 8 + s) * 4) for p in range(3) for s in range(8)))
+from host_regs import REC_FIELDS, rec_vals   # noqa: E402,F401
 
 
 rtl_pal = {}

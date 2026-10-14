@@ -29,15 +29,7 @@ import tile_model as tm         # noqa: E402
 
 ACK_DELAY = int(os.environ.get("TS_ACK_DELAY", "0"))
 # coordinate widths: must match syn_pkg::MIW / SBW / PXW (4x4-unit, 64x64-superblock and pixel positions / counts)
-MIW, SBW, PXW = 13, 9, 15
-HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
-    ("mi_rows", MIW), ("mi_cols", MIW), ("mi_row_start", MIW), ("mi_row_end", MIW), ("mi_col_start", MIW), ("mi_col_end", MIW),
-    ("ssx", 1), ("ssy", 1), ("mono", 1), ("sb128", 1), ("bit_depth", 4), ("seg_enabled", 1), ("seg_preskip", 1),
-    ("last_active_segid", 3), ("seg_skip_en", 8), ("lossless", 8), ("seg_qidx", 64), ("base_q_idx", 8), ("tx_mode", 2),
-    ("reduced_tx_set", 1), ("allow_sct", 1), ("allow_intrabc", 1), ("enable_filter_intra", 1), ("enable_cdef", 1), ("cdef_bits", 2),
-    ("coded_lossless", 1), ("delta_q_present", 1), ("delta_q_res", 2), ("delta_lf_present", 1), ("delta_lf_res", 2),
-    ("delta_lf_multi", 1), ("disable_cdf_update", 1), ("lr_type", 6), ("lr_size", 6), ("frame_height", PXW), ("upscaled_width", PXW),
-    ("use_superres", 1), ("superres_denom", 5)]
+from host_regs import MIW, SBW, PXW, HDR_FIELDS, pack, unpack, hdr_vals   # noqa: E402,F401  (cocotb-free: the board driver shares them)
 BLK_FIELDS = [
     ("r", MIW), ("c", MIW), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
@@ -47,23 +39,6 @@ BLK_FIELDS = [
 TX_FIELDS = [("plane", 2), ("x", PXW), ("y", PXW), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1), ("slot", 3)]
 LR_FIELDS = [("plane", 2), ("unit_row", SBW), ("unit_col", SBW), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
-
-def pack(fields, vals):
-    v = 0
-    for name, w in fields:
-        x = vals[name] & ((1 << w) - 1)
-        v = (v << w) | x
-    return v
-
-
-def unpack(fields, v):
-    out = {}
-    total = sum(w for _, w in fields)
-    pos = total
-    for name, w in fields:
-        pos -= w
-        out[name] = (v >> pos) & ((1 << w) - 1)
-    return out
 
 
 def to_signed(v, bits):
@@ -156,25 +131,6 @@ class RecDecoder(tm.TileDecoder):
         h = self.h
         b["os"] = (min(T.Block_Width[subSize], (h.MiCols - c) * 4), min(T.Block_Height[subSize], (h.MiRows - r) * 4))
 
-
-def hdr_vals(th, dec, frame_parity=0):
-    v = dict(mi_rows=th.MiRows, mi_cols=th.MiCols, mi_row_start=th.MiRowStart, mi_row_end=th.MiRowEnd,
-             mi_col_start=th.MiColStart, mi_col_end=th.MiColEnd, ssx=th.subsampling_x, ssy=th.subsampling_y,
-             mono=1 if th.NumPlanes == 1 else 0, sb128=th.use_128x128_superblock, bit_depth=th.BitDepth,
-             seg_enabled=th.segmentation_enabled, seg_preskip=th.SegIdPreSkip, last_active_segid=th.LastActiveSegId,
-             seg_skip_en=sum((th.FeatureEnabled[s][6] & 1) << s for s in range(8)),
-             lossless=sum((th.LosslessArray[s] & 1) << s for s in range(8)),
-             seg_qidx=sum((dec.get_qindex(1, s) & 0xFF) << (8 * s) for s in range(8)),
-             base_q_idx=th.base_q_idx, tx_mode=th.TxMode, reduced_tx_set=th.reduced_tx_set,
-             allow_sct=th.allow_screen_content_tools, allow_intrabc=th.allow_intrabc, enable_filter_intra=th.enable_filter_intra, enable_cdef=th.enable_cdef,
-             cdef_bits=th.cdef_bits, coded_lossless=th.CodedLossless, delta_q_present=th.delta_q_present,
-             delta_q_res=th.delta_q_res, delta_lf_present=th.delta_lf_present, delta_lf_res=th.delta_lf_res,
-             delta_lf_multi=th.delta_lf_multi, disable_cdf_update=th.disable_cdf_update,
-             lr_type=sum(th.FrameRestorationType[p] << (2 * p) for p in range(3)),
-             lr_size=sum((th.LoopRestorationSize[p].bit_length() - 1 - 6) << (2 * p) for p in range(3)),
-             frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth,
-             use_superres=th.use_superres, superres_denom=th.SuperresDenom if th.use_superres else 8)
-    return v
 
 
 
