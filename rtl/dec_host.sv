@@ -406,12 +406,12 @@ module dec_host
                         else if (wi[9:4] == 6'h03)   rh_w[wi[3:0]]  <= strb(rh_w[wi[3:0]], w_d, w_s);        // 0x0C0
                         else if (wi[9:4] == 6'h04)   lh_w[wi[3:0]]  <= strb(lh_w[wi[3:0]], w_d, w_s);        // 0x100
                         else if (wi[9:4] == 6'h05)   ch_w[wi[3:0]]  <= strb(ch_w[wi[3:0]], w_d, w_s);        // 0x140
-                        else if (wi[9:4] == 6'h06 && wi[3:2] != 2'd3) begin                                     // 0x190..0x1BC: planes 0..2
+                        else if (wi[9:4] == 6'h06 && wi[3:2] != 2'd0) begin                                     // 0x190..0x1BC: planes 0..2
                             case (wi[1:0])
-                                2'd0: dma_base[wi[3:2]][31:0]  <= strb(dma_base[wi[3:2]][31:0], w_d, w_s);
-                                2'd1: dma_base[wi[3:2]][39:32] <= w_d[7:0];
-                                2'd2: dma_stride[wi[3:2]]      <= strb(dma_stride[wi[3:2]], w_d, w_s);
-                                default: begin dma_w[wi[3:2]] <= w_d[15:0]; dma_h[wi[3:2]] <= w_d[31:16]; end
+                                2'd0: dma_base[wi[3:2] - 2'd1][31:0]  <= strb(dma_base[wi[3:2] - 2'd1][31:0], w_d, w_s);
+                                2'd1: dma_base[wi[3:2] - 2'd1][39:32] <= w_d[7:0];
+                                2'd2: dma_stride[wi[3:2] - 2'd1]      <= strb(dma_stride[wi[3:2] - 2'd1], w_d, w_s);
+                                default: begin dma_w[wi[3:2] - 2'd1] <= w_d[15:0]; dma_h[wi[3:2] - 2'd1] <= w_d[31:16]; end
                             endcase
                         end
                     end
@@ -444,12 +444,12 @@ module dec_host
                         else if (ri[9:4] == 6'h03) s_axi_rdata <= rh_w[ri[3:0]];
                         else if (ri[9:4] == 6'h04) s_axi_rdata <= lh_w[ri[3:0]];
                         else if (ri[9:4] == 6'h05) s_axi_rdata <= ch_w[ri[3:0]];
-                        else if (ri[9:4] == 6'h06 && ri[3:2] != 2'd3)
+                        else if (ri[9:4] == 6'h06 && ri[3:2] != 2'd0)
                             case (ri[1:0])
-                                2'd0: s_axi_rdata <= dma_base[ri[3:2]][31:0];
-                                2'd1: s_axi_rdata <= {24'd0, dma_base[ri[3:2]][39:32]};
-                                2'd2: s_axi_rdata <= dma_stride[ri[3:2]];
-                                default: s_axi_rdata <= {dma_h[ri[3:2]], dma_w[ri[3:2]]};
+                                2'd0: s_axi_rdata <= dma_base[ri[3:2] - 2'd1][31:0];
+                                2'd1: s_axi_rdata <= {24'd0, dma_base[ri[3:2] - 2'd1][39:32]};
+                                2'd2: s_axi_rdata <= dma_stride[ri[3:2] - 2'd1];
+                                default: s_axi_rdata <= {dma_h[ri[3:2] - 2'd1], dma_w[ri[3:2] - 2'd1]};
                             endcase
                         else                       s_axi_rdata <= 32'd0;
                     end

@@ -83,7 +83,7 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
         seq, layout, total = dma_regs(hdr, base, visible)
         for a, v in seq:
             await ax.write(a, v)
-        before = mem.written()
+        mem.mem.clear()
         await ax.write(R_DMA_START, 1)
         st = await ax.poll(R_DMA_STATUS, DMA_DONE | DMA_BUSY, DMA_DONE, 20_000_000, tag)
         assert not (st & DMA_ERR), f"{tag}: DMA error flag"
@@ -97,7 +97,7 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
                     bad += [(plane, y, x, got[plane][y][x], planes[plane][y][x]) for x in range(W) if got[plane][y][x] != planes[plane][y][x]]
             stats["pixels"] += W * H
         expect_bytes = sum(((W * (1 if hdr.BitDepth == 8 else 2)) * H) for _, _, W, H in layout)
-        assert mem.written() - before == expect_bytes, f"{tag}: DMA wrote {mem.written() - before} bytes, picture is {expect_bytes}"
+        assert mem.written() == expect_bytes, f"{tag}: DMA wrote {mem.written()} bytes, picture is {expect_bytes}"
         assert not bad, f"{tag}: DMA image: {len(bad)} samples differ, first (plane, y, x, dma, model): {bad[:8]}"
         return
     for plane in range(hdr.NumPlanes):
