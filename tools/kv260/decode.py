@@ -23,6 +23,49 @@ import obu_parser as op                                     # noqa: E402
 from host_regs import HostDecoder, HostError, plane_size    # noqa: E402
 
 
+class FbStage:
+    """The DisplayPort framebuffer (/dev/fb0, xlnxdrmfb: a physically contiguous, uncached CMA buffer) as the DMA
+    target: the visible screen is its first yres lines, the rest of its virtual height is free and holds the
+    decoded picture. The PS reads the picture back through the same mapping, so no /dev/mem is needed (the
+    kernel refuses /dev/mem on RAM anyway)."""
+    FBIOGET_VSCREENINFO, FBIOGET_FSCREENINFO = 0x4600, 0x4602
+
+    def __init__(self, path="/dev/fb0"):
+        import fcntl
+        self.fd = os.open(path, os.O_RDWR)
+        fix = bytearray(72)
+        fcntl.ioctl(self.fd, self.FBIOGET_FSCREENINFO, fix)
+        self.smem_start, self.smem_len = struct.unpack("QI", fix[16:28])
+        self.line_length = struct.unpack("I", fix[48:52])[0]
+        var = bytearray(160)
+        fcntl.ioctl(self.fd, self.FBIOGET_VSCREENINFO, var)
+        self.xres, self.yres, self.xres_v, self.yres_v, _, _, self.bpp = struct.unpack("7I", var[0:28])
+        if not self.smem_start:
+            raise OSError("framebuffer reports no physical address")
+        self.m = mmap.mmap(self.fd, self.smem_len, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+        self.screen_bytes = self.line_length * self.yres
+        self.stage_off = self.screen_bytes
+        self.stage_len = self.smem_len - self.stage_off
+        self.base = self.smem_start + self.stage_off          # physical address of the staging area
+
+    def read(self, off, n):
+        return bytes(self.m[self.stage_off + off:self.stage_off + off + n])
+
+    def ptr(self, off):
+        return ctypes.addressof(ctypes.c_char.from_buffer(self.m, off))
+
+    def show(self, lib, hdr, planes_layout):
+        """8-bit 4:2:0 pictures onto the screen, centred (or the top-left corner when larger)."""
+        if hdr.BitDepth != 8 or hdr.NumPlanes != 3 or not (hdr.subsampling_x and hdr.subsampling_y) or self.bpp != 16:
+            return False
+        (yb, ys, W, H), (ub, cs, _, _), (vb, _, _, _) = planes_layout
+        w, h = min(W, self.xres), min(H, self.yres)
+        x0, y0 = (self.xres - w) // 2, (self.yres - h) // 2
+        lib.yuv420_rgb565(self.ptr(self.stage_off + yb - self.base), self.ptr(self.stage_off + ub - self.base),
+                          self.ptr(self.stage_off + vb - self.base), w, h, ys, cs, self.ptr(0), self.line_length // 2, x0, y0)
+        return True
+
+
 class Regs:
     """32-bit register access through /dev/mem; every access ONE aligned 32-bit bus transaction (ctypes'
     c_uint32: struct.pack_into and slice stores split a word into 2-3 transfers, first board run 2026-10-14)."""
@@ -85,6 +128,8 @@ def main():
     ap.add_argument("--frames", type=int, help="stop after this many coded frames")
     ap.add_argument("--single", action="store_true", help="read the picture sample by sample (HDATA) instead of packed")
     ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
+    ap.add_argument("--dma", action="store_true", help="the picture through the DMA engine into the framebuffer's spare lines")
+    ap.add_argument("--show", action="store_true", help="with --dma: also put each picture on the screen (8-bit 4:2:0, RGB565 fb)")
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     args = ap.parse_args()
@@ -116,13 +161,21 @@ def main():
         from hostlib import HostLib
         fast = HostLib(args.base)
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
+    stage = None
+    if args.dma:
+        stage = FbStage()
+        print(f"framebuffer {stage.xres}x{stage.yres} ({stage.bpp} bpp) at 0x{stage.smem_start:x}; staging {stage.stage_len} bytes at 0x{stage.base:x}")
     cfg = host.identify()
     print(f"decoder at 0x{args.base:08x} ({'libhostregs.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']}; "
           f"{len(d.frames)} coded frames, {len(shown)} shown")
     n_bad_frames = 0
     t_all = time.monotonic()
     try:
-        for fi, hdr, planes, t in host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single):
+        for fi, hdr, planes, t in host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
+                                                     dma=(stage.base, stage.read) if stage else None):
+            if stage is not None and args.show and fast is not None:
+                from host_regs import dma_layout
+                stage.show(fast, hdr, dma_layout(hdr, stage.base)[0])
             if args.frames is not None and fi >= args.frames:
                 break
             W, H = plane_size(hdr, 0)

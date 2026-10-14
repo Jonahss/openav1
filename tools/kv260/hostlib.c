@@ -106,3 +106,19 @@ int hl_read_plane(int plane, int W, int H, int bd8, uint16_t *out) {
     }
     return 0;
 }
+
+// 8-bit 4:2:0 planes (the DMA image: y with ystride, u / v with cstride) to RGB565 at (x0, y0) of a 16-bit
+// framebuffer with dst_stride pixels per line (BT.601 limited range, the usual for these clips)
+void hl_yuv420_rgb565(const uint8_t *y, const uint8_t *u, const uint8_t *v, int W, int H, int ystride, int cstride,
+                      uint16_t *dst, int dst_stride, int x0, int y0) {
+    for (int j = 0; j < H; j++) {
+        const uint8_t *yr = y + (long)j * ystride, *ur = u + (long)(j >> 1) * cstride, *vr = v + (long)(j >> 1) * cstride;
+        uint16_t *d = dst + (long)(y0 + j) * dst_stride + x0;
+        for (int i = 0; i < W; i++) {
+            int c = 298 * (yr[i] - 16), dd = ur[i >> 1] - 128, e = vr[i >> 1] - 128;
+            int r = (c + 409 * e + 128) >> 8, g = (c - 100 * dd - 208 * e + 128) >> 8, b = (c + 516 * dd + 128) >> 8;
+            r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+            d[i] = (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3));
+        }
+    }
+}
