@@ -792,8 +792,6 @@ module recon_top
                     sd_valid <= (sk < t.eob); sd_k <= sk;
                     if (sk < t.eob) sk <= sk + 11'd1;
                     p_valid <= sd_valid; pci <= sc_ci; pcj <= sc_cj;
-                    padd_x_r <= FBX'(t.x + PXW'(flip_lr ? 7'(tw_px - 7'd4 - sc_cj) : sc_cj));
-                    padd_y_r <= FBY'(t.y + PXW'(flip_ud ? 7'(th_px - 7'd1 - sc_ci) : sc_ci));
                     if (sk >= t.eob && !sd_valid) rs <= R_DQ_LAST;
                 end
                 R_DQ_LAST: begin p_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; rs <= R_ITX_START; end
@@ -801,6 +799,8 @@ module recon_top
                 R_ITX_W: if (itx_done) begin p_valid <= 1'b0; rs <= R_ADD; end
                 R_ADD: begin                             // read group (ci, cj..cj+3); the previous group is added and written this cycle
                     p_valid <= 1'b1; pci <= ci; pcj <= cj;
+                    padd_x_r <= FBX'(t.x + PXW'(flip_lr ? 7'(tw_px - 7'd4 - cj) : cj));
+                    padd_y_r <= FBY'(t.y + PXW'(flip_ud ? 7'(th_px - 7'd1 - ci) : ci));
                     if (cj + 7'd4 < tw_px) cj <= cj + 7'd4;
                     else if (ci + 7'd1 < th_px) begin cj <= 7'd0; ci <= ci + 7'd1; end
                     else rs <= R_ADD_LAST;
