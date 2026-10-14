@@ -60,22 +60,22 @@ module frame_mem_uram #(
     // the clk-domain capture at the next clk edge (one-cycle latency, as the model), a write issued in cycle t
     // is visible to reads from cycle t+1 on, and a read in the same cycle as a write to the same word sees the
     // old data: exactly the model's semantics. phase = 1 at E_a, 0 at E_b (from the clock generator).
+    // Read-first dual-port RAM in Vivado's UltraRAM template: one block per port, 9-bit byte-write enables, the
+    // output register updated on every enabled access (so a write slot's read-first output is junk; the read
+    // data is captured from a_q / b_q at the clk-aligned edge, before that update, into rq0 / rq1).
     (* ram_style = "ultra" *) logic [71:0] mem [0:NWORD-1];
     logic           a_en, b_en;
-    logic           a_we, b_we;
-    logic [7:0]     a_bwe, b_bwe;                            // byte enables, two per lane
+    logic [7:0]     a_bwe, b_bwe;                            // byte-write enables (9-bit bytes, two per lane)
     logic [AW-1:0]  a_addr, b_addr;
     logic [71:0]    a_d, b_d;
     logic [71:0]    a_q, b_q;
-    always_ff @(posedge clk2x) begin
-        if (a_en) begin
-            if (a_we) begin for (int l = 0; l < 4; l++) if (a_bwe[2*l]) mem[a_addr][l*18 +: 18] <= a_d[l*18 +: 18]; end
-            else a_q <= mem[a_addr];
-        end
-        if (b_en) begin
-            if (b_we) begin for (int l = 0; l < 4; l++) if (b_bwe[2*l]) mem[b_addr][l*18 +: 18] <= b_d[l*18 +: 18]; end
-            else b_q <= mem[b_addr];
-        end
+    always_ff @(posedge clk2x) if (a_en) begin
+        for (int by = 0; by < 8; by++) if (a_bwe[by]) mem[a_addr][by*9 +: 9] <= a_d[by*9 +: 9];
+        a_q <= mem[a_addr];
+    end
+    always_ff @(posedge clk2x) if (b_en) begin
+        for (int by = 0; by < 8; by++) if (b_bwe[by]) mem[b_addr][by*9 +: 9] <= b_d[by*9 +: 9];
+        b_q <= mem[b_addr];
     end
 
     // ---------------------------------------------------------------- requests
@@ -100,29 +100,30 @@ module frame_mem_uram #(
         end
     end
     always_comb begin
-        if (phase) begin                                     // E_a: reads
-            a_en = re[0];               a_we = 1'b0; a_addr = waddr(r_plane[1:0], rx0, ry0); a_d = '0; a_bwe = '0;
-            b_en = re[1] || host_slot;  b_we = 1'b0; a_d = '0; b_d = '0; b_bwe = '0;
+        if (phase) begin                                     // E_a: reads (no byte enabled)
+            a_en = re[0];               a_addr = waddr(r_plane[1:0], rx0, ry0); a_d = '0; a_bwe = '0;
+            b_en = re[1] || host_slot;  b_d = '0; b_bwe = '0;
             b_addr = host_slot ? waddr(h_plane, h_x, h_y) : waddr(r_plane[3:2], rx1, ry1);
         end else begin                                       // E_b: writes
-            a_en = wq_we[0]; a_we = 1'b1; a_addr = wq_addr[0]; a_d = wq_d[0]; a_bwe = wq_bwe[0];
-            b_en = wq_we[1]; b_we = 1'b1; b_addr = wq_addr[1]; b_d = wq_d[1]; b_bwe = wq_bwe[1];
+            a_en = wq_we[0]; a_addr = wq_addr[0]; a_d = wq_d[0]; a_bwe = wq_bwe[0];
+            b_en = wq_we[1]; b_addr = wq_addr[1]; b_d = wq_d[1]; b_bwe = wq_bwe[1];
         end
     end
 
     // ---------------------------------------------------------------- results back into the clk domain
-    // a_q / b_q are updated at E_a and hold through E_b; the clk edge coincident with E_b captures them.
-    logic [71:0] q0, q1, hq;
+    // a_q / b_q hold the E_a read data until the E_b access updates them; rq0 / rq1 capture them at E_b (the
+    // clk-aligned edge) and are stable for the following clk cycle, which is when the model's data is valid.
+    logic [71:0] rq0, rq1;
+    always_ff @(posedge clk2x) if (!phase) begin rq0 <= a_q; rq1 <= b_q; end
     logic [1:0]  rx0l, rx1l, hxl;
     always_ff @(posedge clk) begin
-        q0 <= a_q; q1 <= b_q; hq <= b_q;
         rx0l <= rx0[1:0]; rx1l <= rx1[1:0]; hxl <= h_x[1:0];
     end
     always_comb begin
-        rdata4[0*4*PW +: 4*PW] = {q0[3*18 +: PW], q0[2*18 +: PW], q0[1*18 +: PW], q0[0*18 +: PW]};
-        rdata4[1*4*PW +: 4*PW] = {q1[3*18 +: PW], q1[2*18 +: PW], q1[1*18 +: PW], q1[0*18 +: PW]};
-        rdata[0*PW +: PW] = q0[32'(rx0l)*18 +: PW];
-        rdata[1*PW +: PW] = q1[32'(rx1l)*18 +: PW];
-        h_rdata = hq[32'(hxl)*18 +: PW];
+        rdata4[0*4*PW +: 4*PW] = {rq0[3*18 +: PW], rq0[2*18 +: PW], rq0[1*18 +: PW], rq0[0*18 +: PW]};
+        rdata4[1*4*PW +: 4*PW] = {rq1[3*18 +: PW], rq1[2*18 +: PW], rq1[1*18 +: PW], rq1[0*18 +: PW]};
+        rdata[0*PW +: PW] = rq0[32'(rx0l)*18 +: PW];
+        rdata[1*PW +: PW] = rq1[32'(rx1l)*18 +: PW];
+        h_rdata = rq1[32'(hxl)*18 +: PW];
     end
 endmodule
