@@ -4,8 +4,8 @@
 // read ports (or the host), on the clk-aligned edge they write for the two write ports. Every decoder-side port
 // keeps its one-cycle latency at clk; nothing arbitrates or stalls.
 //
-// Word = one aligned group of four samples, 4 x 18-bit lanes = 72 bits (a sample in the low 12 bits of its lane;
-// the lane is two URAM bytes, so the lane write enables are byte-write enables). Address = plane base +
+// Word = one aligned group of four samples, 4 x 16-bit lanes in a 72-bit URAM word (a sample in the low 12 bits
+// of its lane; the lane is two URAM bytes, so the lane write enables are byte-write enables; byte 8 unused). Address = plane base +
 // y * (W/4) + x/4 with W = 1 << FBX: plane 0 holds (1 << FBY) rows, planes 1 and 2 (4:2:0) a quarter each.
 module frame_mem_uram #(
     parameter int FBX = 9,
@@ -60,24 +60,42 @@ module frame_mem_uram #(
     // the clk-domain capture at the next clk edge (one-cycle latency, as the model), a write issued in cycle t
     // is visible to reads from cycle t+1 on, and a read in the same cycle as a write to the same word sees the
     // old data: exactly the model's semantics. phase = 1 at E_a, 0 at E_b (from the clock generator).
-    // Dual-port RAM in Vivado's UltraRAM template: one block per port, 9-bit byte-write enables; the read data is
-    // captured from a_q / b_q at the clk-aligned edge into rq0 / rq1.
-    (* ram_style = "ultra" *) logic [71:0] mem [0:NWORD-1];
+    // The RAM: 72-bit words, 9 bytes of 8 bits; lane l = bytes 2l, 2l+1 (bits 16l .. 16l+15, sample in the low 12),
+    // byte 8 unused. Vivado's inference accepts UltraRAM only for full-word no-change writes (probed 2026-10-13:
+    // read-first and per-byte enables are both "invalid write mode"), but the URAM288 primitive has byte-write
+    // enables, so synthesis instantiates it through the XPM macro and simulation uses the behavioural model
+    // below; the gate-level replay (tb/gate) checks the two agree.
     logic           a_en, b_en;
-    logic [7:0]     a_bwe, b_bwe;                            // byte-write enables (9-bit bytes, two per lane)
+    logic [8:0]     a_bwe, b_bwe;                            // byte-write enables; none set = read
     logic [AW-1:0]  a_addr, b_addr;
     logic [71:0]    a_d, b_d;
     logic [71:0]    a_q, b_q;
-    // "no change" mode: the output register holds during a write (a read slot never has a byte enabled, a
-    // write slot always has at least one), with 9-bit byte-write enables.
+`ifdef SYNTHESIS
+    xpm_memory_tdpram #(
+        .MEMORY_SIZE(NWORD * 72), .MEMORY_PRIMITIVE("ultra"), .CLOCKING_MODE("common_clock"), .MEMORY_INIT_FILE("none"),
+        .MEMORY_INIT_PARAM("0"), .USE_MEM_INIT(0), .WAKEUP_TIME("disable_sleep"), .MESSAGE_CONTROL(0),
+        .ECC_MODE("no_ecc"), .AUTO_SLEEP_TIME(0), .USE_EMBEDDED_CONSTRAINT(0), .MEMORY_OPTIMIZATION("true"),
+        .WRITE_DATA_WIDTH_A(72), .READ_DATA_WIDTH_A(72), .BYTE_WRITE_WIDTH_A(8), .ADDR_WIDTH_A(AW), .READ_RESET_VALUE_A("0"),
+        .READ_LATENCY_A(1), .WRITE_MODE_A("no_change"),
+        .WRITE_DATA_WIDTH_B(72), .READ_DATA_WIDTH_B(72), .BYTE_WRITE_WIDTH_B(8), .ADDR_WIDTH_B(AW), .READ_RESET_VALUE_B("0"),
+        .READ_LATENCY_B(1), .WRITE_MODE_B("no_change")
+    ) u_ram (
+        .clka(clk2x), .ena(a_en), .wea(a_bwe), .addra(a_addr), .dina(a_d), .douta(a_q), .regcea(1'b1), .rsta(1'b0),
+        .clkb(clk2x), .enb(b_en), .web(b_bwe), .addrb(b_addr), .dinb(b_d), .doutb(b_q), .regceb(1'b1), .rstb(1'b0),
+        .sleep(1'b0), .injectsbiterra(1'b0), .injectdbiterra(1'b0), .injectsbiterrb(1'b0), .injectdbiterrb(1'b0),
+        .sbiterra(), .dbiterra(), .sbiterrb(), .dbiterrb()
+    );
+`else
+    logic [71:0] mem [0:NWORD-1];
     always_ff @(posedge clk2x) if (a_en) begin
-        if (|a_bwe) begin for (int by = 0; by < 8; by++) if (a_bwe[by]) mem[a_addr][by*9 +: 9] <= a_d[by*9 +: 9]; end
+        if (|a_bwe) begin for (int by = 0; by < 9; by++) if (a_bwe[by]) mem[a_addr][by*8 +: 8] <= a_d[by*8 +: 8]; end
         else a_q <= mem[a_addr];
     end
     always_ff @(posedge clk2x) if (b_en) begin
-        if (|b_bwe) begin for (int by = 0; by < 8; by++) if (b_bwe[by]) mem[b_addr][by*9 +: 9] <= b_d[by*9 +: 9]; end
+        if (|b_bwe) begin for (int by = 0; by < 9; by++) if (b_bwe[by]) mem[b_addr][by*8 +: 8] <= b_d[by*8 +: 8]; end
         else b_q <= mem[b_addr];
     end
+`endif
 
     // ---------------------------------------------------------------- requests
     logic [FBX-1:0] rx0, rx1, wx0, wx1;
@@ -88,16 +106,17 @@ module frame_mem_uram #(
     assign host_slot = !re[1];
     // write requests captured at E_a, applied at E_b
     logic           wq_we [2];
-    logic [7:0]     wq_bwe [2];
+    logic [8:0]     wq_bwe [2];
     logic [AW-1:0]  wq_addr [2];
     logic [71:0]    wq_d [2];
     always_ff @(posedge clk2x) if (phase) begin
         wq_we[0] <= we[0]; wq_we[1] <= we[1];
         wq_addr[0] <= waddr(w_plane[1:0], wx0, wy0);
         wq_addr[1] <= waddr(w_plane[3:2], wx1, wy1);
+        wq_d[0][71:64] <= '0; wq_d[1][71:64] <= '0; wq_bwe[0][8] <= 1'b0; wq_bwe[1][8] <= 1'b0;
         for (int l = 0; l < 4; l++) begin
-            wq_d[0][l*18 +: 18] <= 18'(w_data[l*PW +: PW]);       wq_bwe[0][2*l +: 2] <= {2{w_be[l]}};
-            wq_d[1][l*18 +: 18] <= 18'(w_data[(4 + l)*PW +: PW]); wq_bwe[1][2*l +: 2] <= {2{w_be[4 + l]}};
+            wq_d[0][l*16 +: 16] <= 16'(w_data[l*PW +: PW]);       wq_bwe[0][2*l +: 2] <= {2{w_be[l]}};
+            wq_d[1][l*16 +: 16] <= 16'(w_data[(4 + l)*PW +: PW]); wq_bwe[1][2*l +: 2] <= {2{w_be[4 + l]}};
         end
     end
     always_comb begin
@@ -121,10 +140,10 @@ module frame_mem_uram #(
         rx0l <= rx0[1:0]; rx1l <= rx1[1:0]; hxl <= h_x[1:0];
     end
     always_comb begin
-        rdata4[0*4*PW +: 4*PW] = {rq0[3*18 +: PW], rq0[2*18 +: PW], rq0[1*18 +: PW], rq0[0*18 +: PW]};
-        rdata4[1*4*PW +: 4*PW] = {rq1[3*18 +: PW], rq1[2*18 +: PW], rq1[1*18 +: PW], rq1[0*18 +: PW]};
-        rdata[0*PW +: PW] = rq0[32'(rx0l)*18 +: PW];
-        rdata[1*PW +: PW] = rq1[32'(rx1l)*18 +: PW];
-        h_rdata = rq1[32'(hxl)*18 +: PW];
+        rdata4[0*4*PW +: 4*PW] = {rq0[3*16 +: PW], rq0[2*16 +: PW], rq0[1*16 +: PW], rq0[0*16 +: PW]};
+        rdata4[1*4*PW +: 4*PW] = {rq1[3*16 +: PW], rq1[2*16 +: PW], rq1[1*16 +: PW], rq1[0*16 +: PW]};
+        rdata[0*PW +: PW] = rq0[32'(rx0l)*16 +: PW];
+        rdata[1*PW +: PW] = rq1[32'(rx1l)*16 +: PW];
+        h_rdata = rq1[32'(hxl)*16 +: PW];
     end
 endmodule
