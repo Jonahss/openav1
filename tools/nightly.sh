@@ -26,6 +26,8 @@ run tile_syntax_plain  TS_SCREEN=0 TS_SEEDS=12 python tb/runner.py tile_syntax
 run tile_syntax_screen TS_SCREEN=1 TS_SEEDS=24 python tb/runner.py tile_syntax
 run dec_top_small      TS_SEEDS=12 python tb/runner.py dec_top
 run dec_top_large      TS_SEEDS=101,102,103,104,105,106 TS_W=256 TS_H=160 python tb/runner.py dec_top
+# the core FPGA configuration through its AXI-Lite host interface (rtl/dec_host.sv): registers, FIFO, read-back
+run dec_host_core      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=1,2,3,4 TS_W=128 TS_H=96 TS_STAGE=lf python tb/runner.py dec_host
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
 run corpus_full_rtl    TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
