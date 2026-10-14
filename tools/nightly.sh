@@ -29,6 +29,7 @@ run dec_top_large      TS_SEEDS=101,102,103,104,105,106 TS_W=256 TS_H=160 python
 # the core FPGA configuration through its AXI-Lite host interface (rtl/dec_host.sv): registers, FIFO, read-back
 run dec_host_core      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=1,2,3,4 TS_W=128 TS_H=96 TS_STAGE=lf python tb/runner.py dec_host
 run dec_host_dma       FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=5,6,7 TS_W=120 TS_H=72 TS_STAGE=lf TS_DMA=1 python tb/runner.py dec_host
+run dec_host_pipe      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=8,9 TS_W=128 TS_H=96 TS_STAGE=lf TS_PIPE=1 TS_DMA=1 python tb/runner.py dec_host
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
 run corpus_full_rtl    TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present

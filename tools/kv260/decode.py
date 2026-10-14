@@ -130,6 +130,7 @@ def main():
     ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
     ap.add_argument("--dma", action="store_true", help="the picture through the DMA engine into the framebuffer's spare lines")
     ap.add_argument("--show", action="store_true", help="with --dma: also put each picture on the screen (8-bit 4:2:0, RGB565 fb)")
+    ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     args = ap.parse_args()
@@ -172,7 +173,7 @@ def main():
     t_all = time.monotonic()
     try:
         for fi, hdr, planes, t in host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
-                                                     dma=(stage.base, stage.read) if stage else None):
+                                                     dma=(stage.base, stage.read) if stage else None, pipe=args.pipe):
             if stage is not None and args.show and fast is not None:
                 from host_regs import dma_layout
                 stage.show(fast, hdr, dma_layout(hdr, stage.base)[0])

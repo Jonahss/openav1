@@ -25,11 +25,23 @@ from axil import AxiLite, write_transcript   # noqa: E402
 from axi_mem import AxiMem                    # noqa: E402
 
 STAGE = os.environ.get("TS_STAGE", "recon")
+PIPE = os.environ.get("TS_PIPE", "0") == "1" and STAGE == "lf"      # the deblocking filter under the frame sequencer
+
+
+async def pipe_start(ax, hdr, n_tile_cols):
+    await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr)), LH_WORDS)
+    await ax.write(R_CTRL, CTRL_PIPE | (n_tile_cols << 16))
+    await ax.write(R_START, START_FRAME)
+
+
+async def pipe_finish(ax, tag):
+    await ax.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, 120_000_000, tag)
+    await ax.write(R_CTRL, 0)
 
 from host_regs import (R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
                        R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
                        HDR_WORDS, RH_WORDS, LH_WORDS, words, plane_size, dma_regs, unpack_dma, R_DMA_START, R_DMA_STATUS,
-                       DMA_BUSY, DMA_DONE, DMA_ERR)
+                       DMA_BUSY, DMA_DONE, DMA_ERR, START_FRAME, ST_FRAME_DONE, CTRL_PIPE)
 
 
 
@@ -182,13 +194,18 @@ async def dec_host_streams(dut):
                 await ax.write(R_CTRL, CTRL_RST)
                 await ClockCycles(dut.clk, 4)
                 await ax.write(R_CTRL, 0)
+                if PIPE:
+                    await pipe_start(ax, hdr0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
                 for ti in tile_idx:
                     th, data = d.tiles[ti]
                     dec = tm.TileDecoder(th, data, None)      # header helper only (get_qindex); nothing is decoded
                     await run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats)
-                await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
-                await ax.write(R_START, START_LF)
-                await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
+                if PIPE:
+                    await pipe_finish(ax, tag)
+                else:
+                    await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
+                    await ax.write(R_START, START_LF)
+                    await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
                 outs = [o for o, k in enumerate(shown) if k == fi]
                 if not outs:
                     continue
@@ -211,6 +228,8 @@ async def dec_host_streams(dut):
         frame = {}
         hdr0 = None
         decs = []
+        if PIPE:
+            await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}))
         for ti, (th, data) in enumerate(d.tiles):
             dec = TD.RecFrame(th, data, frame)
             dec.decode_tile()
@@ -221,9 +240,12 @@ async def dec_host_streams(dut):
         if STAGE == "lf":
             state = xf.FrameState(hdr0, decs)
             lfm.LoopFilter(hdr0, state, planes).apply()
-            await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
-            await ax.write(R_START, START_LF)
-            await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
+            if PIPE:
+                await pipe_finish(ax, tag)
+            else:
+                await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
+                await ax.write(R_START, START_LF)
+                await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
         await read_back(ax, hdr0, planes, tag, stats, mem=mem)
         stats["frames"] += 1
         dut._log.info(f"{tag} {W}x{H}: frame identical ({len(d.tiles)} tiles, {len(transcript) if transcript else 0} register ops so far)")

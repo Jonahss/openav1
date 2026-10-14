@@ -105,8 +105,9 @@ DMA_BUSY, DMA_DONE, DMA_ERR = 1, 2, 4
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
-START_TILE, START_LF = 1, 4
-CTRL_RST, CTRL_EOS = 1, 1 << 8
+START_TILE, START_FRAME, START_LF = 1, 2, 4
+ST_FRAME_DONE = 1 << 4
+CTRL_RST, CTRL_PIPE, CTRL_EOS = 1, 1 << 1, 1 << 8
 HDR_WORDS, RH_WORDS, LH_WORDS = 8, 7, 11     # words of each header window actually written
 
 
@@ -369,10 +370,22 @@ class HostDecoder:
         if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
             raise HostError(f"{tag}: loop restoration is not in the core build (encode with --enable-restoration=0)")
 
-    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None):
+    def frame_pipe_start(self, hdr, n_tile_cols):
+        """Pipelined frame (pipe_en): the deblocking filter trails the tile decoder by superblock rows under the
+        decoder's frame sequencer, which needs the filter header and the tile-column count before the tiles."""
+        self.write_wide(R_LH, pack(LF_FIELDS, lf_vals(hdr)), LH_WORDS)
+        self.wr(R_CTRL, CTRL_PIPE | (n_tile_cols << 16))
+        self.wr(R_START, START_FRAME)
+
+    def frame_pipe_finish(self, tag):
+        self.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, f"{tag}: pipelined frame done")
+        self.wr(R_CTRL, 0)
+
+    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
         per coded frame, planes as lists of rows of samples. dma: (base address, read(offset, n) -> bytes) to take
-        the picture through the DMA engine instead of the registers."""
+        the picture through the DMA engine instead of the registers. pipe: the deblocking filter runs under the
+        frame sequencer, overlapped with the tiles (stage lf)."""
         for fi, tile_idx in enumerate(dec.frames):
             tag = f"{name} frame {fi}"
             hdr0 = dec.tiles[tile_idx[0]][0]
@@ -380,12 +393,16 @@ class HostDecoder:
             t = {}
             t0 = time.monotonic()
             self.reset()
+            if pipe and stage == "lf":
+                self.frame_pipe_start(hdr0, len({dec.tiles[ti][0].MiColStart for ti in tile_idx}))
             for ti in tile_idx:
                 th, data = dec.tiles[ti]
                 self.run_tile(th, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})")
             t["tiles"] = time.monotonic() - t0
             t0 = time.monotonic()
-            if stage == "lf":
+            if pipe and stage == "lf":
+                self.frame_pipe_finish(tag)
+            elif stage == "lf":
                 self.loop_filter(hdr0, tag)
             t["lf"] = time.monotonic() - t0
             t0 = time.monotonic()
