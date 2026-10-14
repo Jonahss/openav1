@@ -1,7 +1,7 @@
 # KV260 bring-up: the core decoder as a bitstream
 
 Status (2026-10-14): **the core decoder decodes on the board, bit-exact.** First bitstream (50 MHz decoder /
-100 MHz memory, 99.5k LUT, 40 URAM, WNS +0.7 ns): seed 1 and seeds 2-7 (4:2:0 / 4:4:4 / mono, 8/10/12-bit,
+100 MHz memory, 99.5k LUT, 40 URAM, WNS +0.7 ns; with the packed reads 99.8k LUT, WNS +2.4 ns): seed 1 and seeds 2-7 (4:2:0 / 4:4:4 / mono, 8/10/12-bit,
 a four-tile frame, loop filter on) replayed through the register file with 0 mismatches over 126,976 pixels;
 then the libaom-encoded natural pictures `streams/synth/natural_lf_only_{8,10}bit.ivf` (384 x 256, two frames
 each) identical to dav1d's output: 589,824 pixels, 0 mismatches, 13 s for 1.2 M register operations from Python.
@@ -31,11 +31,33 @@ multicycle and the phase generator's one-period alignment path; both need post-s
 Software talks to the register file as `tb/test_dec_host.py` does: headers (`hdr_t`, `rec_hdr_t`, `lf_hdr_t`
 packed little-endian into the 16-word windows), the CDF default rows (8 data words + the address write that
 strobes `def_we`), `START.tile`, the tile bytes into the FIFO (`DATA4`, free count in `STATUS[31:16]`), `CTRL.eos`,
-poll `STATUS.tile_done_lvl`; then `START.lf` and poll `STATUS.lf_done`; then the picture through `HADDR` / `HDATA`.
+poll `STATUS.tile_done_lvl`; then `START.lf` and poll `STATUS.lf_done`; then the picture through `HADDR` and the
+data registers. That sequence lives once, in `tb/host_regs.py` (no simulator dependency: the register map, the
+header packing and `HostDecoder`), and the test and the board driver both use it.
 
-The simplest board run needs no model on the board: `TS_TRANSCRIPT=<file> python tb/runner.py dec_host`
-(with `FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_STAGE=lf`) records every register write, every poll and the expected
-value of every pixel read, and `tools/kv260/play.py <file>` replays it over `/dev/mem` and reports mismatches.
+**Stream in, picture out, on the board:** `tools/kv260/decode.py` parses the stream on the PS (`tb/obu_parser.py`)
+and runs `HostDecoder` over `/dev/mem`:
+
+```
+sudo tools/kv260/decode.py streams/synth/natural_lf_only_8bit.ivf -o out.yuv --ref refout/natural_lf_only_8bit.yuv
+```
+
+writes the shown frames in dav1d's raw layout and, with `--ref`, compares every sample against dav1d's output
+(`refout/` is not in git: copy the `.yuv` files over). The core build decodes intra streams without CDEF and loop
+restoration (`aomenc --enable-cdef=0 --enable-restoration=0`); the driver says so when a stream needs them.
+2026-10-14: `natural_lf_only_{8,10}bit` and `natural_lossless_8bit` (384 x 256, two frames each) identical to dav1d.
+Sample by sample the read-back cost three bus transfers per sample, 1.6 s a frame and 94 % of the run; the packed
+reads (`HDATA4`: four 8-bit samples a word, `HDATA2`: two 16-bit lanes, the address advancing by itself, one `HADDR`
+write per row) bring it to 0.20 s (8-bit) / 0.34 s (10-bit) a frame. A 120-frame all-intra 352 x 288 clip
+(`aomenc --kf-max-dist=0 --enable-cdef=0 --enable-restoration=0`) decodes bit-exact in 49.5 s (was 228 s): 2.4 fps,
+nearly all of it the PS driving the register file from Python (~0.1 s a frame of header / CDF-default / tile-byte
+writes, ~0.3 s of pixel reads at ~7 us a transfer). The decoder itself waits on the host most of the time; the
+DMA path (stream and picture in the PS's DDR) is the next host step.
+
+**Transcript replay** (no parser on the board, the expected pixels recorded by the simulation):
+`TS_TRANSCRIPT=<file> python tb/runner.py dec_host` (with `FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_STAGE=lf`)
+records every register write, every poll and the expected value of every read, and `tools/kv260/play.py <file>`
+replays it over `/dev/mem` and reports mismatches.
 
 ## Board lessons (2026-10-14)
 
