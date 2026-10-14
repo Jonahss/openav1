@@ -60,22 +60,23 @@ module frame_mem_uram #(
     // the clk-domain capture at the next clk edge (one-cycle latency, as the model), a write issued in cycle t
     // is visible to reads from cycle t+1 on, and a read in the same cycle as a write to the same word sees the
     // old data: exactly the model's semantics. phase = 1 at E_a, 0 at E_b (from the clock generator).
-    // Read-first dual-port RAM in Vivado's UltraRAM template: one block per port, 9-bit byte-write enables, the
-    // output register updated on every enabled access (so a write slot's read-first output is junk; the read
-    // data is captured from a_q / b_q at the clk-aligned edge, before that update, into rq0 / rq1).
+    // Dual-port RAM in Vivado's UltraRAM template: one block per port, 9-bit byte-write enables; the read data is
+    // captured from a_q / b_q at the clk-aligned edge into rq0 / rq1.
     (* ram_style = "ultra" *) logic [71:0] mem [0:NWORD-1];
     logic           a_en, b_en;
     logic [7:0]     a_bwe, b_bwe;                            // byte-write enables (9-bit bytes, two per lane)
     logic [AW-1:0]  a_addr, b_addr;
     logic [71:0]    a_d, b_d;
     logic [71:0]    a_q, b_q;
+    // "no change" mode: the output register holds during a write (a read slot never has a byte enabled, a
+    // write slot always has at least one), with 9-bit byte-write enables.
     always_ff @(posedge clk2x) if (a_en) begin
-        for (int by = 0; by < 8; by++) if (a_bwe[by]) mem[a_addr][by*9 +: 9] <= a_d[by*9 +: 9];
-        a_q <= mem[a_addr];
+        if (|a_bwe) begin for (int by = 0; by < 8; by++) if (a_bwe[by]) mem[a_addr][by*9 +: 9] <= a_d[by*9 +: 9]; end
+        else a_q <= mem[a_addr];
     end
     always_ff @(posedge clk2x) if (b_en) begin
-        for (int by = 0; by < 8; by++) if (b_bwe[by]) mem[b_addr][by*9 +: 9] <= b_d[by*9 +: 9];
-        b_q <= mem[b_addr];
+        if (|b_bwe) begin for (int by = 0; by < 8; by++) if (b_bwe[by]) mem[b_addr][by*9 +: 9] <= b_d[by*9 +: 9]; end
+        else b_q <= mem[b_addr];
     end
 
     // ---------------------------------------------------------------- requests
@@ -105,8 +106,8 @@ module frame_mem_uram #(
             b_en = re[1] || host_slot;  b_d = '0; b_bwe = '0;
             b_addr = host_slot ? waddr(h_plane, h_x, h_y) : waddr(r_plane[3:2], rx1, ry1);
         end else begin                                       // E_b: writes
-            a_en = wq_we[0]; a_addr = wq_addr[0]; a_d = wq_d[0]; a_bwe = wq_bwe[0];
-            b_en = wq_we[1]; b_addr = wq_addr[1]; b_d = wq_d[1]; b_bwe = wq_bwe[1];
+            a_en = wq_we[0] && (|wq_bwe[0]); a_addr = wq_addr[0]; a_d = wq_d[0]; a_bwe = wq_bwe[0];
+            b_en = wq_we[1] && (|wq_bwe[1]); b_addr = wq_addr[1]; b_d = wq_d[1]; b_bwe = wq_bwe[1];
         end
     end
 
