@@ -2,7 +2,8 @@
 test_dec_top, but every header, CDF default row, tile byte, start and pixel read goes through the register map,
 exactly as software on the board does it. With TS_TRANSCRIPT=<file> the register traffic is written out
 (tb/axil.py format) for tools/kv260/play.py to replay on the KV260 against the bitstream.
-Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (recon | lf), TS_TRANSCRIPT.
+Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (recon | lf), TS_TRANSCRIPT; or TS_IVF=<a.ivf,b.ivf>
+to run real streams (intra, no CDEF / LR: the core build) against dav1d's pictures in refout/ (TS_REF_DIR).
 """
 import os
 import random
@@ -74,12 +75,16 @@ async def run_tile(ax, th, dec, data, tag, stats):
     stats["bytes"] += len(data)
 
 
-async def read_back(ax, hdr, planes, tag, stats):
+async def read_back(ax, hdr, planes, tag, stats, visible=False):
     for plane in range(hdr.NumPlanes):
         sx = hdr.subsampling_x if plane else 0
         sy = hdr.subsampling_y if plane else 0
-        W = (hdr.MiCols * 4) >> sx
-        H = (hdr.MiRows * 4) >> sy
+        if visible:                                          # dav1d's pictures: the visible area only
+            W = (hdr.UpscaledWidth + sx) >> sx
+            H = (hdr.FrameHeight + sy) >> sy
+        else:
+            W = (hdr.MiCols * 4) >> sx
+            H = (hdr.MiRows * 4) >> sy
         bad = []
         for y in range(H):
             for x in range(W):
@@ -120,6 +125,50 @@ async def dec_host_streams(dut):
     W = int(os.environ.get("TS_W", "64"))
     H = int(os.environ.get("TS_H", "64"))
     stats = dict(frames=0, tiles=0, bytes=0, pixels=0, stage=STAGE)
+    ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
+    if ivfs:
+        import obu_parser as op
+        import tile_model as tm
+        ref_dir = os.environ.get("TS_REF_DIR", str(HERE.parent / "refout"))
+        for path in ivfs:
+            d = op.Decoder()
+            with open(path, "rb") as fh:
+                d.feed_ivf(fh.read())
+            shown = d.shown_frames()
+            pic_offset, off = [], 0
+            for k in shown:
+                h_k = d.tiles[d.frames[k][0]][0]
+                pic_offset.append(off)
+                off += sum(((h_k.UpscaledWidth + (h_k.subsampling_x if p_ else 0)) >> (h_k.subsampling_x if p_ else 0)) *
+                           ((h_k.FrameHeight + (h_k.subsampling_y if p_ else 0)) >> (h_k.subsampling_y if p_ else 0))
+                           for p_ in range(h_k.NumPlanes)) * (1 if h_k.BitDepth == 8 else 2)
+            for fi, tile_idx in enumerate(d.frames):
+                tag = f"{Path(path).name} frame {fi}"
+                hdr0 = d.tiles[tile_idx[0]][0]
+                assert not (hdr0.enable_cdef and not hdr0.CodedLossless and not hdr0.allow_intrabc), f"{tag}: CDEF is not in the core build"
+                assert not any(t != 0 for t in hdr0.FrameRestorationType[:hdr0.NumPlanes]), f"{tag}: loop restoration is not in the core build"
+                await ax.write(R_CTRL, CTRL_RST)
+                await ClockCycles(dut.clk, 4)
+                await ax.write(R_CTRL, 0)
+                for ti in tile_idx:
+                    th, data = d.tiles[ti]
+                    dec = tm.TileDecoder(th, data, None)      # header helper only (get_qindex); nothing is decoded
+                    await run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats)
+                await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), 11)
+                await ax.write(R_START, START_LF)
+                await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
+                outs = [o for o, k in enumerate(shown) if k == fi]
+                if not outs:
+                    continue
+                ref, _ = TD.ref_frame(os.path.join(ref_dir, Path(path).stem + ".yuv"), hdr0, fi, pic_offset[outs[0]])
+                await read_back(ax, hdr0, ref, tag, stats, visible=True)
+                stats["frames"] += 1
+                dut._log.info(f"{tag}: identical to dav1d ({len(tile_idx)} tiles, {hdr0.UpscaledWidth}x{hdr0.FrameHeight} bd{hdr0.BitDepth}, {len(transcript) if transcript else 0} register ops so far)")
+        if transcript is not None:
+            write_transcript(os.environ["TS_TRANSCRIPT"], transcript)
+            dut._log.info(f"transcript: {len(transcript)} ops -> {os.environ['TS_TRANSCRIPT']}")
+        dut._log.info(f"OK: {stats}")
+        return
     for seed in seeds:
         fmt = os.environ.get("TS_FMT") or random.Random(seed * 7).choice(["420", "444", "mono", "422"])
         d, args = TT.gen(seed, W, H, fmt)
