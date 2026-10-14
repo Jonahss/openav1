@@ -8,6 +8,8 @@ set out $::env(SYNTH_OUT)
 file mkdir $out
 foreach f $::env(SYNTH_SOURCES) { read_verilog -sv $f }
 set fp [open $out/clk.xdc w]; puts $fp "create_clock -period 10.000 -name clk \[get_ports clk\]"; close $fp
+# a double-pumped memory (rtl/frame_mem_uram.sv) has a 2x clock port: run.sh sets the env var when the top has one
+if {[info exists ::env(SYNTH_CLK2X)]} { set fp [open $out/clk.xdc a]; puts $fp "create_clock -period 5.000 -name clk2x \[get_ports clk2x\]"; close $fp }
 read_xdc -mode out_of_context $out/clk.xdc
 eval synth_design -top $::env(SYNTH_TOP) -part xck26-sfvc784-2LV-c -mode out_of_context -flatten_hierarchy none $::env(SYNTH_GENERICS)
 report_utilization -file $out/util.rpt
