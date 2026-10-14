@@ -24,19 +24,20 @@ EXTRA = {"itx_lvl": ["itx_pair.sv"], "frame_mem_uram": [], "itx2d": ["itx_pair.s
          "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lf_top.sv"],
          "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lr_top.sv"],
          "cdef_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "cdef_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "cdef_top.sv"]}
+EXTRA["dec_host"] = EXTRA["dec_top"] + ["dec_top.sv"]          # the AXI-Lite host interface around the decoder
 sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{top}.sv"]
 # frame-buffer / per-4x4 state capacity for the frame-level tops (dec_top, *_tb_top): FBX/FBY = log2 pixels,
 # ML2 = log2 4x4 units (FBX-2 / FBY-2 covers the same picture). Defaults fit 1024x512; Argon needs more.
 params = {}
-if top in ("dec_top", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.get("FBX"):
+if top in ("dec_top", "dec_host", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.get("FBX"):
     params = {"FBX": int(os.environ["FBX"]), "FBY": int(os.environ.get("FBY", os.environ["FBX"]))}
 # ITX_LANES=2 builds the K26 configuration (two transform engines); vectors for a 2-lane netlist replay must be
 # recorded from this build, since the lane count changes the cycle cadence (2026-10-12: a 4-lane recording
 # replayed against the 2-lane netlist mismatched from the first transform block on).
-if top in ("dec_top", "recon_top") and os.environ.get("ITX_LANES"):
+if top in ("dec_top", "dec_host", "recon_top") and os.environ.get("ITX_LANES"):
     params["ITX_LANES"] = int(os.environ["ITX_LANES"])
 # FRAME_URAM=1 builds dec_top with the on-chip UltraRAM frame memory (core build only: no CDEF / LR / SR)
-if top == "dec_top" and os.environ.get("FRAME_URAM"):
+if top in ("dec_top", "dec_host") and os.environ.get("FRAME_URAM"):
     params["FRAME_URAM"] = int(os.environ["FRAME_URAM"])
 # SIM_FAST=1: optimise for simulation speed (Verilator -O3, compiler -O2, N threads); default is Verilator's -Os,
 # which compiles fastest. SIM_THREADS overrides the thread count (default: all cores).

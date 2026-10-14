@@ -1,0 +1,20 @@
+/* Device-tree overlay for the openav1 core-decoder bitstream on the KV260 (Kria firmware loader: xmutil loadapp).
+ * Programs the PL with the bitstream, releases the PL resets and enables pl_clk0 at 100 MHz (the MMCM in the
+ * design makes the decoder clocks from it). The register file sits at 0xA000_0000 and is driven through
+ * /dev/mem (tools/kv260/play.py): no kernel driver. */
+/dts-v1/;
+/plugin/;
+&fpga_full {
+    firmware-name = "openav1.bit.bin";
+    resets = <&zynqmp_reset 116>, <&zynqmp_reset 117>, <&zynqmp_reset 118>, <&zynqmp_reset 119>;
+};
+&amba {
+    clocking0: clocking0 {
+        #clock-cells = <0>;
+        assigned-clock-rates = <99999999>;
+        assigned-clocks = <&zynqmp_clk 71>;
+        clock-output-names = "fabric_clk";
+        clocks = <&zynqmp_clk 71>;
+        compatible = "xlnx,fclk";
+    };
+};
