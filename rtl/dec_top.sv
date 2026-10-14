@@ -8,9 +8,13 @@ module dec_top
 #(
     parameter int FBX = 10,                  // 1024 x 512 frame buffer: covers the test corpus (<= 640x360 + overhang)
     parameter int FBY = 9,
-    parameter int ITX_LANES = 4              // transform engines: 4 (throughput) or 2 (K26 area, +2.6% cycles)
+    parameter int ITX_LANES = 4,             // transform engines: 4 (throughput) or 2 (K26 area, +2.6% cycles)
+    parameter int FRAME_URAM = 0             // 1: fb0 is the on-chip double-pumped UltraRAM (rtl/frame_mem_uram.sv, needs clk2x /
+                                             //    phase); fb1 / fb2 are left out, so only the core build (no CDEF / LR / SR) can use it
 ) (
     input  logic              clk,
+    input  logic              clk2x,             // 2x clk, phase-aligned (FRAME_URAM = 1 only; tie low otherwise)
+    input  logic              phase,             // 1 at the mid-cycle clk2x edge, 0 at the clk-aligned one
     input  logic              rst,
     input  hdr_t              hdr,
     input  rec_hdr_t          rh,
@@ -178,9 +182,20 @@ module dec_top
                                                  .we(w_sr0_we), .be(w_sr0_be), .plane(w_sr0_pl), .x(w_sr0_x), .y(w_sr0_y), .data(w_sr0_d));
     assign fb0_we = {w_sr0_we, w_lf_we, w_rc_we}; assign fb0_be = {w_sr0_be, w_lf_be, w_rc_be}; assign fb0_wplane = {w_sr0_pl, w_lf_pl, w_rc_pl};
     assign fb0_wx = {w_sr0_x, w_lf_x, w_rc_x}; assign fb0_wy = {w_sr0_y, w_lf_y, w_rc_y}; assign fb0_wdata = {w_sr0_d, w_lf_d, w_rc_d};
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(5), .NWR(3)) u_fb (.clk, .re(fb0_re), .r_plane(fb0_rplane), .r_x(fb0_rx), .r_y(fb0_ry), .rdata(fb0_rdata), .rdata4(fb0_rdata4),
-                                                                       .we(fb0_we), .w_be(fb0_be), .w_plane(fb0_wplane), .w_x(fb0_wx), .w_y(fb0_wy), .w_data(fb0_wdata),
-                                                                       .h_plane, .h_x, .h_y, .h_rdata(h_rdata0));
+    generate if (FRAME_URAM != 0) begin : g_fb0_uram
+        // the core build: ports 0 (recon) and 1 (LF) of fb0 on the on-chip memory; the CDEF / LR / SR ports are idle
+        logic [47:0] unused_rd4u;
+        frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .clk2x, .phase,
+            .re(fb0_re[1:0]), .r_plane(fb0_rplane[3:0]), .r_x(fb0_rx[2*FBX-1:0]), .r_y(fb0_ry[2*FBY-1:0]),
+            .rdata(fb0_rdata[23:0]), .rdata4(fb0_rdata4[95:0]),
+            .we(fb0_we[1:0]), .w_be(fb0_be[7:0]), .w_plane(fb0_wplane[3:0]), .w_x(fb0_wx[2*FBX-1:0]), .w_y(fb0_wy[2*FBY-1:0]), .w_data(fb0_wdata[95:0]),
+            .h_plane, .h_x, .h_y, .h_rdata(h_rdata0));
+        assign fb0_rdata[59:24] = '0; assign fb0_rdata4[239:96] = '0; assign unused_rd4u = '0;
+    end else begin : g_fb0_model
+        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(5), .NWR(3)) u_fb (.clk, .re(fb0_re), .r_plane(fb0_rplane), .r_x(fb0_rx), .r_y(fb0_ry), .rdata(fb0_rdata), .rdata4(fb0_rdata4),
+                                                                           .we(fb0_we), .w_be(fb0_be), .w_plane(fb0_wplane), .w_x(fb0_wx), .w_y(fb0_wy), .w_data(fb0_wdata),
+                                                                           .h_plane, .h_x, .h_y, .h_rdata(h_rdata0));
+    end endgenerate
     // fb1 = CdefFrame. reads: LR source 1, SR; writes: CDEF, SR
     logic [1:0] fb1_re; logic [3:0] fb1_rplane; logic [2*FBX-1:0] fb1_rx; logic [2*FBY-1:0] fb1_ry; logic [23:0] fb1_rdata; logic [95:0] fb1_rdata4;
     logic [1:0] fb1_we; logic [7:0] fb1_be; logic [3:0] fb1_wplane; logic [2*FBX-1:0] fb1_wx; logic [2*FBY-1:0] fb1_wy; logic [95:0] fb1_wdata;
@@ -197,16 +212,24 @@ module dec_top
                                                  .we(w_sr1_we), .be(w_sr1_be), .plane(w_sr1_pl), .x(w_sr1_x), .y(w_sr1_y), .data(w_sr1_d));
     assign fb1_we = {w_sr1_we, w_cd_we}; assign fb1_be = {w_sr1_be, w_cd_be}; assign fb1_wplane = {w_sr1_pl, w_cd_pl};
     assign fb1_wx = {w_sr1_x, w_cd_x}; assign fb1_wy = {w_sr1_y, w_cd_y}; assign fb1_wdata = {w_sr1_d, w_cd_d};
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(2), .NWR(2)) u_fb1 (.clk, .re(fb1_re), .r_plane(fb1_rplane), .r_x(fb1_rx), .r_y(fb1_ry), .rdata(fb1_rdata), .rdata4(fb1_rdata4),
-                                                                        .we(fb1_we), .w_be(fb1_be), .w_plane(fb1_wplane), .w_x(fb1_wx), .w_y(fb1_wy), .w_data(fb1_wdata),
-                                                                        .h_plane, .h_x, .h_y, .h_rdata(h_rdata1));
+    generate if (FRAME_URAM != 0) begin : g_fb1_none
+        assign fb1_rdata = '0; assign fb1_rdata4 = '0; assign h_rdata1 = '0;
+    end else begin : g_fb1_model
+        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(2), .NWR(2)) u_fb1 (.clk, .re(fb1_re), .r_plane(fb1_rplane), .r_x(fb1_rx), .r_y(fb1_ry), .rdata(fb1_rdata), .rdata4(fb1_rdata4),
+                                                                            .we(fb1_we), .w_be(fb1_be), .w_plane(fb1_wplane), .w_x(fb1_wx), .w_y(fb1_wy), .w_data(fb1_wdata),
+                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata1));
+    end endgenerate
     // fb2 = LrFrame. writes: LR
     logic [11:0] fb2_rdata_u; logic [47:0] fb2_rdata4_u;
     logic w_lr_we; logic [3:0] w_lr_be; logic [1:0] w_lr_pl; logic [FBX-1:0] w_lr_x; logic [FBY-1:0] w_lr_y; logic [47:0] w_lr_d;
     assign w_lr_we = lr_we4; assign w_lr_be = lr_be4; assign w_lr_pl = lr_dplane; assign w_lr_x = lr_dx; assign w_lr_y = lr_dy; assign w_lr_d = lr_wdata4;
-    frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(fb2_rdata_u), .rdata4(fb2_rdata4_u),
-                                                                        .we(w_lr_we), .w_be(w_lr_be), .w_plane(w_lr_pl), .w_x(w_lr_x), .w_y(w_lr_y), .w_data(w_lr_d),
-                                                                        .h_plane, .h_x, .h_y, .h_rdata(h_rdata2));
+    generate if (FRAME_URAM != 0) begin : g_fb2_none
+        assign fb2_rdata_u = '0; assign fb2_rdata4_u = '0; assign h_rdata2 = '0;
+    end else begin : g_fb2_model
+        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(fb2_rdata_u), .rdata4(fb2_rdata4_u),
+                                                                            .we(w_lr_we), .w_be(w_lr_be), .w_plane(w_lr_pl), .w_x(w_lr_x), .w_y(w_lr_y), .w_data(w_lr_d),
+                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata2));
+    end endgenerate
     assign h_rdata = (h_buf == 2'd2) ? h_rdata2 : (h_buf == 2'd1) ? h_rdata1 : h_rdata0;
 
     // ================================================================ frame sequencer (pipe_en): stages per superblock row

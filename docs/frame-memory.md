@@ -57,10 +57,16 @@ Implemented (`rtl/frame_mem_uram.sv`, 2026-10-13): Vivado infers UltraRAM only f
 (read-first and per-byte enables are both "invalid write mode"), so synthesis instantiates the URAM288 through
 `xpm_memory_tdpram` with 8-bit byte enables (lanes are byte pairs, 16 bits, sample in the low 12; byte 8 of
 the 72-bit word is unused) and simulation uses a behavioural model. At 512 x 512: 24 URAM, 265 LUT, 246 FF.
-Timing: the URAM read to the clk2x capture register is 5.4 ns, so the half-cycle closes at a 92 MHz decoder
-clock; the core build itself closes at ~78 MHz today, so this is not the limit. The fuzz
+Schedule (2026-10-14): both ports read at the clk-aligned clk2x edge (the edge at which the model samples
+a request), the write requests are captured into clk2x registers at that edge and applied at the mid-cycle
+edge. So every decoder-side path is a full clk cycle and the read data is the URAM output register itself.
+Constraints: `synth/vivado/synth.tcl` writes the clk <-> clk2x multicycles (2 cycles each way; the
+fast -> slow one with `-start`), and `impl.tcl` adds URAM -> clk2x as a 2-cycle path once the primitives
+exist (the read data -> recon add -> write-request capture round trip is a clk cycle, not a clk2x one). In the
+core build at 512 x 512 the memory adds no path worse than the decoder's own: the URAM output cascade
+(8 deep: 1.8 + 7 x 0.26 ns) to the ipred LUTRAMs is the only one near the edge (-0.4 ns at 100 MHz). The fuzz
 (`tb/test_frame_mem_uram.py`) checks the model's contract on random traffic; the gate-level replay checks the
-XPM build against it.
+XPM build against it (block level and the whole core decoder, `tb/gate/replay_frame_mem_uram.sv`).
 
 ## DDR version (full-size pictures, all stages)
 
