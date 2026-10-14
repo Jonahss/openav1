@@ -237,13 +237,13 @@ module itx2d #(
         e_prog = (cls_l == 2'd0) ? 3'(n_l - 3'd2) : 3'(n_l + 3'd2);     // DCT n -> 0..4, ADST8 -> 5, ADST16 -> 6
         e_r    = col ? col_clamp : row_clamp;
     end
-    // Registered a cycle behind: both are constant over a pass, and the pass is set up (S_GSZ, S_LD) at least two
-    // cycles before the engine starts. Off the start cycle's path (class latch -> program -> the level-0 input
-    // muxes -> pair units -> register vector: the core build's worst path at 100 MHz once the memory paths went).
+    // The program registered a cycle behind: it is constant over a pass, and the pass is set up (S_GSZ, S_LD) at
+    // least two cycles before the engine starts. Off the start cycle's path (class latch -> program -> the level-0
+    // input muxes -> pair units -> register vector: the core build's worst path at 100 MHz once the memory paths
+    // went). The clamp stays combinational: registered too, the engine grew 5k LUTs (constants no longer visible).
     logic [2:0] e_prog_r;
-    logic [4:0] e_r_r;
-    always_ff @(posedge clk) begin e_prog_r <= e_prog; e_r_r <= e_r; end
-    itx_lvl #(.TW(TW)) u_lvl (.clk, .rst, .start(e_start), .prog(e_prog_r), .r(e_r_r), .in_vec(pk_in),
+    always_ff @(posedge clk) e_prog_r <= e_prog;
+    itx_lvl #(.TW(TW)) u_lvl (.clk, .rst, .start(e_start), .prog(e_prog_r), .r(e_r), .in_vec(pk_in),
                               .busy(e_busy), .done(e_done), .out_vec(e_out));
     logic [64*TW-1:0] ld_vec_f;         // the loaded row as a flat vector
     // streamed rows (ADST4 / identity / WHT): a 3-stage pipeline, one row per clock —
