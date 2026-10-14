@@ -19,11 +19,12 @@ existing decoder's source; dav1d and libaom are used only as judges.
 
 - **2026-10-14 — it runs on the board.** The core decoder (entropy decoding, tile syntax, prediction, transforms,
   reconstruction, deblocking) is a bitstream on the Kria KV260 at 50 MHz, with a 512 x 512 UltraRAM frame memory at
-  100 MHz: 99.7 k LUTs (85 % of the K26), timing met. libaom-encoded intra streams (384 x 256, 8- and 10-bit,
-  lossless) decode **bit-exact with dav1d** on the board. `tools/kv260/decode.py`: stream file in, picture out, over
-  an AXI-Lite register file; a two-frame stream takes 3.6 s from Python, most of it pixel read-back (packed reads
-  in progress). Intra-only; CDEF, loop restoration and super-resolution are built and verified in simulation but left
-  out of this bitstream for space.
+  100 MHz: 99.8 k LUTs (85 % of the K26), timing met. libaom-encoded intra streams decode **bit-exact with dav1d**
+  on the board: 8- and 10-bit, lossless, and a 120-frame 352 x 288 clip at **18 fps end to end** from a Python
+  driver over an AXI-Lite register file (`tools/kv260/decode.py`: stream file in, picture out). By cycle count the
+  decoder itself takes ~0.8 M cycles for such a frame (~60 fps at 50 MHz); the rest is the PS feeding it and
+  reading the picture back. Intra-only; CDEF, loop restoration and super-resolution are built and verified in
+  simulation but left out of this bitstream for space.
 - **2026-10-13 — area.** Whole decoder 148.9 k LUTs (from 164 k): level-folded transform engine
   (`docs/itx-level-engine.md`), LUTRAM rewrites. The full decoder is 1.27x the K26; the core build routes at
   100 k LUTs, ~78 MHz, the arithmetic decoder's symbol loop the critical path.
