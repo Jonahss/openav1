@@ -26,7 +26,7 @@ set ps [create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.5 ps]
 set_property -dict [list \
     CONFIG.PSU__USE__M_AXI_GP0 {1} CONFIG.PSU__MAXIGP0__DATA_WIDTH {128} \
     CONFIG.PSU__USE__M_AXI_GP1 {0} CONFIG.PSU__USE__M_AXI_GP2 {0} \
-    CONFIG.PSU__USE__S_AXI_GP0 {0} CONFIG.PSU__USE__S_AXI_GP1 {0} CONFIG.PSU__USE__S_AXI_GP2 {0} \
+    CONFIG.PSU__USE__S_AXI_GP0 {0} CONFIG.PSU__USE__S_AXI_GP1 {0} CONFIG.PSU__USE__S_AXI_GP2 {1} CONFIG.PSU__SAXIGP2__DATA_WIDTH {128} \
     CONFIG.PSU__USE__S_AXI_GP3 {0} CONFIG.PSU__USE__S_AXI_GP4 {0} CONFIG.PSU__USE__S_AXI_GP5 {0} CONFIG.PSU__USE__S_AXI_GP6 {0} \
     CONFIG.PSU__FPGA_PL0_ENABLE {1} CONFIG.PSU__CRL_APB__PL0_REF_CTRL__FREQMHZ {100} \
     CONFIG.PSU__FPGA_PL1_ENABLE {0} CONFIG.PSU__FPGA_PL2_ENABLE {0} CONFIG.PSU__FPGA_PL3_ENABLE {0} \
@@ -43,6 +43,10 @@ set_property -dict [list \
 set rst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst]
 set sc [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc]
 set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $sc
+# the picture DMA: dec_host's AXI4 write master into the PS DDR through S_AXI_HP0_FPD (non-coherent: software
+# reads the picture through an uncached mapping, the framebuffer's)
+set sc2 [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc2]
+set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $sc2
 set host [create_bd_cell -type module -reference dec_host_v host]
 set_property -dict [list CONFIG.FBX {9} CONFIG.FBY {9} CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1}] $host
 set pg [create_bd_cell -type module -reference phase_gen_v pg]
@@ -51,15 +55,20 @@ connect_bd_net [get_bd_pins ps/pl_clk0] [get_bd_pins clkgen/clk_in1]
 connect_bd_net [get_bd_pins ps/pl_resetn0] [get_bd_pins rst/ext_reset_in]
 connect_bd_net [get_bd_pins clkgen/locked] [get_bd_pins rst/dcm_locked]
 connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins ps/maxihpm0_fpd_aclk] [get_bd_pins sc/aclk] \
+    [get_bd_pins ps/saxihp0_fpd_aclk] [get_bd_pins sc2/aclk] \
     [get_bd_pins host/clk] [get_bd_pins rst/slowest_sync_clk] [get_bd_pins pg/clk]
 connect_bd_net [get_bd_pins clkgen/clk_out2] [get_bd_pins host/clk2x] [get_bd_pins pg/clk2x]
-connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins sc/aresetn] [get_bd_pins host/aresetn]
+connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins sc/aresetn] [get_bd_pins sc2/aresetn] [get_bd_pins host/aresetn]
 connect_bd_net [get_bd_pins rst/peripheral_reset] [get_bd_pins pg/rst_in]
 connect_bd_net [get_bd_pins pg/phase] [get_bd_pins host/phase]
 connect_bd_intf_net [get_bd_intf_pins ps/M_AXI_HPM0_FPD] [get_bd_intf_pins sc/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins sc/M00_AXI] [get_bd_intf_pins host/s_axi]
 assign_bd_address -offset 0xA0000000 -range 4K -target_address_space [get_bd_addr_spaces ps/Data] \
     [get_bd_addr_segs host/s_axi/reg0]
+connect_bd_intf_net [get_bd_intf_pins host/m_axi] [get_bd_intf_pins sc2/S00_AXI]
+connect_bd_intf_net [get_bd_intf_pins sc2/M00_AXI] [get_bd_intf_pins ps/S_AXI_HP0_FPD]
+assign_bd_address -target_address_space [get_bd_addr_spaces host/m_axi] [get_bd_addr_segs ps/SAXIGP2/HP0_DDR_LOW]
+assign_bd_address -target_address_space [get_bd_addr_spaces host/m_axi] [get_bd_addr_segs ps/SAXIGP2/HP0_DDR_HIGH]
 validate_bd_design
 puts "clk = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out1]] Hz, clk2x = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out2]] Hz"
 save_bd_design

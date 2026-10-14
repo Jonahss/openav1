@@ -106,3 +106,30 @@ int hl_read_plane(int plane, int W, int H, int bd8, uint16_t *out) {
     }
     return 0;
 }
+
+// 8-bit 4:2:0 planes (the DMA image: y with ystride, u / v with cstride) to RGB565 at (x0, y0) of a 16-bit
+// framebuffer with dst_stride pixels per line (BT.601 limited range, the usual for these clips). Both the
+// staging area and the framebuffer are uncached device memory: a byte-wise walk costs ~0.3 us per access, so
+// each row is first copied out with wide loads (memcpy) and the output row is assembled in a local buffer and
+// copied in with wide stores.
+#include <string.h>
+void hl_yuv420_rgb565(const uint8_t *y, const uint8_t *u, const uint8_t *v, int W, int H, int ystride, int cstride,
+                      uint16_t *dst, int dst_stride, int x0, int y0) {
+    static uint8_t yr[4096], ur[2048], vr[2048];
+    static uint16_t out[4096];
+    if (W > 4096) return;
+    for (int j = 0; j < H; j++) {
+        memcpy(yr, y + (long)j * ystride, (size_t)W);
+        if ((j & 1) == 0) {
+            memcpy(ur, u + (long)(j >> 1) * cstride, (size_t)((W + 1) >> 1));
+            memcpy(vr, v + (long)(j >> 1) * cstride, (size_t)((W + 1) >> 1));
+        }
+        for (int i = 0; i < W; i++) {
+            int c = 298 * (yr[i] - 16), dd = ur[i >> 1] - 128, e = vr[i >> 1] - 128;
+            int r = (c + 409 * e + 128) >> 8, g = (c - 100 * dd - 208 * e + 128) >> 8, b = (c + 516 * dd + 128) >> 8;
+            r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+            out[i] = (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3));
+        }
+        memcpy(dst + (long)(y0 + j) * dst_stride + x0, out, (size_t)W * 2);
+    }
+}

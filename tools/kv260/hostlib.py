@@ -21,6 +21,7 @@ class HostLib:
         lib.hl_poll.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_double]
         lib.hl_poll.restype = ctypes.c_uint32
         lib.hl_read_plane.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_uint16)]
+        lib.hl_yuv420_rgb565.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p] + [ctypes.c_int] * 3
         rc = lib.hl_open(base)
         if rc:
             raise OSError(f"hostlib: cannot map 0x{base:08x} (rc {rc}; needs root for /dev/mem)")
@@ -58,3 +59,6 @@ class HostLib:
             raise OSError("hostlib: HADDR never read back")
         flat = memoryview(buf).cast("B").cast("H").tolist()      # list(buf) on a ctypes array is 25x slower
         return [flat[y * W:(y + 1) * W] for y in range(H)]
+
+    def yuv420_rgb565(self, y_ptr, u_ptr, v_ptr, W, H, ystride, cstride, dst_ptr, dst_stride, x0, y0):
+        self.lib.hl_yuv420_rgb565(y_ptr, u_ptr, v_ptr, W, H, ystride, cstride, dst_ptr, dst_stride, x0, y0)

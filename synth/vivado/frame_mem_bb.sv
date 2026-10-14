@@ -27,6 +27,7 @@ module frame_mem #(
     input  logic [1:0]          h_plane,
     input  logic [FBX-1:0]      h_x,
     input  logic [FBY-1:0]      h_y,
-    output logic [PW-1:0]       h_rdata
+    output logic [PW-1:0]       h_rdata,
+    output logic [4*PW-1:0]     h_rdata4
 );
 endmodule
