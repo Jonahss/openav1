@@ -173,7 +173,8 @@ def main():
     t_all = time.monotonic()
     try:
         for fi, hdr, planes, t in host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
-                                                     dma=(stage.base, stage.read) if stage else None, pipe=args.pipe):
+                                                     dma=(stage.base, stage.read) if stage else None, pipe=args.pipe,
+                                                     want_planes=bool(out or ref) or stage is None):
             if stage is not None and args.show and fast is not None:
                 from host_regs import dma_layout
                 stage.show(fast, hdr, dma_layout(hdr, stage.base)[0])

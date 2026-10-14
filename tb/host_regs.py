@@ -381,11 +381,12 @@ class HostDecoder:
         self.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, f"{tag}: pipelined frame done")
         self.wr(R_CTRL, 0)
 
-    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False):
+    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False, want_planes=True):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
         per coded frame, planes as lists of rows of samples. dma: (base address, read(offset, n) -> bytes) to take
         the picture through the DMA engine instead of the registers. pipe: the deblocking filter runs under the
-        frame sequencer, overlapped with the tiles (stage lf)."""
+        frame sequencer, overlapped with the tiles (stage lf). want_planes=False with dma leaves the picture in
+        memory and yields planes=None (the unpack into Python lists costs ~8 ms a CIF frame)."""
         for fi, tile_idx in enumerate(dec.frames):
             tag = f"{name} frame {fi}"
             hdr0 = dec.tiles[tile_idx[0]][0]
@@ -409,7 +410,7 @@ class HostDecoder:
             if dma is not None:
                 base, read = dma
                 layout, total = self.dma_picture(hdr0, base, tag, visible)
-                planes = unpack_dma(hdr0, read(0, total), layout)
+                planes = unpack_dma(hdr0, read(0, total), layout) if want_planes else None
                 self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             else:
                 planes = [self.read_plane(hdr0, p, visible, packed) for p in range(hdr0.NumPlanes)]
