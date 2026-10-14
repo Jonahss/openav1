@@ -3,6 +3,7 @@ header structs packed the way syn_pkg declares them (hdr_t, rec_hdr_t, lf_hdr_t)
 that drives a frame through the register file (headers, CDF default rows, tile bytes, stage starts, done polls,
 picture read-back). tb/test_dec_host.py uses the packing from here under cocotb; tools/kv260/decode.py runs
 HostDecoder on the KV260 over /dev/mem. One definition of the protocol, so the board does what the test does."""
+import array
 import sys
 import time
 from pathlib import Path
@@ -147,7 +148,11 @@ def unpack_dma(hdr, data, planes):
         for y in range(H):
             off = b - base0 + y * stride
             row = data[off:off + W * bps]
-            rows.append(list(row) if bps == 1 else [row[2 * i] | row[2 * i + 1] << 8 for i in range(W)])
+            if bps == 1:
+                rows.append(list(row))
+            else:
+                a = array.array("H"); a.frombytes(row)            # 16-bit little-endian samples (the host is little-endian)
+                rows.append(a.tolist())
         out.append(rows)
     return out
 
