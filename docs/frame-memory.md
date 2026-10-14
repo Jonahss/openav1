@@ -24,33 +24,34 @@ is live, with two readers (recon, LF) and two writers (recon, LF). fb1 and fb2 a
 
 ## On-chip version (first bitstream)
 
-Two URAM copies of the picture, one per read port, both receiving every write:
+One URAM copy of the picture, **double-pumped**: the URAM runs at 2x the decoder clock (200 MHz, URAM288 is
+rated well above that) and its two ports serve the two readers and the two writers in alternate half-cycles.
+No arbitration, no FIFO, no forwarding, and every port keeps its one-cycle latency at the decoder clock.
 
-- **Word = one aligned group of four samples**, 4 x 18 bits = 72 bits, the URAM width. A sample sits in the low
-  12 bits of its 18-bit lane; the 18-bit lane is two URAM bytes, so URAM byte-write enables give the per-lane
-  write enables the interface needs. Address = plane base + y * (W/4) + x/4. The group read is one word; the
+- **Word = one aligned group of four samples**, 4 x 18 bits = 72 bits, the URAM width. A sample sits in the
+  low 12 bits of its 18-bit lane; the lane is two URAM bytes, so URAM byte-write enables give the per-lane write
+  enables the interface needs. Address = plane base + y * (W/4) + x/4. The group read is one word; the
   single-sample read is a lane select on it.
-- **Reads:** copy A's read port serves recon, copy B's serves LF, each exactly as today (one-cycle latency, no
-  arbitration, no stall).
-- **Writes:** recon's and LF's writes go through a small FIFO (depth 4) into the second port of *both* copies.
-  Both stages write at most one group per clock and on average far less than one between them (recon writes a
-  4-sample group every few clocks while predicting and adding; LF writes a filtered line segment), so a
-  collision costs a clock of FIFO latency, not bandwidth. The hazard this creates — a read of a sample whose
-  write is still in the FIFO — is closed by forwarding: a read compares its word address against the FIFO
-  entries and takes the newest pending lanes. With depth 4 that is four 20-bit comparators per read port.
-- **Host port:** the testbench's read port and the future PS-side read share copy A's write port when idle
-  (writes are sparse) or get a third copy if that ever matters.
+- **Timing:** read 0 is issued on the first 2x edge of a decoder cycle, read 1 on the second; the URAM's output
+  register delivers each a 2x cycle later, and a holding register presents both at the next decoder edge. Writes
+  likewise on the other port. The decoder-side registers are in the 100 MHz domain; the 2x domain is phase-
+  aligned to it from the same MMCM, so the crossing is a known multicycle relationship, not an asynchronous one.
+- **Host port:** the testbench's / PS-side read takes a write slot when the writer is idle (writes are sparse),
+  or a third half-cycle slot at 3x if ever needed.
 
-Size at PW = 12: a 1024 x 512 luma plane plus two 4:2:0 chroma planes is 6.3 Mbit per copy, 22 URAM288 each,
-44 for two: more than the K26's 64 minus the 26 the decoder already uses (CDF store, mode info). Two ways down,
-both fine for a first bitstream:
+Size at PW = 12 with 18-bit lanes (a 2026-10-13 miscount said 11 URAM for 512 x 512; it is 24):
 
-- 512 x 512 pictures (FBX = FBY = 9): 3.1 Mbit, 11 URAM per copy, 22 for two.
-- 8-bit storage for 8-bit streams (two bytes per lane still, samples in 8 of them): nothing saved per lane
-  because the lane is the URAM byte pair; so this is not a lever. Halving the picture is.
+| picture | samples (4:2:0) | words | URAM288 |
+|---|---|---|---|
+| 256 x 256 | 98k | 24.6k | 6 |
+| 512 x 512 | 393k | 98.3k | 24 |
+| 1024 x 512 | 786k | 196.6k | 48 |
 
-So: **core build, 512 x 512, two URAM copies, merged write FIFO with forwarding.** That is the first picture
-on the board.
+The core build leaves 38 URAM free, so **512 x 512 is the first-bitstream geometry** (FBX = FBY = 9), one
+copy, double-pumped. 1024 x 512 needs the DDR version. Two copies with a merged write FIFO (the earlier idea)
+would need 48 URAM at 512 x 512 and forwarding logic; the double-pump is both smaller and exact.
+
+The frame memory needs a second clock input (`clk2x`); the simulation model ignores it.
 
 ## DDR version (full-size pictures, all stages)
 
