@@ -176,8 +176,12 @@ async def fuzz_vs_spec_model(dut):
             await ReadOnly()
             where = f"tile {ti} (sz={sz}, dis={disable}) req {ri} kind={kind} N={N} cdf={cdf_before}"
             assert int(dut.resp_valid.value) == 1, where
-            got_sym, got_rng = int(dut.resp_sym.value), int(dut.resp_rng.value)
+            got_sym = int(dut.resp_sym.value)
             assert got_sym == exp_sym, f"{where}: sym {got_sym} != {exp_sym}"
+            await RisingEdge(dut.clk)                    # the adapted row and the new range: the second stage
+            await ReadOnly()
+            assert int(dut.resp_wb_valid.value) == 1, f"{where}: no second-stage response"
+            got_rng = int(dut.resp_rng.value)
             assert got_rng == exp_rng, f"{where}: rng {got_rng} != {exp_rng}"
             if exp_icdf is not None:
                 got_cdf = int(dut.resp_cdf.value)

@@ -2,7 +2,10 @@
 // request, response, adapted-row write-back. Every syntax-decoding FSM drives one of these.
 //
 //   go (with addr/n/kind)  ->  cycle+1: msac request (row read overlaps the go cycle)
-//                          ->  cycle+2 (if msac accepted at once): done=1, sym valid, row written back
+//                          ->  cycle+2 (if msac accepted at once): done=1, sym valid
+//                          ->  cycle+3: the adapted row (msac's second stage) written back; a re-read of that row
+//                              issued at cycle+2 (the next symbol) takes the write-back data (cdf_wb_pre tells
+//                              cdf_store about it for any other requester)
 // kind: 0 adaptive symbol (row at addr), 1 fixed-probability bool with probability f_in (no CDF access),
 //       2 equiprobable bool (no CDF access), 3 peek: return the row at addr on row_out, no msac. n = N-1.
 module sym_seq
@@ -26,6 +29,8 @@ module sym_seq
     output logic              cdf_wb_we,
     output logic [CDF_AW-1:0] cdf_wb_addr,
     output logic [245:0]      cdf_wb_data,
+    output logic              cdf_wb_pre,    // the cycle before cdf_wb_we, with cdf_wb_pre_addr
+    output logic [CDF_AW-1:0] cdf_wb_pre_addr,
     // msac
     output logic              req_valid,
     input  logic              req_ready,
@@ -35,7 +40,7 @@ module sym_seq
     output logic [5:0]        req_cnt,
     input  logic              resp_valid,
     input  logic [3:0]        resp_sym,
-    input  logic [239:0]      resp_cdf,
+    input  logic [239:0]      resp_cdf,      // valid the cycle after resp_valid
     input  logic [5:0]        resp_cnt
 );
     typedef enum logic [1:0] {S_IDLE, S_REQ, S_RESP} st_t;
@@ -71,11 +76,20 @@ module sym_seq
         end
     end
 
-    // request: in S_REQ the row read issued at `go` is on cdf_rd_data (first S_REQ cycle); hold a copy
+    // write-back one cycle after done (the adapted row leaves msac's second stage then)
+    logic              wb_pend;
+    logic [CDF_AW-1:0] wb_addr_r;
+    always_ff @(posedge clk) begin
+        wb_pend <= !rst && done && (l_kind == 2'd0);
+        wb_addr_r <= l_addr;
+    end
+    // request: in S_REQ the row read issued at `go` is on cdf_rd_data (first S_REQ cycle); hold a copy. A row
+    // re-read in the done cycle of the previous symbol gets that symbol's write-back instead of the memory word.
     logic first_req;
     always_ff @(posedge clk) first_req <= accept_go;
-    always_ff @(posedge clk) if (first_req) row <= cdf_rd_data;
-    wire [245:0] row_now = first_req ? cdf_rd_data : row;
+    wire [245:0] row_rd = (wb_pend && wb_addr_r == l_addr) ? {resp_cnt, resp_cdf} : cdf_rd_data;
+    always_ff @(posedge clk) if (first_req) row <= row_rd;
+    wire [245:0] row_now = first_req ? row_rd : row;
 
     assign req_valid = (st == S_REQ) && (l_kind != 2'd3);
     assign req_kind  = l_kind;
@@ -88,7 +102,9 @@ module sym_seq
     assign done = ((st == S_RESP) && resp_valid) || ((st == S_REQ) && l_kind == 2'd3);
     assign sym  = resp_sym;
 
-    assign cdf_wb_we   = done && (l_kind == 2'd0);
-    assign cdf_wb_addr = l_addr;
+    assign cdf_wb_pre      = done && (l_kind == 2'd0);
+    assign cdf_wb_pre_addr = l_addr;
+    assign cdf_wb_we   = wb_pend;
+    assign cdf_wb_addr = wb_addr_r;
     assign cdf_wb_data = {resp_cnt, resp_cdf};
 endmodule
