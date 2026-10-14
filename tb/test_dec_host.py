@@ -25,17 +25,10 @@ from axil import AxiLite, write_transcript   # noqa: E402
 
 STAGE = os.environ.get("TS_STAGE", "recon")
 
-# register map (rtl/dec_host.sv)
-R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_PERF_SYN, R_PERF_REC = 0x000, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x018
-R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR = 0x01C, 0x020, 0x024, 0x028, 0x02C
-R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
-ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 15
-START_TILE, START_LF = 1, 4
-CTRL_RST, CTRL_EOS = 1, 1 << 8
+from host_regs import (R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
+                       R_DEF, R_HDR, R_RH, R_LH, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
+                       HDR_WORDS, RH_WORDS, LH_WORDS, words)
 
-
-def words(v, n):
-    return [(v >> (32 * i)) & 0xFFFFFFFF for i in range(n)]
 
 
 async def write_wide(ax, base, v, nwords):
@@ -44,8 +37,8 @@ async def write_wide(ax, base, v, nwords):
 
 
 async def run_tile(ax, th, dec, data, tag, stats):
-    await write_wide(ax, R_HDR, TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, 0)), 8)
-    await write_wide(ax, R_RH, TT.pack(TD.REC_FIELDS, TD.rec_vals(th)), 7)
+    await write_wide(ax, R_HDR, TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, 0)), HDR_WORDS)
+    await write_wide(ax, R_RH, TT.pack(TD.REC_FIELDS, TD.rec_vals(th)), RH_WORDS)
     for i, row in enumerate(M.default_rows(th.base_q_idx)):
         await write_wide(ax, R_DEF, row, 8)
         await ax.write(R_DEF_ADDR, i)
@@ -154,7 +147,7 @@ async def dec_host_streams(dut):
                     th, data = d.tiles[ti]
                     dec = tm.TileDecoder(th, data, None)      # header helper only (get_qindex); nothing is decoded
                     await run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats)
-                await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), 11)
+                await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
                 await ax.write(R_START, START_LF)
                 await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
                 outs = [o for o, k in enumerate(shown) if k == fi]
@@ -189,7 +182,7 @@ async def dec_host_streams(dut):
         if STAGE == "lf":
             state = xf.FrameState(hdr0, decs)
             lfm.LoopFilter(hdr0, state, planes).apply()
-            await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), 11)
+            await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
             await ax.write(R_START, START_LF)
             await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
         await read_back(ax, hdr0, planes, tag, stats)
