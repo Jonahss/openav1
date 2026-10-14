@@ -140,9 +140,13 @@ async def replay_trace(dut):
             await ReadOnly()
             assert int(dut.resp_valid.value) == 1, f"tile {ti} sym {ri}: no response"
             got_sym = int(dut.resp_sym.value)
-            got_rng = int(dut.resp_rng.value)
             where = f"tile {ti} req {ri} (kind={kind},n={n} cdf={cdf} cnt={cnt})"
             assert got_sym == exp_sym, f"{where}: symbol {got_sym} != expected {exp_sym}"
+            assert int(dut.req_ready.value) == 0, f"{where}: ready during the second stage"
+            await RisingEdge(dut.clk)                    # the adapted row and the new range: the second stage
+            await ReadOnly()
+            assert int(dut.resp_wb_valid.value) == 1, f"{where}: no second-stage response"
+            got_rng = int(dut.resp_rng.value)
             assert got_rng == exp_rng, f"{where}: rng {got_rng} != expected {exp_rng}"
             if post is not None:
                 got_cdf = int(dut.resp_cdf.value)

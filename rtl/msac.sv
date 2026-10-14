@@ -1,8 +1,14 @@
 // openav1 — AV1 arithmetic (symbol) decoder core.
 //
 // Implements the spec's symbol decoder (AV1 spec section 8.2: init_symbol,
-// read_symbol, read_bool via read_symbol, CDF adaptation). One decoded symbol per
-// accepted request, result registered the following cycle.
+// read_symbol, read_bool via read_symbol, CDF adaptation). Two stages: the cycle a
+// request is accepted finds the symbol (range multiply, compare chain) and registers
+// it with the two range boundaries; the next cycle renormalises the range / value,
+// consumes the stream bits and adapts the CDF. The symbol is on resp_sym one cycle
+// after the request, the adapted row (resp_cdf / resp_cnt / resp_rng, with
+// resp_wb_valid) two cycles after. A request is accepted every other cycle at most,
+// which costs nothing against the symbol sequencer's own two-cycle rhythm (the next
+// request's address depends on this symbol) and halves the timing path of the loop.
 //
 // Conventions (chosen to match dav1d, which is spec-equivalent and is our golden trace):
 //   * CDFs are stored INVERTED: icdf[i] = 32768 - cdf[i].  The spec itself notes that
@@ -38,9 +44,10 @@ module msac (
     input  logic [239:0] req_cdf,      // 15 x 16-bit inverted CDF entries, entry k at [16k +: 16]
     input  logic [5:0]   req_cnt,      // adaptation counter (0..32)
 
-    // ---- response, one cycle after the request is accepted ----
+    // ---- response: the symbol one cycle after the request is accepted, the adapted row two cycles after ----
     output logic         resp_valid,
     output logic [3:0]   resp_sym,
+    output logic         resp_wb_valid,
     output logic [15:0]  resp_rng,     // SymbolRange after renormalisation (matches dav1d's s->rng)
     output logic [239:0] resp_cdf,
     output logic [5:0]   resp_cnt
@@ -113,20 +120,33 @@ module msac (
 
     // symbol = first k with SymbolValue >= cur[k]  (spec loop: continue while SymbolValue < cur)
     logic [3:0]  sym;
-    logic [15:0] cur_sym, cur_prev;
     always_comb begin
         sym = 4'd15;
         for (int k = 15; k >= 0; k--) if (!(val < cur[k])) sym = 4'(k);
-        cur_sym  = cur[sym];
-        cur_prev = (sym == 4'd0) ? rng : cur[sym - 4'd1];
     end
 
-    // Renormalise: bits = 15 - FloorLog2(newRange) = leading zeros of the 16-bit range.
+    // ---- stage 1 -> stage 2 registers: the symbol, every candidate boundary (the two the symbol needs are
+    // picked in stage 2, off the compare chain), the row and its adaptation inputs
+    logic        s1_v;
+    logic [3:0]  s1_sym, s1_n;
+    logic [15:0] s1_cur [16];
+    logic [15:0] s1_icdf [15];
+    logic [5:0]  s1_cnt;
+    logic        s1_upd;
+    int          s1_n_int;
+    assign s1_n_int = {28'd0, s1_n};
+    logic [15:0] s1_cur_sym, s1_cur_prev;
+    always_comb begin
+        s1_cur_sym  = s1_cur[s1_sym];
+        s1_cur_prev = (s1_sym == 4'd0) ? rng : s1_cur[s1_sym - 4'd1];    // rng: still the pre-symbol range during stage 2
+    end
+
+    // Renormalise (stage 2): bits = 15 - FloorLog2(newRange) = leading zeros of the 16-bit range.
     logic [15:0] rng_new, val_new;
     logic [4:0]  bits;
     always_comb begin
-        rng_new = cur_prev - cur_sym;
-        val_new = val - cur_sym;
+        rng_new = s1_cur_prev - s1_cur_sym;
+        val_new = val - s1_cur_sym;
         bits = 5'd0;
         for (int b = 0; b < 16; b++) if (rng_new[b]) bits = 5'(15 - b);   // last assignment = highest set bit
     end
@@ -144,26 +164,27 @@ module msac (
         newbits      = (bits == 5'd0) ? 16'd0 : 16'(win_r >> (6'd32 - 6'(bits)));
     end
 
-    // CDF adaptation (spec 8.2.6, in inverted form):
+    // CDF adaptation (stage 2; spec 8.2.6, in inverted form):
     //   rate = 3 + (cnt > 15) + (cnt > 31) + Min(FloorLog2(N), 2)  ==  4 + (cnt >> 4) + (N-1 > 2)
     logic [3:0]  rate;
     logic [15:0] icdf_upd [15];
     logic [5:0]  cnt_upd;
     always_comb begin
-        rate = 4'd4 + 4'(cnt_eff >> 4) + 4'(n_eff > 4'd2);
+        rate = 4'd4 + 4'(s1_cnt >> 4) + 4'(s1_n > 4'd2);
         for (int i = 0; i < 15; i++) begin
-            if (!do_update || i >= n_int)      icdf_upd[i] = icdf[i];
-            else if (i < {28'd0, sym})                  icdf_upd[i] = icdf[i] + ((16'd32768 - icdf[i]) >> rate);
-            else                                     icdf_upd[i] = icdf[i] - (icdf[i] >> rate);
+            if (!s1_upd || i >= s1_n_int)            icdf_upd[i] = s1_icdf[i];
+            else if (i < {28'd0, s1_sym})            icdf_upd[i] = s1_icdf[i] + ((16'd32768 - s1_icdf[i]) >> rate);
+            else                                     icdf_upd[i] = s1_icdf[i] - (s1_icdf[i] >> rate);
         end
-        cnt_upd = do_update ? (cnt_eff + 6'((cnt_eff < 6'd32) ? 1 : 0)) : cnt_eff;
+        cnt_upd = s1_upd ? (s1_cnt + 6'((s1_cnt < 6'd32) ? 1 : 0)) : s1_cnt;
     end
 
     // ------------------------------------------------------------------
     // Handshake
     // ------------------------------------------------------------------
-    // A symbol may consume up to 15 bits; require them present unless the tile is exhausted.
-    assign req_ready = (state == S_READY) && (wcnt >= 6'd15 || eos);
+    // A symbol may consume up to 15 bits; require them present unless the tile is exhausted. No request while
+    // the previous symbol's second stage runs (it updates the range / value the next one starts from).
+    assign req_ready = (state == S_READY) && !s1_v && (wcnt >= 6'd15 || eos);
     wire   accept    = req_valid && req_ready;
     wire   init_go   = (state == S_INIT) && (wcnt_r >= 6'd15 || eos || in_eos);
 
@@ -172,6 +193,8 @@ module msac (
     // ------------------------------------------------------------------
     always_ff @(posedge clk) begin
         resp_valid <= 1'b0;
+        resp_wb_valid <= 1'b0;
+        s1_v <= 1'b0;
         if (rst) begin
             state <= S_IDLE;
             eos   <= 1'b0;
@@ -198,16 +221,23 @@ module msac (
                     wcnt  <= wcnt_after15;
                     state <= S_READY;
                 end
-                S_READY: if (accept) begin
-                    rng   <= rng_new << bits;
-                    val   <= (val_new << bits) | newbits;
-                    win   <= win_afterb;
-                    wcnt  <= wcnt_afterb;
-                    resp_valid <= 1'b1;
-                    resp_sym   <= sym;
-                    resp_rng   <= rng_new << bits;
-                    resp_cnt   <= cnt_upd;
-                    for (int i = 0; i < 15; i++) resp_cdf[16*i +: 16] <= icdf_upd[i];
+                S_READY: begin
+                    if (accept) begin                        // stage 1: the symbol
+                        s1_v <= 1'b1; s1_sym <= sym; s1_cur <= cur;
+                        s1_icdf <= icdf; s1_cnt <= cnt_eff; s1_n <= n_eff; s1_upd <= do_update;
+                        resp_valid <= 1'b1;
+                        resp_sym   <= sym;
+                    end
+                    if (s1_v) begin                          // stage 2: renormalise, consume bits, adapt (never with accept)
+                        rng   <= rng_new << bits;
+                        val   <= (val_new << bits) | newbits;
+                        win   <= win_afterb;
+                        wcnt  <= wcnt_afterb;
+                        resp_wb_valid <= 1'b1;
+                        resp_rng   <= rng_new << bits;
+                        resp_cnt   <= cnt_upd;
+                        for (int i = 0; i < 15; i++) resp_cdf[16*i +: 16] <= icdf_upd[i];
+                    end
                 end
                 default: ;
             endcase

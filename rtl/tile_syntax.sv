@@ -65,17 +65,17 @@ module tile_syntax
     logic msac_init;
     msac u_msac (.clk, .rst, .in_data, .in_valid, .in_ready, .in_eos, .init(msac_init), .cdf_update_en(!hdr.disable_cdf_update),
                  .req_valid, .req_ready, .req_kind, .req_n, .req_cdf, .req_cnt,
-                 .resp_valid, .resp_sym, .resp_rng, .resp_cdf, .resp_cnt);
+                 .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng, .resp_cdf, .resp_cnt);
 
-    logic rd_en, wb_we, cdf_init, cdf_busy; logic [CDF_AW-1:0] rd_addr, wb_addr; logic [245:0] rd_data, wb_data;
+    logic rd_en, wb_we, wb_pre, cdf_init, cdf_busy; logic [CDF_AW-1:0] rd_addr, wb_addr, wb_pre_addr; logic [245:0] rd_data, wb_data;
     cdf_store u_cdf (.clk, .rst, .def_we, .def_addr, .def_data, .init(cdf_init), .busy(cdf_busy),
-                     .rd_en, .rd_addr, .rd_data, .wb_we, .wb_addr, .wb_data);
+                     .rd_en, .rd_addr, .rd_data, .wb_we, .wb_addr, .wb_data, .wb_pre, .wb_pre_addr);
 
     // two sequencer masters: 'c' = coef_rd, 'k' = control (partition FSM + blk_syntax)
     logic c_go, c_done, c_busy, k_go, k_done, k_busy; logic [CDF_AW-1:0] c_addr, k_addr; logic [3:0] c_n, k_n, c_sym, k_sym; logic [1:0] c_kind, k_kind;
     logic [15:0] k_f; logic [245:0] k_row;
-    logic c_rd_en, k_rd_en, c_wb_we, k_wb_we, c_req_valid, k_req_valid;
-    logic [CDF_AW-1:0] c_rd_addr, k_rd_addr, c_wb_addr, k_wb_addr;
+    logic c_rd_en, k_rd_en, c_wb_we, k_wb_we, c_wb_pre, k_wb_pre, c_req_valid, k_req_valid;
+    logic [CDF_AW-1:0] c_rd_addr, k_rd_addr, c_wb_addr, k_wb_addr, c_wb_pre_addr, k_wb_pre_addr;
     logic [245:0] c_wb_data, k_wb_data;
     logic [1:0] c_req_kind, k_req_kind; logic [3:0] c_req_n, k_req_n; logic [239:0] c_req_cdf, k_req_cdf; logic [5:0] c_req_cnt, k_req_cnt;
     logic sel_k;
@@ -83,20 +83,23 @@ module tile_syntax
 
     sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(c_busy), .done(c_done), .sym(c_sym),
                     .cdf_rd_en(c_rd_en), .cdf_rd_addr(c_rd_addr), .cdf_rd_data(rd_data),
-                    .cdf_wb_we(c_wb_we), .cdf_wb_addr(c_wb_addr), .cdf_wb_data(c_wb_data),
+                    .cdf_wb_we(c_wb_we), .cdf_wb_addr(c_wb_addr), .cdf_wb_data(c_wb_data), .cdf_wb_pre(c_wb_pre), .cdf_wb_pre_addr(c_wb_pre_addr),
                     .req_valid(c_req_valid), .req_ready(req_ready && !sel_k), .req_kind(c_req_kind), .req_n(c_req_n), .req_cdf(c_req_cdf), .req_cnt(c_req_cnt),
                     .resp_valid(resp_valid && !sel_k), .resp_sym, .resp_cdf, .resp_cnt);
     sym_seq u_sq_k (.clk, .rst, .go(k_go), .addr(k_addr), .n(k_n), .kind(k_kind), .f_in(k_f), .row_out(k_row), .busy(k_busy), .done(k_done), .sym(k_sym),
                     .cdf_rd_en(k_rd_en), .cdf_rd_addr(k_rd_addr), .cdf_rd_data(rd_data),
-                    .cdf_wb_we(k_wb_we), .cdf_wb_addr(k_wb_addr), .cdf_wb_data(k_wb_data),
+                    .cdf_wb_we(k_wb_we), .cdf_wb_addr(k_wb_addr), .cdf_wb_data(k_wb_data), .cdf_wb_pre(k_wb_pre), .cdf_wb_pre_addr(k_wb_pre_addr),
                     .req_valid(k_req_valid), .req_ready(req_ready && sel_k), .req_kind(k_req_kind), .req_n(k_req_n), .req_cdf(k_req_cdf), .req_cnt(k_req_cnt),
                     .resp_valid(resp_valid && sel_k), .resp_sym, .resp_cdf, .resp_cnt);
     always_comb begin
         rd_en   = sel_k ? k_rd_en   : c_rd_en;
         rd_addr = sel_k ? k_rd_addr : c_rd_addr;
-        wb_we   = sel_k ? k_wb_we   : c_wb_we;
-        wb_addr = sel_k ? k_wb_addr : c_wb_addr;
-        wb_data = sel_k ? k_wb_data : c_wb_data;
+        // the write-back trails its symbol by a cycle, when the request's owner may already have changed
+        wb_we   = k_wb_we | c_wb_we;
+        wb_addr = k_wb_we ? k_wb_addr : c_wb_addr;
+        wb_data = k_wb_we ? k_wb_data : c_wb_data;
+        wb_pre  = k_wb_pre | c_wb_pre;
+        wb_pre_addr = k_wb_pre ? k_wb_pre_addr : c_wb_pre_addr;
         req_valid = sel_k ? k_req_valid : c_req_valid;
         req_kind  = sel_k ? k_req_kind  : c_req_kind;
         req_n     = sel_k ? k_req_n     : c_req_n;
