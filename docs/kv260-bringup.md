@@ -54,6 +54,17 @@ nearly all of it the PS driving the register file from Python (~0.1 s a frame of
 writes, ~0.3 s of pixel reads at ~7 us a transfer). The decoder itself waits on the host most of the time; the
 DMA path (stream and picture in the PS's DDR) is the next host step.
 
+**Picture DMA (2026-10-14):** `dec_host` has an AXI4 write master (64-bit data, 40-bit address) on the PS's
+`S_AXI_HP0_FPD`: after a frame, software programs the plane bases / strides / sizes (registers 0x180-0x1BC, the map
+in `rtl/dec_host.sv`) and starts the engine, which reads four samples a clock from the frame memory and writes the
+picture in dav1d's planar layout (strides rounded up to 8 bytes) in INCR bursts of up to 16 beats. `decode.py --dma`
+uses the DisplayPort framebuffer's spare lines as the target (`/dev/fb0` is a contiguous uncached CMA buffer whose
+physical address `FBIOGET_FSCREENINFO` reports; the kernel refuses `/dev/mem` on RAM and hides DRM buffers' pages
+from pagemap, so this is the one buffer root can both address and read without a driver). `--show` converts each
+8-bit 4:2:0 picture to RGB565 into the visible lines (C, `hl_yuv420_rgb565`). The 120-frame clip: 3.6 s = 33 fps
+end to end through the DMA, 4.9 s with the dav1d compare, 7.1 s with the screen blit (the PS reading uncached
+memory; moving the conversion into the PL or using a DRM YUV plane is the next display step).
+
 **Transcript replay** (no parser on the board, the expected pixels recorded by the simulation):
 `TS_TRANSCRIPT=<file> python tb/runner.py dec_host` (with `FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_STAGE=lf`)
 records every register write, every poll and the expected value of every read, and `tools/kv260/play.py <file>`
