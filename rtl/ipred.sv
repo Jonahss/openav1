@@ -335,7 +335,7 @@ module ipred #(
     // ------------------------------------------------------------------ pixel datapath: pred[i][j]
     // Address half: the (up to) two above and two left reads a lane needs for pred[i][j], as {a0, a1, l0, l1};
     // value half: the pixel from the fetched values. Split so that every bank read is an explicit port.
-    function automatic logic [39:0] pred_addr(input int i, input int j, input int idx_i, input int idx_j);
+    function automatic logic [39:0] pred_addr(input int i, input int j, input int idx_i, input int idx_j, input int maxb_in);
         int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
         base = 0; idx = 0; maxb = 0; idx2 = 0; base2 = 0; a0 = 0; a1 = 0; l0 = 0; l1 = 0;
         if (l_mode == DC_PRED) begin
@@ -354,7 +354,7 @@ module ipred #(
         end else if (p_angle < 9'd90) begin                                   // Z1
             idx   = idx_i;
             base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
-            maxb  = int'(maxb_r);
+            maxb  = maxb_in;
             if (base < maxb) begin a0 = base; a1 = base + 1; end
             else a0 = maxb;
         end else if (p_angle < 9'd180) begin                                  // Z2
@@ -374,12 +374,20 @@ module ipred #(
         end
         return {10'(a0), 10'(a1), 10'(l0), 10'(l1)};
     endfunction
+    // The lookahead sees every block constant live: the Z1 limit combinationally (maxb_r lags a cycle, which the
+    // S_PIX read tolerated), and in S_SETUP the position / index values being loaded, since S_SETUP may enter
+    // S_PIX directly.
+    logic [9:0] maxb_c;
+    assign maxb_c = 10'((int'(w) + int'(h) - 1) << int'(up_a));
     always_ff @(posedge clk) begin
-        logic la_step;
-        la_step = (state == S_PIX) && !l_fi;                 // S_PIX: addresses for the position after this one
-        for (int l = 0; l < 4; l++)
-            {la_a0[l], la_a1[l], la_l0[l], la_l1[l]} <= la_step ? pred_addr(int'(nx_py), int'(nx_px) + l, int'(nx_idx_i), int'(nx_idx_j[l]))
-                                                              : pred_addr(int'(py), int'(px) + l, int'(idx_i_r), int'(idx_j_r[l]));
+        for (int l = 0; l < 4; l++) begin
+            if (state == S_PIX && !l_fi)                      // addresses for the position after this one
+                {la_a0[l], la_a1[l], la_l0[l], la_l1[l]} <= pred_addr(int'(nx_py), int'(nx_px) + l, int'(nx_idx_i), int'(nx_idx_j[l]), int'(maxb_c));
+            else if (state == S_SETUP)                        // the first position, from the values S_SETUP loads
+                {la_a0[l], la_a1[l], la_l0[l], la_l1[l]} <= pred_addr(0, l, int'(dx), (l + 1) * int'(dy), int'(maxb_c));
+            else
+                {la_a0[l], la_a1[l], la_l0[l], la_l1[l]} <= pred_addr(int'(py), int'(px) + l, int'(idx_i_r), int'(idx_j_r[l]), int'(maxb_c));
+        end
     end
     // The pixel datapath is two stages. Stage 1 (the S_PIX cycle) fetches a lane's edge values and forms its
     // products: the smooth weights times the four values, or the directional interpolation's two products.
