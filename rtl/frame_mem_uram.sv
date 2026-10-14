@@ -1,8 +1,8 @@
 // On-chip frame memory for the FPGA builds (docs/frame-memory.md): the same ports as the frame_mem simulation
 // model for NRD = NWR = 2 (the core build's fb0), one UltraRAM copy of the picture, double-pumped. The RAM runs on
-// clk2x (2x clk, phase-aligned from the same MMCM): on the mid-cycle clk2x edge its two ports read for the two
-// read ports (or the host), on the clk-aligned edge they write for the two write ports. Every decoder-side port
-// keeps its one-cycle latency at clk; nothing arbitrates or stalls.
+// clk2x (2x clk, phase-aligned from the same MMCM): on the clk-aligned clk2x edge its two ports read for the two
+// read ports (or the host) and the write requests are captured, on the mid-cycle edge they write for the two
+// write ports. Every decoder-side port keeps its one-cycle latency at clk; nothing arbitrates or stalls.
 //
 // Word = one aligned group of four samples, 4 x 16-bit lanes in a 72-bit URAM word (a sample in the low 12 bits
 // of its lane; the lane is two URAM bytes, so the lane write enables are byte-write enables; byte 8 unused). Address = plane base +
