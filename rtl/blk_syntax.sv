@@ -398,19 +398,32 @@ module blk_syntax
             S_MVCLS: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_MV_CLASS + CDF_MV_CLASS_S0 + int'(mv_comp)); sq_n = 4'd10; end
             S_MVC0B: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_MV_CLASS0_BIT + CDF_MV_CLASS0_BIT_S0 + int'(mv_comp)); sq_n = 4'd1; end
             S_MVBIT: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_MV_BIT + CDF_MV_BIT_S0 + int'(mv_comp) * CDF_MV_BIT_S1 + int'(mv_bi)); sq_n = 4'd1; end
-            S_TXTYPE: begin
+            S_TXTYPE: begin                                        // bases from the registers below (p_txsz is older than a cycle here)
                 sq_go = 1'b1;
                 if (use_ibc) begin
-                    if (cur_set_i == 2'd1) begin sq_addr = CDF_AW'(CDF_INTER_TX_TYPE_SET1 + int'(tx_sqr(p_txsz))); sq_n = 4'd15; end
-                    else if (cur_set_i == 2'd2) begin sq_addr = CDF_AW'(CDF_INTER_TX_TYPE_SET2); sq_n = 4'd11; end
-                    else begin sq_addr = CDF_AW'(CDF_INTER_TX_TYPE_SET3 + int'(tx_sqr(p_txsz))); sq_n = 4'd1; end
-                end else if (cur_set == 2'd1) begin sq_addr = CDF_AW'(CDF_INTRA_TX_TYPE_SET1 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET1_S0 + int'(intra_dir)); sq_n = 4'd6; end
-                else begin sq_addr = CDF_AW'(CDF_INTRA_TX_TYPE_SET2 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET2_S0 + int'(intra_dir)); sq_n = 4'd4; end
+                    if (cur_set_i_r == 2'd1) begin sq_addr = txt_e1_r; sq_n = 4'd15; end
+                    else if (cur_set_i_r == 2'd2) begin sq_addr = CDF_AW'(CDF_INTER_TX_TYPE_SET2); sq_n = 4'd11; end
+                    else begin sq_addr = txt_e3_r; sq_n = 4'd1; end
+                end else if (cur_set_r == 2'd1) begin sq_addr = CDF_AW'(txt_i1_r + CDF_AW'(intra_dir)); sq_n = 4'd6; end
+                else begin sq_addr = CDF_AW'(txt_i2_r + CDF_AW'(intra_dir)); sq_n = 4'd4; end
             end
             S_LIT:   if (lit_n != 4'd0) begin sq_go = 1'b1; sq_kind = 2'd2; end
             S_PAL_W, S_PTOK_W: begin sq_go = pq_go; sq_addr = pq_addr; sq_n = pq_n; sq_kind = pq_kind; end
             default: ;
         endcase
+    end
+
+    // The transform-type symbol's CDF row bases, derived from p_txsz a cycle behind it: p_txsz is set in the
+    // state before S_RES_TX and S_TXTYPE comes after coef_rd's all-zero symbol, so the registers are current there.
+    // (The tx_set / tx_sqr arithmetic in front of the CDF store's address was 11 LUT levels, -1.9 ns at 100 MHz.)
+    logic [CDF_AW-1:0] txt_i1_r, txt_i2_r, txt_e1_r, txt_e3_r;
+    logic [1:0]        cur_set_r, cur_set_i_r;
+    always_ff @(posedge clk) begin
+        txt_i1_r <= CDF_AW'(CDF_INTRA_TX_TYPE_SET1 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET1_S0);
+        txt_i2_r <= CDF_AW'(CDF_INTRA_TX_TYPE_SET2 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET2_S0);
+        txt_e1_r <= CDF_AW'(CDF_INTER_TX_TYPE_SET1 + int'(tx_sqr(p_txsz)));
+        txt_e3_r <= CDF_AW'(CDF_INTER_TX_TYPE_SET3 + int'(tx_sqr(p_txsz)));
+        cur_set_r <= cur_set; cur_set_i_r <= cur_set_i;
     end
 
     // ---------------------------------------------------------------- outputs to blk_ctx / coef_rd (registered pulses)
