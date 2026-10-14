@@ -29,12 +29,12 @@ set_property -dict [list \
     CONFIG.PSU__FPGA_PL1_ENABLE {0} CONFIG.PSU__FPGA_PL2_ENABLE {0} CONFIG.PSU__FPGA_PL3_ENABLE {0} \
     CONFIG.PSU__USE__IRQ0 {0}] $ps
 set clkgen [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clkgen]
-# pl_clk0's actual frequency as the PS IP computes it (96.97 MHz without the board preset: the overlay asks the
-# running Linux for 100 MHz, so the real decoder clock is ~3% above the analysed one; KV260_MHZ keeps margin)
-set f_in [format %.3f [expr {[get_property CONFIG.FREQ_HZ [get_bd_pins ps/pl_clk0]] / 1.0e6}]]
-puts "pl_clk0 = $f_in MHz"
+# the input frequency is propagated from pl_clk0 at validation (96.97 MHz as the PS IP computes it without the
+# board preset; a user-set PRIM_IN_FREQ must match it to the hertz, so it is left alone). The overlay asks the
+# running Linux for 100 MHz, so the real decoder clock is ~3% above the analysed one: KV260_MHZ keeps margin.
+puts "pl_clk0 = [get_property CONFIG.FREQ_HZ [get_bd_pins ps/pl_clk0]] Hz"
 set_property -dict [list \
-    CONFIG.PRIM_IN_FREQ $f_in CONFIG.PRIMITIVE {MMCM} CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false} \
+    CONFIG.PRIMITIVE {MMCM} CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false} \
     CONFIG.CLKOUT1_REQUESTED_OUT_FREQ $mhz CONFIG.CLKOUT2_USED {true} CONFIG.CLKOUT2_REQUESTED_OUT_FREQ [expr {2 * $mhz}] \
     CONFIG.CLKOUT1_REQUESTED_PHASE {0.000} CONFIG.CLKOUT2_REQUESTED_PHASE {0.000}] $clkgen
 set rst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst]
@@ -58,6 +58,7 @@ connect_bd_intf_net [get_bd_intf_pins sc/M00_AXI] [get_bd_intf_pins host/s_axi]
 assign_bd_address -offset 0xA0000000 -range 4K -target_address_space [get_bd_addr_spaces ps/Data] \
     [get_bd_addr_segs host/s_axi/reg0]
 validate_bd_design
+puts "clk = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out1]] Hz, clk2x = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out2]] Hz"
 save_bd_design
 set bd [get_files sys.bd]
 generate_target all $bd
