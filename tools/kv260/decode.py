@@ -67,7 +67,7 @@ def compare(ref, hdr, planes):
             row = ref[off:off + W * bps]
             exp = row if bps == 1 else struct.unpack("<%dH" % W, row)
             got = planes[p][y]
-            if bytes(got) if bps == 1 else tuple(got) != exp:
+            if (bytes(got) if bps == 1 else tuple(got)) != exp:
                 for x in range(W):
                     if got[x] != exp[x]:
                         bad.append((p, y, x, got[x], exp[x]))
