@@ -33,7 +33,8 @@ module frame_mem_uram #(
     input  logic [1:0]          h_plane,
     input  logic [FBX-1:0]      h_x,
     input  logic [FBY-1:0]      h_y,
-    output logic [PW-1:0]       h_rdata
+    output logic [PW-1:0]       h_rdata,
+    output logic [4*PW-1:0]     h_rdata4         // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
 );
     localparam int WPR   = 1 << (FBX - 2);                   // words per luma row
     localparam int NW0   = WPR << FBY;                       // luma words
@@ -147,5 +148,6 @@ module frame_mem_uram #(
         rdata[0*PW +: PW] = rq0[32'(rx0l)*16 +: PW];
         rdata[1*PW +: PW] = rq1[32'(rx1l)*16 +: PW];
         h_rdata = rq1[32'(hxl)*16 +: PW];
+        h_rdata4 = {rq1[3*16 +: PW], rq1[2*16 +: PW], rq1[1*16 +: PW], rq1[0*16 +: PW]};
     end
 endmodule

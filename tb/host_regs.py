@@ -99,6 +99,8 @@ def lf_vals(th):
 R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_PERF_SYN, R_PERF_REC = 0x000, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x018
 R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR = 0x01C, 0x020, 0x024, 0x028, 0x02C
 R_HDATA2, R_HDATA4 = 0x030, 0x034
+R_DMA_CFG, R_DMA_START, R_DMA_STATUS, R_DMA_BEATS, R_DMA_PLANE = 0x180, 0x184, 0x188, 0x18C, 0x190   # + 0x10 per plane
+DMA_BUSY, DMA_DONE, DMA_ERR = 1, 2, 4
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
@@ -109,6 +111,45 @@ HDR_WORDS, RH_WORDS, LH_WORDS = 8, 7, 11     # words of each header window actua
 
 def words(v, n):
     return [(v >> (32 * i)) & 0xFFFFFFFF for i in range(n)]
+
+
+def dma_layout(hdr, base, visible=True):
+    """Where the DMA engine puts the picture: per plane (base, stride, W, H) with the dav1d sample format
+    (bytes for 8-bit, 16-bit little-endian otherwise) and the stride rounded up to 8 bytes; planes follow each
+    other. Returns (planes, total bytes)."""
+    bps = 1 if hdr.BitDepth == 8 else 2
+    planes, off = [], 0
+    for p in range(hdr.NumPlanes):
+        W, H = plane_size(hdr, p, visible)
+        stride = (W * bps + 7) & ~7
+        planes.append((base + off, stride, W, H))
+        off += stride * H
+    return planes, off
+
+
+def dma_regs(hdr, base, visible=True):
+    """The (address, value) register writes that program the DMA engine for the picture at base."""
+    planes, total = dma_layout(hdr, base, visible)
+    seq = [(R_DMA_CFG, (0 if hdr.BitDepth == 8 else 1) | ((hdr.NumPlanes - 1) << 4))]
+    for p, (b, stride, W, H) in enumerate(planes):
+        r = R_DMA_PLANE + 0x10 * p
+        seq += [(r, b & 0xFFFFFFFF), (r + 4, b >> 32), (r + 8, stride), (r + 12, (H << 16) | W)]
+    return seq, planes, total
+
+
+def unpack_dma(hdr, data, planes):
+    """The DMA image back into plane row lists (data: the bytes from the first plane's base)."""
+    bps = 1 if hdr.BitDepth == 8 else 2
+    base0 = planes[0][0]
+    out = []
+    for b, stride, W, H in planes:
+        rows = []
+        for y in range(H):
+            off = b - base0 + y * stride
+            row = data[off:off + W * bps]
+            rows.append(list(row) if bps == 1 else [row[2 * i] | row[2 * i + 1] << 8 for i in range(W)])
+        out.append(rows)
+    return out
 
 
 def plane_size(hdr, plane, visible=True):
@@ -306,6 +347,16 @@ class HostDecoder:
         self.stats["pixels"] += W * H
         return rows
 
+    def dma_picture(self, hdr, base, tag, visible=True):
+        """The decoded picture into memory at base through the DMA engine; returns the plane layout."""
+        seq, planes, total = dma_regs(hdr, base, visible)
+        self.write_seq(seq)
+        self.wr(R_DMA_START, 1)
+        st = self.poll(R_DMA_STATUS, DMA_DONE | DMA_BUSY, DMA_DONE, f"{tag}: picture DMA")
+        if st & DMA_ERR:
+            raise HostError(f"{tag}: the picture DMA got an AXI error response")
+        return planes, total
+
     # -- a whole stream
     def check_core_build(self, hdr, tag):
         if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
@@ -313,9 +364,10 @@ class HostDecoder:
         if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
             raise HostError(f"{tag}: loop restoration is not in the core build (encode with --enable-restoration=0)")
 
-    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True):
+    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
-        per coded frame, planes as lists of rows of samples."""
+        per coded frame, planes as lists of rows of samples. dma: (base address, read(offset, n) -> bytes) to take
+        the picture through the DMA engine instead of the registers."""
         for fi, tile_idx in enumerate(dec.frames):
             tag = f"{name} frame {fi}"
             hdr0 = dec.tiles[tile_idx[0]][0]
@@ -332,7 +384,13 @@ class HostDecoder:
                 self.loop_filter(hdr0, tag)
             t["lf"] = time.monotonic() - t0
             t0 = time.monotonic()
-            planes = [self.read_plane(hdr0, p, visible, packed) for p in range(hdr0.NumPlanes)]
+            if dma is not None:
+                base, read = dma
+                layout, total = self.dma_picture(hdr0, base, tag, visible)
+                planes = unpack_dma(hdr0, read(0, total), layout)
+                self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
+            else:
+                planes = [self.read_plane(hdr0, p, visible, packed) for p in range(hdr0.NumPlanes)]
             t["read"] = time.monotonic() - t0
             self.stats["frames"] += 1
             yield fi, hdr0, planes, t

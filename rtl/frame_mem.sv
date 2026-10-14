@@ -35,7 +35,8 @@ module frame_mem #(
     input  logic [1:0]          h_plane,
     input  logic [FBX-1:0]      h_x,
     input  logic [FBY-1:0]      h_y,
-    output logic [PW-1:0]       h_rdata
+    output logic [PW-1:0]       h_rdata,
+    output logic [4*PW-1:0]     h_rdata4         // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
 );
     localparam int N = 1 << (FBX + FBY);
     logic [PW-1:0] mem0 [0:N-1];
@@ -83,5 +84,14 @@ module frame_mem #(
             2'd1: h_rdata <= mem1[{h_y, h_x}];
             default: h_rdata <= mem2[{h_y, h_x}];
         endcase
+        for (int l = 0; l < 4; l++) begin
+            logic [FBX+FBY-1:0] hg;
+            hg = {h_y, h_x[FBX-1:2], 2'(l)};
+            case (h_plane)
+                2'd0: h_rdata4[l*PW +: PW] <= mem0[hg];
+                2'd1: h_rdata4[l*PW +: PW] <= mem1[hg];
+                default: h_rdata4[l*PW +: PW] <= mem2[hg];
+            endcase
+        end
     end
 endmodule
