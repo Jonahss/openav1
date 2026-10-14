@@ -29,6 +29,7 @@ set_property -dict [list \
     CONFIG.PSU__USE__S_AXI_GP0 {0} CONFIG.PSU__USE__S_AXI_GP1 {0} CONFIG.PSU__USE__S_AXI_GP2 {1} CONFIG.PSU__SAXIGP2__DATA_WIDTH {128} \
     CONFIG.PSU__USE__S_AXI_GP3 {0} CONFIG.PSU__USE__S_AXI_GP4 {0} CONFIG.PSU__USE__S_AXI_GP5 {0} CONFIG.PSU__USE__S_AXI_GP6 {0} \
     CONFIG.PSU__FPGA_PL0_ENABLE {1} CONFIG.PSU__CRL_APB__PL0_REF_CTRL__FREQMHZ {100} \
+    CONFIG.PSU__CRL_APB__PL0_REF_CTRL__SRCSEL {IOPLL} CONFIG.PSU__CRL_APB__PL0_REF_CTRL__DIVISOR0 {15} CONFIG.PSU__CRL_APB__PL0_REF_CTRL__DIVISOR1 {1} \
     CONFIG.PSU__FPGA_PL1_ENABLE {0} CONFIG.PSU__FPGA_PL2_ENABLE {0} CONFIG.PSU__FPGA_PL3_ENABLE {0} \
     CONFIG.PSU__USE__IRQ0 {0}] $ps
 set clkgen [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clkgen]
@@ -40,6 +41,23 @@ set_property -dict [list \
     CONFIG.PRIMITIVE {MMCM} CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false} \
     CONFIG.CLKOUT1_REQUESTED_OUT_FREQ $mhz CONFIG.CLKOUT2_USED {true} CONFIG.CLKOUT2_REQUESTED_OUT_FREQ [expr {2 * $mhz}] \
     CONFIG.CLKOUT1_REQUESTED_PHASE {0.000} CONFIG.CLKOUT2_REQUESTED_PHASE {0.000}] $clkgen
+# The MMCM dividers set by hand, so that clk and clk2x come from one VCO as VCO/d and VCO/(d/2): the double-pumped
+# frame memory needs the exact 2:1 ratio and aligned edges, and the timer needs it for the two-cycle crossing
+# constraints. Left to the IP, 80 MHz came out as 80.02 and 159.0 MHz from unrelated dividers (2026-10-14), with
+# the crossing paths timed over drifting edges. Input 100 MHz (pl_clk0 from the IOPLL above), VCO = 100 * m.
+set m 0
+for {set cand 16} {$cand >= 8} {incr cand -1} {
+    set vco [expr {100.0 * $cand}]
+    set q [expr {$vco / (2.0 * $mhz)}]
+    if {$q == int($q) && $vco >= 800 && $vco <= 1600} { set m $cand; break }
+}
+if {$m == 0} { error "no integer MMCM dividers for $mhz MHz from a 100 MHz input" }
+set d2 [expr {int(100 * $m / (2 * $mhz))}]
+set d1 [expr {2 * $d2}]
+set_property -dict [list CONFIG.OVERRIDE_MMCM {true} CONFIG.MMCM_DIVCLK_DIVIDE {1} CONFIG.MMCM_CLKFBOUT_MULT_F [format %.3f $m] \
+    CONFIG.MMCM_CLKOUT0_DIVIDE_F [format %.3f $d1] CONFIG.MMCM_CLKOUT1_DIVIDE $d2 \
+    CONFIG.MMCM_CLKOUT0_PHASE {0.000} CONFIG.MMCM_CLKOUT1_PHASE {0.000}] $clkgen
+puts "MMCM: VCO [expr {100 * $m}] MHz, clk = VCO/$d1, clk2x = VCO/$d2"
 set rst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst]
 set sc [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc]
 set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $sc
