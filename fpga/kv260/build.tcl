@@ -18,10 +18,13 @@ update_compile_order -fileset sources_1
 # ---------------------------------------------------------------- the block design
 create_bd_design sys
 set ps [create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.5 ps]
-# only what the PL needs: HPM0 FPD (32-bit) as the register master, pl_clk0 at 100 MHz, pl_resetn0. The rest of
-# the PS configuration is the boot firmware's business (the bitstream is loaded under a running Linux).
+# only what the PL needs: HPM0 FPD as the register master, pl_clk0 at 100 MHz, pl_resetn0. The rest of the PS
+# configuration is the boot firmware's business (the bitstream is loaded under a running Linux) - including the
+# port's fabric width: FPD_SLCR.AFI_FS is set by the K26 firmware's psu_init to 128 bits for HPM0/HPM1, and a PL
+# built for 32 bits sees only lane 0 (2026-10-14: registers at offsets 4/8/12 mod 16 unreachable). So 128 here;
+# the smartconnect narrows to the AXI-Lite slave.
 set_property -dict [list \
-    CONFIG.PSU__USE__M_AXI_GP0 {1} CONFIG.PSU__MAXIGP0__DATA_WIDTH {32} \
+    CONFIG.PSU__USE__M_AXI_GP0 {1} CONFIG.PSU__MAXIGP0__DATA_WIDTH {128} \
     CONFIG.PSU__USE__M_AXI_GP1 {0} CONFIG.PSU__USE__M_AXI_GP2 {0} \
     CONFIG.PSU__USE__S_AXI_GP0 {0} CONFIG.PSU__USE__S_AXI_GP1 {0} CONFIG.PSU__USE__S_AXI_GP2 {0} \
     CONFIG.PSU__USE__S_AXI_GP3 {0} CONFIG.PSU__USE__S_AXI_GP4 {0} CONFIG.PSU__USE__S_AXI_GP5 {0} CONFIG.PSU__USE__S_AXI_GP6 {0} \
