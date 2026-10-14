@@ -573,6 +573,17 @@ async def dec_vs_model(dut):
     H = int(os.environ.get("TS_H", "96"))
     debug = bool(os.environ.get("TD_DEBUG"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    if hasattr(dut, "clk2x"):                                # FRAME_URAM: the double-pumped frame memory's 2x clock
+        cocotb.start_soon(Clock(dut.clk2x, 5, unit="ns").start())
+        async def phase_gen():                               # 1 at the mid-cycle clk2x edge, 0 at the clk-aligned one
+            while True:
+                await RisingEdge(dut.clk)
+                await Timer(2.5, "ns")
+                dut.phase.value = 1
+                await Timer(5, "ns")
+                dut.phase.value = 0
+        dut.phase.value = 0
+        cocotb.start_soon(phase_gen())
     for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start", "pipe_en", "frame_start", "n_tile_cols", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1

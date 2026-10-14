@@ -257,6 +257,17 @@ async def tile_vs_model(dut):
     W = int(os.environ.get("TS_W", "128"))
     H = int(os.environ.get("TS_H", "96"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    if hasattr(dut, "clk2x"):                                # dec_top with the double-pumped frame memory (FRAME_URAM)
+        cocotb.start_soon(Clock(dut.clk2x, 5, unit="ns").start())
+        async def phase_gen():                               # 1 at the mid-cycle clk2x edge, 0 at the clk-aligned one
+            while True:
+                await RisingEdge(dut.clk)
+                await Timer(2.5, "ns")
+                dut.phase.value = 1
+                await Timer(5, "ns")
+                dut.phase.value = 0
+        dut.phase.value = 0
+        cocotb.start_soon(phase_gen())
     for s in ("in_valid", "in_eos", "def_we", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "blk_ack", "pm_plane", "pm_x", "pm_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1

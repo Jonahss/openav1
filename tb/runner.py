@@ -19,7 +19,7 @@ EXTRA = {"itx_lvl": ["itx_pair.sv"], "frame_mem_uram": [], "itx2d": ["itx_pair.s
                          "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv"],
          "dec_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "q_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                      "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv", "tile_syntax.sv",
-                     "itx_pair.sv", "itx_lvl.sv", "itx_row.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "frame_mem.sv", "frame_mem_w.sv", "recon_top.sv",
+                     "itx_pair.sv", "itx_lvl.sv", "itx_row.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "frame_mem.sv", "frame_mem_w.sv", "frame_mem_uram.sv", "recon_top.sv",
                      "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "rec_fifo.sv", "lf_top.sv", "cdef_top.sv", "lr_top.sv", "sr_top.sv"],
          "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lf_top.sv"],
          "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lr_top.sv"],
@@ -35,6 +35,9 @@ if top in ("dec_top", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.ge
 # replayed against the 2-lane netlist mismatched from the first transform block on).
 if top in ("dec_top", "recon_top") and os.environ.get("ITX_LANES"):
     params["ITX_LANES"] = int(os.environ["ITX_LANES"])
+# FRAME_URAM=1 builds dec_top with the on-chip UltraRAM frame memory (core build only: no CDEF / LR / SR)
+if top == "dec_top" and os.environ.get("FRAME_URAM"):
+    params["FRAME_URAM"] = int(os.environ["FRAME_URAM"])
 # SIM_FAST=1: optimise for simulation speed (Verilator -O3, compiler -O2, N threads); default is Verilator's -Os,
 # which compiles fastest. SIM_THREADS overrides the thread count (default: all cores).
 build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves and waves_fmt == "fst" else []) \
@@ -45,7 +48,8 @@ if os.environ.get("SIM_FAST", "0") == "1":
 # One build dir per configuration (build/<top> or build/<top>_fb<X>x<Y>), so Argon classes with different
 # frame-buffer sizes build and run side by side instead of rebuilding one dir in turn.
 build_dir = ROOT / "build" / (top + (f"_fb{params['FBX']}x{params['FBY']}" if "FBX" in params else "")
-                              + (f"_l{params['ITX_LANES']}" if "ITX_LANES" in params else ""))
+                              + (f"_l{params['ITX_LANES']}" if "ITX_LANES" in params else "")
+                              + ("_uram" if params.get("FRAME_URAM") else ""))
 r.build(sources=sources, hdl_toplevel=top, parameters=params,
         build_dir=build_dir, build_args=build_args, waves=waves)
 if os.environ.get("TS_BUILD_ONLY") == "1":
