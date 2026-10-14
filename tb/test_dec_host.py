@@ -26,8 +26,8 @@ from axil import AxiLite, write_transcript   # noqa: E402
 STAGE = os.environ.get("TS_STAGE", "recon")
 
 from host_regs import (R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
-                       R_DEF, R_HDR, R_RH, R_LH, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
-                       HDR_WORDS, RH_WORDS, LH_WORDS, words)
+                       R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
+                       HDR_WORDS, RH_WORDS, LH_WORDS, words, plane_size)
 
 
 
@@ -69,18 +69,27 @@ async def run_tile(ax, th, dec, data, tag, stats):
 
 
 async def read_back(ax, hdr, planes, tag, stats, visible=False):
+    """The picture through the host port: packed words (HDATA4 for 8-bit, HDATA2 otherwise, the address
+    advancing by itself) unless TS_READ=single, which reads every sample through HADDR / HDATA."""
+    packed = os.environ.get("TS_READ", "packed") != "single"
     for plane in range(hdr.NumPlanes):
-        sx = hdr.subsampling_x if plane else 0
-        sy = hdr.subsampling_y if plane else 0
-        if visible:                                          # dav1d's pictures: the visible area only
-            W = (hdr.UpscaledWidth + sx) >> sx
-            H = (hdr.FrameHeight + sy) >> sy
-        else:
-            W = (hdr.MiCols * 4) >> sx
-            H = (hdr.MiRows * 4) >> sy
+        W, H = plane_size(hdr, plane, visible)                # visible: dav1d's pictures hold the visible area only
+        n = 4 if hdr.BitDepth == 8 else 2
+        reg = R_HDATA4 if n == 4 else R_HDATA2
         bad = []
         for y in range(H):
-            for x in range(W):
+            x = 0
+            if packed:
+                await ax.write(R_HADDR, (plane << 28) | (y << 14))
+                while x + n <= W:
+                    exp = sum(planes[plane][y][x + i] << (8 * i if n == 4 else 16 * i) for i in range(n))
+                    v = await ax.read(reg, expect=exp)
+                    for i in range(n):
+                        got = (v >> (8 * i)) & 0xFF if n == 4 else (v >> (16 * i)) & 0xFFF
+                        if got != planes[plane][y][x + i]:
+                            bad.append((y, x + i, got, planes[plane][y][x + i]))
+                    x += n
+            for x in range(x, W):
                 await ax.write(R_HADDR, (plane << 28) | (y << 14) | x)
                 v = await ax.read(R_HDATA, expect=planes[plane][y][x])
                 if v != planes[plane][y][x]:

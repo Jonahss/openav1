@@ -20,7 +20,11 @@
 //   0x01C DATA1     W   push one tile byte [7:0]        0x020 DATA4  W  push four bytes, [7:0] first
 //                       (a push into a full FIFO, or one whose write strobe is not the whole word, is dropped
 //                       and sets STATUS bit 14: poll the free count; make each push one 32-bit bus transfer)
-//   0x024 HADDR     RW  host read address {2'd0, plane[1:0], y[13:0], x[13:0]}   0x028 HDATA  R  h_rdata [11:0]
+//   0x024 HADDR     RW  host read address {2'd0, plane[1:0], y[13:0], x[13:0]}: a write fetches the four samples at
+//                       x .. x+3 of that row into a buffer (16 cycles); a data read before they are in waits
+//   0x028 HDATA     R   sample x [11:0] (the address stays)
+//   0x030 HDATA2    R   {4'd0, sample x+1, 4'd0, sample x}: then x += 2 and the next four are fetched
+//   0x034 HDATA4    R   {x+3, x+2, x+1, x}[7:0] (8-bit pictures): then x += 4 and the next four are fetched
 //   0x02C DEF_ADDR  W   CDF default row address; the write strobes def_we with DEF_DATA
 //   0x040-0x05C DEF_DATA[0..7]  RW  246-bit default row
 //   0x080-0x0BC HDR[0..15]  RW  syn_pkg::hdr_t     0x0C0-0x0FC RH[0..15]  RW  rec_hdr_t
@@ -112,7 +116,7 @@ module dec_host
         .sr_start(start[4]), .sr_buf(ctrl[3]), .sr_busy, .sr_done,
         .lr_start(start[5]), .lr_from_deblocked(ctrl[2]), .lr_busy, .lr_done_o,
         .blk_done, .blk_rec, .tx_done, .tx_rec, .lr_done, .lr_rec,
-        .h_buf(ctrl[5:4]), .h_plane(haddr[29:28]), .h_x(haddr[FBX-1:0]), .h_y(haddr[14 +: FBY]), .h_rdata
+        .h_buf(ctrl[5:4]), .h_plane(haddr[29:28]), .h_x(hx_q), .h_y(haddr[14 +: FBY]), .h_rdata
     );
     logic [CDF_AW-1:0] def_addr_r;
     always_comb begin
@@ -169,6 +173,33 @@ module dec_host
     assign in_data  = ow[8 * ow_i +: 8];
     assign in_eos   = ctrl[8] && !ow_valid && f_empty;
 
+    // ---------------------------------------------------------------- picture read-back prefetch
+    // After an HADDR write, and after a packed read advanced the address, the four samples at x .. x+3 of the
+    // addressed row are read into hbuf one after another, each address held for HL cycles (both frame memories
+    // answer the cycle after the address; the hold covers that with margin, 16 cycles per fetch against a
+    // microsecond per AXI transaction from the PS). A data read while the fetch is in progress waits on the
+    // AXI read channel (arready stays low), so software never sees stale samples.
+    localparam int HL = 3;
+    logic [FBX-1:0] hx_q;                                    // the address presented to the decoder's host port
+    logic [11:0]    hbuf [4];
+    logic           hbuf_ok, h_busy, h_fetch;                // h_fetch: (re)start at haddr (pulse from the AXI side)
+    logic [1:0]     h_idx, h_cnt;
+    always_ff @(posedge clk) begin
+        if (!aresetn) begin hbuf_ok <= 1'b0; h_busy <= 1'b0; h_idx <= 2'd0; h_cnt <= 2'd0; hx_q <= '0; end
+        else if (h_fetch) begin
+            hbuf_ok <= 1'b0; h_busy <= 1'b1; h_idx <= 2'd0; h_cnt <= 2'd0; hx_q <= haddr[FBX-1:0];
+        end else if (h_busy) begin
+            if (h_cnt == 2'(HL)) begin
+                hbuf[h_idx] <= h_rdata;
+                h_cnt <= 2'd0;
+                hx_q  <= hx_q + 1'b1;
+                h_idx <= h_idx + 1'b1;
+                if (h_idx == 2'd3) begin h_busy <= 1'b0; hbuf_ok <= 1'b1; end
+            end else h_cnt <= h_cnt + 1'b1;
+        end
+    end
+    logic h_data_read;                                       // a read of HDATA / HDATA2 / HDATA4
+
     // ---------------------------------------------------------------- AXI4-Lite slave
     logic        aw_v, w_v, ar_v;
     logic [11:0] aw_a, ar_a;
@@ -181,7 +212,8 @@ module dec_host
     assign s_axi_bresp   = 2'b00;
     assign s_axi_rresp   = 2'b00;
     assign do_write = aw_v && w_v && !s_axi_bvalid;
-    assign do_read  = ar_v;
+    assign h_data_read = (ri == 10'h00A) || (ri == 10'h00C) || (ri == 10'h00D);
+    assign do_read  = ar_v && !(h_data_read && !hbuf_ok);
     logic [9:0] wi, ri;                                      // word index
     assign wi = aw_a[11:2];
     assign ri = ar_a[11:2];
@@ -196,9 +228,9 @@ module dec_host
             ctrl <= 32'd0; haddr <= 32'd0; def_addr_r <= '0;
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
-            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0;
         end else begin
-            start <= '0; push <= 1'b0; def_we <= 1'b0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0; h_fetch <= 1'b0;
             if (ctrl[0]) f_badw <= 1'b0;
             if (s_axi_awvalid && s_axi_awready) begin aw_a <= s_axi_awaddr; aw_v <= 1'b1; end
             if (s_axi_wvalid && s_axi_wready) begin w_d <= s_axi_wdata; w_s <= s_axi_wstrb; w_v <= 1'b1; end
@@ -212,7 +244,7 @@ module dec_host
                     // first board run) is dropped and flagged like an overflow
                     10'h007: begin if (w_s[0]) begin push <= 1'b1; push_d <= {2'd0, 24'd0, w_d[7:0]}; end else f_badw <= 1'b1; end
                     10'h008: begin if (w_s == 4'hF) begin push <= 1'b1; push_d <= {2'd3, w_d}; end else f_badw <= 1'b1; end
-                    10'h009: haddr <= strb(haddr, w_d, w_s);
+                    10'h009: begin haddr <= strb(haddr, w_d, w_s); h_fetch <= 1'b1; end
                     10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; def_we <= 1'b1; end
                     default: begin
                         if (wi[9:3] == 7'h02)        def_w[wi[2:0]] <= strb(def_w[wi[2:0]], w_d, w_s);       // 0x040
@@ -238,7 +270,9 @@ module dec_host
                     10'h005: s_axi_rdata <= perf_syn_stall;
                     10'h006: s_axi_rdata <= perf_rec_idle;
                     10'h009: s_axi_rdata <= haddr;
-                    10'h00A: s_axi_rdata <= {20'd0, h_rdata};
+                    10'h00A: s_axi_rdata <= {20'd0, hbuf[0]};
+                    10'h00C: begin s_axi_rdata <= {4'd0, hbuf[1], 4'd0, hbuf[0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(2); h_fetch <= 1'b1; end
+                    10'h00D: begin s_axi_rdata <= {hbuf[3][7:0], hbuf[2][7:0], hbuf[1][7:0], hbuf[0][7:0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(4); h_fetch <= 1'b1; end
                     default: begin
                         if (ri[9:3] == 7'h02)      s_axi_rdata <= def_w[ri[2:0]];
                         else if (ri[9:4] == 6'h02) s_axi_rdata <= hdr_w[ri[3:0]];

@@ -82,6 +82,7 @@ def main():
     ap.add_argument("--base", type=lambda x: int(x, 0), default=0xA0000000)
     ap.add_argument("--stage", choices=("lf", "recon"), default="lf")
     ap.add_argument("--frames", type=int, help="stop after this many coded frames")
+    ap.add_argument("--single", action="store_true", help="read the picture sample by sample (HDATA) instead of packed")
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     args = ap.parse_args()
@@ -115,7 +116,7 @@ def main():
     n_bad_frames = 0
     t_all = time.monotonic()
     try:
-        for fi, hdr, planes, t in host.decode_frames(d, stage=args.stage, name=Path(args.stream).name):
+        for fi, hdr, planes, t in host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single):
             if args.frames is not None and fi >= args.frames:
                 break
             W, H = plane_size(hdr, 0)

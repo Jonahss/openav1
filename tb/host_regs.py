@@ -98,6 +98,7 @@ def lf_vals(th):
 # ---------------------------------------------------------------- register map (rtl/dec_host.sv)
 R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_PERF_SYN, R_PERF_REC = 0x000, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x018
 R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR = 0x01C, 0x020, 0x024, 0x028, 0x02C
+R_HDATA2, R_HDATA4 = 0x030, 0x034
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
@@ -222,9 +223,36 @@ class HostDecoder:
             raise HostError(f"HADDR never read back 0x{a:08x}")
         return self.rd(R_HDATA)
 
-    def read_plane(self, hdr, plane, visible=True):
+    def set_haddr(self, plane, x, y):
+        a = (plane << 28) | (y << 14) | x
+        self.wr(R_HADDR, a)
+        for _ in range(1000):
+            if self.rd(R_HADDR) == a:
+                return
+        raise HostError(f"HADDR never read back 0x{a:08x}")
+
+    def read_row(self, hdr, plane, y, W, packed=True):
+        """One row of W samples: HDATA4 (four 8-bit samples a word) or HDATA2 (two 16-bit lanes) with the
+        address advancing by itself, the odd tail sample by sample; packed=False reads every sample singly."""
+        if not packed:
+            return [self.read_sample(plane, x, y) for x in range(W)]
+        n = 4 if hdr.BitDepth == 8 else 2
+        reg = R_HDATA4 if n == 4 else R_HDATA2
+        row = []
+        self.set_haddr(plane, 0, y)
+        for _ in range(W // n):
+            v = self.rd(reg)
+            if n == 4:
+                row += [v & 0xFF, v >> 8 & 0xFF, v >> 16 & 0xFF, v >> 24]
+            else:
+                row += [v & 0xFFF, v >> 16 & 0xFFF]
+        for x in range(len(row), W):
+            row.append(self.read_sample(plane, x, y))
+        return row
+
+    def read_plane(self, hdr, plane, visible=True, packed=True):
         W, H = plane_size(hdr, plane, visible)
-        rows = [[self.read_sample(plane, x, y) for x in range(W)] for y in range(H)]
+        rows = [self.read_row(hdr, plane, y, W, packed) for y in range(H)]
         self.stats["pixels"] += W * H
         return rows
 
@@ -235,7 +263,7 @@ class HostDecoder:
         if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
             raise HostError(f"{tag}: loop restoration is not in the core build (encode with --enable-restoration=0)")
 
-    def decode_frames(self, dec, stage="lf", visible=True, name="stream"):
+    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
         per coded frame, planes as lists of rows of samples."""
         for fi, tile_idx in enumerate(dec.frames):
@@ -254,7 +282,7 @@ class HostDecoder:
                 self.loop_filter(hdr0, tag)
             t["lf"] = time.monotonic() - t0
             t0 = time.monotonic()
-            planes = [self.read_plane(hdr0, p, visible) for p in range(hdr0.NumPlanes)]
+            planes = [self.read_plane(hdr0, p, visible, packed) for p in range(hdr0.NumPlanes)]
             t["read"] = time.monotonic() - t0
             self.stats["frames"] += 1
             yield fi, hdr0, planes, t
