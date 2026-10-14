@@ -53,6 +53,15 @@ would need 48 URAM at 512 x 512 and forwarding logic; the double-pump is both sm
 
 The frame memory needs a second clock input (`clk2x`); the simulation model ignores it.
 
+Implemented (`rtl/frame_mem_uram.sv`, 2026-10-13): Vivado infers UltraRAM only for full-word no-change writes
+(read-first and per-byte enables are both "invalid write mode"), so synthesis instantiates the URAM288 through
+`xpm_memory_tdpram` with 8-bit byte enables (lanes are byte pairs, 16 bits, sample in the low 12; byte 8 of
+the 72-bit word is unused) and simulation uses a behavioural model. At 512 x 512: 24 URAM, 265 LUT, 246 FF.
+Timing: the URAM read to the clk2x capture register is 5.4 ns, so the half-cycle closes at a 92 MHz decoder
+clock; the core build itself closes at ~78 MHz today, so this is not the limit. The fuzz
+(`tb/test_frame_mem_uram.py`) checks the model's contract on random traffic; the gate-level replay checks the
+XPM build against it.
+
 ## DDR version (full-size pictures, all stages)
 
 Same port interface, pictures in the PS DDR through the AXI HP ports. The stages' access patterns are all
