@@ -1,4 +1,4 @@
-"""ctypes binding of tools/kv260/hostlib.c (hostlib.so next to this file, built by build_hostlib.sh): the bulk
+"""ctypes binding of tools/kv260/hostlib.c (libhostregs.so next to this file, built by build_hostlib.sh): the bulk
 register traffic of the board driver in C. Used by tb/host_regs.HostDecoder as its `fast` backend."""
 import ctypes
 from pathlib import Path
@@ -8,7 +8,7 @@ HERE = Path(__file__).resolve().parent
 
 class HostLib:
     def __init__(self, base, path=None):
-        self.lib = ctypes.CDLL(str(path or HERE / "hostlib.so"))
+        self.lib = ctypes.CDLL(str(path or HERE / "libhostregs.so"))
         lib = self.lib
         lib.hl_open.argtypes = [ctypes.c_uint64]
         lib.hl_wr.argtypes = [ctypes.c_uint32, ctypes.c_uint32]

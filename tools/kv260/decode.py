@@ -84,7 +84,7 @@ def main():
     ap.add_argument("--stage", choices=("lf", "recon"), default="lf")
     ap.add_argument("--frames", type=int, help="stop after this many coded frames")
     ap.add_argument("--single", action="store_true", help="read the picture sample by sample (HDATA) instead of packed")
-    ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no hostlib.so)")
+    ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     args = ap.parse_args()
@@ -112,12 +112,12 @@ def main():
 
     regs = Regs(args.base)
     fast = None
-    if not args.slow and not args.single and (Path(__file__).resolve().parent / "hostlib.so").exists():
+    if not args.slow and not args.single and (Path(__file__).resolve().parent / "libhostregs.so").exists():
         from hostlib import HostLib
         fast = HostLib(args.base)
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
     cfg = host.identify()
-    print(f"decoder at 0x{args.base:08x} ({'hostlib.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']}; "
+    print(f"decoder at 0x{args.base:08x} ({'libhostregs.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']}; "
           f"{len(d.frames)} coded frames, {len(shown)} shown")
     n_bad_frames = 0
     t_all = time.monotonic()

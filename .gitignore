@@ -21,4 +21,4 @@ streams/argon.tar.zst*
 streams/fuzz/
 streams/fuzz_fail/
 streams/gen/
-tools/kv260/hostlib.so
+tools/kv260/libhostregs.so
