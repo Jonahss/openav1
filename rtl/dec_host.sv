@@ -13,11 +13,13 @@
 //                       5 lr_start (a start clears its stage's sticky done bit)
 //   0x010 STATUS    R   bit 0 tile_busy, 1 tile_done_lvl, 2 unsupported, 3 frame_busy, 4 frame_done_lvl,
 //                       5 lf_busy, 6 lf_done (sticky), 7 cdef_busy, 8 cdef_done (sticky), 9 sr_busy,
-//                       10 sr_done (sticky), 11 lr_busy, 12 lr_done (sticky), 13 in_ready, 14 fifo overflow
-//                       (sticky until rst), 15 fifo empty (and no byte pending), [31:16] free FIFO words
+//                       10 sr_done (sticky), 11 lr_busy, 12 lr_done (sticky), 13 in_ready, 14 fifo overflow or a
+//                       push with a partial write strobe (sticky until rst), 15 fifo empty (and no byte pending),
+//                       [31:16] free FIFO words
 //   0x014 PERF_SYN  R   perf_syn_stall       0x018 PERF_REC  R   perf_rec_idle
 //   0x01C DATA1     W   push one tile byte [7:0]        0x020 DATA4  W  push four bytes, [7:0] first
-//                       (a push into a full FIFO is dropped and sets the overflow bit: poll the free count)
+//                       (a push into a full FIFO, or one whose write strobe is not the whole word, is dropped
+//                       and sets STATUS bit 14: poll the free count; make each push one 32-bit bus transfer)
 //   0x024 HADDR     RW  host read address {2'd0, plane[1:0], y[13:0], x[13:0]}   0x028 HDATA  R  h_rdata [11:0]
 //   0x02C DEF_ADDR  W   CDF default row address; the write strobes def_we with DEF_DATA
 //   0x040-0x05C DEF_DATA[0..7]  RW  246-bit default row
@@ -142,7 +144,7 @@ module dec_host
     assign f_free  = (FIFO_LW + 1)'(FD) - (wptr - rptr);
     logic               push;
     logic [33:0]        push_d;
-    logic               f_ovf;
+    logic               f_ovf, f_badw;                       // overflow / partial-strobe push: both STATUS bit 14
     logic               ow_valid;                            // the word being handed out byte by byte
     logic [31:0]        ow;
     logic [1:0]         ow_n, ow_i;
@@ -194,9 +196,10 @@ module dec_host
             ctrl <= 32'd0; haddr <= 32'd0; def_addr_r <= '0;
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
-            start <= '0; push <= 1'b0; def_we <= 1'b0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0;
         end else begin
             start <= '0; push <= 1'b0; def_we <= 1'b0;
+            if (ctrl[0]) f_badw <= 1'b0;
             if (s_axi_awvalid && s_axi_awready) begin aw_a <= s_axi_awaddr; aw_v <= 1'b1; end
             if (s_axi_wvalid && s_axi_wready) begin w_d <= s_axi_wdata; w_s <= s_axi_wstrb; w_v <= 1'b1; end
             if (s_axi_bvalid && s_axi_bready) s_axi_bvalid <= 1'b0;
@@ -205,8 +208,10 @@ module dec_host
                 case (wi)
                     10'h002: ctrl <= strb(ctrl, w_d, w_s);
                     10'h003: start <= w_d[5:0];
-                    10'h007: begin push <= 1'b1; push_d <= {2'd0, 24'd0, w_d[7:0]}; end
-                    10'h008: begin push <= 1'b1; push_d <= {2'd3, w_d}; end
+                    // a push must be one whole transfer: a narrow or split write (a byte-wise memcpy on the PS,
+                    // first board run) is dropped and flagged like an overflow
+                    10'h007: begin if (w_s[0]) begin push <= 1'b1; push_d <= {2'd0, 24'd0, w_d[7:0]}; end else f_badw <= 1'b1; end
+                    10'h008: begin if (w_s == 4'hF) begin push <= 1'b1; push_d <= {2'd3, w_d}; end else f_badw <= 1'b1; end
                     10'h009: haddr <= strb(haddr, w_d, w_s);
                     10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; def_we <= 1'b1; end
                     default: begin
@@ -228,7 +233,7 @@ module dec_host
                     10'h000: s_axi_rdata <= 32'hA71D_0001;
                     10'h001: s_axi_rdata <= {8'd0, 8'(FBX), 8'(FBY), 4'(ITX_LANES), 3'd0, 1'(FRAME_URAM)};
                     10'h002: s_axi_rdata <= ctrl;
-                    10'h004: s_axi_rdata <= {16'(f_free), !ow_valid && f_empty, f_ovf, in_ready, lr_done_s, lr_busy, sr_done_s, sr_busy,
+                    10'h004: s_axi_rdata <= {16'(f_free), !ow_valid && f_empty, f_ovf || f_badw, in_ready, lr_done_s, lr_busy, sr_done_s, sr_busy,
                                              cdef_done_s, cdef_busy, lf_done_s, lf_busy, frame_done_lvl, frame_busy, unsupported, tile_done_lvl, tile_busy};
                     10'h005: s_axi_rdata <= perf_syn_stall;
                     10'h006: s_axi_rdata <= perf_rec_idle;

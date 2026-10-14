@@ -8,25 +8,37 @@ Lines: W <addr> <data> | R <addr> <expect> | P <addr> <mask> <value> (hex). The 
 Exit status 0 when every R matched and every P completed; the first mismatches are printed.
 """
 import argparse
+import ctypes
 import mmap
 import os
 import struct
 import sys
 import time
 
-R_STATUS, R_DATA1, R_DATA4 = 0x010, 0x01C, 0x020
+R_STATUS, R_DATA1, R_DATA4, R_HADDR = 0x010, 0x01C, 0x020, 0x024
 
 
 class Regs:
+    """32-bit register access through /dev/mem. Every access must be ONE 32-bit bus transaction: on the first
+    board run (2026-10-14) struct.pack_into turned out to issue three stores per word and a slice assignment
+    two, so each DATA4 write pushed several junk words into the tile FIFO; ctypes' c_uint32 does a single
+    aligned store/load."""
     def __init__(self, base, span=0x1000):
         self.fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
         self.m = mmap.mmap(self.fd, span, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
+        self.regs = {}
+
+    def reg(self, a):
+        r = self.regs.get(a)
+        if r is None:
+            r = self.regs[a] = ctypes.c_uint32.from_buffer(self.m, a)
+        return r
 
     def rd(self, a):
-        return struct.unpack_from("<I", self.m, a)[0]
+        return self.reg(a).value
 
     def wr(self, a, v):
-        struct.pack_into("<I", self.m, a, v & 0xFFFFFFFF)
+        self.reg(a).value = v & 0xFFFFFFFF
 
 
 def main():
@@ -36,10 +48,12 @@ def main():
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--max-bad", type=int, default=16)
     ap.add_argument("--poll-timeout", type=float, default=30.0, help="seconds per poll")
+    ap.add_argument("--dump", help="write every checked read as '<addr> <value> <expected>' to this file")
     args = ap.parse_args()
     r = Regs(args.base)
     ops = [ln.split() for ln in open(args.transcript) if ln.strip()]
     bad = []
+    dump = open(args.dump, "w") if args.dump else None
     n_r = n_w = n_p = 0
     t0 = time.time()
     for i, op in enumerate(ops):
@@ -55,10 +69,22 @@ def main():
                         sys.exit(2)
             r.wr(a, v)
             n_w += 1
+            if a == R_HADDR:
+                # the AXI write and the following HDATA read travel on independent channels and the read can
+                # overtake the posted write (first board run: every pixel came back as its predecessor), so wait
+                # until the address reads back before the data read is issued
+                for _ in range(1000):
+                    if r.rd(R_HADDR) == v:
+                        break
+                else:
+                    print(f"op {i}: HADDR never read back 0x{v:08x}")
+                    sys.exit(2)
         elif kind == "R":
             exp = int(op[2], 16)
             v = r.rd(a)
             n_r += 1
+            if dump:
+                dump.write(f"{a:x} {v:x} {exp:x}\n")
             if v != exp:
                 bad.append((i, a, v, exp))
                 if len(bad) <= args.max_bad:
