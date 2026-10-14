@@ -40,6 +40,7 @@ for f in $files; do
     esac
 done
 export SYNTH_ROOT=$root SYNTH_OUT=$out SYNTH_TOP=$top SYNTH_GENERICS=$generics SYNTH_SOURCES=$sources
+grep -qE "input +logic +clk2x" "$root/rtl/$top.sv" && export SYNTH_CLK2X=1   # a double-pumped memory: 5 ns clock on clk2x
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): give Vivado the same shape
 mkdir -p "$out/work/run"; ln -sfn "$root/rtl" "$out/rtl"
 echo "$top FBX=$fbx FBY=$fby ($generics) -> $out"
