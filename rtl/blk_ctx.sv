@@ -105,8 +105,13 @@ module blk_ctx
     // registers: left records, segment ids of the previous superblock row's last row, palettes, left levels
     logic [16*REC_W-1:0] left_rec  [0:1];
     logic [47:0]         seg_prev  [0:WORDS-1];
-    logic [95:0]         a_pal [0:1][0:31];                  // plane, col & 31
-    logic [95:0]         l_pal [0:1][0:31];
+    // palette colour caches: one entry per 4x4 column (above) / row (left), written one entry per clock at block
+    // end, read one entry per query. Four 1-D arrays so Vivado infers distributed RAM (as a 2-D array with two
+    // writes per clock it built 32:1 muxes of 96 bits and 12k flip-flops, 2026-10-13).
+    (* ram_style = "distributed" *) logic [95:0] a_pal_y_m [0:31];
+    (* ram_style = "distributed" *) logic [95:0] a_pal_u_m [0:31];
+    (* ram_style = "distributed" *) logic [95:0] l_pal_y_m [0:31];
+    (* ram_style = "distributed" *) logic [95:0] l_pal_u_m [0:31];
     logic [127:0]        l_lvl [0:2][0:1];
 
     // ------------------------------------------------------------------ helpers
@@ -152,8 +157,8 @@ module blk_ctx
                 l_word  <= left_rec[q_r[4]];
                 l_word1 <= left_rec[~q_r[4]];
                 if (q_top) begin seg_w_u <= seg_prev[q_c[CAW+3:4]]; seg_w_ul <= seg_prev[cm1[CAW+3:4]]; end
-                ap_y <= a_pal[0][q_c[4:0]]; ap_u <= a_pal[1][q_c[4:0]];
-                lp_y <= l_pal[0][q_r[4:0]]; lp_u <= l_pal[1][q_r[4:0]];
+                ap_y <= a_pal_y_m[q_c[4:0]]; ap_u <= a_pal_u_m[q_c[4:0]];
+                lp_y <= l_pal_y_m[q_r[4:0]]; lp_u <= l_pal_u_m[q_r[4:0]];
                 qst <= Q_RD1;
             end
             Q_RD1: begin if (!q_top) seg_w_u <= sg_rdata; a_word <= ar_rdata; qst <= Q_RD2; end
@@ -250,6 +255,8 @@ module blk_ctx
     logic [CAW-1:0] wcol_word;
     assign wcol_word = wr_c[CAW+3:4] + CAW'(wj);
     logic [MIW-1:0] wcol4;
+    always_ff @(posedge clk) if (wst == W_PALA) begin a_pal_y_m[wcol4[4:0]] <= wcol_y; a_pal_u_m[wcol4[4:0]] <= wcol_u; end
+    always_ff @(posedge clk) if (wst == W_PALL) begin l_pal_y_m[wrow[4:0]]  <= wcol_y; l_pal_u_m[wrow[4:0]]  <= wcol_u; end
     assign wcol4 = wr_c + MIW'(wi);
 
     always_ff @(posedge clk) begin
@@ -303,15 +310,11 @@ module blk_ctx
             end
             W_PALA: begin
                 if (sbrow_end) sbrow_pend <= 1'b1;                                  // palette blocks are <= 64 px: bw4, bh4 <= 16
-                a_pal[0][wcol4[4:0]] <= wcol_y;
-                a_pal[1][wcol4[4:0]] <= wcol_u;
                 if (wi + 6'd1 >= wr_bw4) begin wi <= 6'd0; wst <= W_PALL; end
                 else wi <= wi + 6'd1;
             end
             W_PALL: begin
                 if (sbrow_end) sbrow_pend <= 1'b1;
-                l_pal[0][wrow[4:0]] <= wcol_y;
-                l_pal[1][wrow[4:0]] <= wcol_u;
                 if (wi + 6'd1 >= wr_bh4) begin wi <= 6'd0; wst <= W_IDLE; end
                 else wi <= wi + 6'd1;
             end
