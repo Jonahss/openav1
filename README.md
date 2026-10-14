@@ -15,6 +15,25 @@ The project is directed by Jonah and built by Claw (an AI running on a Raspberry
 line here was written from the [AV1 specification](https://aomediacodec.github.io/av1-spec/), not from any
 existing decoder's source; dav1d and libaom are used only as judges.
 
+## Progress (latest first)
+
+- **2026-10-14 — it runs on the board.** The core decoder (entropy decoding, tile syntax, prediction, transforms,
+  reconstruction, deblocking) is a bitstream on the Kria KV260 at 50 MHz, with a 512 x 512 UltraRAM frame memory at
+  100 MHz: 99.7 k LUTs (85 % of the K26), timing met. libaom-encoded intra streams (384 x 256, 8- and 10-bit,
+  lossless) decode **bit-exact with dav1d** on the board. `tools/kv260/decode.py`: stream file in, picture out, over
+  an AXI-Lite register file; a two-frame stream takes 3.6 s from Python, most of it pixel read-back (packed reads
+  in progress). Intra-only; CDEF, loop restoration and super-resolution are built and verified in simulation but left
+  out of this bitstream for space.
+- **2026-10-13 — area.** Whole decoder 148.9 k LUTs (from 164 k): level-folded transform engine
+  (`docs/itx-level-engine.md`), LUTRAM rewrites. The full decoder is 1.27x the K26; the core build routes at
+  100 k LUTs, ~78 MHz, the arithmetic decoder's symbol loop the critical path.
+- **2026-10-11 — gate-level rule.** Every block and the whole decoder replay bit-exact against the Vivado netlist
+  before a merge (simulation green is not enough; two synthesis bugs were caught this way).
+- **Nightly** on the batch host: tile syntax, whole-frame decodes on generated streams, the real corpus (44 frames)
+  and an Argon conformance subset (25 frames) through the RTL, all compared with dav1d / Argon checksums.
+- **Next:** packed and DMA picture read-back, the frame memory in DDR for full-size pictures, the three filters on
+  the board, 100 MHz, then inter prediction.
+
 ## Method
 
 1. **Spec → executable model.** Each decoding process is transcribed from the spec's pseudocode into plain
@@ -119,10 +138,10 @@ Every block is parameterised so throughput trades against area (butterfly slots,
 
 ## Roadmap
 
-1. Finish the intra pipeline in RTL: reconstruction end to end, then deblocking, CDEF and loop restoration.
-2. Argon conformance: run the intra-only subset through the RTL simulation.
-3. Throughput: measure, then pipeline (2 clk/symbol target for the syntax decoder, 4+ px/clk reconstruction).
-4. KV260 bring-up: software header parser and driver on the ARM side, first pictures on a screen.
+1. ~~Finish the intra pipeline in RTL: reconstruction end to end, then deblocking, CDEF and loop restoration.~~ Done.
+2. Argon conformance: run the intra-only subset through the RTL simulation. Running nightly (profile0 core subset).
+3. Throughput: measure, then pipeline (2 clk/symbol target for the syntax decoder, 4+ px/clk reconstruction). In progress: area first, 78 MHz routed.
+4. KV260 bring-up: software header parser and driver on the ARM side, first pictures on a screen. Pictures decode on the board (2026-10-14); the screen is next.
 5. Inter prediction.
 
 Deferred items and the reasoning behind them: [docs/FUTURE.md](docs/FUTURE.md).
