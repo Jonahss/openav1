@@ -136,6 +136,7 @@ class HostDecoder:
         self.poll_timeout = poll_timeout
         self.log = log or (lambda s: None)
         self.stats = dict(frames=0, tiles=0, bytes=0, pixels=0, writes=0, reads=0)
+        self._def_seq = {}                      # base_q_idx -> the CDF default rows as a write sequence
 
     # -- primitives
     def wr(self, a, v):
@@ -151,13 +152,33 @@ class HostDecoder:
             self.wr(base + 4 * i, w)
 
     def write_seq(self, pairs):
-        """(address, value) pairs in order."""
+        """(address, value) pairs in order, or a prebuilt (addrs, vals) pair of arrays for the fast backend."""
         if self.fast is not None:
-            self.fast.write_seq([a for a, _ in pairs], [v for _, v in pairs])
-            self.stats["writes"] += len(pairs)
+            if isinstance(pairs, tuple):
+                self.fast.write_seq(*pairs)
+                self.stats["writes"] += len(pairs[0])
+            else:
+                self.fast.write_seq([a for a, _ in pairs], [v for _, v in pairs])
+                self.stats["writes"] += len(pairs)
+        elif isinstance(pairs, tuple):
+            for a, v in zip(*pairs):
+                self.wr(a, v)
         else:
             for a, v in pairs:
                 self.wr(a, v)
+
+    def default_rows_seq(self, base_q_idx):
+        """The CDF default rows of a base_q_idx as a write sequence (8 data words + the address write per row),
+        computed once: the rows take 60 ms to generate and 11 k words to marshal."""
+        seq = self._def_seq.get(base_q_idx)
+        if seq is None:
+            pairs = []
+            for i, row in enumerate(M.default_rows(base_q_idx)):
+                pairs += [(R_DEF + 4 * k, w) for k, w in enumerate(words(row, 8))]
+                pairs.append((R_DEF_ADDR, i))
+            addrs, vals = [a for a, _ in pairs], [v for _, v in pairs]
+            seq = self._def_seq[base_q_idx] = self.fast.seq_arrays(addrs, vals) if self.fast is not None else (addrs, vals)
+        return seq
 
     def poll(self, a, mask, value, what):
         if self.fast is not None:
@@ -191,11 +212,9 @@ class HostDecoder:
         """Headers, CDF defaults, start, the tile bytes, end of stream; returns when the tile is decoded."""
         seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th, dec, 0)), HDR_WORDS))]
         seq += [(R_RH + 4 * i, w) for i, w in enumerate(words(pack(REC_FIELDS, rec_vals(th)), RH_WORDS))]
-        for i, row in enumerate(M.default_rows(th.base_q_idx)):
-            seq += [(R_DEF + 4 * k, w) for k, w in enumerate(words(row, 8))]
-            seq.append((R_DEF_ADDR, i))
-        seq.append((R_START, START_TILE))
         self.write_seq(seq)
+        self.write_seq(self.default_rows_seq(th.base_q_idx))
+        self.wr(R_START, START_TILE)
         pos = 0
         n_words = (len(data) + 3) // 4
         t0 = time.monotonic()

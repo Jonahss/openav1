@@ -1,5 +1,6 @@
 """ctypes binding of tools/kv260/hostlib.c (libhostregs.so next to this file, built by build_hostlib.sh): the bulk
 register traffic of the board driver in C. Used by tb/host_regs.HostDecoder as its `fast` backend."""
+import array
 import ctypes
 from pathlib import Path
 
@@ -30,10 +31,18 @@ class HostLib:
     def rd(self, a):
         return self.lib.hl_rd(a)
 
+    @staticmethod
+    def seq_arrays(addrs, vals):
+        """(address, value) lists as the C arrays write_seq takes; build once per repeated sequence (the CDF
+        default rows of a base_q_idx: 11 k words), since the marshalling costs more than the bus."""
+        return array.array("I", addrs), array.array("I", [v & 0xFFFFFFFF for v in vals])
+
     def write_seq(self, addrs, vals):
+        if not isinstance(addrs, array.array):
+            addrs, vals = self.seq_arrays(addrs, vals)
         n = len(addrs)
-        A = (ctypes.c_uint32 * n)(*addrs)
-        V = (ctypes.c_uint32 * n)(*[v & 0xFFFFFFFF for v in vals])
+        A = (ctypes.c_uint32 * n).from_buffer(addrs)
+        V = (ctypes.c_uint32 * n).from_buffer(vals)
         self.lib.hl_write_seq(A, V, n)
 
     def push(self, data, timeout):
@@ -47,5 +56,5 @@ class HostLib:
         buf = (ctypes.c_uint16 * (W * H))()
         if self.lib.hl_read_plane(plane, W, H, 1 if bd8 else 0, buf):
             raise OSError("hostlib: HADDR never read back")
-        flat = list(buf)
+        flat = memoryview(buf).cast("B").cast("H").tolist()      # list(buf) on a ctypes array is 25x slower
         return [flat[y * W:(y + 1) * W] for y in range(H)]
