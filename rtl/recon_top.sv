@@ -617,6 +617,11 @@ module recon_top
     logic [6:0]  add_xx, add_yy, padd_xx, padd_yy;
     assign padd_xx = flip_lr ? 7'(tw_px - 7'd4 - pcj) : pcj;
     assign padd_yy = flip_ud ? 7'(th_px - 7'd1 - pci) : pci;
+    // The written group's picture position, registered with (pci, pcj): the flip arithmetic and the block offset
+    // then sit a cycle ahead of the frame memory's write address (31 logic levels from the transform-size register
+    // to the UltraRAM address pin was the core build's worst clock-crossing path at 100 MHz).
+    logic [FBX-1:0] padd_x_r;
+    logic [FBY-1:0] padd_y_r;
     assign add_xx = flip_lr ? 7'(tw_px - 7'd4 - cj) : cj;
     assign add_yy = flip_ud ? 7'(th_px - 7'd1 - ci) : ci;
     logic [47:0] add_out4;
@@ -686,7 +691,7 @@ module recon_top
             // residual add: read the group at (ci, cj) through port 1, write the previous group through port 4
             R_ADD, R_ADD_LAST: begin
                 if (rs == R_ADD) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(add_xx)); fb_y = FBY'(t.y + PXW'(add_yy)); end
-                if (p_valid) begin fb4_we = 1'b1; fb4_x = FBX'(t.x + PXW'(padd_xx)); fb4_y = FBY'(t.y + PXW'(padd_yy)); fb4_wdata = add_out4; end
+                if (p_valid) begin fb4_we = 1'b1; fb4_x = padd_x_r; fb4_y = padd_y_r; fb4_wdata = add_out4; end
             end
             default: ;
         endcase
@@ -787,6 +792,8 @@ module recon_top
                     sd_valid <= (sk < t.eob); sd_k <= sk;
                     if (sk < t.eob) sk <= sk + 11'd1;
                     p_valid <= sd_valid; pci <= sc_ci; pcj <= sc_cj;
+                    padd_x_r <= FBX'(t.x + PXW'(flip_lr ? 7'(tw_px - 7'd4 - sc_cj) : sc_cj));
+                    padd_y_r <= FBY'(t.y + PXW'(flip_ud ? 7'(th_px - 7'd1 - sc_ci) : sc_ci));
                     if (sk >= t.eob && !sd_valid) rs <= R_DQ_LAST;
                 end
                 R_DQ_LAST: begin p_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; rs <= R_ITX_START; end
