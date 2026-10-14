@@ -2,7 +2,9 @@
 
 Status (2026-10-14): **the core decoder decodes on the board, bit-exact.** First bitstream (50 MHz decoder /
 100 MHz memory, 99.5k LUT, 40 URAM, WNS +0.7 ns): seed 1 and seeds 2-7 (4:2:0 / 4:4:4 / mono, 8/10/12-bit,
-a four-tile frame, loop filter on) replayed through the register file with 0 mismatches over 126,976 pixels.
+a four-tile frame, loop filter on) replayed through the register file with 0 mismatches over 126,976 pixels;
+then the libaom-encoded natural pictures `streams/synth/natural_lf_only_{8,10}bit.ivf` (384 x 256, two frames
+each) identical to dav1d's output: 589,824 pixels, 0 mismatches, 13 s for 1.2 M register operations from Python.
 Two board-only lessons, below.
 
 ## What is in the bitstream
