@@ -5,6 +5,7 @@ open_checkpoint $out/post_synth.dcp
 set_param general.maxThreads 8
 # the out-of-context clock: tell the tools where it comes from so the timer stops warning
 set_property HD.CLK_SRC BUFGCTRL_X0Y0 [get_ports clk]
+if {[llength [get_ports -quiet clk2x]]} { set_property HD.CLK_SRC BUFGCTRL_X0Y1 [get_ports clk2x] }
 opt_design
 place_design
 phys_opt_design

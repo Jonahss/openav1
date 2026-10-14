@@ -16,8 +16,9 @@ if {[info exists ::env(SYNTH_CLK2X)]} {
     # read data only there (rtl/frame_mem_uram.sv), so every clk <-> clk2x path is a full clk cycle
     puts $fp "set_multicycle_path -setup 2 -from \[get_clocks clk\] -to \[get_clocks clk2x\]"
     puts $fp "set_multicycle_path -hold 1 -from \[get_clocks clk\] -to \[get_clocks clk2x\]"
-    puts $fp "set_multicycle_path -setup 2 -from \[get_clocks clk2x\] -to \[get_clocks clk\]"
-    puts $fp "set_multicycle_path -hold 1 -from \[get_clocks clk2x\] -to \[get_clocks clk\]"
+    # fast -> slow: the launch is the clk-aligned clk2x edge, one clk2x period before the default (-start)
+    puts $fp "set_multicycle_path -setup 2 -start -from \[get_clocks clk2x\] -to \[get_clocks clk\]"
+    puts $fp "set_multicycle_path -hold 1 -start -from \[get_clocks clk2x\] -to \[get_clocks clk\]"
     close $fp
 }
 read_xdc -mode out_of_context $out/clk.xdc
