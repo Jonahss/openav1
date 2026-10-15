@@ -5,7 +5,8 @@ module dec_host_v #(
     parameter FBX = 9,
     parameter FBY = 9,
     parameter ITX_LANES = 2,
-    parameter FRAME_URAM = 1
+    parameter FRAME_URAM = 1,
+    parameter FRAME_WIN = 0
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axi, ASSOCIATED_RESET aresetn" *)
@@ -64,7 +65,7 @@ module dec_host_v #(
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RVALID" *)  input  wire        m_axi_rvalid,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RREADY" *)  output wire        m_axi_rready
 );
-    dec_host #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM)) u (
+    dec_host #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN)) u (
         .clk(clk), .clk2x(clk2x), .phase(phase), .aresetn(aresetn),
         .s_axi_awaddr(s_axi_awaddr), .s_axi_awvalid(s_axi_awvalid), .s_axi_awready(s_axi_awready),
         .s_axi_wdata(s_axi_wdata), .s_axi_wstrb(s_axi_wstrb), .s_axi_wvalid(s_axi_wvalid), .s_axi_wready(s_axi_wready),

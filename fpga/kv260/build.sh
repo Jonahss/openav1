@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the KV260 bitstream of the core decoder (no CDEF / LR / SR, 512 x 512 UltraRAM frame memory, 2 transform
 # lanes) behind the AXI-Lite host interface, and package it for the Kria firmware loader:
-#   fpga/kv260/build.sh [tag]          (KV260_MHZ=50 by default: the decoder clock; the memory runs at 2x)
+#   fpga/kv260/build.sh [tag]          (KV260_MHZ=50 by default: the decoder clock; the memory runs at 2x;
+#                                       KV260_FBX / KV260_FBY = 9 and KV260_WIN = 0 by default: 512 x 512 whole-picture
+#                                       memory; KV260_FBX=11 KV260_FBY=11 KV260_WIN=3 for the 1080p window build)
 # Output in ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/kv260-<tag>/: the Vivado project (proj/), impl_*.rpt, and
 # fw/openav1/{openav1.bit.bin, openav1.dtbo, shell.json} for `xmutil loadapp openav1` (docs/kv260-bringup.md).
 # Needs Vivado (with bootgen) on PATH and dtc for the overlay.

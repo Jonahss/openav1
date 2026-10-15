@@ -81,7 +81,14 @@ set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $sc
 set sc2 [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc2]
 set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] $sc2
 set host [create_bd_cell -type module -reference dec_host_v host]
-set_property -dict [list CONFIG.FBX {9} CONFIG.FBY {9} CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1}] $host
+# geometry: KV260_FBX / KV260_FBY (log2 of the largest picture dimension the coordinates hold), KV260_WIN (0: the
+# whole picture in UltraRAM, 512 x 512 at 9 / 9; N: a window of N superblock rows at the full width, rows flushed to
+# DDR, e.g. 11 / 11 / 3 for 1080p: docs/frame-memory.md)
+set fbx [expr {[info exists ::env(KV260_FBX)] ? $::env(KV260_FBX) : 9}]
+set fby [expr {[info exists ::env(KV260_FBY)] ? $::env(KV260_FBY) : 9}]
+set win [expr {[info exists ::env(KV260_WIN)] ? $::env(KV260_WIN) : 0}]
+set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win] $host
+puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win"
 set pg [create_bd_cell -type module -reference phase_gen_v pg]
 
 connect_bd_net [get_bd_pins ps/pl_clk0] [get_bd_pins clkgen/clk_in1]
