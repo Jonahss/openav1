@@ -67,6 +67,7 @@ async def run_tile(ax, th, dec, data, tag, stats):
         await write_wide(ax, R_DEF, row, 8)
         await ax.write(R_DEF_ADDR, i)
     await ax.write(R_START, START_TILE)
+    data = data + bytes(int(os.environ.get("TS_PAD", "0")))    # TS_PAD=N: N explicit zero bytes after the tile (padding experiment)
     # the bytes: whole words, the FIFO's free count read before each burst
     pos = 0
     while pos < len(data):
