@@ -83,7 +83,10 @@ module dec_top
     logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane, blk_ack; logic [MIW-1:0] sb_r, sb_c;
     logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
     logic ts_unsup;                                 // tile_syntax's; the window build adds its own limits below
-    tile_syntax #(.ML2R(FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
+    // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
+    // superblock row up), the filters' info 64 rows (the four superblock rows live between reconstruction and the
+    // flush); their row index is simply truncated, i.e. a ring.
+    tile_syntax #(.ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                       .sb_start_o(sb_start), .sb_r_o(sb_r), .sb_c_o(sb_c), .blk_info, .blk_done, .blk_rec,
                       .tx_done, .tx_rec, .tx_ack, .lr_done, .lr_rec, .q_slot_w, .q_slot_r, .q_addr, .q_data,
@@ -118,7 +121,7 @@ module dec_top
 
     // per-4x4 state + deblocking filter; the filter owns the frame buffer port while it runs
     logic [MIW-1:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
-    mi_store #(.ML2R(FBY - 2), .ML2C(FBX - 2)) u_mi (.clk, .rst, .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(mi_blk_busy),
+    mi_store #(.ML2R(FRAME_WIN > 0 ? 6 : FBY - 2), .ML2C(FBX - 2)) u_mi (.clk, .rst, .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(mi_blk_busy),
                    .tx_we(mi_tx_we), .tx_plane(mi_tx_plane), .tx_row(mi_tx_row), .tx_col(mi_tx_col), .tx_w4(mi_tx_w4), .tx_h4(mi_tx_h4), .tx_sz(mi_tx_sz), .tx_busy(mi_tx_busy),
                    .rd_row(rd_row), .rd_col(rd_col), .rd_info, .rd2_row(cd_rd_row), .rd2_col(cd_rd_col), .rd2_info(cd_rd_info), .txr_plane, .txr_row, .txr_col, .txr_sz,
                    .cd_clr(mi_cd_clr), .cd_we(mi_cd_we), .cd_row64(mi_cd_row64), .cd_col64(mi_cd_col64), .cd_sb128(hdr.sb128), .cd_mask(mi_cd_mask), .cd_idx(mi_cd_idx),
