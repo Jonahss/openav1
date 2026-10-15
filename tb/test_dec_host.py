@@ -135,6 +135,13 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
             beats = await ax.read(R_DMA_BEATS, record=False)
             assert False, (f"{tag}: DMA wrote {mem.written()} bytes, picture is {expect_bytes}; " + "; ".join(per)
                            + f"; outside: {others}; max addr 0x{max(mem.mem):x}; DMA_STATUS 0x{st2:08x} (rows flushed {st2 >> 16 & 0xFF}), beats {beats}, bursts {mem.bursts}")
+        if bad and WIN:                                          # the same samples straight from the window, after the flush
+            win = []
+            for plane, y, x, got, exp in bad[:6]:
+                await ax.write(R_HADDR, (plane << 28) | (y << 14) | x)
+                v = await ax.read(R_HDATA, record=False)
+                win.append((plane, y, x, v))
+            dut._log.info(f"{tag}: window holds (plane, y, x, value): {win}")
         assert not bad, f"{tag}: DMA image: {len(bad)} samples differ, first (plane, y, x, dma, model): {bad[:8]}"
         return
     for plane in range(hdr.NumPlanes):
