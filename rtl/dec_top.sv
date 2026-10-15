@@ -285,6 +285,16 @@ module dec_top
     // the window build's limits (docs/frame-memory.md): 64-pixel superblocks, 4:2:0 or mono, pipelined frames, no intra block copy
     assign unsupported = ts_unsup || ((FRAME_WIN > 0) && tile_busy
                                       && (hdr.sb128 || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en));
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin                      // window trace (simulation only)
+        if (lf_pend && lf_done) $display("[win] t=%0t LF done row %0d (n_rows %0d) rel_upto->%0d", $time, lf_next, n_rows, (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next);
+        if (row_final) $display("[win] t=%0t row_final %0d", $time, row_final_idx);
+        if (flush_done) $display("[win] t=%0t flush_done (flushed_cnt -> %0d)", $time, flushed_cnt + 1);
+        if (frame_done) $display("[win] t=%0t frame_done rel_next %0d rel_upto %0d", $time, rel_next, rel_upto);
+        if (frame_start) $display("[win] t=%0t frame_start", $time);
+        if (hold_rc && !rc_busy && ev_pop) $display("[win] t=%0t hold row %0d (flushed %0d)", $time, sb_pop_row, flushed_cnt);
+    end
+`endif
     always_ff @(posedge clk) begin
         row_final <= 1'b0;
         if (rst || frame_start) begin
