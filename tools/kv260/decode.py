@@ -54,6 +54,26 @@ class FbStage:
     def ptr(self, off):
         return ctypes.addressof(ctypes.c_char.from_buffer(self.m, off))
 
+
+class MemStage:
+    """A reserved physical region as the DMA target (memory the kernel was told to leave alone, e.g. mem=3584M on
+    the KV260 leaves 0x8_6000_0000 .. 0x8_7FFF_FFFF): mapped through /dev/mem, which the kernel allows for pages
+    that are not System RAM. Big enough for full-size pictures, unlike the framebuffer's spare lines."""
+    def __init__(self, base, size):
+        self.fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
+        self.m = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
+        self.base, self.stage_off, self.stage_len = base, 0, size
+        self.xres = self.yres = self.bpp = 0                   # no screen
+
+    def read(self, off, n):
+        return bytes(self.m[off:off + n])
+
+    def ptr(self, off):
+        return ctypes.addressof(ctypes.c_char.from_buffer(self.m, off))
+
+    def show(self, lib, hdr, planes_layout):
+        return False
+
     def show(self, lib, hdr, planes_layout):
         """8-bit 4:2:0 pictures onto the screen, centred (or the top-left corner when larger)."""
         if hdr.BitDepth != 8 or hdr.NumPlanes != 3 or not (hdr.subsampling_x and hdr.subsampling_y) or self.bpp != 16:
@@ -132,6 +152,8 @@ def main():
     ap.add_argument("--show", action="store_true", help="with --dma: also put each picture on the screen (8-bit 4:2:0, RGB565 fb)")
     ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
     ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma --pipe")
+    ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
+    ap.add_argument("--dma-size", type=lambda x: int(x, 0), default=256 << 20)
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     args = ap.parse_args()
@@ -166,7 +188,10 @@ def main():
         fast = HostLib(args.base)
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
     stage = None
-    if args.dma:
+    if args.dma and args.dma_base is not None:
+        stage = MemStage(args.dma_base, args.dma_size)
+        print(f"DMA target: reserved memory, {stage.stage_len} bytes at 0x{stage.base:x}")
+    elif args.dma:
         stage = FbStage()
         print(f"framebuffer {stage.xres}x{stage.yres} ({stage.bpp} bpp) at 0x{stage.smem_start:x}; staging {stage.stage_len} bytes at 0x{stage.base:x}")
     cfg = host.identify()
