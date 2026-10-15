@@ -45,7 +45,7 @@ async def pipe_finish(ax, tag):
     await ax.write(R_CTRL, 0)
 
 from host_regs import (R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
-                       R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
+                       R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, R_DMA_BEATS, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
                        HDR_WORDS, RH_WORDS, LH_WORDS, words, plane_size, dma_regs, unpack_dma, R_DMA_START, R_DMA_STATUS,
                        DMA_BUSY, DMA_DONE, DMA_ERR, START_FRAME, ST_FRAME_DONE, CTRL_PIPE, DMA_FLUSH_BUSY, DMA_CFG_AUTO, R_DMA_CFG,
                        dma_layout)
@@ -128,7 +128,10 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
                 lo, hi = b, b + stride * H
                 per.append(f"plane@0x{b:x} stride {stride} {W}x{H}: {sum(1 for a in mem.mem if lo <= a < hi)} bytes")
             others = sum(1 for a in mem.mem if not any(b <= a < b + stride * H for b, stride, W, H in layout))
-            assert False, f"{tag}: DMA wrote {mem.written()} bytes, picture is {expect_bytes}; " + "; ".join(per) + f"; outside: {others}; max addr 0x{max(mem.mem):x}"
+            st2 = await ax.read(R_DMA_STATUS, record=False)
+            beats = await ax.read(R_DMA_BEATS, record=False)
+            assert False, (f"{tag}: DMA wrote {mem.written()} bytes, picture is {expect_bytes}; " + "; ".join(per)
+                           + f"; outside: {others}; max addr 0x{max(mem.mem):x}; DMA_STATUS 0x{st2:08x} (rows flushed {st2 >> 16 & 0xFF}), beats {beats}, bursts {mem.bursts}")
         assert not bad, f"{tag}: DMA image: {len(bad)} samples differ, first (plane, y, x, dma, model): {bad[:8]}"
         return
     for plane in range(hdr.NumPlanes):
