@@ -250,6 +250,9 @@ async def dec_host_streams(dut):
         frame = {}
         hdr0 = None
         decs = []
+        if WIN and d.tiles[0][0].use_128x128_superblock:        # the window build is 64-pixel superblocks only
+            dut._log.info(f"{tag}: 128-pixel superblocks, skipped in the window build")
+            continue
         if PIPE:
             await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)
         for ti, (th, data) in enumerate(d.tiles):
