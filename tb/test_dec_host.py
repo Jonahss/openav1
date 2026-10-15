@@ -32,12 +32,15 @@ WIN = os.environ.get("TS_WIN", "0") == "1"                           # window bu
 async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None):
     if WIN:                                                  # the planes and auto-flush before the frame
         seq, layout, total = dma_regs(hdr, base, visible=True)
+        st = await ax.read(R_DMA_STATUS, record=False)
+        ax.dut._log.info(f"pipe_start: DMA_STATUS 0x{st:08x} before the frame; {len(seq)} plane register writes")
         for a, v in seq:
             await ax.write(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v)
         mem.mem.clear()
     await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr)), LH_WORDS)
     await ax.write(R_CTRL, CTRL_PIPE | (n_tile_cols << 16))
     await ax.write(R_START, START_FRAME)
+    ax.dut._log.info("pipe_start: frame started")
 
 
 async def pipe_finish(ax, tag):
@@ -250,6 +253,7 @@ async def dec_host_streams(dut):
         frame = {}
         hdr0 = None
         decs = []
+        dut._log.info(f"{tag} {W}x{H}: {len(d.tiles)} tiles, sb128 {d.tiles[0][0].use_128x128_superblock}, decoding the model")
         if WIN and d.tiles[0][0].use_128x128_superblock:        # the window build is 64-pixel superblocks only
             dut._log.info(f"{tag}: 128-pixel superblocks, skipped in the window build")
             continue
