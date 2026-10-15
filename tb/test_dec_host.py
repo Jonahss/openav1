@@ -122,7 +122,13 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
                     bad += [(plane, y, x, got[plane][y][x], planes[plane][y][x]) for x in range(W) if got[plane][y][x] != planes[plane][y][x]]
             stats["pixels"] += W * H
         expect_bytes = sum(((W * (1 if hdr.BitDepth == 8 else 2)) * H) for _, _, W, H in layout)
-        assert mem.written() == expect_bytes, f"{tag}: DMA wrote {mem.written()} bytes, picture is {expect_bytes}"
+        if mem.written() != expect_bytes:
+            per = []
+            for b, stride, W, H in layout:
+                lo, hi = b, b + stride * H
+                per.append(f"plane@0x{b:x} stride {stride} {W}x{H}: {sum(1 for a in mem.mem if lo <= a < hi)} bytes")
+            others = sum(1 for a in mem.mem if not any(b <= a < b + stride * H for b, stride, W, H in layout))
+            assert False, f"{tag}: DMA wrote {mem.written()} bytes, picture is {expect_bytes}; " + "; ".join(per) + f"; outside: {others}; max addr 0x{max(mem.mem):x}"
         assert not bad, f"{tag}: DMA image: {len(bad)} samples differ, first (plane, y, x, dma, model): {bad[:8]}"
         return
     for plane in range(hdr.NumPlanes):
