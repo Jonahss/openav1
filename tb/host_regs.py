@@ -278,17 +278,16 @@ class HostDecoder:
                 if time.monotonic() - t0 > self.poll_timeout:
                     raise HostError(f"{tag}: the tile FIFO never freed a word")
                 continue
-            for _ in range(min(free, n_words)):
+            for _ in range(free):                        # every push is one FIFO word, tail bytes included
+                if pos >= len(data):
+                    break
                 chunk = data[pos:pos + 4]
                 if len(chunk) == 4:
                     self.wr(R_DATA4, int.from_bytes(chunk, "little"))
+                    pos += 4
                 else:
-                    for b in chunk:
-                        self.wr(R_DATA1, b)
-                pos += 4
-                n_words -= 1
-                if pos >= len(data):
-                    break
+                    self.wr(R_DATA1, chunk[0])
+                    pos += 1
         self.wr(R_CTRL, self.rd(R_CTRL) | CTRL_EOS)
         st = self.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, f"{tag}: tile done")
         if st & ST_UNSUP:

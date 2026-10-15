@@ -76,19 +76,23 @@ async def run_tile(ax, th, dec, data, tag, stats):
         if free == 0:
             await ClockCycles(ax.clk, 64)
             continue
-        n = min(free, (len(data) - pos + 3) // 4)
-        for _ in range(n):
+        # every push is one FIFO word, a single tail byte included: the budget counts pushes, not bytes (2026-10-15:
+        # a 3-byte tail budgeted as one word overflowed a nearly full FIFO and the last byte of the tile was lost)
+        for _ in range(free):
+            if pos >= len(data):
+                break
             chunk = data[pos:pos + 4]
             if len(chunk) == 4:
                 await ax.write(R_DATA4, int.from_bytes(chunk, "little"))
+                pos += 4
             else:
-                for b in chunk:
-                    await ax.write(R_DATA1, b)
-            pos += 4
+                await ax.write(R_DATA1, chunk[0])
+                pos += 1
     ctrl = await ax.read(R_CTRL, record=False)
     await ax.write(R_CTRL, ctrl | CTRL_EOS)
     st = await ax.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, 400_000_000, tag)
     assert not (st & ST_UNSUP), f"{tag}: RTL flagged unsupported syntax"
+    assert not (st & (1 << 14)), f"{tag}: the tile FIFO dropped a push (overflow or a split write)"
     stats["tiles"] += 1
     stats["bytes"] += len(data)
 

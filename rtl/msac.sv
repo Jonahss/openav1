@@ -188,13 +188,6 @@ module msac (
     wire   accept    = req_valid && req_ready;
     wire   init_go   = (state == S_INIT) && (wcnt_r >= 6'd15 || eos || in_eos);
 
-`ifndef SYNTHESIS
-    always_ff @(posedge clk) begin                            // end-of-stream trace (simulation only)
-        if (in_eos && !eos && state != S_IDLE)
-            $display("[msac] t=%0t in_eos: state %0d wcnt %0d win %08x rng %04x val %04x s1_v %0d req_valid %0d in_valid %0d", $time, state, wcnt, win, rng, val, s1_v, req_valid, in_valid);
-        if (init) $display("[msac] t=%0t init", $time);
-    end
-`endif
     // ------------------------------------------------------------------
     // State update
     // ------------------------------------------------------------------
