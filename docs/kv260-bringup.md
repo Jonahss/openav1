@@ -7,15 +7,23 @@ then the libaom-encoded natural pictures `streams/synth/natural_lf_only_{8,10}bi
 each) identical to dav1d's output: 589,824 pixels, 0 mismatches, 13 s for 1.2 M register operations from Python.
 Two board-only lessons, below.
 
+**80 MHz (2026-10-14 evening):** with the two-stage msac, the predictor's address lookahead and the write-address
+precompute, the bitstream closes timing at 80 MHz (`KV260_MHZ=80`, decoder clock 80 / memory 160 MHz, +0.007 ns on
+the decoder clock, 102.5k LUT) and the 120-frame clip decodes bit-exact at **86 fps end to end** (1.4 s), 67 fps with
+the screen blit. The clocks come from a hand-instantiated MMCM (below), not the clock wizard.
+
 ## What is in the bitstream
 
 `fpga/kv260/build.sh` builds a block design (`build.tcl`) for the Kria K26 (xck26-sfvc784-2LV-c):
 
 - `zynq_ultra_ps_e`: only HPM0 FPD (32-bit AXI master), `pl_clk0` and `pl_resetn0`. The PS is configured by the
   boot firmware; the bitstream is loaded under a running Linux, so nothing else of the PS matters here.
-- `clk_wiz` (MMCM) from `pl_clk0`: `clk` (the decoder clock, `KV260_MHZ`, 50 by default) and `clk2x`, aligned.
-  Without the KV260 board files the PS IP computes `pl_clk0` as 96.97 MHz and the MMCM is analysed from that;
-  the overlay asks Linux for 100 MHz, so the real clocks run ~3 % above the analysed ones.
+- `clkgen` (`clkgen_v.v`, written by `build.tcl`): an `MMCME4_ADV` instantiated by hand from `pl_clk0`, pinned to
+  exactly 100 MHz (IOPLL / 15), with the dividers computed for the requested `KV260_MHZ`: VCO = 100 x m, `clk` =
+  VCO / 2d, `clk2x` = VCO / d, so the two are exactly 2:1 and edge-aligned. The clock wizard is not used: asked for
+  80 / 160 MHz it generated 80.0 / 161.1 (M = 14.5, /18.125, /9) and ignored `OVERRIDE_MMCM`; the 50 MHz builds were
+  2:1 by luck (/22, /11). The double-pumped frame memory and the two-cycle crossing constraints both need the exact
+  ratio, and the symptom of the wrong one was crossing paths timed over 6.4 ns instead of 12.5.
 - `phase_gen` (`rtl/phase_gen.sv`): the frame memory's phase flag, a clk2x toggle aligned by the clk reset.
 - `dec_host` (`rtl/dec_host.sv`, through the Verilog shell `dec_host_v.v`): the AXI-Lite register file around
   `dec_top` in the core configuration (FBX = FBY = 9, two transform lanes, `FRAME_URAM = 1`; CDEF and LR are null

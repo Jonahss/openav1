@@ -147,6 +147,25 @@ module ipred #(
     // the first S_PIX cycle with no bypass mux in the address path.
     logic [16:0] idx_i_r;
     logic [16:0] idx_j_r [4];
+    // The position after this one (the S_PIX / S_FI2 stepping: four lanes along the row, then the next row), used
+    // both for the register updates and for the edge-read address lookahead below.
+    logic        nx_row_end;
+    logic [5:0]  nx_px, nx_py;
+    logic [16:0] nx_idx_i;
+    logic [16:0] nx_idx_j [4];
+    always_comb begin
+        nx_row_end = (px + 7'd4 >= w);
+        nx_px = nx_row_end ? 6'd0 : px + 6'd4;
+        nx_py = nx_row_end ? py + 6'd1 : py;
+        nx_idx_i = nx_row_end ? idx_i_r + 17'(dx) : idx_i_r;
+        for (int l = 0; l < 4; l++) nx_idx_j[l] = nx_row_end ? 17'((l + 1) * int'(dy)) : idx_j_r[l] + (17'(dy) << 2);
+    end
+    // Edge-read address lookahead: the S_PIX read addresses of a position are computed the cycle before, from
+    // the next-position values (in S_PIX) or from the current position (any other state, so the first S_PIX
+    // cycle finds its addresses ready), into registers. The index -> address arithmetic (shifts, the Z1 limit
+    // compare, the mode mux) then no longer sits in front of the edge RAMs' high-fanout address pins, which
+    // was 8 ns of routing at 100 MHz in the placed core build.
+    logic signed [9:0] la_a0 [4], la_a1 [4], la_l0 [4], la_l1 [4];
     // Z1's edge limit (w+h-1) << up_a is constant over a block: registered (it was computed in front of the
     // edge-RAM address compare every cycle; w, h, up_a are stable at least a cycle before the first S_PIX).
     logic [9:0]  maxb_r;
@@ -316,7 +335,7 @@ module ipred #(
     // ------------------------------------------------------------------ pixel datapath: pred[i][j]
     // Address half: the (up to) two above and two left reads a lane needs for pred[i][j], as {a0, a1, l0, l1};
     // value half: the pixel from the fetched values. Split so that every bank read is an explicit port.
-    function automatic logic [39:0] pred_addr(input int i, input int j, input int idx_i, input int idx_j);
+    function automatic logic [39:0] pred_addr(input int i, input int j, input int idx_i, input int idx_j, input int maxb_in);
         int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
         base = 0; idx = 0; maxb = 0; idx2 = 0; base2 = 0; a0 = 0; a1 = 0; l0 = 0; l1 = 0;
         if (l_mode == DC_PRED) begin
@@ -335,7 +354,7 @@ module ipred #(
         end else if (p_angle < 9'd90) begin                                   // Z1
             idx   = idx_i;
             base  = (idx >> (6 - int'(up_a))) + (j << int'(up_a));
-            maxb  = int'(maxb_r);
+            maxb  = maxb_in;
             if (base < maxb) begin a0 = base; a1 = base + 1; end
             else a0 = maxb;
         end else if (p_angle < 9'd180) begin                                  // Z2
@@ -355,6 +374,21 @@ module ipred #(
         end
         return {10'(a0), 10'(a1), 10'(l0), 10'(l1)};
     endfunction
+    // The lookahead sees every block constant live: the Z1 limit combinationally (maxb_r lags a cycle, which the
+    // S_PIX read tolerated), and in S_SETUP the position / index values being loaded, since S_SETUP may enter
+    // S_PIX directly.
+    logic [9:0] maxb_c;
+    assign maxb_c = 10'((int'(w) + int'(h) - 1) << int'(up_a));
+    always_ff @(posedge clk) begin
+        for (int l = 0; l < 4; l++) begin
+            if (state == S_PIX && !l_fi)                      // addresses for the position after this one
+                {la_a0[l], la_a1[l], la_l0[l], la_l1[l]} <= pred_addr(int'(nx_py), int'(nx_px) + l, int'(nx_idx_i), int'(nx_idx_j[l]), int'(maxb_c));
+            else if (state == S_SETUP)                        // the first position, from the values S_SETUP loads
+                {la_a0[l], la_a1[l], la_l0[l], la_l1[l]} <= pred_addr(0, l, int'(dx), (l + 1) * int'(dy), int'(maxb_c));
+            else
+                {la_a0[l], la_a1[l], la_l0[l], la_l1[l]} <= pred_addr(int'(py), int'(px) + l, int'(idx_i_r), int'(idx_j_r[l]), int'(maxb_c));
+        end
+    end
     // The pixel datapath is two stages. Stage 1 (the S_PIX cycle) fetches a lane's edge values and forms its
     // products: the smooth weights times the four values, or the directional interpolation's two products.
     // Stage 2 sums, rounds and selects, into the output register. In one cycle (edge read, mode mux, products,
@@ -579,8 +613,7 @@ module ipred #(
                 for (int t = 0; t < 3; t++) rpL_a[t] = 10'((i2 << 1) - 1 + t);
             end else begin
                 for (int l = 0; l < 4; l++)
-                    {rpA_a[2 * l], rpA_a[2 * l + 1], rpL_a[2 * l], rpL_a[2 * l + 1]} =
-                        pred_addr(int'(py), int'(px) + l, int'(idx_i_r), int'(idx_j_r[l]));
+                    {rpA_a[2 * l], rpA_a[2 * l + 1], rpL_a[2 * l], rpL_a[2 * l + 1]} = {la_a0[l], la_a1[l], la_l0[l], la_l1[l]};
             end
             S_DC_SUM: for (int l = 0; l < 8; l++) begin                 // L[k+l] and A[k+l-h] (A side clamped at 0)
                 rpL_a[l] = 10'(int'(k) + l);
@@ -771,15 +804,11 @@ module ipred #(
                     s_raw <= l_fi;                                  // filter-intra odd rows: read back from the patch buffer
                     s_valid <= 1'b1;
                     s_x <= px; s_y <= py;
-                    if (px + 7'd4 >= w) begin
-                        px <= 0;
-                        idx_i_r <= idx_i_r + 17'(dx);
-                        for (int l = 0; l < 4; l++) idx_j_r[l] <= 17'((l + 1) * int'(dy));
+                    px <= nx_px; idx_i_r <= nx_idx_i;
+                    for (int l = 0; l < 4; l++) idx_j_r[l] <= nx_idx_j[l];
+                    if (nx_row_end) begin
                         if (py + 7'd1 == h) state <= S_DRAIN;
-                        else py <= py + 6'd1;
-                    end else begin
-                        px <= px + 6'd4;
-                        for (int l = 0; l < 4; l++) idx_j_r[l] <= idx_j_r[l] + (17'(dy) << 2);
+                        else py <= nx_py;
                     end
                 end
             end
@@ -790,15 +819,11 @@ module ipred #(
                 s_valid <= 1'b1;
                 s_x <= px; s_y <= py;
                 state <= S_PIX;
-                if (px + 7'd4 >= w) begin
-                    px <= 0;
-                    idx_i_r <= idx_i_r + 17'(dx);
-                    for (int l = 0; l < 4; l++) idx_j_r[l] <= 17'((l + 1) * int'(dy));
+                px <= nx_px; idx_i_r <= nx_idx_i;
+                for (int l = 0; l < 4; l++) idx_j_r[l] <= nx_idx_j[l];
+                if (nx_row_end) begin
                     if (py + 7'd1 == h) state <= S_DRAIN;
-                    else py <= py + 6'd1;
-                end else begin
-                    px <= px + 6'd4;
-                    for (int l = 0; l < 4; l++) idx_j_r[l] <= idx_j_r[l] + (17'(dy) << 2);
+                    else py <= nx_py;
                 end
             end
             S_DRAIN: state <= S_DONE;                               // the last pixels leave stage 2 before done

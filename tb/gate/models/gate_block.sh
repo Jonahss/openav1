@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # gate_block.sh <block> <tag> <dcp|-> <vec.hex> [rtl files for the RTL control...]
 # Replays <vec.hex> (+ .out) with ~/gate/<block>/replay_<block>.sv against the RTL (control) and the funcsim netlist of <dcp>.
+# NB: a funcsim is reused only when newer than its checkpoint (2026-10-14: a stale netlist under a reused tag
+# elaborated against a new harness, failed, and the old xsim log was reported as a pass).
 # NB: never add -L xpm to the netlist elaboration: with it, UltraRAM reads simulate as zeros (2026-10-14); a flattened
 # funcsim needs only unisims_ver / secureip even when the RTL used an XPM macro.
 set -u
@@ -14,7 +16,7 @@ if [ $# -gt 0 ]; then
 fi
 if [ "$dcp" != "-" ]; then
   printf "open_checkpoint %s\nwrite_verilog -force -mode funcsim %s/%s_%s.v\nexit\n" "$dcp" "$PWD" "$blk" "$tag" > fs_$tag.tcl
-  [ -f ${blk}_$tag.v ] || vivado -mode batch -nojournal -nolog -source fs_$tag.tcl > fs_$tag.log 2>&1 || { echo "funcsim failed"; exit 1; }
+  { [ -f ${blk}_$tag.v ] && [ ${blk}_$tag.v -nt "$dcp" ]; } || vivado -mode batch -nojournal -nolog -source fs_$tag.tcl > fs_$tag.log 2>&1 || { echo "funcsim failed"; exit 1; }
   # Black-boxed memories (frame_mem for dec_top): compile the sim models AFTER the netlist so they override the stubs.
   models=""; for m in frame_mem.sv frame_mem_w.sv frame_mem_variants.sv; do [ -f "$m" ] && models="$models $m"; done
   xvlog -sv -d NETLIST ${blk}_$tag.v $models replay_$blk.sv $G > g_$tag.xvlog 2>&1 && xelab -L unisims_ver -L secureip replay_$blk glbl -s gs_$tag > g_$tag.xelab 2>&1 && xsim gs_$tag -R -testplusarg vec=$vec > g_$tag.xsim 2>&1

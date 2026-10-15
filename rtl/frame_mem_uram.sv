@@ -81,7 +81,8 @@ module frame_mem_uram #(
         .WRITE_DATA_WIDTH_A(72), .READ_DATA_WIDTH_A(72), .BYTE_WRITE_WIDTH_A(8), .ADDR_WIDTH_A(AW), .READ_RESET_VALUE_A("0"),
         .READ_LATENCY_A(1), .WRITE_MODE_A("no_change"),
         .WRITE_DATA_WIDTH_B(72), .READ_DATA_WIDTH_B(72), .BYTE_WRITE_WIDTH_B(8), .ADDR_WIDTH_B(AW), .READ_RESET_VALUE_B("0"),
-        .READ_LATENCY_B(1), .WRITE_MODE_B("no_change")
+        .READ_LATENCY_B(1), .WRITE_MODE_B("no_change"),
+        .CASCADE_HEIGHT(4)                                   // 8-deep columns put seven cascade hops (~1.8 ns) on every read
     ) u_ram (
         .clka(clk2x), .ena(a_en), .wea(a_bwe), .addra(a_addr), .dina(a_d), .douta(a_q), .regcea(1'b1), .rsta(1'b0),
         .clkb(clk2x), .enb(b_en), .web(b_bwe), .addrb(b_addr), .dinb(b_d), .doutb(b_q), .regceb(1'b1), .rstb(1'b0),
