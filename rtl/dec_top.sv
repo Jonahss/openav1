@@ -264,7 +264,11 @@ module dec_top
     logic [SBW-1:0]  tile_row_prev; logic tile_row_valid;
     logic        sb_pop; logic [SBW-1:0] sb_pop_row;
     assign sb_shift = hdr.sb128 ? 5'd5 : 5'd4;
-    assign sb_pop = ev_valid && ev_pop && (ev_kind == 2'd2);
+    // A superblock event held back from the reconstruction stage by the window (hold_rc, below) still marks the end
+    // of the previous row once reconstruction has finished its last block: the hold waits for a flush that waits
+    // for the filter that waits for this row count (2026-10-14: a deadlock at the first held row otherwise). The
+    // real pop later finds tile_row_prev already on this row and counts nothing twice.
+    assign sb_pop = ev_valid && (ev_kind == 2'd2) && (ev_pop || (hold_rc && !rc_busy));
     assign sb_pop_row = SBW'(ev_sb_r >> sb_shift);
     // ---- window frame memory: rows released as they become final, the hold on slot reuse
     // LF(r) done makes row r-1 final (it wrote into that row's last lines); the last pass releases the last row too.
