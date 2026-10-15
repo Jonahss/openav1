@@ -26,9 +26,15 @@ from axi_mem import AxiMem                    # noqa: E402
 
 STAGE = os.environ.get("TS_STAGE", "recon")
 PIPE = os.environ.get("TS_PIPE", "0") == "1" and STAGE == "lf"      # the deblocking filter under the frame sequencer
+WIN = os.environ.get("TS_WIN", "0") == "1"                           # window build: rows auto-flushed into the AXI memory
 
 
-async def pipe_start(ax, hdr, n_tile_cols):
+async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None):
+    if WIN:                                                  # the planes and auto-flush before the frame
+        seq, layout, total = dma_regs(hdr, base, visible=True)
+        for a, v in seq:
+            await ax.write(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v)
+        mem.mem.clear()
     await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr)), LH_WORDS)
     await ax.write(R_CTRL, CTRL_PIPE | (n_tile_cols << 16))
     await ax.write(R_START, START_FRAME)
@@ -41,7 +47,8 @@ async def pipe_finish(ax, tag):
 from host_regs import (R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
                        R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
                        HDR_WORDS, RH_WORDS, LH_WORDS, words, plane_size, dma_regs, unpack_dma, R_DMA_START, R_DMA_STATUS,
-                       DMA_BUSY, DMA_DONE, DMA_ERR, START_FRAME, ST_FRAME_DONE, CTRL_PIPE)
+                       DMA_BUSY, DMA_DONE, DMA_ERR, START_FRAME, ST_FRAME_DONE, CTRL_PIPE, DMA_FLUSH_BUSY, DMA_CFG_AUTO, R_DMA_CFG,
+                       dma_layout)
 
 
 
@@ -92,12 +99,18 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
     packed = os.environ.get("TS_READ", "packed") != "single"
     if os.environ.get("TS_DMA", "0") == "1":
         base = DMA_BASE + (stats["frames"] % 3) * 0x100000      # a different base per frame
-        seq, layout, total = dma_regs(hdr, base, visible)
-        for a, v in seq:
-            await ax.write(a, v)
-        mem.mem.clear()
-        await ax.write(R_DMA_START, 1)
-        st = await ax.poll(R_DMA_STATUS, DMA_DONE | DMA_BUSY, DMA_DONE, 20_000_000, tag)
+        if WIN:                                                  # the rows were flushed as they finished: wait for the last
+            base = DMA_BASE
+            seq, layout, total = dma_regs(hdr, base, visible=True)
+            st = await ax.poll(R_DMA_STATUS, DMA_FLUSH_BUSY, 0, 20_000_000, tag)
+            visible = True
+        else:
+            seq, layout, total = dma_regs(hdr, base, visible)
+            for a, v in seq:
+                await ax.write(a, v)
+            mem.mem.clear()
+            await ax.write(R_DMA_START, 1)
+            st = await ax.poll(R_DMA_STATUS, DMA_DONE | DMA_BUSY, DMA_DONE, 20_000_000, tag)
         assert not (st & DMA_ERR), f"{tag}: DMA error flag"
         assert not mem.errors, f"{tag}: AXI protocol errors: {mem.errors[:4]}"
         got = unpack_dma(hdr, mem.read(base, total), layout)
@@ -195,7 +208,7 @@ async def dec_host_streams(dut):
                 await ClockCycles(dut.clk, 4)
                 await ax.write(R_CTRL, 0)
                 if PIPE:
-                    await pipe_start(ax, hdr0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
+                    await pipe_start(ax, hdr0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}), DMA_BASE, mem)
                 for ti in tile_idx:
                     th, data = d.tiles[ti]
                     dec = tm.TileDecoder(th, data, None)      # header helper only (get_qindex); nothing is decoded
@@ -229,7 +242,7 @@ async def dec_host_streams(dut):
         hdr0 = None
         decs = []
         if PIPE:
-            await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}))
+            await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)
         for ti, (th, data) in enumerate(d.tiles):
             dec = TD.RecFrame(th, data, frame)
             dec.decode_tile()

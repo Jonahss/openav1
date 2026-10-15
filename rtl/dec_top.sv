@@ -9,7 +9,8 @@ module dec_top
     parameter int FBX = 10,                  // 1024 x 512 frame buffer: covers the test corpus (<= 640x360 + overhang)
     parameter int FBY = 9,
     parameter int ITX_LANES = 4,             // transform engines: 4 (throughput) or 2 (K26 area, +2.6% cycles)
-    parameter int FRAME_URAM = 0             // 1: fb0 is the on-chip double-pumped UltraRAM (rtl/frame_mem_uram.sv, needs clk2x /
+    parameter int FRAME_URAM = 0,             // 1: fb0 is the on-chip double-pumped UltraRAM (rtl/frame_mem_uram.sv, needs clk2x /
+    parameter int FRAME_WIN = 0              // >0 with FRAME_URAM: the frame memory holds this many superblock rows (window, docs/frame-memory.md)
                                              //    phase); fb1 / fb2 are left out, so only the core build (no CDEF / LR / SR) can use it
 ) (
     input  logic              clk,
@@ -45,6 +46,10 @@ module dec_top
     output logic              frame_busy,
     output logic              frame_done,          // 1-cycle pulse
     output logic              frame_done_lvl,      // held until the next frame_start
+    // window frame memory (FRAME_WIN > 0): superblock rows released for the flush to DDR, and the flushes done
+    output logic              row_final,           // 1-cycle pulse: superblock row row_final_idx is final
+    output logic [SBW-1:0]    row_final_idx,
+    input  logic              flush_done,          // 1-cycle pulse: the oldest released row is in DDR
     // in-loop filters, run by software after all tiles of the frame (pipe_en = 0): deblocking (7.14)
     input  logic              lf_start,
     output logic              lf_busy,
@@ -77,13 +82,15 @@ module dec_top
 );
     logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane, blk_ack; logic [MIW-1:0] sb_r, sb_c;
     logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
+    logic ts_unsup;                                 // tile_syntax's; the window build adds its own limits below
     tile_syntax #(.ML2R(FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
-                      .tile_start, .tile_busy, .tile_done(ts_done), .unsupported,
+                      .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                       .sb_start_o(sb_start), .sb_r_o(sb_r), .sb_c_o(sb_c), .blk_info, .blk_done, .blk_rec,
                       .tx_done, .tx_rec, .tx_ack, .lr_done, .lr_rec, .q_slot_w, .q_slot_r, .q_addr, .q_data,
                       .pal_hold, .blk_ack, .pm_plane, .pm_x, .pm_y, .pm_idx);
     // event queue: the syntax decoder runs ahead of reconstruction; a palette block is released (blk_ack) only
     // once reconstruction has drained the queue, because its colour map lives in the syntax stage
+    logic ev_valid_rc;                              // ev_valid as the reconstruction stage sees it (held by the window)
     logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
     logic rc_busy, cdef_en, sr_sub;
@@ -100,7 +107,7 @@ module dec_top
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [SBW-1:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
     recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES)) u_rc (.clk, .rst, .hdr, .rh,
-                                            .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
+                                            .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
                                             .mi_tx_we, .mi_tx_plane, .mi_tx_row, .mi_tx_col, .mi_tx_w4, .mi_tx_h4, .mi_tx_sz, .mi_tx_busy,
@@ -187,7 +194,7 @@ module dec_top
     generate if (FRAME_URAM != 0) begin : g_fb0_uram
         // the core build: ports 0 (recon) and 1 (LF) of fb0 on the on-chip memory; the CDEF / LR / SR ports are idle
         logic [47:0] unused_rd4u;
-        frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12)) u_fb (.clk, .clk2x, .phase,
+        frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN)) u_fb (.clk, .clk2x, .phase,
             .re(fb0_re[1:0]), .r_plane(fb0_rplane[3:0]), .r_x(fb0_rx[2*FBX-1:0]), .r_y(fb0_ry[2*FBY-1:0]),
             .rdata(fb0_rdata[23:0]), .rdata4(fb0_rdata4[95:0]),
             .we(fb0_we[1:0]), .w_be(fb0_be[7:0]), .w_plane(fb0_wplane[3:0]), .w_x(fb0_wx[2*FBX-1:0]), .w_y(fb0_wy[2*FBY-1:0]), .w_data(fb0_wdata[95:0]),
@@ -259,6 +266,30 @@ module dec_top
     assign sb_shift = hdr.sb128 ? 5'd5 : 5'd4;
     assign sb_pop = ev_valid && ev_pop && (ev_kind == 2'd2);
     assign sb_pop_row = SBW'(ev_sb_r >> sb_shift);
+    // ---- window frame memory: rows released as they become final, the hold on slot reuse
+    // LF(r) done makes row r-1 final (it wrote into that row's last lines); the last pass releases the last row too.
+    // Reconstruction may not start superblock row R before row R - FRAME_WIN, the previous occupant of its slot, is
+    // flushed (flushed_cnt counts flush_done pulses this frame: rows 0 .. flushed_cnt-1 are in DDR).
+    logic [SBW-1:0] rel_upto, rel_next, flushed_cnt;
+    logic           hold_rc;
+    assign hold_rc = (FRAME_WIN > 0) && ev_valid && (ev_kind == 2'd2) && (32'(sb_pop_row) >= FRAME_WIN)
+                     && (32'(sb_pop_row) - FRAME_WIN >= 32'(flushed_cnt));
+    assign ev_valid_rc = ev_valid && !hold_rc;
+    // the window build's limits (docs/frame-memory.md): 64-pixel superblocks, 4:2:0 or mono, pipelined frames, no intra block copy
+    assign unsupported = ts_unsup || ((FRAME_WIN > 0) && tile_busy
+                                      && (hdr.sb128 || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en));
+    always_ff @(posedge clk) begin
+        row_final <= 1'b0;
+        if (rst || frame_start) begin
+            rel_upto <= '0; rel_next <= '0; flushed_cnt <= '0;
+        end else begin
+            if (lf_pend && lf_done) rel_upto <= (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next;
+            if (rel_next != rel_upto && rel_next < rel_upto) begin
+                row_final <= 1'b1; row_final_idx <= rel_next; rel_next <= rel_next + SBW'(1);
+            end
+            if (flush_done) flushed_cnt <= flushed_cnt + SBW'(1);
+        end
+    end
     function automatic logic row_dec(input logic [SBW-1:0] r);   // row r decoded by every tile column
         row_dec = (r >= n_rows) || (row_cnt[(FBY - 6)'(r)] >= 8'(n_tile_cols));
     endfunction
@@ -333,7 +364,7 @@ module dec_top
             if (lr_pend && lr_done_o) begin lr_pend <= 1'b0; lr_next <= lr_next + SBW'(1); end
             // frame done: every enabled stage past its last unit
             if (rows_seen && !tile_busy && (lf_next >= n_rows) && (!cdef_en || cd_next >= n_rows) && (!sr_en || sr_next >= n_rows) && (!lr_en || lr_next >= n_stripes)
-                && !lf_pend && !cd_pend && !sr_pend && !lr_pend) begin
+                && !lf_pend && !cd_pend && !sr_pend && !lr_pend && (FRAME_WIN == 0 || rel_next == rel_upto)) begin
                 seq_active <= 1'b0; frame_busy <= 1'b0; frame_done <= 1'b1; frame_done_lvl <= 1'b1;
             end
         end

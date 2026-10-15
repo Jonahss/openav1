@@ -101,7 +101,8 @@ R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_PERF_SYN, R_PERF_REC = 0x000, 0x004, 0
 R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR = 0x01C, 0x020, 0x024, 0x028, 0x02C
 R_HDATA2, R_HDATA4 = 0x030, 0x034
 R_DMA_CFG, R_DMA_START, R_DMA_STATUS, R_DMA_BEATS, R_DMA_PLANE = 0x180, 0x184, 0x188, 0x18C, 0x190   # + 0x10 per plane
-DMA_BUSY, DMA_DONE, DMA_ERR = 1, 2, 4
+DMA_BUSY, DMA_DONE, DMA_ERR, DMA_FLUSH_BUSY = 1, 2, 4, 8
+DMA_CFG_AUTO = 1 << 8                      # window builds: released superblock rows flushed to the plane bases as they finish
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
@@ -381,12 +382,18 @@ class HostDecoder:
         self.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, f"{tag}: pipelined frame done")
         self.wr(R_CTRL, 0)
 
-    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False, want_planes=True):
+    def flush_wait(self, tag):
+        """Window builds: after frame_done, until every released row has been written to DDR."""
+        self.poll(R_DMA_STATUS, DMA_FLUSH_BUSY, 0, f"{tag}: row flush")
+
+    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False, want_planes=True, window=False):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
         per coded frame, planes as lists of rows of samples. dma: (base address, read(offset, n) -> bytes) to take
         the picture through the DMA engine instead of the registers. pipe: the deblocking filter runs under the
         frame sequencer, overlapped with the tiles (stage lf). want_planes=False with dma leaves the picture in
-        memory and yields planes=None (the unpack into Python lists costs ~8 ms a CIF frame)."""
+        memory and yields planes=None (the unpack into Python lists costs ~8 ms a CIF frame). window: a window
+        build (FRAME_WIN > 0): the planes are programmed before the frame and auto-flushed row by row; needs dma
+        and pipe."""
         for fi, tile_idx in enumerate(dec.frames):
             tag = f"{name} frame {fi}"
             hdr0 = dec.tiles[tile_idx[0]][0]
@@ -394,6 +401,11 @@ class HostDecoder:
             t = {}
             t0 = time.monotonic()
             self.reset()
+            if window:
+                assert dma is not None and pipe and stage == "lf", "a window build decodes pipelined frames into DDR"
+                seq, layout, total = dma_regs(hdr0, dma[0], visible)
+                seq = [(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in seq]
+                self.write_seq(seq)
             if pipe and stage == "lf":
                 self.frame_pipe_start(hdr0, len({dec.tiles[ti][0].MiColStart for ti in tile_idx}))
             for ti in tile_idx:
@@ -407,7 +419,13 @@ class HostDecoder:
                 self.loop_filter(hdr0, tag)
             t["lf"] = time.monotonic() - t0
             t0 = time.monotonic()
-            if dma is not None:
+            if dma is not None and window:
+                base, read = dma
+                self.flush_wait(tag)
+                layout, total = dma_layout(hdr0, base, visible)
+                planes = unpack_dma(hdr0, read(0, total), layout) if want_planes else None
+                self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
+            elif dma is not None:
                 base, read = dma
                 layout, total = self.dma_picture(hdr0, base, tag, visible)
                 planes = unpack_dma(hdr0, read(0, total), layout) if want_planes else None

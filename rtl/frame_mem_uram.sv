@@ -10,7 +10,8 @@
 module frame_mem_uram #(
     parameter int FBX = 9,
     parameter int FBY = 9,
-    parameter int PW = 12
+    parameter int PW = 12,
+    parameter int FRAME_WIN = 0                             // 0: the whole picture; N: a window of N superblock rows
 ) (
     input  logic                clk,
     input  logic                clk2x,
@@ -37,17 +38,31 @@ module frame_mem_uram #(
     output logic [4*PW-1:0]     h_rdata4         // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
 );
     localparam int WPR   = 1 << (FBX - 2);                   // words per luma row
-    localparam int NW0   = WPR << FBY;                       // luma words
+    // FRAME_WIN > 0: a window of FRAME_WIN superblock rows (64 lines) of the full width instead of the whole picture,
+    // the lines addressed by superblock row modulo FRAME_WIN (docs/frame-memory.md, window version); the
+    // y coordinate keeps its FBY bits
+    localparam int WLINES = (FRAME_WIN > 0) ? FRAME_WIN * 64 : (1 << FBY);
+    localparam int NW0   = WPR * WLINES;                     // luma words
     localparam int NW1   = NW0 >> 2;                         // chroma plane words (4:2:0)
     localparam int NWORD = NW0 + 2 * NW1;
     localparam int AW    = $clog2(NWORD);
 
+    // the window line of picture line y: luma superblock rows are 64 lines, chroma (4:2:0) 32, slot = row mod FRAME_WIN
+    function automatic logic [FBY-1:0] wline(input logic [1:0] p, input logic [FBY-1:0] y);
+        logic [FBY-1:0] row, slot;
+        if (FRAME_WIN == 0) return y;
+        row = (p == 2'd0) ? (y >> 6) : (y >> 5);
+        slot = FBY'(32'(row) % FRAME_WIN);
+        return (p == 2'd0) ? FBY'((slot << 6) | (y & FBY'(63))) : FBY'((slot << 5) | (y & FBY'(31)));
+    endfunction
     function automatic logic [AW-1:0] waddr(input logic [1:0] p, input logic [FBX-1:0] x, input logic [FBY-1:0] y);
         logic [AW-1:0] a;
+        logic [FBY-1:0] yw;
+        yw = wline(p, y);
         case (p)
-            2'd0:    a = AW'(y) * AW'(WPR) + AW'(x >> 2);
-            2'd1:    a = AW'(NW0) + AW'(y) * AW'(WPR >> 1) + AW'(x >> 2);
-            default: a = AW'(NW0 + NW1) + AW'(y) * AW'(WPR >> 1) + AW'(x >> 2);
+            2'd0:    a = AW'(yw) * AW'(WPR) + AW'(x >> 2);
+            2'd1:    a = AW'(NW0) + AW'(yw) * AW'(WPR >> 1) + AW'(x >> 2);
+            default: a = AW'(NW0 + NW1) + AW'(yw) * AW'(WPR >> 1) + AW'(x >> 2);
         endcase
         return a;
     endfunction

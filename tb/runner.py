@@ -39,6 +39,9 @@ if top in ("dec_top", "dec_host", "recon_top") and os.environ.get("ITX_LANES"):
 # FRAME_URAM=1 builds dec_top with the on-chip UltraRAM frame memory (core build only: no CDEF / LR / SR)
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_URAM"):
     params["FRAME_URAM"] = int(os.environ["FRAME_URAM"])
+# FRAME_WIN=N (with FRAME_URAM=1): the frame memory as a window of N superblock rows, rows flushed to DDR (docs/frame-memory.md)
+if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN"):
+    params["FRAME_WIN"] = int(os.environ["FRAME_WIN"])
 # SIM_FAST=1: optimise for simulation speed (Verilator -O3, compiler -O2, N threads); default is Verilator's -Os,
 # which compiles fastest. SIM_THREADS overrides the thread count (default: all cores).
 build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves and waves_fmt == "fst" else []) \
@@ -50,6 +53,7 @@ if os.environ.get("SIM_FAST", "0") == "1":
 # frame-buffer sizes build and run side by side instead of rebuilding one dir in turn.
 build_dir = ROOT / "build" / (top + (f"_fb{params['FBX']}x{params['FBY']}" if "FBX" in params else "")
                               + (f"_l{params['ITX_LANES']}" if "ITX_LANES" in params else "")
+                              + (f"_w{params['FRAME_WIN']}" if "FRAME_WIN" in params else "")
                               + ("_uram" if params.get("FRAME_URAM") else ""))
 r.build(sources=sources, hdl_toplevel=top, parameters=params,
         build_dir=build_dir, build_args=build_args, waves=waves)

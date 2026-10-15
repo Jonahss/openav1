@@ -85,3 +85,43 @@ The simulation model stays the oracle: the hardware frame memory replays the who
 `tb/gate` flow records the frame-memory ports as part of dec_top's ports) and the decoder's regressions run
 against both models through a parameter. Gate-level replay of the memory itself: record its ports in a
 dec_top run, replay against the netlist with the URAM primitives (xsim has them).
+
+## Window version: full-size pictures through DDR (design 2026-10-14 evening)
+
+The core build is intra-only without intra block copy, so no stage ever reads far from where it is working:
+reconstruction reads the row above and the column to the left of the block, the deblocking filter reads and
+writes a few lines either side of the superblock-row boundary. In the pipelined frame mode (`pipe_en`) the
+filter trails reconstruction by one superblock row, so at any moment the picture rows in play are three: the
+row being reconstructed (r), the row being filtered (r-1), and the row whose last lines that filtering still
+changes (r-2). Everything older is final.
+
+So the frame memory becomes a **window**: the same double-pumped UltraRAM with the same ports and the same
+one-cycle latency, holding `FRAME_WIN` superblock rows (3) of the picture's full width as a ring indexed by the
+superblock row modulo 3. Rows that become final are **flushed to DDR** by the host interface's AXI master (the
+picture-DMA engine, now also triggered by hardware), in the same planar layout the picture DMA used; the PS
+finds the finished picture in DDR exactly as before, nothing is ever read back from DDR by the decoder. The
+only new control is a hold: reconstruction may not start superblock row R before row R-3 (the previous occupant
+of its slot) has been flushed. `dec_top` gates the superblock event into the reconstruction stage on
+`flushed_upto >= R - FRAME_WIN`; in practice a flush (a few hundred microseconds a row at 1080p) finishes long
+before reconstruction gets there, so the hold is a safety net.
+
+Row release: `lf_done` for superblock row r makes row r-1 final (LF(r) wrote into its last lines); the last
+filter pass releases the last two rows. `dec_top` emits `row_final` pulses with the row index; `dec_host`
+queues them and writes each row's lines (all planes) to the plane bases / strides already programmed for the
+picture DMA, then reports `flush_done`, which advances `flushed_upto`. Software programs the plane registers
+once per frame (before `START.frame`), sets the auto-flush bit, and after `frame_done` waits for the flush
+queue to drain.
+
+Geometry: at 4:2:0 the window is `3 x 64 x W` luma samples plus two chroma planes of `3 x 32 x W/2`, one
+72-bit word per aligned group of four samples:
+
+| width | window words | URAM288 |
+|---|---|---|
+| 1280 (720p) | 92k | 23 |
+| 1920 (1080p) | 138k | 35 |
+
+against 24 for the 512 x 512 full-picture memory, so 1080p fits the K26 with ~20 UltraRAMs to spare. Limits of
+this version, all flagged as `unsupported` by the RTL rather than silently wrong: 64-pixel superblocks only
+(128-pixel rows would need a 6-row window), 4:2:0 or monochrome, pipelined frame mode only, no intra block copy
+(it reads anywhere in the picture), and CDEF / loop restoration stay out (they would lengthen the window by the
+rows they lag). Full-picture builds (`FRAME_WIN = 0`) are unchanged.
