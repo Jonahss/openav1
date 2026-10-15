@@ -121,7 +121,19 @@ Geometry: at 4:2:0 the window is `3 x 64 x W` luma samples plus two chroma plane
 | 1920 (1080p) | 138k | 35 |
 
 against 24 for the 512 x 512 full-picture memory, so 1080p fits the K26 with ~20 UltraRAMs to spare. Limits of
-this version, all flagged as `unsupported` by the RTL rather than silently wrong: 64-pixel superblocks only
-(128-pixel rows would need a 6-row window), 4:2:0 or monochrome, pipelined frame mode only, no intra block copy
-(it reads anywhere in the picture), and CDEF / loop restoration stay out (they would lengthen the window by the
-rows they lag). Full-picture builds (`FRAME_WIN = 0`) are unchanged.
+this version, all flagged as `unsupported` by the RTL (sticky for the frame) and refused by the driver rather than
+silently wrong: 64-pixel superblocks only (128-pixel rows would need a 6-row window), 4:2:0 or monochrome,
+pipelined frame mode only, **one tile column** (a tile column spans every superblock row, so with several the
+window of the full width could never release a row before the next column started: the first run on a four-column
+stream deadlocked on the hold), no intra block copy (it reads anywhere in the picture), and CDEF / loop restoration
+stay out (they would lengthen the window by the rows they lag). Tile rows are fine. Full-picture builds
+(`FRAME_WIN = 0`) are unchanged.
+
+Two things the first simulations taught (2026-10-14 evening): the UltraRAM serves the host port only in the
+filter's read slot when that port is idle, and the flush now runs while the filter works, so the memory reports
+whether a host read was served (`h_ok`) and the DMA engine refetches a group that was not; and a superblock event
+held by the window still has to count as the end of the previous row (once reconstruction is idle), since the
+filter that releases the row the hold waits for is itself waiting for that count. Synthesis of the 1080p
+configuration (`FBX = FBY = 11`, three rows): 102k LUT, 94 block RAM, 50 UltraRAM, once the per-4x4 stores that
+scale with the picture (motion info, the filters' info, reconstruction's mode map) were narrowed to the rows in
+play (32, 64 and 64 4x4 rows, rings by row truncation).
