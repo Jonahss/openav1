@@ -176,9 +176,16 @@ async def monitor_nb(dut, log):
                             lword=hex(int(c.l_word.value)), aword=hex(int(c.a_word.value))))
 
 
+FEED_GAP = [int(x) for x in os.environ.get("TS_FEED_GAP", "0,0").split(",")]   # every N bytes, no bytes for M cycles (starvation)
+
+
 async def feed_bytes(dut, data):
     dut.in_eos.value = 0
-    for b in data:
+    for i, b in enumerate(data):
+        if FEED_GAP[0] and i and i % FEED_GAP[0] == 0:
+            dut.in_valid.value = 0
+            await ClockCycles(dut.clk, FEED_GAP[1])
+            await Timer(1, "ns")
         dut.in_data.value = b
         dut.in_valid.value = 1
         while True:
