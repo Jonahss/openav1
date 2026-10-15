@@ -151,6 +151,7 @@ module dec_host
     lr_rec_t           lr_rec;
     logic [11:0]       h_rdata;
     logic [47:0]       h_rdata4;
+    logic              h_ok;
     logic [1:0]        h_plane_m;                            // the host port: the DMA engine's while it runs, else the register prefetch's
     logic [FBX-1:0]    h_x_m;
     logic [FBY-1:0]    h_y_m;
@@ -168,7 +169,7 @@ module dec_host
         .sr_start(start[4]), .sr_buf(ctrl[3]), .sr_busy, .sr_done,
         .lr_start(start[5]), .lr_from_deblocked(ctrl[2]), .lr_busy, .lr_done_o,
         .blk_done, .blk_rec, .tx_done, .tx_rec, .lr_done, .lr_rec,
-        .h_buf(ctrl[5:4]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4
+        .h_buf(ctrl[5:4]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4, .h_ok
     );
     logic [CDF_AW-1:0] def_addr_r;
     always_comb begin
@@ -357,10 +358,12 @@ module dec_host
                 end
                 D_AW: if (m_axi_awready) ds <= D_F0;
                 D_F0: ds <= fmt16 ? D_F2 : D_F1;             // h_x = d_x this cycle; its group is readable next cycle
-                D_F1: begin d_g0 <= h_rdata4; ds <= D_F2; end // h_x = d_x + 4 this cycle (8-bit pictures: two groups a beat)
+                // the window memory serves the host port only when the filter's read port is idle (a flush runs
+                // alongside decoding): a group the memory did not serve (h_ok low) is fetched again from D_F0
+                D_F1: begin d_g0 <= h_rdata4; ds <= h_ok ? D_F2 : D_F0; end   // h_x = d_x + 4 this cycle (8-bit: two groups a beat)
                 D_F2: begin
                     if (fmt16) d_g0 <= h_rdata4; else d_g1 <= h_rdata4;
-                    ds <= D_W;
+                    ds <= h_ok ? D_W : D_F0;
                 end
                 D_W: if (m_axi_wready) begin
                     dma_beats <= dma_beats + 1'b1;

@@ -51,7 +51,7 @@ module cdef_tb_top
                                                .we(w_h_we), .be(w_h_be), .plane(w_h_pl), .x(w_h_x), .y(w_h_y), .data(w_h_d));
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_src (.clk, .re(busy && src_re), .r_plane(src_plane), .r_x(src_x), .r_y(src_y), .rdata(src_rdata), .rdata4(src_rdata4),
                                                                         .we(w_h_we), .w_be(w_h_be), .w_plane(w_h_pl), .w_x(w_h_x), .w_y(w_h_y), .w_data(w_h_d),
-                                                                        .h_plane(2'd0), .h_x('0), .h_y('0), .h_rdata(unused_h0), .h_rdata4());
+                                                                        .h_plane(2'd0), .h_x('0), .h_y('0), .h_rdata(unused_h0), .h_rdata4(), .h_ok());
     logic [11:0] unused_r1;
     logic w_d_we; logic [3:0] w_d_be; logic [1:0] w_d_pl; logic [FBX-1:0] w_d_x; logic [FBY-1:0] w_d_y; logic [47:0] w_d_d; logic [47:0] unused_r4;
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_d (.we1(dst_we), .plane1(dst_plane), .x1(dst_x), .y1(dst_y), .d1(dst_wdata),
@@ -59,5 +59,5 @@ module cdef_tb_top
                                                .we(w_d_we), .be(w_d_be), .plane(w_d_pl), .x(w_d_x), .y(w_d_y), .data(w_d_d));
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_dst (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(unused_r1), .rdata4(unused_r4),
                                                                         .we(w_d_we), .w_be(w_d_be), .w_plane(w_d_pl), .w_x(w_d_x), .w_y(w_d_y), .w_data(w_d_d),
-                                                                        .h_plane, .h_x, .h_y, .h_rdata, .h_rdata4());
+                                                                        .h_plane, .h_x, .h_y, .h_rdata, .h_rdata4(), .h_ok());
 endmodule

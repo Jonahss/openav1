@@ -36,8 +36,10 @@ module frame_mem #(
     input  logic [FBX-1:0]      h_x,
     input  logic [FBY-1:0]      h_y,
     output logic [PW-1:0]       h_rdata,
-    output logic [4*PW-1:0]     h_rdata4         // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
+    output logic [4*PW-1:0]     h_rdata4,        // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
+    output logic                h_ok             // always: the host port is independent here
 );
+    assign h_ok = 1'b1;
     localparam int N = 1 << (FBX + FBY);
     logic [PW-1:0] mem0 [0:N-1];
     logic [PW-1:0] mem1 [0:N-1];

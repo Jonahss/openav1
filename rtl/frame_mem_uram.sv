@@ -35,7 +35,8 @@ module frame_mem_uram #(
     input  logic [FBX-1:0]      h_x,
     input  logic [FBY-1:0]      h_y,
     output logic [PW-1:0]       h_rdata,
-    output logic [4*PW-1:0]     h_rdata4         // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
+    output logic [4*PW-1:0]     h_rdata4,        // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
+    output logic                h_ok             // the host read sampled at the last clk edge was served (read-port 1 was idle)
 );
     localparam int WPR   = 1 << (FBX - 2);                   // words per luma row
     // FRAME_WIN > 0: a window of FRAME_WIN superblock rows (64 lines) of the full width instead of the whole picture,
@@ -157,6 +158,7 @@ module frame_mem_uram #(
     logic [1:0]  rx0l, rx1l, hxl;
     always_ff @(posedge clk) begin
         rx0l <= rx0[1:0]; rx1l <= rx1[1:0]; hxl <= h_x[1:0];
+        h_ok <= host_slot;                                   // sampled with the request: read-port 1 idle at this edge
     end
     always_comb begin
         rdata4[0*4*PW +: 4*PW] = {rq0[3*16 +: PW], rq0[2*16 +: PW], rq0[1*16 +: PW], rq0[0*16 +: PW]};

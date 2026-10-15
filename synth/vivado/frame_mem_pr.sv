@@ -28,7 +28,8 @@ module frame_mem #(
     input  logic [FBX-1:0]      h_x,
     input  logic [FBY-1:0]      h_y,
     output logic [PW-1:0]       h_rdata,
-    output logic [4*PW-1:0]     h_rdata4
+    output logic [4*PW-1:0]     h_rdata4,
+    output logic                h_ok
 );
     function automatic logic [7:0] hsh(input logic [1:0] p, input logic [FBX-1:0] x, input logic [FBY-1:0] y);
         return 8'(x >> 2) ^ 8'(y << 2) ^ {6'd0, p};
@@ -51,6 +52,7 @@ module frame_mem #(
             assign rdata[gi*PW +: PW] = q[PW-1:0];
         end
     endgenerate
+    assign h_ok = 1'b1;
     always_ff @(posedge clk) begin
         h_rdata <= g_rd[0].mem[hsh(h_plane, h_x, h_y)][PW-1:0];
         for (int l = 0; l < 4; l++) h_rdata4[l*PW +: PW] <= g_rd[0].mem[hsh(h_plane, {h_x[FBX-1:2], 2'(l)}, h_y)][PW-1:0];

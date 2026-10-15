@@ -54,5 +54,5 @@ module lf_tb_top
                                                .we(w_h_we), .be(w_h_be), .plane(w_h_pl), .x(w_h_x), .y(w_h_y), .data(w_h_d));
     frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb (.clk, .re(fb_re), .r_plane(fb_plane), .r_x(fb_x), .r_y(fb_y), .rdata(fb_rdata), .rdata4(fb_rdata4),
                                                                        .we({w_h_we, w_f_we}), .w_be({w_h_be, w_f_be}), .w_plane({w_h_pl, w_f_pl}), .w_x({w_h_x, w_f_x}), .w_y({w_h_y, w_f_y}), .w_data({w_h_d, w_f_d}),
-                                                                       .h_plane, .h_x, .h_y, .h_rdata, .h_rdata4());
+                                                                       .h_plane, .h_x, .h_y, .h_rdata, .h_rdata4(), .h_ok());
 endmodule

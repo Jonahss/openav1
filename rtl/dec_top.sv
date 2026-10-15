@@ -78,7 +78,8 @@ module dec_top
     input  logic [FBX-1:0]    h_x,
     input  logic [FBY-1:0]    h_y,
     output logic [11:0]       h_rdata,
-    output logic [47:0]       h_rdata4             // the four samples of h_x's aligned group, lane 0 lowest
+    output logic [47:0]       h_rdata4,            // the four samples of h_x's aligned group, lane 0 lowest
+    output logic              h_ok                 // the host read sampled at the last edge was served (the UltraRAM shares a slot)
 );
     logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane, blk_ack; logic [MIW-1:0] sb_r, sb_c;
     logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
@@ -170,6 +171,7 @@ module dec_top
                                          .d_we(sr_we), .d_x(sr_dx), .d_y(sr_dy), .d_wdata(sr_wdata));
     logic [11:0] h_rdata0, h_rdata1, h_rdata2;
     logic [47:0] h_rdata40, h_rdata41, h_rdata42;
+    logic        h_ok0, h_ok1, h_ok2;
     // ---- frame buffers, one port per stage (no sharing: the stages may run concurrently)
     // fb0 = pre-filter / deblocked frame. reads: recon, LF, CDEF, LR source 0 (and source 1 when CDEF did not run), SR; writes: recon, LF, SR
     logic [4:0] fb0_re; logic [9:0] fb0_rplane; logic [5*FBX-1:0] fb0_rx; logic [5*FBY-1:0] fb0_ry; logic [59:0] fb0_rdata; logic [239:0] fb0_rdata4;
@@ -201,12 +203,12 @@ module dec_top
             .re(fb0_re[1:0]), .r_plane(fb0_rplane[3:0]), .r_x(fb0_rx[2*FBX-1:0]), .r_y(fb0_ry[2*FBY-1:0]),
             .rdata(fb0_rdata[23:0]), .rdata4(fb0_rdata4[95:0]),
             .we(fb0_we[1:0]), .w_be(fb0_be[7:0]), .w_plane(fb0_wplane[3:0]), .w_x(fb0_wx[2*FBX-1:0]), .w_y(fb0_wy[2*FBY-1:0]), .w_data(fb0_wdata[95:0]),
-            .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40));
+            .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40), .h_ok(h_ok0));
         assign fb0_rdata[59:24] = '0; assign fb0_rdata4[239:96] = '0; assign unused_rd4u = '0;
     end else begin : g_fb0_model
         frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(5), .NWR(3)) u_fb (.clk, .re(fb0_re), .r_plane(fb0_rplane), .r_x(fb0_rx), .r_y(fb0_ry), .rdata(fb0_rdata), .rdata4(fb0_rdata4),
                                                                            .we(fb0_we), .w_be(fb0_be), .w_plane(fb0_wplane), .w_x(fb0_wx), .w_y(fb0_wy), .w_data(fb0_wdata),
-                                                                           .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40));
+                                                                           .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40), .h_ok(h_ok0));
     end endgenerate
     // fb1 = CdefFrame. reads: LR source 1, SR; writes: CDEF, SR
     logic [1:0] fb1_re; logic [3:0] fb1_rplane; logic [2*FBX-1:0] fb1_rx; logic [2*FBY-1:0] fb1_ry; logic [23:0] fb1_rdata; logic [95:0] fb1_rdata4;
@@ -225,23 +227,24 @@ module dec_top
     assign fb1_we = {w_sr1_we, w_cd_we}; assign fb1_be = {w_sr1_be, w_cd_be}; assign fb1_wplane = {w_sr1_pl, w_cd_pl};
     assign fb1_wx = {w_sr1_x, w_cd_x}; assign fb1_wy = {w_sr1_y, w_cd_y}; assign fb1_wdata = {w_sr1_d, w_cd_d};
     generate if (FRAME_URAM != 0) begin : g_fb1_none
-        assign fb1_rdata = '0; assign fb1_rdata4 = '0; assign h_rdata1 = '0; assign h_rdata41 = '0;
+        assign fb1_rdata = '0; assign fb1_rdata4 = '0; assign h_rdata1 = '0; assign h_rdata41 = '0; assign h_ok1 = 1'b1;
     end else begin : g_fb1_model
         frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(2), .NWR(2)) u_fb1 (.clk, .re(fb1_re), .r_plane(fb1_rplane), .r_x(fb1_rx), .r_y(fb1_ry), .rdata(fb1_rdata), .rdata4(fb1_rdata4),
                                                                             .we(fb1_we), .w_be(fb1_be), .w_plane(fb1_wplane), .w_x(fb1_wx), .w_y(fb1_wy), .w_data(fb1_wdata),
-                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata1), .h_rdata4(h_rdata41));
+                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata1), .h_rdata4(h_rdata41), .h_ok(h_ok1));
     end endgenerate
     // fb2 = LrFrame. writes: LR
     logic [11:0] fb2_rdata_u; logic [47:0] fb2_rdata4_u;
     logic w_lr_we; logic [3:0] w_lr_be; logic [1:0] w_lr_pl; logic [FBX-1:0] w_lr_x; logic [FBY-1:0] w_lr_y; logic [47:0] w_lr_d;
     assign w_lr_we = lr_we4; assign w_lr_be = lr_be4; assign w_lr_pl = lr_dplane; assign w_lr_x = lr_dx; assign w_lr_y = lr_dy; assign w_lr_d = lr_wdata4;
     generate if (FRAME_URAM != 0) begin : g_fb2_none
-        assign fb2_rdata_u = '0; assign fb2_rdata4_u = '0; assign h_rdata2 = '0; assign h_rdata42 = '0;
+        assign fb2_rdata_u = '0; assign fb2_rdata4_u = '0; assign h_rdata2 = '0; assign h_rdata42 = '0; assign h_ok2 = 1'b1;
     end else begin : g_fb2_model
         frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(fb2_rdata_u), .rdata4(fb2_rdata4_u),
                                                                             .we(w_lr_we), .w_be(w_lr_be), .w_plane(w_lr_pl), .w_x(w_lr_x), .w_y(w_lr_y), .w_data(w_lr_d),
-                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42));
+                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42), .h_ok(h_ok2));
     end endgenerate
+    assign h_ok     = (h_buf == 2'd2) ? h_ok2     : (h_buf == 2'd1) ? h_ok1     : h_ok0;
     assign h_rdata  = (h_buf == 2'd2) ? h_rdata2  : (h_buf == 2'd1) ? h_rdata1  : h_rdata0;
     assign h_rdata4 = (h_buf == 2'd2) ? h_rdata42 : (h_buf == 2'd1) ? h_rdata41 : h_rdata40;
 
