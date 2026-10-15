@@ -141,7 +141,7 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
                 await ax.write(R_HADDR, (plane << 28) | (y << 14) | x)
                 v = await ax.read(R_HDATA, record=False)
                 win.append((plane, y, x, v))
-            dut._log.info(f"{tag}: window holds (plane, y, x, value): {win}")
+            ax.dut._log.info(f"{tag}: window holds (plane, y, x, value): {win}")
         assert not bad, f"{tag}: DMA image: {len(bad)} samples differ, first (plane, y, x, dma, model): {bad[:8]}"
         return
     for plane in range(hdr.NumPlanes):
