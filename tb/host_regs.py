@@ -365,11 +365,25 @@ class HostDecoder:
         return planes, total
 
     # -- a whole stream
-    def check_core_build(self, hdr, tag):
+    def check_core_build(self, hdr, tag, window=False, n_tile_cols=1):
         if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             raise HostError(f"{tag}: CDEF is not in the core build (encode with --enable-cdef=0)")
         if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
             raise HostError(f"{tag}: loop restoration is not in the core build (encode with --enable-restoration=0)")
+        if window:
+            if hdr.use_128x128_superblock:
+                raise HostError(f"{tag}: the window build takes 64-pixel superblocks (encode with --sb-size=64)")
+            if hdr.NumPlanes > 1 and not (hdr.subsampling_x and hdr.subsampling_y):
+                raise HostError(f"{tag}: the window build takes 4:2:0 or monochrome")
+            if n_tile_cols != 1:
+                raise HostError(f"{tag}: the window build takes one tile column (encode with --tile-columns=0)")
+            if hdr.allow_intrabc:
+                raise HostError(f"{tag}: intra block copy is not in the window build")
+
+    @staticmethod
+    def window_ok(hdr, n_tile_cols=1):
+        return not hdr.use_128x128_superblock and (hdr.NumPlanes == 1 or (hdr.subsampling_x and hdr.subsampling_y)) \
+            and n_tile_cols == 1 and not hdr.allow_intrabc
 
     def frame_pipe_start(self, hdr, n_tile_cols):
         """Pipelined frame (pipe_en): the deblocking filter trails the tile decoder by superblock rows under the
@@ -397,7 +411,7 @@ class HostDecoder:
         for fi, tile_idx in enumerate(dec.frames):
             tag = f"{name} frame {fi}"
             hdr0 = dec.tiles[tile_idx[0]][0]
-            self.check_core_build(hdr0, tag)
+            self.check_core_build(hdr0, tag, window, len({dec.tiles[ti][0].MiColStart for ti in tile_idx}))
             t = {}
             t0 = time.monotonic()
             self.reset()

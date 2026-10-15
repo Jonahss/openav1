@@ -47,7 +47,7 @@ async def pipe_finish(ax, tag):
     await ax.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, 120_000_000, tag)
     await ax.write(R_CTRL, 0)
 
-from host_regs import (R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
+from host_regs import (HostDecoder, R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
                        R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, R_DMA_BEATS, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
                        HDR_WORDS, RH_WORDS, LH_WORDS, words, plane_size, dma_regs, unpack_dma, R_DMA_START, R_DMA_STATUS,
                        DMA_BUSY, DMA_DONE, DMA_ERR, START_FRAME, ST_FRAME_DONE, CTRL_PIPE, DMA_FLUSH_BUSY, DMA_CFG_AUTO, R_DMA_CFG,
@@ -254,8 +254,8 @@ async def dec_host_streams(dut):
         hdr0 = None
         decs = []
         dut._log.info(f"{tag} {W}x{H}: {len(d.tiles)} tiles, sb128 {d.tiles[0][0].use_128x128_superblock}, decoding the model")
-        if WIN and d.tiles[0][0].use_128x128_superblock:        # the window build is 64-pixel superblocks only
-            dut._log.info(f"{tag}: 128-pixel superblocks, skipped in the window build")
+        if WIN and not HostDecoder.window_ok(d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles})):
+            dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc), skipped")
             continue
         if PIPE:
             await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)

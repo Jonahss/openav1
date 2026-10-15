@@ -285,9 +285,16 @@ module dec_top
     assign hold_rc = (FRAME_WIN > 0) && ev_valid && (ev_kind == 2'd2) && (32'(sb_pop_row) >= FRAME_WIN)
                      && (32'(sb_pop_row) - FRAME_WIN >= 32'(flushed_cnt));
     assign ev_valid_rc = ev_valid && !hold_rc;
-    // the window build's limits (docs/frame-memory.md): 64-pixel superblocks, 4:2:0 or mono, pipelined frames, no intra block copy
-    assign unsupported = ts_unsup || ((FRAME_WIN > 0) && tile_busy
-                                      && (hdr.sb128 || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en));
+    // the window build's limits (docs/frame-memory.md): 64-pixel superblocks, 4:2:0 or mono, pipelined frames, one tile
+    // column (a tile column spans every row, so a window of the full width could never release one), no intra block
+    // copy. Sticky until the next frame, so software sees it after the tile (which may well have deadlocked on the hold).
+    logic win_unsup;
+    always_ff @(posedge clk) begin
+        if (rst || frame_start) win_unsup <= 1'b0;
+        else if ((FRAME_WIN > 0) && tile_busy && (hdr.sb128 || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en
+                                                  || n_tile_cols != 6'd1)) win_unsup <= 1'b1;
+    end
+    assign unsupported = ts_unsup || win_unsup;
 `ifndef SYNTHESIS
     always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin                      // window trace (simulation only)
         if (lf_pend && lf_done) $display("[win] t=%0t LF done row %0d (n_rows %0d) rel_upto->%0d", $time, lf_next, n_rows, (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next);
