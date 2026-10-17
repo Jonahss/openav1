@@ -54,6 +54,21 @@ class FbStage:
     def ptr(self, off):
         return ctypes.addressof(ctypes.c_char.from_buffer(self.m, off))
 
+    def show(self, lib, hdr, planes_layout):
+        return show_on(lib, hdr, planes_layout, lambda pa: self.ptr(self.stage_off + pa - self.base), self)
+
+
+def show_on(lib, hdr, planes_layout, src, screen):
+    """8-bit 4:2:0 pictures onto the screen (an FbStage), centred (or the top-left corner when larger); src(pa)
+    gives the pointer to the staged picture at physical address pa."""
+    if hdr.BitDepth != 8 or hdr.NumPlanes != 3 or not (hdr.subsampling_x and hdr.subsampling_y) or screen.bpp != 16:
+        return False
+    (yb, ys, W, H), (ub, cs, _, _), (vb, _, _, _) = planes_layout
+    w, h = min(W, screen.xres), min(H, screen.yres)
+    x0, y0 = (screen.xres - w) // 2, (screen.yres - h) // 2
+    lib.yuv420_rgb565(src(yb), src(ub), src(vb), w, h, ys, cs, screen.ptr(0), screen.line_length // 2, x0, y0)
+    return True
+
 
 class MemStage:
     """A reserved physical region as the DMA target (memory the kernel was told to leave alone, e.g. mem=3584M on
@@ -63,7 +78,7 @@ class MemStage:
         self.fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
         self.m = mmap.mmap(self.fd, size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
         self.base, self.stage_off, self.stage_len = base, 0, size
-        self.xres = self.yres = self.bpp = 0                   # no screen
+        self.screen = None                                     # an FbStage, opened by show()
 
     def read(self, off, n):
         return bytes(self.m[off:off + n])
@@ -72,18 +87,16 @@ class MemStage:
         return ctypes.addressof(ctypes.c_char.from_buffer(self.m, off))
 
     def show(self, lib, hdr, planes_layout):
-        return False
-
-    def show(self, lib, hdr, planes_layout):
-        """8-bit 4:2:0 pictures onto the screen, centred (or the top-left corner when larger)."""
-        if hdr.BitDepth != 8 or hdr.NumPlanes != 3 or not (hdr.subsampling_x and hdr.subsampling_y) or self.bpp != 16:
+        """The picture is in the reserved region; the screen is still the framebuffer, opened on first use."""
+        if self.screen is None:
+            try:
+                self.screen = FbStage()
+            except OSError as e:
+                print(f"no screen: {e}")
+                self.screen = False
+        if not self.screen:
             return False
-        (yb, ys, W, H), (ub, cs, _, _), (vb, _, _, _) = planes_layout
-        w, h = min(W, self.xres), min(H, self.yres)
-        x0, y0 = (self.xres - w) // 2, (self.yres - h) // 2
-        lib.yuv420_rgb565(self.ptr(self.stage_off + yb - self.base), self.ptr(self.stage_off + ub - self.base),
-                          self.ptr(self.stage_off + vb - self.base), w, h, ys, cs, self.ptr(0), self.line_length // 2, x0, y0)
-        return True
+        return show_on(lib, hdr, planes_layout, lambda pa: self.ptr(pa - self.base), self.screen)
 
 
 class Regs:
@@ -149,7 +162,7 @@ def main():
     ap.add_argument("--single", action="store_true", help="read the picture sample by sample (HDATA) instead of packed")
     ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
     ap.add_argument("--dma", action="store_true", help="the picture through the DMA engine into the framebuffer's spare lines")
-    ap.add_argument("--show", action="store_true", help="with --dma: also put each picture on the screen (8-bit 4:2:0, RGB565 fb)")
+    ap.add_argument("--show", action="store_true", help="with --dma / --dma-base: also put each picture on the screen (8-bit 4:2:0, RGB565 fb0)")
     ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
     ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma --pipe")
     ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
