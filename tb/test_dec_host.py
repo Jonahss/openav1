@@ -266,8 +266,14 @@ async def dec_host_streams(dut):
         hdr0 = None
         decs = []
         dut._log.info(f"{tag} {W}x{H}: {len(d.tiles)} tiles, sb128 {d.tiles[0][0].use_128x128_superblock}, decoding the model")
-        if WIN and not HostDecoder.window_ok(d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles})):
+        h0 = d.tiles[0][0]
+        if WIN and not HostDecoder.window_ok(h0, len({th.MiColStart for th, _ in d.tiles})):
             dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc), skipped")
+            continue
+        if WIN and ((h0.enable_cdef and not h0.CodedLossless and not h0.allow_intrabc) or any(t != 0 for t in h0.FrameRestorationType[:h0.NumPlanes])):
+            # the window build has no CDEF / loop restoration (the board build nulls them): a recording with them
+            # busy cannot be replayed on that netlist (seed 7, 2026-10-17: STATUS bits 7 / 10 / 11 differed)
+            dut._log.info(f"{tag}: CDEF / loop restoration are not in the window build, skipped")
             continue
         if PIPE:
             await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)
