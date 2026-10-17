@@ -113,8 +113,9 @@ int hl_read_plane(int plane, int W, int H, int bd8, uint16_t *out) {
 // each row is first copied out with wide loads (memcpy) and the output row is assembled in a local buffer and
 // copied in with wide stores.
 #include <string.h>
+// flip: the picture turned by 180 degrees within its rectangle (a panel mounted upside down).
 void hl_yuv420_rgb565(const uint8_t *y, const uint8_t *u, const uint8_t *v, int W, int H, int ystride, int cstride,
-                      uint16_t *dst, int dst_stride, int x0, int y0) {
+                      uint16_t *dst, int dst_stride, int x0, int y0, int flip) {
     static uint8_t yr[4096], ur[2048], vr[2048];
     static uint16_t out[4096];
     if (W > 4096) return;
@@ -130,6 +131,11 @@ void hl_yuv420_rgb565(const uint8_t *y, const uint8_t *u, const uint8_t *v, int 
             r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
             out[i] = (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3));
         }
-        memcpy(dst + (long)(y0 + j) * dst_stride + x0, out, (size_t)W * 2);
+        if (flip) {
+            for (int i = 0; i < W / 2; i++) { uint16_t t = out[i]; out[i] = out[W - 1 - i]; out[W - 1 - i] = t; }
+            memcpy(dst + (long)(y0 + H - 1 - j) * dst_stride + x0, out, (size_t)W * 2);
+        } else {
+            memcpy(dst + (long)(y0 + j) * dst_stride + x0, out, (size_t)W * 2);
+        }
     }
 }

@@ -54,19 +54,20 @@ class FbStage:
     def ptr(self, off):
         return ctypes.addressof(ctypes.c_char.from_buffer(self.m, off))
 
-    def show(self, lib, hdr, planes_layout):
-        return show_on(lib, hdr, planes_layout, lambda pa: self.ptr(self.stage_off + pa - self.base), self)
+    def show(self, lib, hdr, planes_layout, flip=False):
+        return show_on(lib, hdr, planes_layout, lambda pa: self.ptr(self.stage_off + pa - self.base), self, flip)
 
 
-def show_on(lib, hdr, planes_layout, src, screen):
+def show_on(lib, hdr, planes_layout, src, screen, flip=False):
     """8-bit 4:2:0 pictures onto the screen (an FbStage), centred (or the top-left corner when larger); src(pa)
-    gives the pointer to the staged picture at physical address pa."""
+    gives the pointer to the staged picture at physical address pa; flip turns the picture by 180 degrees for a
+    panel mounted upside down (the console has fbcon=rotate:2 for the same)."""
     if hdr.BitDepth != 8 or hdr.NumPlanes != 3 or not (hdr.subsampling_x and hdr.subsampling_y) or screen.bpp != 16:
         return False
     (yb, ys, W, H), (ub, cs, _, _), (vb, _, _, _) = planes_layout
     w, h = min(W, screen.xres), min(H, screen.yres)
     x0, y0 = (screen.xres - w) // 2, (screen.yres - h) // 2
-    lib.yuv420_rgb565(src(yb), src(ub), src(vb), w, h, ys, cs, screen.ptr(0), screen.line_length // 2, x0, y0)
+    lib.yuv420_rgb565(src(yb), src(ub), src(vb), w, h, ys, cs, screen.ptr(0), screen.line_length // 2, x0, y0, flip)
     return True
 
 
@@ -86,7 +87,7 @@ class MemStage:
     def ptr(self, off):
         return ctypes.addressof(ctypes.c_char.from_buffer(self.m, off))
 
-    def show(self, lib, hdr, planes_layout):
+    def show(self, lib, hdr, planes_layout, flip=False):
         """The picture is in the reserved region; the screen is still the framebuffer, opened on first use."""
         if self.screen is None:
             try:
@@ -96,7 +97,7 @@ class MemStage:
                 self.screen = False
         if not self.screen:
             return False
-        return show_on(lib, hdr, planes_layout, lambda pa: self.ptr(pa - self.base), self.screen)
+        return show_on(lib, hdr, planes_layout, lambda pa: self.ptr(pa - self.base), self.screen, flip)
 
 
 class Regs:
@@ -163,6 +164,7 @@ def main():
     ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
     ap.add_argument("--dma", action="store_true", help="the picture through the DMA engine into the framebuffer's spare lines")
     ap.add_argument("--show", action="store_true", help="with --dma / --dma-base: also put each picture on the screen (8-bit 4:2:0, RGB565 fb0)")
+    ap.add_argument("--flip", action="store_true", help="with --show: the picture turned by 180 degrees (panel mounted upside down)")
     ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
     ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma --pipe")
     ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
@@ -218,7 +220,7 @@ def main():
                                                      want_planes=bool(out or ref) or stage is None, window=args.window):
             if stage is not None and args.show and fast is not None:
                 from host_regs import dma_layout
-                stage.show(fast, hdr, dma_layout(hdr, stage.base)[0])
+                stage.show(fast, hdr, dma_layout(hdr, stage.base)[0], flip=args.flip)
             if args.frames is not None and fi >= args.frames:
                 break
             W, H = plane_size(hdr, 0)
