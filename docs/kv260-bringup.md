@@ -76,7 +76,10 @@ memory; moving the conversion into the PL or using a DRM YUV plane is the next d
 **1080p on the board (2026-10-17):** the window build (`KV260_FBX=11 KV260_FBY=11 KV260_WIN=3`, 50 MHz,
 103.9k LUT, 50 UltraRAM, +1.9 ns of slack; `docs/frame-memory.md`) decodes `streams/demo/testsrc2_1080p_20f_core.ivf`
 bit-exact against dav1d: 20 of 20 frames identical, 15.8 s for the run with the compare (tiles 0.15 s, read-back
-0.20 s a frame). The framebuffer's spare lines are too small for a 1080p picture, so the DMA target is a region the
+0.20 s a frame). At 80 MHz the same build misses timing by 1 ns under Vivado's default strategy (the window line
+mapping at the end of the reconstruction's coordinate path, 39 logic levels) and closes with 38 ps to spare under
+`KV260_STRATEGY=Performance_ExtraTimingOpt`; that bitstream decodes the same stream bit-exact in 10.9 s with the
+picture on the screen. The framebuffer's spare lines are too small for a 1080p picture, so the DMA target is a region the
 kernel never sees: the board boots with `mem=3584M` (a `boot.scr` with that in `bootargs`; the 512 MB from
 0x8_6000_0000 are then free) and `decode.py --window --dma-base 0x860000000 --dma-size 0x20000000` maps it through
 `/dev/mem`. The first run read back only the stale bytes already in that memory: the decoder had put the right
