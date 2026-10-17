@@ -141,7 +141,11 @@ play (32, 64 and 64 4x4 rows, rings by row truncation).
 On the board (2026-10-17): the 1080p configuration at 50 MHz decodes the 20-frame 1080p demo stream bit-exact
 against dav1d through the picture DMA into a reserved DDR region (`docs/kv260-bringup.md`). Its gate-level
 replays: the whole decoder at the core configuration (`FRAME_WIN = 0`) on two recordings, and `dec_host` at
-`FRAME_WIN = 3` on two window recordings (the AXI attribute outputs compared only while their valid is high).
+`FRAME_WIN = 3` on two window recordings, 256 x 224 with seeds 1 and 4 (monochrome and 4:2:0 8-bit, 567,588
+cycles) and 128 x 512 with seeds 6 and 8 (4:2:0 12-bit and 8-bit, 823,354 cycles), both 0 mismatches (the AXI
+attribute outputs compared only while their valid is high). The seeds are ones the board build accepts: a
+recording with CDEF or loop restoration on shows those blocks busy in the STATUS register, which the netlist
+with them nulled cannot (seed 7: 281,257 STATUS-read mismatches and not one anywhere else, including the DMA).
 The first of those replays disagreed on `awsize` / `awburst` on every write address: not the netlist, the
 recording. Verilator gives one VCD identifier to nets it finds equal (the write and read channels' constant size
 and burst), and `vcd2vec` kept one name per identifier, so the write channel's constants were recorded as zero.
