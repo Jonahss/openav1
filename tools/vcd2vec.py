@@ -17,7 +17,8 @@ a = ap.parse_args()
 ins = a.ins.split(','); outs = a.outs.split(',')
 want = set(ins + outs + [a.clk])
 
-code = {}       # id -> name
+code = {}       # id -> names (Verilator gives one identifier to nets it finds equal, e.g. two ports tied to the same
+                # constant: the AXI write and read channels' size / burst / prot; every name must take the value)
 width = {}
 scope = []
 per_scope = {}  # scope path -> {name: (ident, width)}
@@ -42,10 +43,10 @@ with open(a.vcd) as f:
         sys.exit(f"no scope holds all signals; best is {best} missing {sorted(want - set(per_scope.get(best, {})))}")
     if chosen != a.scope: print(f"(signals taken from scope {chosen})", file=sys.stderr)
     for name, (ident, w) in per_scope[chosen].items():
-        code[ident] = name; width[name] = w
+        code.setdefault(ident, []).append(name); width[name] = w
     for n in ins + outs: print(f"{n} {width[n]}", file=sys.stderr)
     val = {n: 0 for n in width}
-    clk_id = next(i for i, n in code.items() if n == a.clk)
+    clk_id = next(i for i, ns in code.items() if a.clk in ns)
     prev_clk = 0
     pending = {}          # changes in the current timestep, applied together
     def flush():
@@ -67,8 +68,11 @@ with open(a.vcd) as f:
         if c == '#': flush(); continue
         if c in '01xz':
             ident = line[1:].strip()
-            if ident in code: pending[code[ident]] = 1 if c == '1' else 0
+            if ident in code:
+                for n in code[ident]: pending[n] = 1 if c == '1' else 0
         elif c == 'b':
             bits, ident = line[1:].split()
-            if ident in code: pending[code[ident]] = int(bits.replace('x', '0').replace('z', '0'), 2)
+            if ident in code:
+                v = int(bits.replace('x', '0').replace('z', '0'), 2)
+                for n in code[ident]: pending[n] = v
     flush()
