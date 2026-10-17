@@ -73,6 +73,15 @@ from pagemap, so this is the one buffer root can both address and read without a
 end to end through the DMA, 4.9 s with the dav1d compare, 7.1 s with the screen blit (the PS reading uncached
 memory; moving the conversion into the PL or using a DRM YUV plane is the next display step).
 
+**1080p on the board (2026-10-17):** the window build (`KV260_FBX=11 KV260_FBY=11 KV260_WIN=3`, 50 MHz,
+103.9k LUT, 50 UltraRAM, +1.9 ns of slack; `docs/frame-memory.md`) decodes `streams/demo/testsrc2_1080p_20f_core.ivf`
+bit-exact against dav1d: 20 of 20 frames identical, 15.8 s for the run with the compare (tiles 0.15 s, read-back
+0.20 s a frame). The framebuffer's spare lines are too small for a 1080p picture, so the DMA target is a region the
+kernel never sees: the board boots with `mem=3584M` (a `boot.scr` with that in `bootargs`; the 512 MB from
+0x8_6000_0000 are then free) and `decode.py --window --dma-base 0x860000000 --dma-size 0x20000000` maps it through
+`/dev/mem`. The first run read back only the stale bytes already in that memory: the decoder had put the right
+40-bit address on the bus, but the block design had no segment for it (see the lesson below).
+
 **Transcript replay** (no parser on the board, the expected pixels recorded by the simulation):
 `TS_TRANSCRIPT=<file> python tb/runner.py dec_host` (with `FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_STAGE=lf`)
 records every register write, every poll and the expected value of every read, and `tools/kv260/play.py <file>`
@@ -80,6 +89,12 @@ replays it over `/dev/mem` and reports mismatches.
 
 ## Board lessons (2026-10-14)
 
+- **The block design's memory map comes from the PS IP's DDR geometry, not from the board.** The firmware
+  programs the controller, but Vivado's default `zynq_ultra_ps_e` (2 Gbit x8 devices: 2 GB) offers only
+  `HP0_DDR_LOW`, and `assign_bd_address ... HP0_DDR_HIGH` quietly finds no segment (`WARNING: [BD 5-699]`), so a
+  write above 4 GB reaches nothing and nobody reports it. `build.tcl` now sets the K26's geometry (8 Gbit x16,
+  64-bit bus, from the `kv260_som` board preset) and the high segment appears at 0x8_0000_0000. Check the build
+  log for both `HP0_DDR_LOW` and `HP0_DDR_HIGH` being assigned.
 - **The PS port width is the boot firmware's, not the bitstream's.** The K26 firmware's psu_init sets
   `FPD_SLCR.AFI_FS` (0xFD615000, bits [9:8] HPM0, [11:10] HPM1) to 128 bits. A PL built for a 32-bit HPM0 only
   sees byte lane 0: registers at offsets 4, 8, 12 mod 16 read 0 and ignore writes. The design now asks for

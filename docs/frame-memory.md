@@ -137,3 +137,9 @@ filter that releases the row the hold waits for is itself waiting for that count
 configuration (`FBX = FBY = 11`, three rows): 102k LUT, 94 block RAM, 50 UltraRAM, once the per-4x4 stores that
 scale with the picture (motion info, the filters' info, reconstruction's mode map) were narrowed to the rows in
 play (32, 64 and 64 4x4 rows, rings by row truncation).
+
+On the board (2026-10-17): the 1080p configuration at 50 MHz decodes the 20-frame 1080p demo stream bit-exact
+against dav1d through the picture DMA into a reserved DDR region (`docs/kv260-bringup.md`). Its gate-level
+replays: the whole decoder at the core configuration (`FRAME_WIN = 0`) on two recordings, and `dec_host` at
+`FRAME_WIN = 3` on two window recordings, the AXI attribute outputs compared only while their valid is high (the
+netlist and the RTL tie idle attributes off differently).
