@@ -131,6 +131,12 @@ update_compile_order -fileset sources_1
 
 # ---------------------------------------------------------------- runs
 set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+# KV260_STRATEGY: an implementation strategy for a timing-tight build (e.g. Performance_ExtraTimingOpt,
+# Performance_ExplorePostRoutePhysOpt); the default strategy otherwise
+if {[info exists ::env(KV260_STRATEGY)] && $::env(KV260_STRATEGY) ne ""} {
+    set_property strategy $::env(KV260_STRATEGY) [get_runs impl_1]
+    puts "impl strategy: $::env(KV260_STRATEGY)"
+}
 set_property STEPS.OPT_DESIGN.TCL.PRE $root/fpga/kv260/pre_opt.tcl [get_runs impl_1]
 launch_runs synth_1 -jobs 8
 wait_on_run synth_1
