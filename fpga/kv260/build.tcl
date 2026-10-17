@@ -31,7 +31,17 @@ set_property -dict [list \
     CONFIG.PSU__FPGA_PL0_ENABLE {1} CONFIG.PSU__CRL_APB__PL0_REF_CTRL__FREQMHZ {100} \
     CONFIG.PSU__CRL_APB__PL0_REF_CTRL__SRCSEL {IOPLL} CONFIG.PSU__CRL_APB__PL0_REF_CTRL__DIVISOR0 {15} CONFIG.PSU__CRL_APB__PL0_REF_CTRL__DIVISOR1 {1} \
     CONFIG.PSU__FPGA_PL1_ENABLE {0} CONFIG.PSU__FPGA_PL2_ENABLE {0} CONFIG.PSU__FPGA_PL3_ENABLE {0} \
-    CONFIG.PSU__USE__IRQ0 {0}] $ps
+    CONFIG.PSU__USE__IRQ0 {0} \
+    CONFIG.PSU__DDRC__MEMORY_TYPE {DDR 4} CONFIG.PSU__DDRC__COMPONENTS {Components} CONFIG.PSU__DDRC__SPEED_BIN {DDR4_2400R} \
+    CONFIG.PSU__DDRC__BUS_WIDTH {64 Bit} CONFIG.PSU__DDRC__DRAM_WIDTH {16 Bits} CONFIG.PSU__DDRC__DEVICE_CAPACITY {8192 MBits} \
+    CONFIG.PSU__DDRC__RANK_ADDR_COUNT {0} CONFIG.PSU__DDRC__BG_ADDR_COUNT {1} CONFIG.PSU__DDRC__BANK_ADDR_COUNT {2} \
+    CONFIG.PSU__DDRC__ROW_ADDR_COUNT {16} CONFIG.PSU__DDRC__COL_ADDR_COUNT {10}] $ps
+# The DDR geometry is the K26 SOM's (4 x 8 Gbit x16 DDR4, 64-bit bus: the board preset's figures, kv260_som 1.4).
+# The firmware programs the controller, not this; but the address map of the block design comes from this, and
+# with the IP's default (2 Gbit x8 devices: 2 GB) the PS has no HP0_DDR_HIGH segment at all, so a picture DMA to
+# the reserved region above 4 GB (decode.py --dma-base 0x860000000, mem=3584M on the board) reached no memory
+# (2026-10-17: the first 1080p run read back the stale bytes already in DDR). With 8 Gbit x16 the high segment
+# exists and the assign_bd_address below takes.
 # The decoder clocks: an MMCME4_ADV instantiated by hand (fpga/kv260/clkgen_v.v, written here with the dividers),
 # not the clock wizard. clk and clk2x must be VCO/d and VCO/(d/2) from one VCO, exactly 2:1 and edge-aligned: the
 # double-pumped frame memory and the two-cycle crossing constraints both rely on it. The wizard honours neither
