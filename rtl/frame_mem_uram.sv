@@ -48,22 +48,31 @@ module frame_mem_uram #(
     localparam int NWORD = NW0 + 2 * NW1;
     localparam int AW    = $clog2(NWORD);
 
-    // the window line of picture line y: luma superblock rows are 64 lines, chroma (4:2:0) 32, slot = row mod FRAME_WIN
+    // The window line of picture line y: luma superblock rows are 64 lines, chroma (4:2:0) 32, slot = row mod FRAME_WIN,
+    // as a table over the superblock row (two LUT levels) rather than a modulo. The 80 MHz 1080p window build's worst
+    // path (-1.03 ns, 39 logic levels, 2026-10-17) ran from the reconstruction stage's transform-size register into the
+    // UltraRAM address through this function and the plane arithmetic below, synthesised as a divider and adders.
+    localparam int NROW = 1 << (FBY - 5);                    // superblock rows a y coordinate can address (chroma rows are 32 lines)
     function automatic logic [FBY-1:0] wline(input logic [1:0] p, input logic [FBY-1:0] y);
-        logic [FBY-1:0] row, slot;
+        logic [FBY-6:0] row;
+        logic [FBY-1:0] slot;
         if (FRAME_WIN == 0) return y;
-        row = (p == 2'd0) ? (y >> 6) : (y >> 5);
-        slot = FBY'(32'(row) % FRAME_WIN);
+        row = (p == 2'd0) ? (FBY-5)'(y >> 6) : (FBY-5)'(y >> 5);
+        slot = '0;
+        for (int r = 0; r < NROW; r++) if (row == (FBY-5)'(r)) slot = FBY'(r % FRAME_WIN);
         return (p == 2'd0) ? FBY'((slot << 6) | (y & FBY'(63))) : FBY'((slot << 5) | (y & FBY'(31)));
     endfunction
+    // Address = plane base + line * words-per-row + x / 4. The words-per-row are powers of two and x / 4 is below them
+    // (chroma planes are half as wide), so line and group concatenate; only the plane base is added, and its low bits
+    // are zero.
     function automatic logic [AW-1:0] waddr(input logic [1:0] p, input logic [FBX-1:0] x, input logic [FBY-1:0] y);
         logic [AW-1:0] a;
         logic [FBY-1:0] yw;
         yw = wline(p, y);
         case (p)
-            2'd0:    a = AW'(yw) * AW'(WPR) + AW'(x >> 2);
-            2'd1:    a = AW'(NW0) + AW'(yw) * AW'(WPR >> 1) + AW'(x >> 2);
-            default: a = AW'(NW0 + NW1) + AW'(yw) * AW'(WPR >> 1) + AW'(x >> 2);
+            2'd0:    a = (AW'(yw) << (FBX - 2)) | AW'(x[FBX-1:2]);
+            2'd1:    a = AW'(NW0) + ((AW'(yw) << (FBX - 3)) | AW'(x[FBX-2:2]));
+            default: a = AW'(NW0 + NW1) + ((AW'(yw) << (FBX - 3)) | AW'(x[FBX-2:2]));
         endcase
         return a;
     endfunction

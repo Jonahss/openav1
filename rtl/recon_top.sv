@@ -361,6 +361,12 @@ module recon_top
     logic [3:0]  mode;
     logic        have_l, have_a, have_ar, have_bl;
     logic [PXW-1:0] above_lim, left_lim;
+    // The limits are constant over a transform block (geometry, the flag rows, the picture edge) and are only used
+    // by the edge gather: registered in R_SETUP, so the per-cycle read coordinate is an add and a compare on
+    // registers. Computed in front of the frame memory's address every cycle, the chain transform-size register ->
+    // availability flag -> limit -> clamp -> window line -> UltraRAM address was the 80 MHz window build's worst
+    // path (-1.03 ns, 2026-10-17).
+    logic [PXW-1:0] above_lim_r, left_lim_r;
     always_comb begin
         bdf_y_rd  = (rs == R_FIN) ? 6'(sb_row_p + 6'd1 + 6'(fy)) : sb_row_p;
         bdf_a_rd  = 7'(t.plane) * 7'd34 + 7'(bdf_y_rd);
@@ -505,7 +511,7 @@ module recon_top
     logic [PXW-1:0] ep_xb;                                    // x of the group's first sample
     logic [11:0] last_above;
     logic [8:0]  n_above;
-    assign n_above = 9'(tw_px) + 9'(th_px);
+    assign n_above = n_edges >> 1;                         // w + h: n_edges is registered in R_SETUP
     logic [1:0]  ep_side; logic [7:0] ep_idx; logic [11:0] ep_val;
     logic        px_valid;                                 // generic 1-deep read pipeline
     logic [6:0]  px_i, px_j;
@@ -552,17 +558,17 @@ module recon_top
     logic [PXW-1:0] e_rx, e_ry;
     always_comb begin
         e_const = 1'b0; e_side = 2'd0; e_idx = 8'd0; e_val = 12'd0; e_rx = t.x; e_ry = t.y;
-        if (ek < 9'(tw_px) + 9'(th_px)) begin
+        if (ek < n_above) begin
             e_side = 2'd0; e_idx = 8'(ek);
             if (have_a) begin
-                e_rx = (t.x + PXW'(ek) > above_lim) ? above_lim : t.x + PXW'(ek); e_ry = t.y - PXW'(1);
+                e_rx = (t.x + PXW'(ek) > above_lim_r) ? above_lim_r : t.x + PXW'(ek); e_ry = t.y - PXW'(1);
             end else if (have_l) begin
                 e_rx = t.x - PXW'(1); e_ry = t.y;
             end else begin e_const = 1'b1; e_val = mid_m1; end
-        end else if (ek < 2 * (9'(tw_px) + 9'(th_px))) begin
-            e_side = 2'd1; e_idx = 8'(ek - 9'(tw_px) - 9'(th_px));
+        end else if (ek < n_edges) begin
+            e_side = 2'd1; e_idx = 8'(ek - n_above);
             if (have_l) begin
-                e_rx = t.x - PXW'(1); e_ry = (t.y + PXW'(e_idx) > left_lim) ? left_lim : t.y + PXW'(e_idx);
+                e_rx = t.x - PXW'(1); e_ry = (t.y + PXW'(e_idx) > left_lim_r) ? left_lim_r : t.y + PXW'(e_idx);
             end else if (have_a) begin
                 e_rx = t.x; e_ry = t.y - PXW'(1);
             end else begin e_const = 1'b1; e_val = mid_p1; end
@@ -647,8 +653,8 @@ module recon_top
             gx = ep_xb + PXW'(l);
             if (ep_const) edge_data4[l * 12 +: 12] = ep_val;
             else if (ep_rep) edge_data4[l * 12 +: 12] = fb_rdata;
-            else if (gx <= above_lim) edge_data4[l * 12 +: 12] = fb_rdata4[l * 12 +: 12];
-            else if (above_lim >= ep_xb) edge_data4[l * 12 +: 12] = fb_rdata4[(above_lim - ep_xb) * 12 +: 12];
+            else if (gx <= above_lim_r) edge_data4[l * 12 +: 12] = fb_rdata4[l * 12 +: 12];
+            else if (above_lim_r >= ep_xb) edge_data4[l * 12 +: 12] = fb_rdata4[(above_lim_r - ep_xb) * 12 +: 12];
             else edge_data4[l * 12 +: 12] = last_above;
         end
         itx_we = 1'b0; itx_addr = 10'd0; itx_data = '0;
@@ -726,6 +732,7 @@ module recon_top
                 R_SETUP: begin
                     ci <= 7'd0; cj <= 7'd0; px_valid <= 1'b0; ek <= 9'd0; ep_valid <= 1'b0;
                     n_edges <= 2 * (9'(tw_px) + 9'(th_px));
+                    above_lim_r <= above_lim; left_lim_r <= left_lim;
                     if (b.is_inter) rs <= R_RESID;                       // predicted whole by the block copy
                     else if (is_pal) rs <= R_PAL;
                     else rs <= R_EDGE;
@@ -743,8 +750,8 @@ module recon_top
                 R_PAL_LAST: begin px_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; rs <= R_RESID; end
                 // ---- edge preparation (7.11.2.1), pipelined: issue entry ek, write entry ek-1
                 R_EDGE: begin
-                    if (ep_valid && ep_grp && !ep_const && !ep_rep && above_lim >= ep_xb && above_lim <= ep_xb + PXW'(3))
-                        last_above <= fb_rdata4[(above_lim - ep_xb) * 12 +: 12];
+                    if (ep_valid && ep_grp && !ep_const && !ep_rep && above_lim_r >= ep_xb && above_lim_r <= ep_xb + PXW'(3))
+                        last_above <= fb_rdata4[(above_lim_r - ep_xb) * 12 +: 12];
                     if (ek < n_above) begin                                  // above row, groups of 4
                         ep_valid <= 1'b1; ep_grp <= 1'b1; ep_side <= 2'd0; ep_idx <= 8'(ek); ep_xb <= t.x + PXW'(ek);
                         ep_const <= !have_a && !have_l; ep_val <= mid_m1; ep_rep <= !have_a && have_l;

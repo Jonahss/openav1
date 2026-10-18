@@ -62,7 +62,8 @@ module pal_syntax
         P_LIT_COL, P_LIT_COL_W,                  // first explicit colour
         P_EXTRA, P_EXTRA_W,                      // palette_num_extra_bits
         P_DELTA, P_DELTA_W,                      // delta-coded colours
-        P_SORT,                                  // sort + commit plane
+        P_SORT,                                  // sort (first half of the network) ...
+        P_SORT2,                                 // ... second half + commit plane
         P_UV_CHK,
         P_V_DE, P_V_DE_W, P_V_EXTRA_W, P_V0_W, P_V_DELTA, P_V_DELTA_W, P_V_SIGN_W, P_V_LIT, P_V_LIT_W,
         P_DONE_MI,
@@ -125,14 +126,15 @@ module pal_syntax
     // 8-entry bubble sorting network (entries >= n hold 12'hFFF so they sink to the end)
     // Odd-even transposition sort: eight rounds of up to four independent compare-exchanges, so the network is
     // eight compare-exchanges deep (a bubble sort's seven passes were 28 deep in series: tile_syntax's worst path).
-    function automatic logic [95:0] sort8(input logic [95:0] v);
+    // odd-even transposition sort of eight colours: rounds r0 .. r1-1 of the 8-round network (all 8 = sorted)
+    function automatic logic [95:0] sort8_rounds(input logic [95:0] v, input int r0, input int r1);
         logic [11:0] a [8];
         logic [11:0] t;
         for (int k = 0; k < 8; k++) a[k] = v[12 * k +: 12];
-        for (int r = 0; r < 8; r++)
+        for (int r = r0; r < r1; r++)
             for (int k = r % 2; k < 7; k += 2)
                 if (a[k] > a[k + 1]) begin t = a[k]; a[k] = a[k + 1]; a[k + 1] = t; end
-        for (int k = 0; k < 8; k++) sort8[12 * k +: 12] = a[k];
+        for (int k = 0; k < 8; k++) sort8_rounds[12 * k +: 12] = a[k];
     endfunction
 
     // get_palette_color_context: scores from the three neighbours, partial selection sort of the top 3,
@@ -352,11 +354,24 @@ module pal_syntax
                     pbits <= (d_bits < pbits) ? d_bits : pbits;
                     st <= P_DELTA;
                 end
+                // Sorting the eight colours is an 8-round compare-exchange network, split over two states (24 logic
+                // levels in one cycle was -0.56 ns at 80 MHz, 2026-10-17): the first four rounds go back into the
+                // working colours, the last four into the plane's list. Sorting is pointwise over the network, so the
+                // split changes no result; the V colours overwrite the working array from index 0 afterwards.
                 P_SORT: begin
+                    begin
+                        logic [95:0] packed_wc, half;
+                        for (int k = 0; k < 8; k++) packed_wc[12 * k +: 12] = wc[k];
+                        half = sort8_rounds(packed_wc, 0, 4);
+                        for (int k = 0; k < 8; k++) wc[k] <= half[12 * k +: 12];
+                    end
+                    st <= P_SORT2;
+                end
+                P_SORT2: begin
                     begin
                         logic [95:0] packed_wc;
                         for (int k = 0; k < 8; k++) packed_wc[12 * k +: 12] = wc[k];
-                        if (pl) col_u <= sort8(packed_wc); else col_y <= sort8(packed_wc);
+                        if (pl) col_u <= sort8_rounds(packed_wc, 4, 8); else col_y <= sort8_rounds(packed_wc, 4, 8);
                     end
                     st <= pl ? P_V_DE : P_UV_CHK;
                 end
