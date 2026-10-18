@@ -293,6 +293,42 @@ module ipred #(
     logic [8:0]    ef_sz;             // edge filter sz / upsample numPx
     logic [PW-1:0] o0, o1;            // originals of edge[k-2], edge[k-1] during the edge filter
     logic [PW-1:0] up_save1;          // original buf[1] across the descending upsample pass
+    // Edge-filter / upsample read-address lookahead. The loop states read the banks at positions derived from k and
+    // the pass size with clamps; computed in front of the LUT-RAM address every cycle, the state decode, the clamp
+    // compares, the RAM read, the filter arithmetic and the write-request mux formed one path (26 levels, -0.56 ns at
+    // 80 MHz, 2026-10-17). The six indices the next cycle reads (ports 0..5, both sides) are computed where the
+    // sequencer sets the next k / pass size / state, into this register: 6 x signed 10-bit edge indices.
+    logic [59:0]   la_v;
+    // the pass sizes (spec: numPx + 1 for the filter, numPx for the upsampler), from values latched at start
+    logic [8:0]    ef_sz_a, ef_sz_l, up_n_a, up_n_l;
+    assign ef_sz_a = 9'(l_apx) + (p_angle < 90 ? 9'(h) : 9'd0) + 9'd1;
+    assign ef_sz_l = 9'(l_lpx) + (p_angle > 180 ? 9'(w) : 9'd0) + 9'd1;
+    assign up_n_a  = 9'(w) + (p_angle < 90 ? 9'(h) : 9'd0);
+    assign up_n_l  = 9'(h) + (p_angle > 180 ? 9'(w) : 9'd0);
+    // S_EF step kk of a pass of sz: edge[m] = side[m-1] for m = kk-2, kk-1, kk, kk+1, kk+2 (clamped to 0 .. sz-1) on
+    // ports 0..4, edge[kk] again on port 5 (the original kept in o1)
+    function automatic logic [59:0] ef_la(input int kk, input int sz);
+        int m0, m1, m3, m4;
+        logic [59:0] r;
+        m0 = kk - 2; m1 = kk - 1; m3 = kk + 1; m4 = kk + 2;
+        if (m0 < 0) m0 = 0; if (m1 < 0) m1 = 0;
+        if (m3 > sz - 1) m3 = sz - 1; if (m4 > sz - 1) m4 = sz - 1;
+        r[0*10 +: 10] = 10'(m0 - 1); r[1*10 +: 10] = 10'(m1 - 1); r[2*10 +: 10] = 10'(kk - 1);
+        r[3*10 +: 10] = 10'(m3 - 1); r[4*10 +: 10] = 10'(m4 - 1); r[5*10 +: 10] = 10'(kk - 1);
+        return r;
+    endfunction
+    // S_UP_* step kk (i = kk - 1) of numPx n: buf[i-2] (clamped to -1), buf[i-1], buf[i], buf[i+1] (clamped to n-1)
+    // on ports 0..3, buf[-1] on port 4, buf[1] on port 5
+    function automatic logic [59:0] up_la(input int kk, input int n);
+        int i, i0, i3;
+        logic [59:0] r;
+        i = kk - 1;
+        i0 = (i - 2 < -1) ? -1 : i - 2;
+        i3 = (i + 1 > n - 1) ? n - 1 : i + 1;
+        r[0*10 +: 10] = 10'(i0); r[1*10 +: 10] = 10'(i - 1); r[2*10 +: 10] = 10'(i); r[3*10 +: 10] = 10'(i3);
+        r[4*10 +: 10] = 10'(-1); r[5*10 +: 10] = 10'(1);
+        return r;
+    endfunction
 
     logic [19:0]   dc_sum, dc_part;   // running sum and the sum of the next (up to) 8 edge samples
     logic [8:0]    dc_n;              // number of edge samples summed
@@ -619,16 +655,8 @@ module ipred #(
                 rpL_a[l] = 10'(int'(k) + l);
                 rpA_a[l] = (l_hl && int'(k) + l < int'(h)) ? 10'sd0 : 10'(int'(k) + l - (l_hl ? int'(h) : 0));
             end
-            S_EF: begin                                                 // edge[m] = side[m-1] for m0 m1 k m3 m4; edge[k]
-                rpA_a[0] = 10'(ef_m0 - 1); rpA_a[1] = 10'(ef_m1 - 1); rpA_a[2] = 10'(int'(k) - 1);
-                rpA_a[3] = 10'(ef_m3 - 1); rpA_a[4] = 10'(ef_m4 - 1); rpA_a[5] = 10'(int'(k) - 1);
-                for (int q = 0; q < 6; q++) rpL_a[q] = rpA_a[q];
-            end
-            S_UP_A, S_UP_L: begin                                       // buf[i-2] buf[i-1] buf[i] buf[i+1]; buf[-1]; buf[1]
-                rpA_a[0] = 10'(up_i0); rpA_a[1] = 10'(up_i - 1); rpA_a[2] = 10'(up_i); rpA_a[3] = 10'(up_i3);
-                rpA_a[4] = -10'sd1; rpA_a[5] = 10'sd1;
-                for (int q = 0; q < 6; q++) rpL_a[q] = rpA_a[q];
-            end
+            S_EF, S_UP_A, S_UP_L:                                       // the lookahead (ef_la / up_la), set with k
+                for (int q = 0; q < 6; q++) begin rpA_a[q] = la_v[q * 10 +: 10]; rpL_a[q] = la_v[q * 10 +: 10]; end
             S_CORNER: begin rpL_a[0] = 10'sd0; rpA_a[0] = -10'sd1; rpA_a[1] = 10'sd0; end   // L[0], A[-1], A[0]
             default: ;
         endcase
@@ -725,62 +753,76 @@ module ipred #(
                 if (l_ha) begin
                     ef_side <= 1'b0;
                     ef_str  <= edge_strength(wh, l_ft, abs_diff(p_angle, 9'd90));
-                    ef_sz   <= 9'(l_apx) + (p_angle < 90 ? 9'(h) : 9'd0) + 9'd1;
+                    ef_sz   <= ef_sz_a;
                 end else begin
                     ef_side <= 1'b1;
                     ef_str  <= edge_strength(wh, l_ft, abs_diff(p_angle, 9'd180));
-                    ef_sz   <= 9'(l_lpx) + (p_angle > 180 ? 9'(w) : 9'd0) + 9'd1;
+                    ef_sz   <= ef_sz_l;
                 end
                 k <= (l_ha || l_hl) ? 9'd1 : 9'd0;      // S_UP_A expects k == 0 on entry
                 state <= (l_ha || l_hl) ? S_EF : S_UP_A;
+                la_v <= (l_ha || l_hl) ? ef_la(1, l_ha ? int'(ef_sz_a) : int'(ef_sz_l)) : up_la(0, 1);
             end
             S_EF: begin
                 if (ef_str == 0 || k >= ef_sz) begin
                     if (!ef_side && l_hl) begin
                         ef_side <= 1'b1;
                         ef_str  <= edge_strength(wh, l_ft, abs_diff(p_angle, 9'd180));
-                        ef_sz   <= 9'(l_lpx) + (p_angle > 180 ? 9'(w) : 9'd0) + 9'd1;
+                        ef_sz   <= ef_sz_l;
                         k <= 9'd1;
+                        la_v <= ef_la(1, int'(ef_sz_l));
                     end else begin
                         state <= S_UP_A; k <= 0;
+                        la_v <= up_la(0, 1);
                     end
                 end else begin
                     // side[k-1] (= edge[k]) <- filtered; remember its original for the next two steps
                     o0 <= o1;
                     o1 <= ef_side ? rpL_d[5] : rpA_d[5];           // edge[k] = side[k-1], on port 5
                     k  <= k + 9'd1;
+                    la_v <= ef_la(int'(k) + 1, int'(ef_sz));
                 end
             end
             S_UP_A: begin
                 if (k == 0) begin
                     if (is_dir && l_efe && use_upsample(wh, l_ft, abs_diff(p_angle, 9'd90))) begin
                         up_a  <= 1'b1;
-                        ef_sz <= 9'(w) + (p_angle < 90 ? 9'(h) : 9'd0);
-                        k     <= 9'(w) + (p_angle < 90 ? 9'(h) : 9'd0);
+                        ef_sz <= up_n_a;
+                        k     <= up_n_a;
                         up_save1 <= rpA_d[5];                      // A[1] on port 5
+                        la_v <= up_la(int'(up_n_a), int'(up_n_a));
                     end else begin
                         state <= S_UP_L;
+                        la_v <= up_la(0, 1);
                     end
                 end else begin
                     if (k == 9'd1) begin
                         state <= S_UP_L; k <= 0;
-                    end else k <= k - 9'd1;
+                        la_v <= up_la(0, 1);
+                    end else begin
+                        k <= k - 9'd1;
+                        la_v <= up_la(int'(k) - 1, int'(ef_sz));
+                    end
                 end
             end
             S_UP_L: begin
                 if (k == 0) begin
                     if (is_dir && l_efe && use_upsample(wh, l_ft, abs_diff(p_angle, 9'd180))) begin
                         up_l  <= 1'b1;
-                        ef_sz <= 9'(h) + (p_angle > 180 ? 9'(w) : 9'd0);
-                        k     <= 9'(h) + (p_angle > 180 ? 9'(w) : 9'd0);
+                        ef_sz <= up_n_l;
+                        k     <= up_n_l;
                         up_save1 <= rpL_d[5];
+                        la_v <= up_la(int'(up_n_l), int'(up_n_l));
                     end else begin
                         state <= S_PIX;
                     end
                 end else begin
                     if (k == 9'd1) begin
                         state <= S_PIX;
-                    end else k <= k - 9'd1;
+                    end else begin
+                        k <= k - 9'd1;
+                        la_v <= up_la(int'(k) - 1, int'(ef_sz));
+                    end
                 end
             end
             S_DC_SUM: begin
