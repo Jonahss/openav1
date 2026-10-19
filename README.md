@@ -19,6 +19,11 @@ existing decoder's source; dav1d and libaom are used only as judges.
 
 ## Progress (latest first)
 
+- **2026-10-19** Inter frame syntax in RTL (stage 1 of inter prediction): `blk_syntax` decodes inter blocks (references, the
+  full MV candidate stack with global / temporal / compound candidates, DRL, MV differences, inter-intra, motion modes with the
+  overlappable and warp-sample scans, compound types, switchable filters), with the inherited CDFs, segmentation map and
+  motion field in host-written band memories. Argon profile-0 inter streams are record- and symbol-exact against the Python
+  model (docs/inter-syntax.md). Branch `inter`; motion compensation is stage 2.
 - **2026-10-14 — it runs on the board, at 80 MHz.** The core decoder (entropy decoding, tile syntax, prediction,
   transforms, reconstruction, deblocking) is a bitstream on the Kria KV260 with a 512 x 512 UltraRAM frame memory:
   102.5 k LUTs (87 % of the K26), timing met at 80 MHz. libaom-encoded intra streams decode **bit-exact with dav1d**
