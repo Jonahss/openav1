@@ -28,6 +28,9 @@
 // 12-bit), InterRound1 = 11 single (9 at 12-bit) / 7 compound, InterPostRound = 14 - InterRound0 - InterRound1.
 // Output: 4 samples at (out_x .. out_x + 3, out_y) with a lane mask (w = 2 predicts two columns), unit-relative,
 // in group-major order (all rows of group 0, then group 1, ...).
+// Warp (warp = 1): one 8 x 8 of block_warp per run from a 15-row x 4-word patch at (ix4 - 7, iy4 - 7): the unscaled
+// streams (15 rows, 2 groups; 8 output rows) with Warped_Filters taps per sample from (sx4, alpha, beta) and
+// (sy4, gamma, delta); the blend modes apply as for any unit.
 // Cycles, unscaled: (h + 7) (ngrp + 2) + ngrp (h + 7) + ~12; a 64 x 64 unit is ~2,430. Scaled: 16 (position table)
 // + nrow (words + ngrp) + ngrp h 8 + ~12: a 32 x 32 unit with 2:1 steps is ~5,400.
 module mc_filt
@@ -54,6 +57,11 @@ module mc_filt
     input  logic [9:0]    y_frac0,
     input  logic [11:0]   x_step,              // 1/1024 sample per output column; 1024 = unscaled (64 .. 2048)
     input  logic [11:0]   y_step,
+    // ---- warped motion (7.11.3.5 block_warp, one 8 x 8 per run; w, h, the fractions and steps are ignored) ----
+    input  logic          warp,
+    input  logic signed [15:0] w_alpha, w_beta, w_gamma, w_delta,   // setup_shear
+    input  logic [15:0]   w_sx4,               // the 8x8's projected position, fractional parts (x4 & 0xFFFF)
+    input  logic [15:0]   w_sy4,
     input  logic [3:0]    bit_depth,
     input  logic [2:0]    mode,                // 0 single, 1 park, 2 average, 3 distance, 4 pair (masked blends outside)
     input  logic [4:0]    wt0,                 // distance weights (Quant_Dist_Lookup): parked list, this list
@@ -90,6 +98,9 @@ module mc_filt
     // ================================================================ run parameters
     logic        p_list;
     logic        p_scaled;                               // x_step or y_step != 1024
+    logic        p_warp;                                 // block_warp: 15 x 8 horizontal, 8 x 8 vertical, per-sample taps
+    logic signed [15:0] p_wa, p_wb, p_wg, p_wd;
+    logic [15:0] p_wsx, p_wsy;
     logic [4:0]  p_ngrp;                                 // ceil(w / 4)
     logic [6:0]  p_h;
     logic [6:0]  p_nrow;                                 // patch / strip rows to filter
@@ -183,6 +194,15 @@ module mc_filt
         endcase
     endfunction
 
+    // warp filter row for lane l of group g (i2 = 4 g + l - 4) at row i1 (horizontal: patch row - 7; vertical:
+    // output row - 4): Round2(base + a i2 + b i1, 10) + 64, in 0 .. 192 when the shear is valid
+    function automatic logic [7:0] warp_offs(input logic [15:0] base, input logic signed [15:0] a, input logic signed [15:0] b,
+                                             input logic [4:0] g, input int l, input logic signed [7:0] i1);
+        logic signed [23:0] sx;
+        sx = 24'(signed'({8'b0, base})) + 24'(a) * 24'(signed'(5'(g) * 5'd4 + 5'(l) - 5'd4)) + 24'(b) * 24'(i1);
+        return 8'(((sx + 24'sd512) >>> 10) + 24'sd64);
+    endfunction
+
     // ---------------------------------------------------------------- vertical pass pipeline
     // v0: reads issued (strip row, vg) and the parked word (output row, vg); scaled: the 8 tap rows of an output row
     //     in turn, the last one tagged to compute
@@ -193,7 +213,7 @@ module mc_filt
     logic [63:0] vwin [0:6];                             // the 7 strip words before srd_q1 (vwin[0] = oldest)
     logic        v2_v;  logic [6:0] v2_i;  logic [4:0] v2_g;  logic [63:0] v2_pred;
     logic signed [15:0] vsamp [0:3][0:7];
-    logic signed [8:0]  vtap  [0:7];
+    logic signed [8:0]  vtap  [0:3][0:7];
     logic        v3_v;  logic [6:0] v3_i;  logic [4:0] v3_g;  logic [63:0] v3_pred;
     logic signed [24:0] vp [0:3][0:7];
     logic        v4_v;  logic [6:0] v4_i;  logic [4:0] v4_g;  logic [63:0] v4_pred;
@@ -218,15 +238,16 @@ module mc_filt
             case (st)
                 S_IDLE: if (start) begin
                     p_list <= lst;
-                    p_scaled <= (x_step != 12'd1024) || (y_step != 12'd1024);
-                    p_ngrp <= 5'((w + 7'd3) >> 2); p_h <= h;
-                    p_nrow <= 7'(nrow_calc[18:10] + 9'd8);
+                    p_scaled <= !warp && ((x_step != 12'd1024) || (y_step != 12'd1024));
+                    p_warp <= warp; p_wa <= w_alpha; p_wb <= w_beta; p_wg <= w_gamma; p_wd <= w_delta; p_wsx <= w_sx4; p_wsy <= w_sy4;
+                    p_ngrp <= warp ? 5'd2 : 5'((w + 7'd3) >> 2); p_h <= warp ? 7'd8 : h;
+                    p_nrow <= warp ? 7'd15 : 7'(nrow_calc[18:10] + 9'd8);
                     p_bd <= bit_depth; p_mode <= mode; p_wt0 <= wt0; p_wt1 <= wt1;
                     p_r0 <= (bit_depth == 4'd12) ? 4'd5 : 4'd3;
                     p_r1 <= (mode != 3'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11;
                     p_post <= 4'd14 - ((bit_depth == 4'd12) ? 4'd5 : 4'd3)
                                     - ((mode != 3'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11);
-                    p_mask <= (w == 7'd2) ? 4'b0011 : 4'b1111;
+                    p_mask <= (w == 7'd2 && !warp) ? 4'b0011 : 4'b1111;
                     p_fidx <= filt_id(interp_x, w <= 7'd4); p_fidy <= filt_id(interp_y, h <= 7'd4);
                     p_xf0 <= x_frac0; p_yf0 <= y_frac0; p_xs <= x_step; p_ys <= y_step;
                     for (int t = 0; t < 8; t++) begin
@@ -234,7 +255,7 @@ module mc_filt
                         ty[t] <= subpel_tap(filt_id(interp_y, h <= 7'd4), y_frac0[9:6], 3'(t));
                     end
                     hr <= 7'd0; hk <= 5'd0; hg <= 5'd0;
-                    if ((x_step != 12'd1024) || (y_step != 12'd1024)) begin
+                    if (!warp && ((x_step != 12'd1024) || (y_step != 12'd1024))) begin
                         pg <= 5'd0; ppos <= 17'(x_frac0); st <= S_PRE;
                     end else st <= S_H;
                 end
@@ -306,9 +327,9 @@ module mc_filt
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++)
                     if (!p_scaled) begin
-                        // unscaled: lane l's taps are samples l + t of words k - 2, k - 1, k = W3, W4, prd_q1
+                        // unscaled (and warp): lane l's taps are samples l + t of words k - 2, k - 1, k = W3, W4, prd_q1
                         hsamp[l][t] <= wsamp(W1, W2, W3, W4, prd_q1, 5'(8 + l + t));
-                        htap[l][t]  <= tx[t];
+                        htap[l][t]  <= p_warp ? 9'(warp_tap(warp_offs(p_wsx, p_wa, p_wb, h1_g, l, 8'(signed'({1'b0, h1_r})) - 8'sd7), 3'(t))) : tx[t];
                     end else begin
                         // scaled: window words kw - 4 .. kw = {W1 .. W4, prd_q1} on a read cycle (kw = h1_k), else
                         // {W0 .. W4}; lane l's first tap is sample g_int - 4 (kw - 4) of it
@@ -345,12 +366,14 @@ module mc_filt
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++)
                     vsamp[l][t] <= signed'((t < 7) ? vwin[t][l*16 +: 16] : srd_q1[l*16 +: 16]);
-            for (int t = 0; t < 8; t++)
-                vtap[t] <= p_scaled ? subpel_tap(p_fidy, v1_ph, 3'(t)) : ty[t];
+            for (int l = 0; l < 4; l++)
+                for (int t = 0; t < 8; t++)
+                    vtap[l][t] <= p_warp ? 9'(warp_tap(warp_offs(p_wsy, p_wg, p_wd, v1_g, l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t)))
+                                : p_scaled ? subpel_tap(p_fidy, v1_ph, 3'(t)) : ty[t];
             v3_v <= v2_v; v3_i <= v2_i; v3_g <= v2_g; v3_pred <= v2_pred;
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++)
-                    vp[l][t] <= 25'(vsamp[l][t]) * 25'(vtap[t]);
+                    vp[l][t] <= 25'(vsamp[l][t]) * 25'(vtap[l][t]);
             v4_v <= v3_v; v4_i <= v3_i; v4_g <= v3_g; v4_pred <= v3_pred;
             for (int l = 0; l < 4; l++) begin
                 logic signed [27:0] s;

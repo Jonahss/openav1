@@ -339,6 +339,7 @@ module recon_top
         .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
         .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
         .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
+        .warp(1'b0), .w_alpha(16'sd0), .w_beta(16'sd0), .w_gamma(16'sd0), .w_delta(16'sd0), .w_sx4(16'd0), .w_sy4(16'd0),   // stage 2c.2 pending
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
         .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
 

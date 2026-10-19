@@ -34,6 +34,39 @@ def model_pred(ref, refW, refH, x0, y0, xf, yf, xs, ys, w, h, interp_x, interp_y
     return rm.FrameRecon.block_inter_prediction(fake, 0, [ref], sx, sy, xs, ys, w, h, 0, 0, refW, refH, r0, r1)
 
 
+def model_warp(ref, refW, refH, params, x, y, bd, compound):
+    """block_warp of the model: the 8x8 at plane position (x, y) through the affine params (luma = plane)."""
+    fake = types.SimpleNamespace(h=types.SimpleNamespace(subsampling_x=0, subsampling_y=0, BitDepth=bd),
+                                 resolve_divisor=rm.FrameRecon.resolve_divisor)
+    fake.setup_shear = lambda wp: rm.FrameRecon.setup_shear(fake, wp)
+    r0 = 3 + (2 if bd == 12 else 0)
+    r1 = 7 if compound else (11 - (2 if bd == 12 else 0))
+    pred = [[0] * 8 for _ in range(8)]
+    rm.FrameRecon.block_warp(fake, params, 0, [ref], refW, refH, x, y, 0, 0, 8, 8, pred, r0, r1)
+    return pred
+
+
+def warp_position(params, x, y):
+    """ix4 / iy4 / sx4 / sy4 of block_warp for the 8x8 at (x, y), luma (no subsampling)."""
+    srcX, srcY = x + 4, y + 4
+    dstX = params[2] * srcX + params[3] * srcY + params[0]
+    dstY = params[4] * srcX + params[5] * srcY + params[1]
+    return dstX >> 16, dstY >> 16, dstX & 0xFFFF, dstY & 0xFFFF
+
+
+def random_warp_params(rng):
+    """Affine parameters with a valid shear (setup_shear), identity-ish with random translation."""
+    fake = types.SimpleNamespace(resolve_divisor=rm.FrameRecon.resolve_divisor)
+    while True:
+        wide = rng.random() < 0.3
+        r = (1 << 13) if wide else (1 << 10)
+        params = [rng.randint(-(1 << 19), (1 << 19)), rng.randint(-(1 << 19), (1 << 19)),
+                  65536 + rng.randint(-r, r), rng.randint(-r, r), rng.randint(-r, r), 65536 + rng.randint(-r, r)]
+        valid, alpha, beta, gamma, delta = rm.FrameRecon.setup_shear(fake, params)
+        if valid:
+            return params, (alpha, beta, gamma, delta)
+
+
 def patch_extent(w, h, xs, ys):
     """(rows, words) of the patch mc_filt reads: rows = intermediateHeight, words = ceil(cols / 4) with
     cols = (((w - 1) xs + 1023) >> 10) + 8, at least the unscaled ngrp + 2."""
@@ -59,10 +92,18 @@ async def write_patch(dut, lst, ref, refW, refH, x0, y0, w, h, xs=1024, ys=1024)
     await Timer(1, "ns")
 
 
-async def run(dut, lst, w, h, interp_x, interp_y, xf, yf, bd, mode, wt0, wt1, xs=1024, ys=1024):
+async def run(dut, lst, w, h, interp_x, interp_y, xf, yf, bd, mode, wt0, wt1, xs=1024, ys=1024, warp=None):
     dut.lst.value = lst; dut.w.value = w; dut.h.value = h
     dut.interp_x.value = interp_x; dut.interp_y.value = interp_y
     dut.x_frac0.value = xf; dut.y_frac0.value = yf; dut.x_step.value = xs; dut.y_step.value = ys
+    if warp is None:
+        dut.warp.value = 0
+    else:
+        shear, sx4, sy4 = warp
+        dut.warp.value = 1
+        dut.w_alpha.value = shear[0] & 0xFFFF; dut.w_beta.value = shear[1] & 0xFFFF
+        dut.w_gamma.value = shear[2] & 0xFFFF; dut.w_delta.value = shear[3] & 0xFFFF
+        dut.w_sx4.value = sx4; dut.w_sy4.value = sy4
     dut.bit_depth.value = bd; dut.mode.value = mode; dut.wt0.value = wt0; dut.wt1.value = wt1
     dut.start.value = 1
     await RisingEdge(dut.clk)
@@ -111,14 +152,19 @@ async def mc_filt_vs_model(dut):
         await RisingEdge(dut.clk)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = {"single": 0, "avg": 0, "dist": 0, "pair": 0, "scaled": 0, "samples": 0, "clamped": 0}
+    stats = {"single": 0, "avg": 0, "dist": 0, "pair": 0, "scaled": 0, "warp": 0, "samples": 0, "clamped": 0}
     scaled_share = float(os.environ.get("MC_SCALED", "0.4"))
+    warp_share = float(os.environ.get("MC_WARP", "0.3"))
     for it in range(iters):
         bd = rng.choice([8, 10, 12])
         mx = (1 << bd) - 1
         w, h = rng.choice(SIZES), rng.choice(SIZES)
+        # warped motion (7.11.3.5): one 8x8 per run, every list through its own affine parameters
+        use_warp = rng.random() < warp_share
+        if use_warp:
+            w, h = 8, 8
         # scaled references (7.11.3.3): steps 64 .. 2048 per axis (1/16x .. 2x), units <= 32 x 32 when a step > 1024
-        if rng.random() < scaled_share:
+        if not use_warp and rng.random() < scaled_share:
             pick = lambda: rng.choice([1024, rng.randint(64, 2048), rng.randint(512, 2048), 2048, 64])  # noqa: E731
             xs, ys = pick(), pick()
             if xs == 1024 and ys == 1024:
@@ -146,8 +192,23 @@ async def mc_filt_vs_model(dut):
             else:
                 fx, fy = rng.randint(0, 1023), rng.randint(0, 1023)
             interp_x, interp_y = rng.randint(0, 3), rng.randint(0, 3)
-            await write_patch(dut, lst, ref, refW, refH, x0, y0, w, h, xs, ys)
-            preds.append(model_pred(ref, refW, refH, x0, y0, fx, fy, xs, ys, w, h, interp_x, interp_y, bd, compound))
+            warp = None
+            if use_warp:
+                # the 8x8 sits at a plane position; its projection lands anywhere, inside or across the edges
+                params, shear = random_warp_params(rng)
+                px, py = rng.randint(0, 64), rng.randint(0, 64)
+                ix4, iy4, sx4, sy4 = warp_position(params, px, py)
+                if not (-40 <= ix4 - refW <= 40 and -40 <= iy4 - refH <= 40):
+                    params[0] -= (ix4 - refW // 2) << 16            # pull the projection back near the picture
+                    params[1] -= (iy4 - refH // 2) << 16
+                    ix4, iy4, sx4, sy4 = warp_position(params, px, py)
+                x0, y0 = ix4 - 4, iy4 - 4
+                warp = (shear, sx4, sy4)
+                await write_patch(dut, lst, ref, refW, refH, x0, y0, 8, 8)
+                preds.append(model_warp(ref, refW, refH, params, px, py, bd, compound))
+            else:
+                await write_patch(dut, lst, ref, refW, refH, x0, y0, w, h, xs, ys)
+                preds.append(model_pred(ref, refW, refH, x0, y0, fx, fy, xs, ys, w, h, interp_x, interp_y, bd, compound))
             if compound and lst == 0:
                 mode, wt0, wt1 = 1, 0, 0
             elif kind == "avg":
@@ -160,7 +221,7 @@ async def mc_filt_vs_model(dut):
                 mode, wt0, wt1 = 4, 0, 0
             else:
                 mode, wt0, wt1 = 0, 0, 0
-            got, n, cycles = await run(dut, lst, w, h, interp_x, interp_y, fx, fy, bd, mode, wt0, wt1, xs, ys)
+            got, n, cycles = await run(dut, lst, w, h, interp_x, interp_y, fx, fy, bd, mode, wt0, wt1, xs, ys, warp)
         # expected (predict_inter's blend lines)
         clip1 = lambda v: 0 if v < 0 else mx if v > mx else v  # noqa: E731
         if kind == "single":
@@ -176,9 +237,10 @@ async def mc_filt_vs_model(dut):
         for i in range(h):
             for j in range(w):
                 assert got[i][j] == exp[i][j], (f"iter {it}: {kind} {w}x{h} bd {bd} interp ({interp_x},{interp_y}) frac "
-                                                f"({fx},{fy}) step ({xs},{ys}): ({j},{i}) rtl {got[i][j]} model {exp[i][j]}; "
+                                                f"({fx},{fy}) step ({xs},{ys}) warp {use_warp}: ({j},{i}) rtl {got[i][j]} model {exp[i][j]}; "
                                                 f"row {got[i][:8]} vs {exp[i][:8]}")
         stats[kind] += 1
         stats["scaled"] += (xs, ys) != (1024, 1024)
+        stats["warp"] += use_warp
         stats["samples"] += w * h
     dut._log.info(f"OK: {stats}")
