@@ -18,6 +18,8 @@ REF_SCALE_SHIFT, SUBPEL_BITS, SCALE_SUBPEL_BITS, SUBPEL_MASK = 14, 4, 10, 15
 MI_SIZE = tm.MI_SIZE
 FILTER_BITS = 7
 # warped motion (7.11.3.5 .. 7.11.3.8)
+import os as _os
+MC_TRACE = bool(_os.environ.get("TD_MCTRACE"))      # print every predict_inter reference call (debugging the RTL's strips)
 WARPEDMODEL_PREC_BITS = 16
 WARPEDDIFF_PREC_BITS = 10
 WARPEDPIXEL_PREC_SHIFTS = 1 << 6
@@ -240,6 +242,9 @@ class FrameRecon(tm.TileDecoder):
                 refPlanes = self.planes
                 startX, startY, stepX, stepY = self.motion_vector_scaling(plane, x, y, mv, h.UpscaledWidth, h.FrameHeight)
                 clampW, clampH = h.MiCols * MI_SIZE, h.MiRows * MI_SIZE
+            if MC_TRACE:
+                print(f"MODEL MC pl{plane} l{refList} at ({x},{y}) {w}x{hh} ref {refFrame} warp {useWarp} start {startX},{startY} "
+                      f"steps {stepX},{stepY} mv {mv} clamp {clampW}x{clampH}")
             if useWarp:
                 pred = [[0] * w for _ in range(hh)]
                 params = self.LocalWarpParams if useWarp == 1 else h.gm_params[refFrame]
@@ -250,6 +255,8 @@ class FrameRecon(tm.TileDecoder):
             else:
                 pred = self.block_inter_prediction(plane, refPlanes, startX, startY, stepX, stepY, w, hh, candRow, candCol,
                                                    clampW, clampH, InterRound0, InterRound1)
+            if MC_TRACE:
+                print(f"MODEL MC   pred rows 0/{hh // 2}: {pred[0][:8]} / {pred[hh // 2][:8]}")
             preds.append(pred)
         # masks (persist across the planes of the block: the luma mask serves the chroma blend)
         if self.compound_type == tm.COMPOUND_WEDGE and plane == 0:

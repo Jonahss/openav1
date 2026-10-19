@@ -31,7 +31,9 @@ def decode_frame(tiles):
         decs.append(dec)
     hdr = tiles[0][0]
     planes = frame["planes"]
-    state = FrameState(hdr, decs)
+    state = FrameState(hdr)
+    for _d in decs:
+        state.add(_d)
     lfm.LoopFilter(hdr, state, planes).apply()
     deblocked = planes
     if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:

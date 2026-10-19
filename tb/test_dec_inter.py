@@ -52,6 +52,20 @@ def load_slot(mem, hdr, slot, planes):
 @cocotb.test()
 async def dec_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
+    if os.environ.get("TD_MCTRACE"):
+        async def mc_trace():
+            # every motion-compensation run the reconstruction launches: the strip's geometry and reference position
+            rc = dut.u_rc
+            while True:
+                await RisingEdge(dut.clk)
+                if int(rc.mc_start.value):
+                    dut._log.info(f"MC pl{int(rc.mc_pl.value)} l{int(rc.mc_l.value)} at ({int(rc.mc_px.value)},{int(rc.mc_py.value)}) "
+                                  f"{int(rc.mc_sw.value)}x{int(rc.mc_sh.value)} mode {int(rc.mc_mode.value)} warp {int(rc.mc_warp.value)} "
+                                  f"ref x0 {int(rc.rf_x0.value.signed_integer)} y0 {int(rc.rf_y0.value.signed_integer)} "
+                                  f"w {int(rc.rf_w.value)} h {int(rc.rf_h.value)} steps {int(rc.sc_xs.value)},{int(rc.sc_ys.value)} "
+                                  f"frac {int(rc.mc_xf0.value)},{int(rc.mc_yf0.value)} unit ({int(rc.mc_ux.value)},{int(rc.mc_uy.value)}) "
+                                  f"{int(rc.mc_uw.value)}x{int(rc.mc_uh.value)} strips {int(rc.mc_nsc.value)}x{int(rc.mc_nsr.value)}")
+        cocotb.start_soon(mc_trace())
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     if hasattr(dut, "clk2x"):
         cocotb.start_soon(Clock(dut.clk2x, 5, unit="ns").start())

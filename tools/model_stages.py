@@ -66,7 +66,9 @@ def main():
         W, U = hdr.FrameWidth, hdr.UpscaledWidth
         tag = out / f"frame{fi}"
         dump(f"{tag}_recon.yuv", hdr, planes, W)
-        state = xf.FrameState(hdr, decs)
+        state = xf.FrameState(hdr)
+        for _d in decs:
+            state.add(_d)
         lfm.LoopFilter(hdr, state, planes).apply()
         dump(f"{tag}_deblocked.yuv", hdr, planes, W)
         deblocked = planes

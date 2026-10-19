@@ -129,7 +129,9 @@ async def one_frame(dut, tiles, tag, stats):
         decs.append(dec)
     hdr = tiles[0][0]
     planes = frame["planes"]
-    state = xf.FrameState(hdr, decs)
+    state = xf.FrameState(hdr)
+    for _d in decs:
+        state.add(_d)
     pre = copy.deepcopy(planes)
     lfm.LoopFilter(hdr, state, planes).apply()
     dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(hdr, decs[0]))

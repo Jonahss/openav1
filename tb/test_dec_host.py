@@ -309,7 +309,9 @@ async def dec_host_streams(dut):
                 await check_cdf_readback(ax, dec, f"{tag} tile {ti}", stats)
         planes = frame["planes"]
         if STAGE == "lf":
-            state = xf.FrameState(hdr0, decs)
+            state = xf.FrameState(hdr0)
+            for _d in decs:
+                state.add(_d)
             lfm.LoopFilter(hdr0, state, planes).apply()
             if PIPE:
                 await pipe_finish(ax, tag)

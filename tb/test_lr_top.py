@@ -115,7 +115,9 @@ async def one_frame(dut, tiles, tag, stats):
         decs.append(dec)
     hdr = tiles[0][0]
     planes = frame["planes"]
-    state = xf.FrameState(hdr, decs)
+    state = xf.FrameState(hdr)
+    for _d in decs:
+        state.add(_d)
     lfm.LoopFilter(hdr, state, planes).apply()
     if all(t == 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
         dut._log.info(f"{tag}: restoration off, skipped")
