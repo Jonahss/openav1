@@ -724,10 +724,12 @@ module recon_top
             end
             B_MC_FILT: if ((mc_done || mc_fin) && !ob_rd_v && !ob_rd2_v && !ob_wr_v && !mb_a_v && !mb_b_v) begin   // the run finished and the blend pipelines drained
                 mc_fin <= 1'b0;
-                if (ob_active) begin ob_k <= ob_k + 3'd1; bst <= B_MC_OB; end
-                else if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
+                // all strips of the unit first (an OBMC neighbour unit is up to 64 tall / wide: two strips in a frame
+                // with scaled references), then the other list, the next OBMC neighbour, the next unit
+                if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
                 else if (mc_sc + 5'd1 < mc_nsc) begin mc_sc <= mc_sc + 5'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
                 else if (mc_sr + 5'd1 < mc_nsr) begin mc_sc <= 5'd0; mc_sr <= mc_sr + 5'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
+                else if (ob_active) begin ob_k <= ob_k + 3'd1; bst <= B_MC_OB; end
                 else if (mc_uj + 2'd1 < mc_uc) begin mc_uj <= mc_uj + 2'd1; bst <= B_MC_UNIT; end
                 else if (mc_ui + 2'd1 < mc_ur) begin mc_uj <= 2'd0; mc_ui <= mc_ui + 2'd1; bst <= B_MC_UNIT; end
                 else bst <= B_MC_PLEND;

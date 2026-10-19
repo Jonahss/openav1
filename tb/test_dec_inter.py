@@ -59,12 +59,16 @@ async def dec_inter_vs_model(dut):
             while True:
                 await RisingEdge(dut.clk)
                 if int(rc.mc_start.value):
+                    bb = TT.unpack(TT.BLK_FIELDS, int(rc.b.value))
                     dut._log.info(f"MC pl{int(rc.mc_pl.value)} l{int(rc.mc_l.value)} at ({int(rc.mc_px.value)},{int(rc.mc_py.value)}) "
                                   f"{int(rc.mc_sw.value)}x{int(rc.mc_sh.value)} mode {int(rc.mc_mode.value)} warp {int(rc.mc_warp.value)} "
                                   f"ref x0 {int(rc.rf_x0.value.signed_integer)} y0 {int(rc.rf_y0.value.signed_integer)} "
                                   f"w {int(rc.rf_w.value)} h {int(rc.rf_h.value)} steps {int(rc.sc_xs.value)},{int(rc.sc_ys.value)} "
                                   f"frac {int(rc.mc_xf0.value)},{int(rc.mc_yf0.value)} unit ({int(rc.mc_ux.value)},{int(rc.mc_uy.value)}) "
-                                  f"{int(rc.mc_uw.value)}x{int(rc.mc_uh.value)} strips {int(rc.mc_nsc.value)}x{int(rc.mc_nsr.value)}")
+                                  f"{int(rc.mc_uw.value)}x{int(rc.mc_uh.value)} strips {int(rc.mc_nsc.value)}x{int(rc.mc_nsr.value)} "
+                                  f"blk r{bb['r']} c{bb['c']} bs{bb['bsize']} mm{bb['motion_mode']} "
+                                  f"ob {int(rc.ob_active.value)}/{int(rc.ob_pass.value)}/{int(rc.ob_k.value)} comp {int(rc.mc_comp.value)} "
+                                  f"cmv {int(rc.mc_cmv.value)} uw_warp {int(rc.unit_warp.value)}")
         cocotb.start_soon(mc_trace())
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     if hasattr(dut, "clk2x"):
