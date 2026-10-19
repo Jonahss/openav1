@@ -247,8 +247,9 @@ def main():
         if out is not None:
             out.close()
     s = host.stats
+    dt_all = time.monotonic() - t_all
     print(f"{s['frames']} frames, {s['tiles']} tiles, {s['bytes']} stream bytes, {s['pixels']} samples read back, "
-          f"{s['writes']} register writes + {s['reads']} reads in {time.monotonic() - t_all:.1f}s"
+          f"{s['writes']} register writes + {s['reads']} reads in {dt_all:.1f}s ({s['frames'] / dt_all:.1f} fps)"
           + (f"; {n_bad_frames} frame(s) differ from the reference" if ref is not None else ""))
     sys.exit(1 if n_bad_frames else 0)
 
