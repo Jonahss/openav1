@@ -88,6 +88,7 @@ module recon_top
     input  logic [20:0] ref_slot,             // slot of LAST_FRAME + i at [3i +: 3]
     input  logic [1727:0] ref_planes,         // slot s, plane p: {stride[31:0], base[39:0]} at [72 (3s + p) +: 72]
     input  logic [255:0] ref_dims,            // slot s: {frame height[15:0], upscaled width[15:0]} at [32s +: 32]
+    input  logic [255:0] ref_scales,          // slot s: {yScale[15:0], xScale[15:0]} of 7.11.3.3 (REF_SCALE_SHIFT 14; 16384 = unscaled) at [32s +: 32]
     input  logic        ref_fmt16,            // reference samples are 16-bit LE (else one byte each)
     output logic        mc_unsup,             // sticky: an inter block used a feature beyond stage 2a (masks, OBMC, warp, scaled references)
     output logic [39:0] m_axi_araddr,
@@ -108,6 +109,11 @@ module recon_top
     localparam logic [3:0] IDTX = 4'd9;
     localparam int TW = 22;
 
+    // Round2Signed(v, 8) of 7.11.3.3 (symmetric rounding of a signed value)
+    function automatic logic signed [31:0] round2s8(input logic signed [38:0] v);
+        if (v >= 39'sd0) return 32'((v + 39'sd128) >>> 8);
+        else return -32'((-v + 39'sd128) >>> 8);
+    endfunction
     function automatic logic is_inside(input logic [MIW-1:0] r, input logic [MIW-1:0] c);
         is_inside = ($signed({1'b0, c}) >= $signed({1'b0, hdr.mi_col_start})) && (c < hdr.mi_col_end) &&
                     ($signed({1'b0, r}) >= $signed({1'b0, hdr.mi_row_start})) && (r < hdr.mi_row_end);
@@ -162,7 +168,7 @@ module recon_top
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
                               B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR,
-                              B_MC_INIT, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
+                              B_MC_INIT, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
@@ -206,7 +212,13 @@ module recon_top
     logic [1:0]  mc_ur, mc_uc, mc_ui, mc_uj;                 // unit grid and index
     logic        mc_cmv;                                     // units take their motion from b.cmv
     logic [PXW-1:0] mc_ux, mc_uy;                            // unit origin
-    logic [1:0]  mc_nsr, mc_nsc, mc_sr, mc_sc;               // 64 x 64 strips of the unit
+    logic [2:0]  mc_nsr, mc_nsc, mc_sr, mc_sc;               // 64 x 64 strips of the unit (32 x 32 in frames with a scaled reference)
+    logic        frame_scl;                                  // the frame references a scaled picture: 32 x 32 strips, 7.11.3.3 positions
+    assign frame_scl = |ihdr.ref_scaled;
+    logic [6:0]  rf_w, rf_h;                                 // ref_fetch request: unit size in reference samples (strip size unscaled)
+    logic signed [38:0] sc_bx, sc_by;                        // 7.11.3.3: origX * xScale, origY * yScale (strip 1 of 2)
+    logic [11:0] sc_xs, sc_ys;                               // xStep / yStep
+    logic [6:0]  sc_sw, sc_sh;
     logic [PXW-1:0] mc_px, mc_py;                            // strip origin
     logic [6:0]  mc_sw, mc_sh;                               // strip size
     logic        mc_l, mc_comp;
@@ -220,7 +232,7 @@ module recon_top
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_out_valid;
     logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
-    logic [3:0]  mc_fx, mc_fy;
+    logic [9:0]  mc_xf0, mc_yf0;                             // startX & 1023, startY & 1023 of the strip
     logic [2:0]  mc_mode;
     logic [127:0] mc_out_pair;
     logic [6:0]  mc_out_x, mc_out_y; logic [47:0] mc_out_pix4; logic [3:0] mc_out_mask;
@@ -319,13 +331,14 @@ module recon_top
     ref_fetch #(.PW(12)) u_rf (.clk, .rst,
         .req_valid(rf_req_valid), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
-        .req_w(mc_sw), .req_h(mc_sh), .done(rf_done), .err(rf_err),
+        .req_w(rf_w), .req_h(rf_h), .done(rf_done), .err(rf_err),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
         .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
         .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
-        .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0), .fx(mc_fx), .fy(mc_fy),
+        .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
+        .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
         .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
 
@@ -509,7 +522,6 @@ module recon_top
                 wts = dist_weights(ihdr, b.ref0, b.ref1);
                 mc_wt0 <= wts[4:0]; mc_wt1 <= wts[9:5];
                 if (b.motion_mode == 2'd2 || (comp && b.compound_type == 3'd3)
-                    || ihdr.ref_scaled[int'(b.ref0) - 1] || (comp && ihdr.ref_scaled[int'(b.ref1) - 1])
                     || ((b.ymode == 5'd15 || b.ymode == 5'd23) && !ihdr.force_integer_mv && bw4 >= 6'd2 && bh4 >= 6'd2
                         && (gm_type_of(ihdr, b.ref0) > 2'd1 || (comp && gm_type_of(ihdr, b.ref1) > 2'd1))))
                     mc_unsup <= 1'b1;
@@ -578,28 +590,37 @@ module recon_top
                     u_mv1r <= 16'(b.mv1_row); u_mv1c <= 16'(b.mv1_col); u_i0 <= b.interp0; u_i1 <= b.interp1;
                 end
                 mc_ux <= mc_bx + PXW'(mc_uj) * PXW'(mc_uw); mc_uy <= mc_by + PXW'(mc_ui) * PXW'(mc_uh);
-                mc_nsc <= 2'((mc_uw + 8'd63) >> 6); mc_nsr <= 2'((mc_uh + 8'd63) >> 6);
-                mc_sr <= 2'd0; mc_sc <= 2'd0; mc_l <= 1'b0;
+                mc_nsc <= frame_scl ? 3'((mc_uw + 8'd31) >> 5) : 3'((mc_uw + 8'd63) >> 6);
+                mc_nsr <= frame_scl ? 3'((mc_uh + 8'd31) >> 5) : 3'((mc_uh + 8'd63) >> 6);
+                mc_sr <= 3'd0; mc_sc <= 3'd0; mc_l <= 1'b0;
                 bst <= B_MC_STRIP;
             end
             B_MC_STRIP: begin
-                // the strip's geometry and this list's reference position (7.11.3.3 for an unscaled reference:
-                // integer part x + ((2 mv) >> subX) >> 4, phase its low 4 bits)
+                // the strip's geometry and this list's reference position. Unscaled reference (7.11.3.3 with
+                // xScale = yScale = 1 << 14): integer part x + ((2 mv) >> subX) >> 4, phase its low 4 bits, step 1024.
+                // Frames with a scaled reference take the general path: strips of 32, startX / startY of the UNIT from
+                // origX * xScale (this cycle), rounded and offset by the strip's columns in steps in B_MC_STRIP2.
                 logic [7:0] rem_w, rem_h;
                 logic signed [19:0] mvx2, mvy2;
                 logic [3:0] rref;
                 logic [2:0] slot;
-                logic [15:0] dw, dh;
+                logic [15:0] dw, dh, xsc, ysc;
                 logic [PXW-1:0] px, py;
-                rem_w = mc_uw - (8'(mc_sc) << 6); rem_h = mc_uh - (8'(mc_sr) << 6);
-                mc_sw <= (rem_w > 8'd64) ? 7'd64 : 7'(rem_w); mc_sh <= (rem_h > 8'd64) ? 7'd64 : 7'(rem_h);
-                px = mc_ux + (PXW'(mc_sc) << 6); py = mc_uy + (PXW'(mc_sr) << 6);
+                logic [6:0] sw, sh;
+                logic signed [21:0] ox, oy;
+                if (frame_scl) begin
+                    rem_w = mc_uw - (8'(mc_sc) << 5); rem_h = mc_uh - (8'(mc_sr) << 5);
+                    sw = (rem_w > 8'd32) ? 7'd32 : 7'(rem_w); sh = (rem_h > 8'd32) ? 7'd32 : 7'(rem_h);
+                    px = mc_ux + (PXW'(mc_sc) << 5); py = mc_uy + (PXW'(mc_sr) << 5);
+                end else begin
+                    rem_w = mc_uw - (8'(mc_sc) << 6); rem_h = mc_uh - (8'(mc_sr) << 6);
+                    sw = (rem_w > 8'd64) ? 7'd64 : 7'(rem_w); sh = (rem_h > 8'd64) ? 7'd64 : 7'(rem_h);
+                    px = mc_ux + (PXW'(mc_sc) << 6); py = mc_uy + (PXW'(mc_sr) << 6);
+                end
+                mc_sw <= sw; mc_sh <= sh; sc_sw <= sw; sc_sh <= sh;
                 mc_px <= px; mc_py <= py;
                 mvx2 = (20'(mc_l ? u_mv1c : u_mv0c) * 20'sd2) >>> mc_sx;
                 mvy2 = (20'(mc_l ? u_mv1r : u_mv0r) * 20'sd2) >>> mc_sy;
-                mc_fx <= mvx2[3:0]; mc_fy <= mvy2[3:0];
-                rf_x0 <= 17'(signed'({2'b0, px})) + 17'(mvx2 >>> 4);
-                rf_y0 <= 17'(signed'({2'b0, py})) + 17'(mvy2 >>> 4);
                 rref = mc_l ? u_ref1 : u_ref0;
                 slot = ref_slot[3 * (int'(rref) - 1) +: 3];
                 rf_base <= ref_planes[72 * (3 * int'(slot) + int'(mc_pl)) +: 40];
@@ -608,6 +629,35 @@ module recon_top
                 rf_lastx <= ((dw + 16'(mc_sx)) >> mc_sx) - 16'd1; rf_lasty <= ((dh + 16'(mc_sy)) >> mc_sy) - 16'd1;
                 rf_lst <= mc_l;
                 mc_mode <= ob_active ? 3'd0 : mc_l ? (mb_active ? 3'd4 : 3'(mc_bmode)) : (mc_comp ? 3'd1 : 3'd0);
+                if (!frame_scl) begin
+                    mc_xf0 <= {mvx2[3:0], 6'b100000}; mc_yf0 <= {mvy2[3:0], 6'b100000}; sc_xs <= 12'd1024; sc_ys <= 12'd1024;
+                    rf_x0 <= 17'(signed'({2'b0, px})) + 17'(mvx2 >>> 4);
+                    rf_y0 <= 17'(signed'({2'b0, py})) + 17'(mvy2 >>> 4);
+                    rf_w <= sw; rf_h <= sh;
+                end else begin
+                    // origX = (x << 4) + ((2 mv) >> subX) + 8 for the unit; baseX = origX * xScale - (8 << 14)
+                    xsc = ref_scales[32 * int'(slot) +: 16]; ysc = ref_scales[32 * int'(slot) + 16 +: 16];
+                    ox = (22'(signed'({7'b0, mc_ux})) <<< 4) + 22'(mvx2) + 22'sd8;
+                    oy = (22'(signed'({7'b0, mc_uy})) <<< 4) + 22'(mvy2) + 22'sd8;
+                    sc_bx <= ox * 39'(signed'({1'b0, xsc})) - 39'sd131072;
+                    sc_by <= oy * 39'(signed'({1'b0, ysc})) - 39'sd131072;
+                    sc_xs <= 12'((xsc + 16'd8) >> 4); sc_ys <= 12'((ysc + 16'd8) >> 4);         // Round2Signed(xScale, 4)
+                end
+                bst <= B_MC_STRIP2;
+            end
+            B_MC_STRIP2: begin
+                if (frame_scl) begin
+                    // startX = Round2Signed(baseX, 8) + 32, then the strip's offset in steps; the patch covers
+                    // (((w - 1) xStep + 1023) >> 10) + 8 reference columns (rows likewise): ref_fetch's w + 7
+                    logic signed [31:0] stx, sty;
+                    logic [18:0] cw, ch;
+                    stx = round2s8(sc_bx) + 32'sd32 + 32'(signed'({20'b0, sc_xs})) * 32'(signed'({24'b0, mc_sc, 5'b0}));
+                    sty = round2s8(sc_by) + 32'sd32 + 32'(signed'({20'b0, sc_ys})) * 32'(signed'({24'b0, mc_sr, 5'b0}));
+                    rf_x0 <= 17'(stx >>> 10); rf_y0 <= 17'(sty >>> 10);
+                    mc_xf0 <= stx[9:0]; mc_yf0 <= sty[9:0];
+                    cw = 19'(sc_sw - 7'd1) * 19'(sc_xs) + 19'd1023; ch = 19'(sc_sh - 7'd1) * 19'(sc_ys) + 19'd1023;
+                    rf_w <= 7'(cw[18:10] + 9'd1); rf_h <= 7'(ch[18:10] + 9'd1);
+                end
                 rf_req_valid <= 1'b1;
                 bst <= B_MC_FETCH;
             end
@@ -619,8 +669,8 @@ module recon_top
                 mc_fin <= 1'b0;
                 if (ob_active) begin ob_k <= ob_k + 3'd1; bst <= B_MC_OB; end
                 else if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
-                else if (mc_sc + 2'd1 < mc_nsc) begin mc_sc <= mc_sc + 2'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
-                else if (mc_sr + 2'd1 < mc_nsr) begin mc_sc <= 2'd0; mc_sr <= mc_sr + 2'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
+                else if (mc_sc + 3'd1 < mc_nsc) begin mc_sc <= mc_sc + 3'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
+                else if (mc_sr + 3'd1 < mc_nsr) begin mc_sc <= 3'd0; mc_sr <= mc_sr + 3'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
                 else if (mc_uj + 2'd1 < mc_uc) begin mc_uj <= mc_uj + 2'd1; bst <= B_MC_UNIT; end
                 else if (mc_ui + 2'd1 < mc_ur) begin mc_uj <= 2'd0; mc_ui <= mc_ui + 2'd1; bst <= B_MC_UNIT; end
                 else bst <= B_MC_PLEND;
@@ -657,7 +707,8 @@ module recon_top
                     end
                     mc_uw <= pw; mc_uh <= ph;
                     u_ref0 <= e[14:11]; u_mv0r <= e[30:15]; u_mv0c <= e[46:31]; u_i0 <= e[48:47]; u_i1 <= e[50:49];
-                    mc_nsc <= 2'd1; mc_nsr <= 2'd1; mc_sr <= 2'd0; mc_sc <= 2'd0; mc_l <= 1'b0;
+                    mc_nsc <= frame_scl ? 3'((pw + 8'd31) >> 5) : 3'd1; mc_nsr <= frame_scl ? 3'((ph + 8'd31) >> 5) : 3'd1;
+                    mc_sr <= 3'd0; mc_sc <= 3'd0; mc_l <= 1'b0;
                     bst <= B_MC_STRIP;
                 end
             end

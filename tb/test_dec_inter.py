@@ -67,7 +67,7 @@ async def dec_inter_vs_model(dut):
         cocotb.start_soon(phase_gen())
     for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "ihdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start",
               "pipe_en", "frame_start", "n_tile_cols", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y", "mf_we", "sp_we",
-              "ref_slot", "ref_planes", "ref_dims", "ref_fmt16"):
+              "ref_slot", "ref_planes", "ref_dims", "ref_scales", "ref_fmt16"):
         if hasattr(dut, s):
             getattr(dut, s).value = 0
     mem = AxiMem(dut, dut.clk, seed=1, stall=0.2)
@@ -132,6 +132,7 @@ async def dec_inter_vs_model(dut):
                 ref_slot = 0
                 ref_planes = 0
                 ref_dims = 0
+                ref_scales = 0
                 for i in range(7):
                     slot = ph.ref_frame_idx[i]
                     ref_slot |= slot << (3 * i)
@@ -145,9 +146,14 @@ async def dec_inter_vs_model(dut):
                         base = SLOT_BASE + slot * SLOT_STRIDE + p * PLANE_STRIDE
                         ref_planes |= (base | (stride << 40)) << (72 * (3 * slot + p))
                     ref_dims |= (st["upscaled_width"] | (st["frame_height"] << 16)) << (32 * slot)
+                    # 7.11.3.3 scale factors of this reference for the current frame (REF_SCALE_SHIFT 14)
+                    xsc = ((st["upscaled_width"] << 14) + ph.FrameWidth // 2) // ph.FrameWidth
+                    ysc = ((st["frame_height"] << 14) + ph.FrameHeight // 2) // ph.FrameHeight
+                    ref_scales |= (xsc | (ysc << 16)) << (32 * slot)
                 dut.ref_slot.value = ref_slot
                 dut.ref_planes.value = ref_planes
                 dut.ref_dims.value = ref_dims
+                dut.ref_scales.value = ref_scales
                 dut.ref_fmt16.value = 1 if th0.BitDepth > 8 else 0
                 stats["inter_frames"] += 1
             rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else M.default_rows(th0.base_q_idx)

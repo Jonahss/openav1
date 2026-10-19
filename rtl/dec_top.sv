@@ -49,6 +49,7 @@ module dec_top
     input  logic [20:0]       ref_slot,            // slot of LAST_FRAME + i at [3i +: 3]
     input  logic [1727:0]     ref_planes,          // slot s, plane p: {stride[31:0], base[39:0]} at [72 (3s + p) +: 72]
     input  logic [255:0]      ref_dims,            // slot s: {frame height[15:0], upscaled width[15:0]} at [32s +: 32]
+    input  logic [255:0]      ref_scales,          // slot s: {yScale[15:0], xScale[15:0]} (7.11.3.3, 16384 = unscaled) at [32s +: 32]
     input  logic              ref_fmt16,
     output logic [39:0]       m_axi_araddr,
     output logic [7:0]        m_axi_arlen,
@@ -154,7 +155,7 @@ module dec_top
                                             .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata, .fb_rdata4,
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
                                             .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
-                                            .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_fmt16, .mc_unsup,
+                                            .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .mc_unsup,
                                             .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot,
                                             .m_axi_arvalid, .m_axi_arready, .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready);
 

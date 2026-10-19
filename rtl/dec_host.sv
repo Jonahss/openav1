@@ -41,6 +41,8 @@
 //   Reference slot table (stage 2a inter prediction; ref_fetch reads the slots through m_axi's read channels):
 //   0x400 + 0x40 s + 0x10 p   slot s (0..7), plane p (0..2): +0 BASE_LO, +4 BASE_HI (bits 39:32), +8 STRIDE (bytes);
 //   0x400 + 0x40 s + 0x30     slot s SIZE {frame height[31:16], upscaled width[15:0]} in luma samples
+//   0x400 + 0x40 s + 0x34     slot s SCALE {yScale[31:16], xScale[15:0]} of 7.11.3.3 for the current frame
+//                             (((RefUpscaledWidth << 14) + FrameWidth / 2) / FrameWidth; 16384 = unscaled)
 //   0x600 REF_SLOT  RW  the slot of LAST_FRAME + i at [3i +: 3] (ref_frame_idx)      0x604 REF_CFG  RW  bit 0 fmt16
 //   Picture DMA (the decoded frame into DDR through the AXI4 write master m_axi, 64-bit data, 40-bit address):
 //   0x180 DMA_CFG   RW  bit 0 fmt16 (16-bit little-endian samples; else one byte per sample, 8-bit pictures),
@@ -189,7 +191,7 @@ module dec_host
         .mf_we, .mf_wref(mf_addr_r[26:24]), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
         .mf_wrow(signed'(mf_wd[31:16])), .mf_wcol(signed'(mf_wd[15:0])),
         .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),
-        .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_fmt16(ref_cfg_r[0]),
+        .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
         .tile_start(start[0]), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
@@ -304,14 +306,16 @@ module dec_host
     logic [39:0]    rs_base [8][3];                          // reference slot table
     logic [31:0]    rs_stride [8][3];
     logic [15:0]    rs_w [8], rs_h [8];
+    logic [15:0]    rs_xs [8], rs_ys [8];                    // 7.11.3.3 scale factors per slot (for the current frame)
     logic [20:0]    ref_slot_r;
     logic [31:0]    ref_cfg_r;
     logic [1727:0]  ref_planes;
-    logic [255:0]   ref_dims;
+    logic [255:0]   ref_dims, ref_scales;
     always_comb begin
         for (int sl = 0; sl < 8; sl++) begin
             for (int pl = 0; pl < 3; pl++) ref_planes[72 * (3 * sl + pl) +: 72] = {rs_stride[sl][pl], rs_base[sl][pl]};
             ref_dims[32 * sl +: 32] = {rs_h[sl], rs_w[sl]};
+            ref_scales[32 * sl +: 32] = {rs_ys[sl], rs_xs[sl]};
         end
     end
     logic [39:0]    dma_base [3];
@@ -474,7 +478,7 @@ module dec_host
             mf_addr_r <= '0; sp_addr_r <= '0; sp_d0 <= '0; sp_d1 <= '0; mf_wd <= '0;
             dma_cfg <= '0; dma_start <= 1'b0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
-            for (int sl = 0; sl < 8; sl++) begin rs_w[sl] <= '0; rs_h[sl] <= '0; for (int pl = 0; pl < 3; pl++) begin rs_base[sl][pl] <= '0; rs_stride[sl][pl] <= '0; end end
+            for (int sl = 0; sl < 8; sl++) begin rs_w[sl] <= '0; rs_h[sl] <= '0; rs_xs[sl] <= 16'd16384; rs_ys[sl] <= 16'd16384; for (int pl = 0; pl < 3; pl++) begin rs_base[sl][pl] <= '0; rs_stride[sl][pl] <= '0; end end
             ref_slot_r <= '0; ref_cfg_r <= '0;
         end else begin
             start <= '0; push <= 1'b0; def_we <= 1'b0; h_fetch <= 1'b0; dma_start <= 1'b0;
@@ -520,6 +524,7 @@ module dec_host
                                     default: ;
                                 endcase
                             end else if (wi[1:0] == 2'd0) begin rs_w[wi[6:4]] <= w_d[15:0]; rs_h[wi[6:4]] <= w_d[31:16]; end
+                            else if (wi[1:0] == 2'd1) begin rs_xs[wi[6:4]] <= w_d[15:0]; rs_ys[wi[6:4]] <= w_d[31:16]; end
                         end
                         else if (wi[9:4] == 6'h06 && wi[3:2] != 2'd0) begin                                     // 0x190..0x1BC: planes 0..2
                             case (wi[1:0])
