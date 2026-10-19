@@ -25,6 +25,8 @@ LAST_FRAME, LAST2_FRAME, BWDREF_FRAME, ALTREF2_FRAME, ALTREF_FRAME, GOLDEN_FRAME
 KEY_FRAME, INTER_FRAME, INTRA_ONLY_FRAME, SWITCH_FRAME = 0, 1, 2, 3
 PRIMARY_REF_NONE = 7
 MV_INVALID = tm.MV_INVALID
+MF_HOLE = (MV_INVALID, MV_INVALID)      # shared, read-only: one object for every unprojected motion field cell
+ZERO_MV = (0, 0)                       # shared, read-only: the stored MV of every cell without a saved reference
 
 
 def zero_counts(cdfs):
@@ -98,7 +100,8 @@ class SequenceState:
     # ---- 7.9 motion field estimation
     def motion_field_estimation(self, h):
         w8, h8 = h.MiCols >> 1, h.MiRows >> 1
-        mf = [[[[MV_INVALID, MV_INVALID] for _ in range(w8)] for _ in range(h8)] for _ in range(8)]
+        # the holes share one tuple (a 16K x 16K frame has 16M cells x 8 references; per-cell lists took 1 GB+ here)
+        mf = [[[MF_HOLE] * w8 for _ in range(h8)] for _ in range(8)]
         lastIdx = h.ref_frame_idx[0]
         curGoldOrderHint = h.OrderHints[GOLDEN_FRAME]
         lastAltOrderHint = self.slots[lastIdx].saved_order_hints[ALTREF_FRAME]
@@ -180,7 +183,7 @@ class SequenceState:
         frame_cdfs: the CDFs the frame started with (None: the defaults for base_q_idx)."""
         R, Cc = h.MiRows, h.MiCols
         ref_frames = [[NONE] * Cc for _ in range(R)]
-        mvs = [[[0, 0] for _ in range(Cc)] for _ in range(R)]
+        mvs = [[ZERO_MV] * Cc for _ in range(R)]               # cells with a saved MV get their own tuple below
         # the frame's segmentation map (7.4 decode frame wrapup): the blocks' ids, except that a frame with
         # segmentation enabled and segmentation_update_map = 0 stores the previous map verbatim, NOT the per-block
         # minima its blocks used (the two differ where a block covered mixed ids; found on Argon test10147)
@@ -209,7 +212,7 @@ class SequenceState:
                                 mv = d_mv[col - c0][lst]
                                 if abs(mv[0]) <= tm.REFMVS_LIMIT and abs(mv[1]) <= tm.REFMVS_LIMIT:
                                     ref_frames[row][col] = r
-                                    mvs[row][col] = list(mv)
+                                    mvs[row][col] = (mv[0], mv[1])
         # frame end update: the CDFs of tile context_update_tile_id (final, with counts) unless disabled
         if h.disable_frame_end_update_cdf:
             cdfs = frame_cdfs if frame_cdfs is not None else tm.make_cdfs(h.base_q_idx)
@@ -231,4 +234,4 @@ class SequenceState:
         if h.frame_type == KEY_FRAME:
             src = self.slots[h.frame_to_show_map_idx]
             for i in range(NUM_REF_FRAMES):
-                self.slots[i] = copy.deepcopy(src)
+                self.slots[i] = src                     # slots are never mutated after end_frame builds them: share
