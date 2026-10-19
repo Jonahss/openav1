@@ -102,77 +102,108 @@ def main():
     max_tiles = int(sys.argv[sys.argv.index("--max-tiles") + 1]) if "--max-tiles" in sys.argv else None
     path = args[0]
     stream = args[1] if len(args) > 1 else None
-    tiles = []
-    cur = None          # tile receiving header fields (T/H come first for all tiles of a frame)
-    pending = []        # tiles of the frame being set up
-    active = {}         # (tile_row, tile_col) -> tile, for the frame being decoded (D routes events)
-    with open(path) as fh:
-        for line in fh:
-            if not line or line[0] == "#":
-                continue
-            f = line.split()
-            k = f[0]
-            if k == "T":                       # msac init: T then H, for every tile, before decoding starts
-                cur = dict(hdr=None, data=bytes.fromhex(f[3]) if len(f) > 3 else b"", syms=[], coefs=[])
-                tiles.append(cur)
-                pending.append(cur)
-            elif k == "H":
-                cur["hdr"] = [int(x) for x in f[1:]]
-            elif k == "D":                     # a tile's superblock row starts decoding
-                if pending:
-                    active = {(t["hdr"][0], t["hdr"][1]): t for t in pending}
-                    pending = []
-                cur = active[(int(f[1]), int(f[2]))]
-            elif k == "S":
-                if f[1] == "A":
-                    n = int(f[2])
-                    cur["syms"].append(("A", n, int(f[3]), int(f[4]), int(f[5]), [int(x) for x in f[6:6 + n]]))
-                elif f[1] == "B":
-                    cur["syms"].append(["B", int(f[2]), int(f[3]), int(f[4]), None])
-                else:
-                    cur["syms"].append(("E", int(f[2]), int(f[3])))
-            elif k == "U":
-                last = cur["syms"][-1]
-                assert last[0] == "B"
-                last[4] = (int(f[1]), int(f[2]), int(f[3]))
-            elif k == "C":
-                plane, x4, y4, tx, txtp, eob, w, h = [int(x) for x in f[1:9]]
-                n = min(w, 32) * min(h, 32)
-                cur["coefs"].append((plane, x4, y4, tx, txtp, eob, w, h, [int(x) for x in f[9:9 + n]]))
+
+    def frames_of(path):
+        """Yield the trace's frames one at a time as lists of tiles (dict hdr/data/syms/coefs), so memory holds one
+        frame's events rather than the whole stream (a large Argon stream parsed whole took 15 GB)."""
+        pending = []        # tiles of the frame being set up (T/H come first for all tiles of a frame)
+        active = {}         # (tile_row, tile_col) -> tile, for the frame being decoded (D routes events)
+        order = []          # the active frame's tiles in T order
+        cur = None
+        with open(path) as fh:
+            for line in fh:
+                if not line or line[0] == "#":
+                    continue
+                f = line.split()
+                k = f[0]
+                if k == "T":                       # msac init: T then H, for every tile, before decoding starts
+                    if active and not pending:     # a new frame starts: the decoded one is complete
+                        yield order
+                        active, order = {}, []
+                    cur = dict(hdr=None, data=bytes.fromhex(f[3]) if len(f) > 3 else b"", syms=[], coefs=[])
+                    pending.append(cur)
+                elif k == "H":
+                    cur["hdr"] = [int(x) for x in f[1:]]
+                elif k == "D":                     # a tile's superblock row starts decoding
+                    if pending:
+                        active = {(t["hdr"][0], t["hdr"][1]): t for t in pending}
+                        order = pending
+                        pending = []
+                    cur = active[(int(f[1]), int(f[2]))]
+                elif k == "S":
+                    if f[1] == "A":
+                        n = int(f[2])
+                        cur["syms"].append(("A", n, int(f[3]), int(f[4]), int(f[5]), [int(x) for x in f[6:6 + n]]))
+                    elif f[1] == "B":
+                        cur["syms"].append(["B", int(f[2]), int(f[3]), int(f[4]), None])
+                    else:
+                        cur["syms"].append(("E", int(f[2]), int(f[3])))
+                elif k == "U":
+                    last = cur["syms"][-1]
+                    assert last[0] == "B"
+                    last[4] = (int(f[1]), int(f[2]), int(f[3]))
+                elif k == "C":
+                    plane, x4, y4, tx, txtp, eob, w, h = [int(x) for x in f[1:9]]
+                    n = min(w, 32) * min(h, 32)
+                    cur["coefs"].append((plane, x4, y4, tx, txtp, eob, w, h, [int(x) for x in f[9:9 + n]]))
+        if pending:                                # tiles announced but never decoded (should not happen)
+            active = {(t["hdr"][0], t["hdr"][1]): t for t in pending}
+            order = pending
+        if order:
+            yield order
     ok = 0
     tot_s = tot_c = tot_b = 0
-    has_coefs = any(t["coefs"] for t in tiles)          # a mask-1 trace carries no C events: symbols only
+    n_tiles = 0
+    has_coefs = None                                        # decided from the first frame (a mask-1 trace has no C events)
+    stopped = False
     if stream is None:
-        for ti, t in enumerate(tiles[:max_tiles] if max_tiles else tiles):
-            try:
-                ns, nc, nb, _ = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose, check_coefs=has_coefs)
-                ok += 1
-                tot_s += ns; tot_c += nc; tot_b += nb
-            except Mismatch as m:
-                print(f"tile {ti}: MISMATCH: {m}")
+        for ftiles in frames_of(path):
+            if has_coefs is None:
+                has_coefs = any(t["coefs"] for t in ftiles)
+            for t in ftiles:
+                n_tiles += 1
+                if max_tiles is not None and n_tiles > max_tiles:
+                    stopped = True
+                    break
+                try:
+                    ns, nc, nb, _ = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose, check_coefs=has_coefs)
+                    ok += 1
+                    tot_s += ns; tot_c += nc; tot_b += nb
+                except Mismatch as m:
+                    print(f"tile {n_tiles - 1}: MISMATCH: {m}")
+                    stopped = True
+                    break
+            if stopped:
                 break
     else:
         d = op.parse_file(stream)
-        if len(d.tiles) != len(tiles):
-            print(f"tile count: parser {len(d.tiles)} vs trace {len(tiles)}")
         seq = sm.SequenceState()
         tot_inter = [0, 0]                                      # inter blocks, of which compound
-        ti = 0
-        fi = 0                                                  # index into d.frames (decoded frames)
-        stop = False
-        for h in d.frame_headers:
-            if h.show_existing_frame:
-                seq.show_existing(h)
-                continue
-            tile_idx = d.frames[fi]
-            fi += 1
+        hdr_iter = iter(d.frame_headers)
+        fi = 0                                                  # decoded frames consumed
+        for ftiles in frames_of(path):
+            if has_coefs is None:
+                has_coefs = any(t["coefs"] for t in ftiles)
+            # the parser's header of this decoded frame, applying show_existing_frame events on the way
+            h = None
+            for h in hdr_iter:
+                if h.show_existing_frame:
+                    seq.show_existing(h)
+                    continue
+                break
+            if h is None or h.show_existing_frame:
+                print(f"frame {fi}: the trace has more frames than the parsed stream")
+                stopped = True
+                break
+            if len(d.frames[fi]) != len(ftiles):
+                print(f"frame {fi}: parser {len(d.frames[fi])} tiles vs trace {len(ftiles)}")
             ctx = seq.start_frame(h)
             decoders = []
-            for _ in tile_idx:
-                if max_tiles is not None and ti >= max_tiles:
-                    stop = True
+            for t in ftiles:
+                n_tiles += 1
+                if max_tiles is not None and n_tiles > max_tiles:
+                    stopped = True
                     break
-                t = tiles[ti]
                 try:
                     ns, nc, nb, dec = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose, frame=ctx,
                                                check_coefs=has_coefs)
@@ -180,20 +211,24 @@ def main():
                     tot_s += ns; tot_c += nc; tot_b += nb
                     tot_inter[0] += sum(1 for b in dec.blocks if b.get("inter") and not b.get("intrabc"))
                     tot_inter[1] += sum(1 for b in dec.blocks if b.get("inter") and len(b.get("mvs", ())) == 2)
+                    dec.events = []                                 # the frame's coefficient events are checked; free them
                     decoders.append(dec)
                 except Mismatch as m:
                     kind = "intra" if h.FrameIsIntra else "inter"
-                    print(f"tile {ti} (frame {fi - 1}, {kind}, order_hint {h.order_hint}): MISMATCH: {m}")
-                    stop = True
+                    print(f"tile {n_tiles - 1} (frame {fi}, {kind}, order_hint {h.order_hint}): MISMATCH: {m}")
+                    stopped = True
                     break
-                ti += 1
-            if stop:
+            if stopped:
                 break
             seq.end_frame(h, decoders, frame_cdfs=ctx.cdfs)
+            fi += 1
+        if not stopped and fi != len(d.frames):
+            print(f"parser has {len(d.frames)} decoded frames, trace {fi}")
+            stopped = True
     inter = f", {tot_inter[0]} inter blocks ({tot_inter[1]} compound)" if stream is not None else ""
-    print(f"OK: {ok}/{len(tiles)} tiles, {tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks{inter}" if ok == len(tiles)
-          else f"{ok}/{len(tiles)} tiles OK ({tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks{inter} before the mismatch)")
-    sys.exit(0 if ok == len(tiles) else 1)
+    print(f"OK: {ok}/{n_tiles} tiles, {tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks{inter}" if not stopped and ok == n_tiles
+          else f"{ok}/{n_tiles} tiles OK ({tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks{inter} before the mismatch)")
+    sys.exit(0 if (not stopped and ok == n_tiles) else 1)
 
 if __name__ == "__main__":
     main()
