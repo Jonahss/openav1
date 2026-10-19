@@ -378,26 +378,39 @@ class TileDecoder:
         if not h.FrameIsIntra and getattr(h, "enable_order_hint", 0):
             for ref in range(LAST_FRAME, ALTREF_FRAME + 1):
                 self.RefFrameSignBias[ref] = int(self.get_relative_dist(h.OrderHints[ref], h.order_hint) > 0)
-        self.SkipModes = [[0] * Cc for _ in range(R)]
-        self.CompGroupIdxs = [[0] * Cc for _ in range(R)]
-        self.CompoundIdxs = [[0] * Cc for _ in range(R)]
+        # The per-4x4 frame arrays are allocated once per frame and shared by the frame's tiles (FrameCtx.arena):
+        # every tile reads and writes only its own region (the spec's is_inside / availability checks stop at tile
+        # edges, above contexts are per tile below), so sharing is exact, and a 2,000-tile Argon frame no longer
+        # allocates 25 frame-sized arrays per tile (hours and 20 GB on 2026-10-19).
+        ar = getattr(self.frame, "arena", None)
+        if ar is None:
+            ar = self.frame.arena = {}
+
+        def arr(name, make):
+            a = ar.get(name)
+            if a is None:
+                a = ar[name] = make()
+            return a
+        self.SkipModes = arr("SkipModes", lambda: [[0] * Cc for _ in range(R)])
+        self.CompGroupIdxs = arr("CompGroupIdxs", lambda: [[0] * Cc for _ in range(R)])
+        self.CompoundIdxs = arr("CompoundIdxs", lambda: [[0] * Cc for _ in range(R)])
         self.PrevSegmentIds = self.frame.prev_segment_ids
         self.MotionFieldMvs = self.frame.motion_field
-        self.YModes = [[DC_PRED] * Cc for _ in range(R)]
-        self.UVModes = [[DC_PRED] * Cc for _ in range(R)]
-        self.Skips = [[0] * Cc for _ in range(R)]
-        self.TxSizes = [[TX_4X4] * Cc for _ in range(R)]
-        self.InterTxSizes = [[TX_4X4] * Cc for _ in range(R)]
-        self.MiSizes = [[BLOCK_4X4] * Cc for _ in range(R)]
-        self.SegmentIds = [[0] * Cc for _ in range(R)]
-        self.PaletteSizes = [[[0] * Cc for _ in range(R)] for _ in range(2)]
-        self.PaletteColors = [[[None] * Cc for _ in range(R)] for _ in range(2)]
-        self.TxTypes = [[DCT_DCT] * Cc for _ in range(R)]
-        self.DeltaLFs = [[None] * Cc for _ in range(R)]
-        self.RefFrames = [[None] * Cc for _ in range(R)]      # None = not written yet this frame (7.10.2.4)
-        self.IsInters = [[0] * Cc for _ in range(R)]
-        self.Mvs = [[None] * Cc for _ in range(R)]
-        self.InterpFilters = [[None] * Cc for _ in range(R)]
+        self.YModes = arr("YModes", lambda: [[DC_PRED] * Cc for _ in range(R)])
+        self.UVModes = arr("UVModes", lambda: [[DC_PRED] * Cc for _ in range(R)])
+        self.Skips = arr("Skips", lambda: [[0] * Cc for _ in range(R)])
+        self.TxSizes = arr("TxSizes", lambda: [[TX_4X4] * Cc for _ in range(R)])
+        self.InterTxSizes = arr("InterTxSizes", lambda: [[TX_4X4] * Cc for _ in range(R)])
+        self.MiSizes = arr("MiSizes", lambda: [[BLOCK_4X4] * Cc for _ in range(R)])
+        self.SegmentIds = arr("SegmentIds", lambda: [[0] * Cc for _ in range(R)])
+        self.PaletteSizes = arr("PaletteSizes", lambda: [[[0] * Cc for _ in range(R)] for _ in range(2)])
+        self.PaletteColors = arr("PaletteColors", lambda: [[[None] * Cc for _ in range(R)] for _ in range(2)])
+        self.TxTypes = arr("TxTypes", lambda: [[DCT_DCT] * Cc for _ in range(R)])
+        self.DeltaLFs = arr("DeltaLFs", lambda: [[None] * Cc for _ in range(R)])
+        self.RefFrames = arr("RefFrames", lambda: [[None] * Cc for _ in range(R)])      # None = not written yet this frame (7.10.2.4)
+        self.IsInters = arr("IsInters", lambda: [[0] * Cc for _ in range(R)])
+        self.Mvs = arr("Mvs", lambda: [[None] * Cc for _ in range(R)])
+        self.InterpFilters = arr("InterpFilters", lambda: [[None] * Cc for _ in range(R)])
         self.use_intrabc = 0
         self.is_inter = 0
         self.AboveLevelContext = [[0] * Cc for _ in range(3)]
@@ -420,11 +433,14 @@ class TileDecoder:
         self.blocks = []          # decoded block infos (for inspection)
         self.Quant = [0] * 1024
         self.Dequant = None
-        self.LoopfilterTxSizes = []
-        for plane in range(3):
-            subX = hdr.subsampling_x if plane > 0 else 0
-            subY = hdr.subsampling_y if plane > 0 else 0
-            self.LoopfilterTxSizes.append([[TX_4X4] * ((Cc + subX) >> subX) for _ in range((R + subY) >> subY)])
+        def lf_sizes():
+            out = []
+            for plane in range(3):
+                subX = hdr.subsampling_x if plane > 0 else 0
+                subY = hdr.subsampling_y if plane > 0 else 0
+                out.append([[TX_4X4] * ((Cc + subX) >> subX) for _ in range((R + subY) >> subY)])
+            return out
+        self.LoopfilterTxSizes = arr("LoopfilterTxSizes", lf_sizes)
 
     # ---- helpers ------------------------------------------------------------------------------
     def sym(self, cdf, name):
