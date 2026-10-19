@@ -32,6 +32,10 @@ sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{to
 params = {}
 if top in ("dec_top", "dec_host", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.get("FBX"):
     params = {"FBX": int(os.environ["FBX"]), "FBY": int(os.environ.get("FBY", os.environ["FBX"]))}
+# tile_syntax alone: FBX/FBY size its motion-info memory and the inter bands like dec_top does for a frame of that size
+if top == "tile_syntax" and os.environ.get("FBX"):
+    fbx, fby = int(os.environ["FBX"]), int(os.environ.get("FBY", os.environ["FBX"]))
+    params = {"ML2R": fby - 2, "ML2C": fbx - 2, "MFL2R": fby - 3, "MFL2C": fbx - 3, "SPL2R": fby - 2, "SPL2W": fbx - 6}
 # ITX_LANES=2 builds the K26 configuration (two transform engines); vectors for a 2-lane netlist replay must be
 # recorded from this build, since the lane count changes the cycle cadence (2026-10-12: a 4-lane recording
 # replayed against the 2-lane netlist mismatched from the first transform block on).
