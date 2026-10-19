@@ -17,7 +17,7 @@ mkdir -p "$out/stubs" "$out/work" "$out/fw/openav1"
 # the core build: CDEF and LR replaced by null stubs (synth/vivado/run.sh -n), the simulation frame memory by the
 # place-and-route stand-in (never elaborated with FRAME_URAM = 1, but it must not be a black box)
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq coef_rd blk_ctx
-       pal_syntax mv_mem mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
+       pal_syntax mv_mem mf_band seg_band mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
        frame_mem_w frame_mem_uram recon_top cdef_pkg lr_pkg mi_store rec_fifo lf_top cdef_top lr_top sr_top dec_top
        dec_host phase_gen"
 sources="$root/synth/vivado/frame_mem_pr.sv"
