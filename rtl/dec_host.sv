@@ -506,7 +506,7 @@ module dec_host
                     10'h0C2: sp_addr_r <= strb(sp_addr_r, w_d, w_s);                                           // 0x308
                     10'h0C3: sp_d0 <= strb(sp_d0, w_d, w_s);                                                   // 0x30C
                     10'h0C4: begin sp_d1 <= w_d[15:0]; sp_we <= 1'b1; end                                      // 0x310
-                    10'h180: ref_slot_r <= strb({11'd0, ref_slot_r}, w_d, w_s)[20:0];                           // 0x600
+                    10'h180: ref_slot_r <= 21'(strb({11'd0, ref_slot_r}, w_d, w_s));                              // 0x600 (no select on a function call: Vivado Synth 8-12513)
                     10'h181: ref_cfg_r <= strb(ref_cfg_r, w_d, w_s);                                           // 0x604
                     default: begin
                         if (wi[9:3] == 7'h02)        def_w[wi[2:0]] <= strb(def_w[wi[2:0]], w_d, w_s);       // 0x040
