@@ -26,11 +26,11 @@ module warp_setup
     input  logic signed [31:0] ls_a00, ls_a01, ls_a11, ls_bx0, ls_bx1, ls_by0, ls_by1,
     input  logic signed [15:0] mv_row, mv_col,  // Mv[0] of the block (1/8 luma samples)
     input  logic [15:0]   mid_x, mid_y,         // MiCol * 4 + w4 * 2 - 1, MiRow * 4 + h4 * 2 - 1
-    input  logic signed [23:0] gm_p [0:5],      // gm_params of the reference (mode 1)
+    input  logic [143:0]  gm_p,                 // gm_params of the reference (mode 1): gm_params[j] signed 24 bits at [24j +: 24]
     output logic          busy,
     output logic          done,
     output logic          valid,                // warpValid (and LocalValid for mode 0)
-    output logic signed [23:0] p [0:5],
+    output logic [143:0]  p,                    // the parameters, p[j] at [24j +: 24]
     output logic signed [15:0] alpha, beta, gamma, delta
 );
     // ---------------------------------------------------------------- helpers
@@ -93,7 +93,7 @@ module warp_setup
             W_IDLE: if (start) begin
                 lvalid <= 1'b1;
                 if (mode) begin
-                    for (int i = 0; i < 6; i++) q[i] <= gm_p[i];
+                    for (int i = 0; i < 6; i++) q[i] <= 24'(signed'(gm_p[24 * i +: 24]));
                     st <= W_SH0;
                 end else begin m_a <= 64'(ls_a00); m_b <= 64'(ls_a11); st <= W_DET; end
             end
@@ -157,7 +157,7 @@ module warp_setup
                 s2 = 20'(18'(ga[17] ? -ga : ga)) * 20'd4 + 20'(18'(de[17] ? -de : de)) * 20'd4;
                 alpha <= 16'(al); beta <= 16'(be); gamma <= 16'(ga); delta <= 16'(de);
                 valid <= lvalid && (s1 < 20'd65536) && (s2 < 20'd65536);
-                for (int i = 0; i < 6; i++) p[i] <= q[i];
+                for (int i = 0; i < 6; i++) p[24 * i +: 24] <= q[i];
                 done <= 1'b1; st <= W_IDLE;
             end
             default: st <= W_IDLE;

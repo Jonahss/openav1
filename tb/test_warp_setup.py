@@ -54,8 +54,10 @@ async def run(dut, mode, sums, mv, midx, midy, gm):
         getattr(dut, name).value = v & 0xFFFFFFFF
     dut.mv_row.value = mv[0] & 0xFFFF; dut.mv_col.value = mv[1] & 0xFFFF
     dut.mid_x.value = midx; dut.mid_y.value = midy
+    gmv = 0
     for i in range(6):
-        dut.gm_p[i].value = gm[i] & 0xFFFFFF
+        gmv |= (gm[i] & 0xFFFFFF) << (24 * i)
+    dut.gm_p.value = gmv
     dut.mode.value = mode
     dut.start.value = 1
     await RisingEdge(dut.clk)
@@ -65,7 +67,8 @@ async def run(dut, mode, sums, mv, midx, midy, gm):
         await RisingEdge(dut.clk)
         await ReadOnly()
         if int(dut.done.value):
-            p = [s24(int(dut.p[i].value)) for i in range(6)]
+            pv = int(dut.p.value)
+            p = [s24((pv >> (24 * i)) & 0xFFFFFF) for i in range(6)]
             sh = tuple(s16(int(getattr(dut, n).value)) for n in ("alpha", "beta", "gamma", "delta"))
             v = int(dut.valid.value)
             await Timer(1, "ns")

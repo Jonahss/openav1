@@ -220,7 +220,7 @@ module recon_top
     logic [1:0]  w_cand;                                     // lists that may warp (setup decides the validity)
     logic        wl;                                         // the list being set up
     logic        ws_start, ws_mode, ws_busy, ws_done, ws_valid;
-    logic signed [23:0] ws_p [6], ws_gm [6];
+    logic [143:0] ws_p, ws_gm;
     logic signed [15:0] ws_alpha, ws_beta, ws_gamma, ws_delta;
     logic [15:0] ws_midx, ws_midy;
     logic [3:0]  ws_ref;
@@ -576,7 +576,7 @@ module recon_top
                 ws_start <= 1'b0;
                 if (ws_done) begin
                     w_use[wl] <= ws_valid;
-                    for (int j = 0; j < 6; j++) w_p[wl][j] <= ws_p[j];
+                    for (int j = 0; j < 6; j++) w_p[wl][j] <= 24'(signed'(ws_p[24 * j +: 24]));
                     w_al[wl] <= ws_alpha; w_be[wl] <= ws_beta; w_ga[wl] <= ws_gamma; w_de[wl] <= ws_delta;
                     if (wl) bst <= after_wset;
                     else begin wl <= 1'b1; bst <= B_MC_WSET; end
@@ -779,7 +779,7 @@ module recon_top
     assign ws_ref = wl ? b.ref1 : b.ref0;
     assign ws_midx = 16'({b.c, 2'b00}) + 16'({bw4, 1'b0}) - 16'd1;
     assign ws_midy = 16'({b.r, 2'b00}) + 16'({bh4, 1'b0}) - 16'd1;
-    always_comb for (int j = 0; j < 6; j++) ws_gm[j] = ihdr.gm_params[24 * (6 * (int'(ws_ref) - 1) + j) +: 24];
+    assign ws_gm = ihdr.gm_params[144 * (int'(ws_ref) - 1) +: 144];
     warp_setup u_ws (
         .clk, .rst, .start(ws_start), .mode(ws_mode),
         .ls_a00(b.ls[0 +: 32]), .ls_a01(b.ls[32 +: 32]), .ls_a11(b.ls[64 +: 32]), .ls_bx0(b.ls[96 +: 32]),
