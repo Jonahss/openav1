@@ -244,6 +244,16 @@ module blk_syntax
     logic [MIW-1:0] ov_x, ov_y;
     logic [2:0]  ws_ph;                                     // 0 above (r-1, c), 1 above loop, 2 left (r, c-1), 3 left loop, 4 TL, 5 TR
     logic [5:0]  ws_i;
+    // least-squares sums of the warp samples (7.11.3.8, blk_rec_t.ls): accumulated per accepted sample as add_sample
+    // runs; ws_n = NumSamplesScanned (the scan stops at 8), ws_nv = NumSamples; ls_v over the valid samples, ls_1 the
+    // first scanned sample alone (used when no sample is valid, spec: NumSamples = 1 then)
+    logic [3:0]  ws_n, ws_nv;
+    logic signed [31:0] ls_v [7], ls_1 [7];
+    logic [223:0] ls_rec;
+    always_comb for (int i = 0; i < 7; i++) ls_rec[32 * i +: 32] = (ws_nv != 4'd0) ? ls_v[i] : ls_1[i];
+    function automatic logic signed [31:0] ls_product(input logic signed [15:0] a, input logic signed [15:0] b);
+        return (32'(a) * 32'(b)) >>> 2 + 32'(a) + 32'(b);
+    endfunction
     // transform-size tree (read_var_tx_size) walked with an explicit node stack, leaves listed in decode
     // order (= transform_tree order: both are z-order over the same quadtree)
     logic        vt_read;                                   // txfm_split symbols are read
@@ -1103,6 +1113,7 @@ module blk_syntax
                 S_OV_P: begin
                     if (mvr_written && mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
                         ws_found <= 1'b0; do_tl <= 1'b1; do_tr <= 1'b1; ws_i <= 6'd0;
+                        ws_n <= 4'd0; ws_nv <= 4'd0; for (int i = 0; i < 7; i++) begin ls_v[i] <= 32'sd0; ls_1[i] <= 32'sd0; end
                         ws_ph <= avail_u ? 3'd0 : (avail_l ? 3'd2 : 3'd4); st <= S_WS;
                     end
                     else begin if (ov_above) ov_x <= ov_x + MIW'(2); else ov_y <= ov_y + MIW'(2); st <= S_OV; end
@@ -1128,8 +1139,42 @@ module blk_syntax
                     srcw = num4x4w(mvr_ent.bsize); srch = num4x4h(mvr_ent.bsize);
                     // is_inside (a row / column above or left of 0 wraps to a large unsigned value and fails the end test)
                     in_tile = (nb_row >= hdr.mi_row_start) && (nb_row < hdr.mi_row_end) && (nb_col >= hdr.mi_col_start) && (nb_col < hdr.mi_col_end);
-                    // add_sample: inside, written, RefFrames == [RefFrame[0], NONE]
-                    if (in_tile && mvr_written && mvr_ent.ref0 == rf0 && mvr_ent.ref1 == R_NONE) ws_found <= 1'b1;
+                    // add_sample: inside, written, RefFrames == [RefFrame[0], NONE]; at most 8 samples are scanned
+                    if (in_tile && mvr_written && mvr_ent.ref0 == rf0 && mvr_ent.ref1 == R_NONE && ws_n < 4'd8) begin
+                        // the candidate block's centre (aligned to its size) and the block's own, in 1/8 luma samples;
+                        // the threshold on the MV difference; the sample's (sx, sy, dx, dy) relative to the block
+                        logic [MIW-1:0] crow, ccol;
+                        logic signed [19:0] cmy, cmx, bmy, bmx, sy, sx, dy, dx;
+                        logic signed [15:0] dmr, dmc;
+                        logic [7:0] thr;
+                        logic [15:0] mvd, ws_bw, ws_bh;
+                        logic valid;
+                        logic signed [31:0] t [7];
+                        ws_found <= 1'b1;
+                        crow = nb_row & ~MIW'(srch - 6'd1); ccol = nb_col & ~MIW'(srcw - 6'd1);
+                        cmy = (20'(signed'({1'b0, crow})) * 20'sd4 + 20'(signed'({1'b0, srch})) * 20'sd2 - 20'sd1) * 20'sd8;
+                        cmx = (20'(signed'({1'b0, ccol})) * 20'sd4 + 20'(signed'({1'b0, srcw})) * 20'sd2 - 20'sd1) * 20'sd8;
+                        bmy = (20'(signed'({1'b0, br})) * 20'sd4 + 20'(signed'({1'b0, bh4})) * 20'sd2 - 20'sd1) * 20'sd8;
+                        bmx = (20'(signed'({1'b0, bc})) * 20'sd4 + 20'(signed'({1'b0, bw4})) * 20'sd2 - 20'sd1) * 20'sd8;
+                        sy = cmy - bmy; sx = cmx - bmx;
+                        dmr = 16'(mvr_ent.mv_row - 16'(mv_row)); dmc = 16'(mvr_ent.mv_col - 16'(mv_col));
+                        dy = sy + 20'(dmr); dx = sx + 20'(dmc);
+                        ws_bw = 16'(bw4) << 2; ws_bh = 16'(bh4) << 2;
+                        thr = (ws_bw > ws_bh) ? ((ws_bw < 16'd16) ? 8'd16 : (ws_bw > 16'd112) ? 8'd112 : 8'(ws_bw))
+                                          : ((ws_bh < 16'd16) ? 8'd16 : (ws_bh > 16'd112) ? 8'd112 : 8'(ws_bh));
+                        mvd = 16'(dmr[15] ? -dmr : dmr) + 16'(dmc[15] ? -dmc : dmc);
+                        valid = (mvd <= 16'(thr));
+                        // the sample's terms (zero when |sx - dx| or |sy - dy| >= LS_MV_MAX: warp_estimation skips it)
+                        if ((dmr < 16'sd256 && dmr > -16'sd256) && (dmc < 16'sd256 && dmc > -16'sd256)) begin
+                            t[0] = ls_product(16'(sx), 16'(sx)) + 32'sd8; t[1] = ls_product(16'(sx), 16'(sy)) + 32'sd4;
+                            t[2] = ls_product(16'(sy), 16'(sy)) + 32'sd8; t[3] = ls_product(16'(sx), 16'(dx)) + 32'sd8;
+                            t[4] = ls_product(16'(sy), 16'(dx)) + 32'sd4; t[5] = ls_product(16'(sx), 16'(dy)) + 32'sd4;
+                            t[6] = ls_product(16'(sy), 16'(dy)) + 32'sd8;
+                        end else for (int i = 0; i < 7; i++) t[i] = 32'sd0;
+                        ws_n <= ws_n + 4'd1;
+                        if (ws_n == 4'd0) for (int i = 0; i < 7; i++) ls_1[i] <= t[i];
+                        if (valid) begin ws_nv <= ws_nv + 4'd1; for (int i = 0; i < 7; i++) ls_v[i] <= ls_v[i] + t[i]; end
+                    end
                     case (ws_ph)
                         3'd0: begin
                             if (bw4 <= srcw) begin
@@ -1506,6 +1551,7 @@ module blk_syntax
                     blk_rec.interp0 <= interp[0]; blk_rec.interp1 <= interp[1];
                     blk_rec.cmv_intra <= cmv_intra; blk_rec.cmv <= cmv_intra ? 304'd0 : cmv;   // someUseIntra: one unit with the block's own motion
                     blk_rec.obmc <= (is_inter_b && motion_mode == 2'd1) ? obmc : 408'd0;
+                    blk_rec.ls <= (is_inter_b && motion_mode == 2'd2) ? ls_rec : 224'd0;
                     blk_rec.r <= br; blk_rec.c <= bc; blk_rec.bsize <= bs; blk_rec.skip <= skip; blk_rec.seg <= seg;
                     blk_rec.lossless <= lossless; blk_rec.has_chroma <= hc; blk_rec.ymode <= is_inter_b ? imode : {1'b0, ymode}; blk_rec.uvmode <= uvmode;
                     blk_rec.angle_y <= ang_y; blk_rec.angle_uv <= ang_uv; blk_rec.cfl_u <= cfl_u; blk_rec.cfl_v <= cfl_v;

@@ -664,7 +664,7 @@ class TileDecoder:
                                 cfl=(self.CflAlphaU, self.CflAlphaV), intrabc=self.use_intrabc,
                                 mv=(tuple(self.Mv[0]) if self.use_intrabc else None),
                                 inter=self.is_inter, ref=tuple(self.RefFrame), mvs=[tuple(m) for m in self.Mv[:1 + isCompound]],
-                                cmv=self.cmv, obmc=self.obmc,
+                                cmv=self.cmv, obmc=self.obmc, ls=(self.ls if self.motion_mode == LOCALWARP else None),
                                 motion_mode=self.motion_mode, compound_type=self.compound_type,
                                 interintra=self.interintra, interp=tuple(self.interp_filter), skip_mode=self.skip_mode,
                                 # the optional inter fields, zero where the syntax did not read them (as the RTL record has them)
@@ -1324,6 +1324,34 @@ class TileDecoder:
             self.add_sample(-1, w4)
         if self.NumSamples == 0 and self.NumSamplesScanned > 0:
             self.NumSamples = 1
+        self.ls = self.ls_sums()
+
+    def ls_sums(self):
+        """Stage 2c.2 record field (blk_rec_t.ls): the seven least-squares sums of warp_estimation (7.11.3.8) over
+        CandList[0 .. NumSamples), relative to the block centre and its Mv[0]; the RTL syntax stage accumulates them
+        while scanning (blk_syntax S_WS_P) and the reconstruction's warp_setup finishes the fit."""
+        w4 = T.Num_4x4_Blocks_Wide[self.MiSize]
+        h4 = T.Num_4x4_Blocks_High[self.MiSize]
+        midY = self.MiRow * 4 + h4 * 2 - 1
+        midX = self.MiCol * 4 + w4 * 2 - 1
+        suy, sux = midY * 8, midX * 8
+        duy, dux = suy + self.Mv[0][0], sux + self.Mv[0][1]
+        acc = [0] * 7
+
+        def lsp(a, b):
+            return ((a * b) >> 2) + (a + b)
+        for cand in self.CandList[:self.NumSamples]:
+            sy, sx = cand[0] - suy, cand[1] - sux
+            dy, dx = cand[2] - duy, cand[3] - dux
+            if abs(sx - dx) < 256 and abs(sy - dy) < 256:
+                acc[0] += lsp(sx, sx) + 8
+                acc[1] += lsp(sx, sy) + 4
+                acc[2] += lsp(sy, sy) + 8
+                acc[3] += lsp(sx, dx) + 8
+                acc[4] += lsp(sy, dx) + 4
+                acc[5] += lsp(sx, dy) + 4
+                acc[6] += lsp(sy, dy) + 8
+        return acc
 
     def add_sample(self, deltaRow, deltaCol):
         if self.NumSamplesScanned >= LEAST_SQUARES_SAMPLES_MAX:

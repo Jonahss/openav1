@@ -198,6 +198,9 @@ package syn_pkg;
         // valid[0], offset from the block in 4x4s[5:1], step4[10:6], ref0[14:11], mv row[30:15] col[46:31] (signed 16),
         // interp0[48:47], interp1[50:49]; zero unless motion_mode == OBMC
         logic [407:0] obmc;
+        // LOCALWARP blocks (stage 2c.2): the least-squares sums of 7.11.3.8 over the warp samples (A00, A01, A11,
+        // Bx0, Bx1, By0, By1, signed 32 bits each, A00 at [31:0]); zero for every other block
+        logic [223:0] ls;
     } blk_rec_t;
 
     // Per-4x4 motion information of the current frame (spec IsInters / RefFrames / Mvs / MiSizes as the MV

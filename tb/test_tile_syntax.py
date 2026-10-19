@@ -40,7 +40,7 @@ BLK_FIELDS = [
     ("is_inter", 1), ("intrabc", 1), ("mv_row", 18), ("mv_col", 18),
     ("skip_mode", 1), ("ref0", 4), ("ref1", 4), ("mv1_row", 18), ("mv1_col", 18), ("motion_mode", 2), ("compound_type", 3),
     ("interintra", 1), ("interintra_mode", 2), ("wedge_interintra", 1), ("wedge_index", 4), ("wedge_sign", 1), ("mask_type", 1),
-    ("comp_group_idx", 1), ("compound_idx", 1), ("interp0", 2), ("interp1", 2), ("cmv_intra", 1), ("cmv", 304), ("obmc", 408)]
+    ("comp_group_idx", 1), ("compound_idx", 1), ("interp0", 2), ("interp1", 2), ("cmv_intra", 1), ("cmv", 304), ("obmc", 408), ("ls", 224)]
 TX_FIELDS = [("plane", 2), ("x", PXW), ("y", PXW), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1), ("slot", 3)]
 LR_FIELDS = [("plane", 2), ("unit_row", SBW), ("unit_col", SBW), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
@@ -57,6 +57,17 @@ def pack_cmv(cmv):
             w = rf0 | (rf1 << 4) | ((mv0[0] & 0xFFFF) << 8) | ((mv0[1] & 0xFFFF) << 24) | ((mv1[0] & 0xFFFF) << 40) \
                 | ((mv1[1] & 0xFFFF) << 56) | (u["interp"][0] << 72) | (u["interp"][1] << 74)
             v |= w << (76 * k)
+    return v
+
+
+def pack_ls(ls):
+    """blk_rec_t.ls: the seven least-squares sums, 32-bit two's complement, A00 lowest."""
+    if not ls:
+        return 0
+    v = 0
+    for i, a in enumerate(ls):
+        assert -(1 << 31) <= a < (1 << 31), f"ls sum {i} = {a} outside 32 bits"
+        v |= (a & 0xFFFFFFFF) << (32 * i)
     return v
 
 
@@ -576,11 +587,11 @@ async def collect(dut, dec, tag0, stats):
                                    comp_group_idx=m.get("comp_group_idx", 0), compound_idx=m.get("compound_idx", 1),
                                    interp0=m["interp"][0], interp1=m["interp"][1],
                                    cmv_intra=(m["cmv"]["intra"] if m.get("cmv") else 0), cmv=pack_cmv(m.get("cmv")),
-                                   obmc=pack_obmc(m.get("obmc")))
+                                   obmc=pack_obmc(m.get("obmc")), ls=pack_ls(m.get("ls")))
                     elif "skip_mode" in m:                      # an intra block of an inter frame: the inter fields at their defaults
                         exp.update(skip_mode=0, ref0=0, ref1=15, mv1_row=0, mv1_col=0, motion_mode=0, compound_type=2, interintra=0,
                                    interintra_mode=0, wedge_interintra=0, wedge_index=0, wedge_sign=0, mask_type=0, comp_group_idx=0,
-                                   compound_idx=1, interp0=0, interp1=0, cmv_intra=0, cmv=0, obmc=0)
+                                   compound_idx=1, interp0=0, interp1=0, cmv_intra=0, cmv=0, obmc=0, ls=0)
 
                     def cols(v, n):
                         return [(v >> (12 * k)) & 0xFFF for k in range(n)]
