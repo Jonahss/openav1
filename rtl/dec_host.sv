@@ -31,6 +31,7 @@
 //   0x040-0x05C DEF_DATA[0..7]  RW  246-bit default row
 //   0x080-0x0BC HDR[0..15]  RW  syn_pkg::hdr_t     0x0C0-0x0FC RH[0..15]  RW  rec_hdr_t
 //   0x100-0x13C LH[0..15]   RW  lf_hdr_t           0x140-0x17C CH[0..15]  RW  cdef_hdr_t
+//   0x200-0x2FC IH[0..63]   RW  syn_pkg::ihdr_t (the inter frame header; zero for intra frames)
 //   Picture DMA (the decoded frame into DDR through the AXI4 write master m_axi, 64-bit data, 40-bit address):
 //   0x180 DMA_CFG   RW  bit 0 fmt16 (16-bit little-endian samples; else one byte per sample, 8-bit pictures),
 //                       [5:4] number of planes - 1, bit 8 auto-flush (window builds, FRAME_WIN > 0: every superblock
@@ -111,9 +112,10 @@ module dec_host
     input  logic        m_axi_rvalid,
     output logic        m_axi_rready
 );
-    localparam int HDR_W = $bits(hdr_t), RH_W = $bits(rec_hdr_t), LH_W = $bits(lf_hdr_t), CH_W = $bits(cdef_hdr_t);
+    localparam int HDR_W = $bits(hdr_t), RH_W = $bits(rec_hdr_t), LH_W = $bits(lf_hdr_t), CH_W = $bits(cdef_hdr_t), IH_W = $bits(ihdr_t);
     initial begin
         if (HDR_W > 512 || RH_W > 512 || LH_W > 512 || CH_W > 512) $error("dec_host: a header struct exceeds its 16-word window");
+        if (IH_W > 2048) $error("dec_host: ihdr_t exceeds its 64-word window");
         if (FBX > 14 || FBY > 14) $error("dec_host: HADDR holds 14-bit coordinates");
     end
 
@@ -122,6 +124,7 @@ module dec_host
     logic [31:0] haddr;
     logic [31:0] def_w [8];
     logic [31:0] hdr_w [16], rh_w [16], lh_w [16], ch_w [16];
+    logic [31:0] ih_w [64];
     logic        rst;                                        // decoder + FIFO reset
     assign rst = !aresetn || ctrl[0];
 
@@ -130,12 +133,16 @@ module dec_host
     rec_hdr_t  rh;
     lf_hdr_t   lh;
     cdef_hdr_t ch;
+    ihdr_t     ihdr;
     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+    logic [2047:0] ih_f;
     always_comb begin
         for (int i = 0; i < 16; i++) begin
             hdr_f[32*i +: 32] = hdr_w[i]; rh_f[32*i +: 32] = rh_w[i]; lh_f[32*i +: 32] = lh_w[i]; ch_f[32*i +: 32] = ch_w[i];
         end
+        for (int i = 0; i < 64; i++) ih_f[32*i +: 32] = ih_w[i];
         hdr = hdr_t'(hdr_f[HDR_W-1:0]); rh = rec_hdr_t'(rh_f[RH_W-1:0]); lh = lf_hdr_t'(lh_f[LH_W-1:0]); ch = cdef_hdr_t'(ch_f[CH_W-1:0]);
+        ihdr = ihdr_t'(ih_f[IH_W-1:0]);
     end
     logic [7:0]        in_data;
     logic              in_valid, in_ready, in_eos;
@@ -162,7 +169,7 @@ module dec_host
     logic           row_final, flush_done;
     logic [SBW-1:0] row_final_idx;
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN)) u_dec (
-        .clk, .clk2x, .phase, .rst, .hdr, .rh, .lh, .ch,
+        .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_data,
         .tile_start(start[0]), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
@@ -429,6 +436,7 @@ module dec_host
             ctrl <= 32'd0; haddr <= 32'd0; def_addr_r <= '0;
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
+            for (int i = 0; i < 64; i++) ih_w[i] <= '0;
             start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0;
             dma_cfg <= '0; dma_start <= 1'b0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
@@ -459,6 +467,7 @@ module dec_host
                         else if (wi[9:4] == 6'h03)   rh_w[wi[3:0]]  <= strb(rh_w[wi[3:0]], w_d, w_s);        // 0x0C0
                         else if (wi[9:4] == 6'h04)   lh_w[wi[3:0]]  <= strb(lh_w[wi[3:0]], w_d, w_s);        // 0x100
                         else if (wi[9:4] == 6'h05)   ch_w[wi[3:0]]  <= strb(ch_w[wi[3:0]], w_d, w_s);        // 0x140
+                        else if (wi[9:6] == 4'h2)    ih_w[wi[5:0]]  <= strb(ih_w[wi[5:0]], w_d, w_s);        // 0x200
                         else if (wi[9:4] == 6'h06 && wi[3:2] != 2'd0) begin                                     // 0x190..0x1BC: planes 0..2
                             case (wi[1:0])
                                 2'd0: dma_base[wi[3:2] - 2'd1][31:0]  <= strb(dma_base[wi[3:2] - 2'd1][31:0], w_d, w_s);
@@ -497,6 +506,7 @@ module dec_host
                         else if (ri[9:4] == 6'h03) s_axi_rdata <= rh_w[ri[3:0]];
                         else if (ri[9:4] == 6'h04) s_axi_rdata <= lh_w[ri[3:0]];
                         else if (ri[9:4] == 6'h05) s_axi_rdata <= ch_w[ri[3:0]];
+                        else if (ri[9:6] == 4'h2)  s_axi_rdata <= ih_w[ri[5:0]];
                         else if (ri[9:4] == 6'h06 && ri[3:2] != 2'd0)
                             case (ri[1:0])
                                 2'd0: s_axi_rdata <= dma_base[ri[3:2] - 2'd1][31:0];

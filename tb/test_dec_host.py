@@ -47,6 +47,7 @@ async def pipe_finish(ax, tag):
     await ax.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, 120_000_000, tag)
     await ax.write(R_CTRL, 0)
 
+import host_regs as HR                   # noqa: E402
 from host_regs import (HostDecoder, R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
                        R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, R_DMA_BEATS, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
                        HDR_WORDS, RH_WORDS, LH_WORDS, words, plane_size, dma_regs, unpack_dma, R_DMA_START, R_DMA_STATUS,
@@ -63,6 +64,7 @@ async def write_wide(ax, base, v, nwords):
 async def run_tile(ax, th, dec, data, tag, stats):
     await write_wide(ax, R_HDR, TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, 0)), HDR_WORDS)
     await write_wide(ax, R_RH, TT.pack(TD.REC_FIELDS, TD.rec_vals(th)), RH_WORDS)
+    await write_wide(ax, HR.R_IH, TT.pack(HR.IHDR_FIELDS, HR.ihdr_vals(th)), HR.IH_WORDS)
     for i, row in enumerate(M.default_rows(th.base_q_idx)):
         await write_wide(ax, R_DEF, row, 8)
         await ax.write(R_DEF_ADDR, i)

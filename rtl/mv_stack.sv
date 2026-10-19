@@ -13,6 +13,7 @@ module mv_stack
     input  logic        clk,
     input  logic        rst,
     input  hdr_t        hdr,
+    input  ihdr_t       ihdr,
     input  logic        start,
     input  logic [MIW-1:0] r, c,                 // MiRow, MiCol
     input  logic [4:0]  bs,                   // MiSize

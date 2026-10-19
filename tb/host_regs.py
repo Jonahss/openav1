@@ -24,6 +24,13 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
 REC_FIELDS = [  # syn_pkg::rec_hdr_t order (MSB first)
     ("enable_intra_edge_filter", 1), ("dq_ydc", 7), ("dq_udc", 7), ("dq_uac", 7), ("dq_vdc", 7), ("dq_vac", 7),
     ("seg_altq_en", 8), ("seg_altq", 72), ("using_qmatrix", 1), ("qm_level", 96)]
+IHDR_FIELDS = [  # syn_pkg::ihdr_t order (MSB first)
+    ("is_inter", 1), ("reference_select", 1), ("skip_mode_present", 1), ("skip_mode_frame0", 3), ("skip_mode_frame1", 3),
+    ("allow_hp_mv", 1), ("force_integer_mv", 1), ("interp_filter", 3), ("motion_mode_switchable", 1), ("allow_warped_motion", 1),
+    ("use_ref_frame_mvs", 1), ("enable_dual_filter", 1), ("enable_interintra_compound", 1), ("enable_masked_compound", 1),
+    ("enable_jnt_comp", 1), ("enable_order_hint", 1), ("order_hint_bits", 3), ("order_hint", 8), ("order_hints", 56),
+    ("ref_sign_bias", 7), ("ref_scaled", 7), ("gm_type", 14), ("gm_params", 1008), ("seg_ref_en", 8), ("seg_ref_data", 24),
+    ("seg_globalmv_en", 8)]
 LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
     ("frame_width", PXW), ("frame_height", PXW), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
     ("ref_delta_intra", 7), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
@@ -45,6 +52,44 @@ def unpack(fields, v):
         pos -= w
         out[name] = (v >> pos) & ((1 << w) - 1)
     return out
+
+
+def ihdr_vals(th):
+    """ihdr_t fields for frame header th (all zero for an intra frame, whose parser leaves the inter fields unset)."""
+    z = dict((n, 0) for n, _ in IHDR_FIELDS)
+    if getattr(th, "FrameIsIntra", 1):
+        return z
+    g = lambda n, d=0: getattr(th, n, d)      # noqa: E731
+    v = dict(is_inter=1, reference_select=g("reference_select"), skip_mode_present=g("skip_mode_present"),
+             skip_mode_frame0=g("SkipModeFrame", [0, 0])[0], skip_mode_frame1=g("SkipModeFrame", [0, 0])[1],
+             allow_hp_mv=g("allow_high_precision_mv"), force_integer_mv=g("force_integer_mv"),
+             interp_filter=g("interpolation_filter"), motion_mode_switchable=g("is_motion_mode_switchable"),
+             allow_warped_motion=g("allow_warped_motion"), use_ref_frame_mvs=g("use_ref_frame_mvs"),
+             enable_dual_filter=g("enable_dual_filter"), enable_interintra_compound=g("enable_interintra_compound"),
+             enable_masked_compound=g("enable_masked_compound"), enable_jnt_comp=g("enable_jnt_comp"),
+             enable_order_hint=g("enable_order_hint"), order_hint_bits=g("OrderHintBits"), order_hint=g("order_hint"))
+    oh, sb, sc, gt, gp = 0, 0, 0, 0, 0
+    for i in range(7):
+        ref = 1 + i
+        oh |= (th.OrderHints[ref] & 0xFF) << (8 * i)
+        sb |= (th.RefFrameSignBias[ref] & 1) << i
+        xs = ((th.RefUpscaledWidths[ref] << 14) + th.FrameWidth // 2) // th.FrameWidth
+        ys = ((th.RefFrameHeights[ref] << 14) + th.FrameHeight // 2) // th.FrameHeight
+        sc |= int(xs != (1 << 14) or ys != (1 << 14)) << i
+        gt |= (th.GmType[ref] & 3) << (2 * i)
+        for j in range(6):
+            p = th.gm_params[ref][j]
+            assert -(1 << 23) <= p < (1 << 23), ("gm_params out of 24 bits", ref, j, p)
+            gp |= (p & 0xFFFFFF) << (24 * (6 * i + j))
+    v.update(order_hints=oh, ref_sign_bias=sb, ref_scaled=sc, gm_type=gt, gm_params=gp)
+    sr_en = sr_d = sg = 0
+    for s in range(8):
+        sr_en |= int(bool(th.FeatureEnabled[s][5])) << s
+        sr_d |= (th.FeatureData[s][5] & 7) << (3 * s)
+        sg |= int(bool(th.FeatureEnabled[s][7])) << s
+    v.update(seg_ref_en=sr_en, seg_ref_data=sr_d, seg_globalmv_en=sg)
+    z.update(v)
+    return z
 
 
 def seg_qindex(th, s):
@@ -104,12 +149,14 @@ R_DMA_CFG, R_DMA_START, R_DMA_STATUS, R_DMA_BEATS, R_DMA_PLANE = 0x180, 0x184, 0
 DMA_BUSY, DMA_DONE, DMA_ERR, DMA_FLUSH_BUSY = 1, 2, 4, 8
 DMA_CFG_AUTO = 1 << 8                      # window builds: released superblock rows flushed to the plane bases as they finish
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
+R_IH = 0x200                                 # ihdr_t, 64 words
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
 START_TILE, START_FRAME, START_LF = 1, 2, 4
 ST_FRAME_DONE = 1 << 4
 CTRL_RST, CTRL_PIPE, CTRL_EOS = 1, 1 << 1, 1 << 8
 HDR_WORDS, RH_WORDS, LH_WORDS = 8, 7, 11     # words of each header window actually written
+IH_WORDS = (sum(w for _, w in IHDR_FIELDS) + 31) // 32
 
 
 def words(v, n):
@@ -272,6 +319,7 @@ class HostDecoder:
         """Headers, CDF defaults, start, the tile bytes, end of stream; returns when the tile is decoded."""
         seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th, dec, 0)), HDR_WORDS))]
         seq += [(R_RH + 4 * i, w) for i, w in enumerate(words(pack(REC_FIELDS, rec_vals(th)), RH_WORDS))]
+        seq += [(R_IH + 4 * i, w) for i, w in enumerate(words(pack(IHDR_FIELDS, ihdr_vals(th)), IH_WORDS))]
         self.write_seq(seq)
         self.write_seq(self.default_rows_seq(th.base_q_idx))
         self.wr(R_START, START_TILE)

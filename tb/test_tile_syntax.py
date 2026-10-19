@@ -29,7 +29,7 @@ import tile_model as tm         # noqa: E402
 
 ACK_DELAY = int(os.environ.get("TS_ACK_DELAY", "0"))
 # coordinate widths: must match syn_pkg::MIW / SBW / PXW (4x4-unit, 64x64-superblock and pixel positions / counts)
-from host_regs import MIW, SBW, PXW, HDR_FIELDS, pack, unpack, hdr_vals   # noqa: E402,F401  (cocotb-free: the board driver shares them)
+from host_regs import MIW, SBW, PXW, HDR_FIELDS, IHDR_FIELDS, pack, unpack, hdr_vals, ihdr_vals   # noqa: E402,F401  (cocotb-free: the board driver shares them)
 BLK_FIELDS = [
     ("r", MIW), ("c", MIW), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
@@ -231,7 +231,7 @@ async def tile_vs_model(dut):
                 dut.phase.value = 0
         dut.phase.value = 0
         cocotb.start_soon(phase_gen())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "blk_ack", "pm_plane", "pm_x", "pm_y"):
+    for s in ("in_valid", "in_eos", "def_we", "rb_en", "rb_addr", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "ihdr", "blk_ack", "pm_plane", "pm_x", "pm_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
@@ -342,6 +342,7 @@ async def tile_vs_model(dut):
             dec.decode_tile()
             hv = hdr_vals(th, dec, frame_of.get(ti, ti))
             dut.hdr.value = pack(HDR_FIELDS, hv)
+            dut.ihdr.value = pack(IHDR_FIELDS, ihdr_vals(th))
             # defaults for base_q_idx
             for i, row in enumerate(M.default_rows(th.base_q_idx)):
                 dut.def_we.value = 1

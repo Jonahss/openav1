@@ -14,6 +14,7 @@ module blk_syntax
     input  logic        clk,
     input  logic        rst,
     input  hdr_t        hdr,
+    input  ihdr_t       ihdr,
     // control
     input  logic        sb_start,             // superblock start: ReadDeltas := delta_q_present, cdef flags := 0
     input  logic        tile_start,           // CurrentQIndex := base_q_idx, DeltaLF := 0
@@ -316,7 +317,7 @@ module blk_syntax
     assign has_pal = (pal_y != 4'd0) || (pal_uv != 4'd0);
 
     // ---------------------------------------------------------------- MV stack (7.10.2) for intra block copy
-    mv_stack u_mvs (.clk, .rst, .hdr, .start(mvs_start), .r(br), .c(bc), .bs,
+    mv_stack u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs,
                     .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
     assign mvm_r = br; assign mvm_c = bc; assign mvm_bw4 = bw4; assign mvm_bh4 = bh4;
     assign mvm_data = '{is_intrabc: use_ibc, bsize: bs, mv_row: mv_row, mv_col: mv_col};

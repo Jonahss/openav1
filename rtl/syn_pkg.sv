@@ -52,6 +52,36 @@ package syn_pkg;
         logic [4:0]  superres_denom;           // SuperresDenom (9..16)
     } hdr_t;
 
+    // Inter frame header (software fills this in; zero for intra frames). 64-word host window.
+    typedef struct packed {
+        logic        is_inter;                 // !FrameIsIntra
+        logic        reference_select;
+        logic        skip_mode_present;
+        logic [2:0]  skip_mode_frame0;         // SkipModeFrame[0..1] (LAST_FRAME .. ALTREF_FRAME = 1 .. 7)
+        logic [2:0]  skip_mode_frame1;
+        logic        allow_hp_mv;              // allow_high_precision_mv
+        logic        force_integer_mv;         // (cur_frame_force_integer_mv)
+        logic [2:0]  interp_filter;            // interpolation_filter (4 = SWITCHABLE)
+        logic        motion_mode_switchable;   // is_motion_mode_switchable
+        logic        allow_warped_motion;
+        logic        use_ref_frame_mvs;
+        logic        enable_dual_filter;
+        logic        enable_interintra_compound;
+        logic        enable_masked_compound;
+        logic        enable_jnt_comp;
+        logic        enable_order_hint;
+        logic [2:0]  order_hint_bits;          // OrderHintBits
+        logic [7:0]  order_hint;               // OrderHint of this frame
+        logic [55:0] order_hints;              // OrderHints[LAST_FRAME + i] at [8i +: 8]
+        logic [6:0]  ref_sign_bias;            // RefFrameSignBias[LAST_FRAME + i] at bit i
+        logic [6:0]  ref_scaled;               // is_scaled(LAST_FRAME + i) (7.11.3.3)
+        logic [13:0] gm_type;                  // GmType[LAST_FRAME + i] at [2i +: 2]
+        logic [1007:0] gm_params;              // gm_params[LAST_FRAME + i][j], signed 24 bits at [24 (6i + j) +: 24]
+        logic [7:0]  seg_ref_en;               // FeatureEnabled[s][SEG_LVL_REF_FRAME]
+        logic [23:0] seg_ref_data;             // FeatureData[s][SEG_LVL_REF_FRAME] at [3s +: 3]
+        logic [7:0]  seg_globalmv_en;          // FeatureEnabled[s][SEG_LVL_GLOBALMV]
+    } ihdr_t;
+
     // Frame-level parameters only the reconstruction stage needs (software fills this in).
     typedef struct packed {
         logic        enable_intra_edge_filter;
