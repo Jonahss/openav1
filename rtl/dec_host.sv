@@ -32,6 +32,12 @@
 //   0x080-0x0BC HDR[0..15]  RW  syn_pkg::hdr_t     0x0C0-0x0FC RH[0..15]  RW  rec_hdr_t
 //   0x100-0x13C LH[0..15]   RW  lf_hdr_t           0x140-0x17C CH[0..15]  RW  cdef_hdr_t
 //   0x200-0x2FC IH[0..63]   RW  syn_pkg::ihdr_t (the inter frame header; zero for intra frames)
+//   Inter frame bands (stage 1: written by the host before the frame; a projection engine takes over in stage 2):
+//   0x300 MF_ADDR   RW  motion field entry {valid[31], ref[26:24] (LAST_FRAME = 0), y8[23:12], x8[11:0]}
+//   0x304 MF_DATA   W   {row[31:16], col[15:0]} (1/8 samples, signed): the write stores the entry at MF_ADDR
+//   0x308 SP_ADDR   RW  previous segmentation map word {row[27:16], word column[11:0]} (16 ids of 3 bits per word)
+//   0x30C SP_DATA0  RW  ids 0 .. 9 and the low bits of id 10 (bits 31:0 of the 48-bit word)
+//   0x310 SP_DATA1  W   bits 47:32: the write stores the word at SP_ADDR
 //   Picture DMA (the decoded frame into DDR through the AXI4 write master m_axi, 64-bit data, 40-bit address):
 //   0x180 DMA_CFG   RW  bit 0 fmt16 (16-bit little-endian samples; else one byte per sample, 8-bit pictures),
 //                       [5:4] number of planes - 1, bit 8 auto-flush (window builds, FRAME_WIN > 0: every superblock
@@ -150,6 +156,10 @@ module dec_host
     logic [CDF_AW-1:0] def_addr;
     logic              rb_en, rb_l1;                 // cdf read-back: request pulse, row-in cycle
     logic [245:0]      rb_data;
+    logic [31:0]       mf_addr_r, sp_addr_r, sp_d0;    // inter frame band writes
+    logic              mf_we, sp_we;
+    logic [31:0]       mf_wd;
+    logic [15:0]       sp_d1;
     logic [245:0]      def_data;
     logic [5:0]        start;                                // tile, frame, lf, cdef, sr, lr
     logic              tile_busy, tile_done, tile_done_lvl, unsupported;
@@ -172,6 +182,9 @@ module dec_host
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_data,
+        .mf_we, .mf_wref(mf_addr_r[26:24]), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
+        .mf_wrow(signed'(mf_wd[31:16])), .mf_wcol(signed'(mf_wd[15:0])),
+        .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),
         .tile_start(start[0]), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
         .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done, .frame_done_lvl,
         .row_final, .row_final_idx, .flush_done,
@@ -437,12 +450,13 @@ module dec_host
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
             for (int i = 0; i < 64; i++) ih_w[i] <= '0;
-            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0; mf_we <= 1'b0; sp_we <= 1'b0;
+            mf_addr_r <= '0; sp_addr_r <= '0; sp_d0 <= '0; sp_d1 <= '0; mf_wd <= '0;
             dma_cfg <= '0; dma_start <= 1'b0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
         end else begin
             start <= '0; push <= 1'b0; def_we <= 1'b0; h_fetch <= 1'b0; dma_start <= 1'b0;
-            rb_en <= 1'b0; rb_l1 <= rb_en;
+            rb_en <= 1'b0; rb_l1 <= rb_en; mf_we <= 1'b0; sp_we <= 1'b0;
             if (rb_l1) begin for (int i = 0; i < 7; i++) def_w[i] <= rb_data[32*i +: 32]; def_w[7] <= 32'(rb_data[245:224]); end
             if (ctrl[0]) f_badw <= 1'b0;
             if (s_axi_awvalid && s_axi_awready) begin aw_a <= s_axi_awaddr; aw_v <= 1'b1; end
@@ -461,6 +475,11 @@ module dec_host
                     10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; if (w_d[31]) rb_en <= 1'b1; else def_we <= 1'b1; end
                     10'h060: dma_cfg <= strb(dma_cfg, w_d, w_s);                                              // 0x180
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
+                    10'h0C0: mf_addr_r <= strb(mf_addr_r, w_d, w_s);                                           // 0x300
+                    10'h0C1: begin mf_wd <= w_d; mf_we <= 1'b1; end                                            // 0x304
+                    10'h0C2: sp_addr_r <= strb(sp_addr_r, w_d, w_s);                                           // 0x308
+                    10'h0C3: sp_d0 <= strb(sp_d0, w_d, w_s);                                                   // 0x30C
+                    10'h0C4: begin sp_d1 <= w_d[15:0]; sp_we <= 1'b1; end                                      // 0x310
                     default: begin
                         if (wi[9:3] == 7'h02)        def_w[wi[2:0]] <= strb(def_w[wi[2:0]], w_d, w_s);       // 0x040
                         else if (wi[9:4] == 6'h02)   hdr_w[wi[3:0]] <= strb(hdr_w[wi[3:0]], w_d, w_s);       // 0x080
@@ -497,6 +516,9 @@ module dec_host
                     10'h060: s_axi_rdata <= dma_cfg;
                     10'h062: s_axi_rdata <= {8'd0, fl_rows, 12'd0, (dma_busy && fl_run) || !fq_empty, dma_err, dma_done, dma_busy};
                     10'h063: s_axi_rdata <= dma_beats;
+                    10'h0C0: s_axi_rdata <= mf_addr_r;
+                    10'h0C2: s_axi_rdata <= sp_addr_r;
+                    10'h0C3: s_axi_rdata <= sp_d0;
                     10'h00A: s_axi_rdata <= {20'd0, hbuf[0]};
                     10'h00C: begin s_axi_rdata <= {4'd0, hbuf[1], 4'd0, hbuf[0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(2); h_fetch <= 1'b1; end
                     10'h00D: begin s_axi_rdata <= {hbuf[3][7:0], hbuf[2][7:0], hbuf[1][7:0], hbuf[0][7:0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(4); h_fetch <= 1'b1; end

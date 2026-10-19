@@ -34,6 +34,16 @@ module dec_top
     input  logic              rb_en,           // cdf read-back (tile_syntax)
     input  logic [CDF_AW-1:0] rb_addr,
     output logic [245:0]      rb_data,
+    // inter frames: the motion field band and the previous segmentation map band (host-written in stage 1)
+    input  logic              mf_we,
+    input  logic [2:0]        mf_wref,
+    input  logic [MIW-2:0]    mf_wy8, mf_wx8,
+    input  logic              mf_wvalid,
+    input  logic signed [15:0] mf_wrow, mf_wcol,
+    input  logic              sp_we,
+    input  logic [MIW-1:0]    sp_wrow,
+    input  logic [MIW-5:0]    sp_wwc,
+    input  logic [47:0]       sp_wdata,
     // control
     input  logic              tile_start,
     output logic              tile_busy,
@@ -92,8 +102,7 @@ module dec_top
     // superblock row up), the filters' info and reconstruction's mode map 64 rows (the four superblock rows live
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
     tile_syntax #(.ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? 4 : FBY - 3), .MFL2C(FBX - 3), .SPL2R(FRAME_WIN > 0 ? 5 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
-                  .mf_we(1'b0), .mf_wref(3'd0), .mf_wy8('0), .mf_wx8('0), .mf_wvalid(1'b0), .mf_wrow(16'sd0), .mf_wcol(16'sd0),   // the motion field: host path in stage 2
-                  .sp_we(1'b0), .sp_wrow('0), .sp_wwc('0), .sp_wdata('0),                                                        // the segmentation map band: likewise
+                  .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
                   .clk, .rst, .hdr, .ihdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                       .sb_start_o(sb_start), .sb_r_o(sb_r), .sb_c_o(sb_c), .blk_info, .blk_done, .blk_rec,

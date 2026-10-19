@@ -157,6 +157,7 @@ DMA_BUSY, DMA_DONE, DMA_ERR, DMA_FLUSH_BUSY = 1, 2, 4, 8
 DMA_CFG_AUTO = 1 << 8                      # window builds: released superblock rows flushed to the plane bases as they finish
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 R_IH = 0x200                                 # ihdr_t, 64 words
+R_MF_ADDR, R_MF_DATA, R_SP_ADDR, R_SP_DATA0, R_SP_DATA1 = 0x300, 0x304, 0x308, 0x30C, 0x310   # inter frame bands
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
 START_TILE, START_FRAME, START_LF = 1, 2, 4
@@ -252,6 +253,31 @@ class HostDecoder:
     def write_wide(self, base, v, nwords):
         for i, w in enumerate(words(v, nwords)):
             self.wr(base + 4 * i, w)
+
+    def write_motion_field(self, mf, mi_rows, mi_cols):
+        """MotionFieldMvs[ref][y8][x8] (seq_model; None = none) into the band: every 8x8 position of the frame, holes as
+        invalid entries."""
+        for ref in range(1, 8):
+            for y8 in range(mi_rows // 2 + 1):
+                for x8 in range(mi_cols // 2 + 1):
+                    mv = mf[ref][y8][x8] if (mf is not None and y8 < len(mf[ref]) and x8 < len(mf[ref][y8])) else [M.tm.MV_INVALID] * 2
+                    valid = mv[0] != M.tm.MV_INVALID
+                    self.wr(R_MF_ADDR, (int(valid) << 31) | ((ref - 1) << 24) | (y8 << 12) | x8)
+                    self.wr(R_MF_DATA, (((mv[0] & 0xFFFF) << 16) | (mv[1] & 0xFFFF)) if valid else 0)
+
+    def write_seg_map(self, prev, mi_rows, mi_cols):
+        """PrevSegmentIds (None = zeros) into the band, 16 ids per word."""
+        for r in range(mi_rows):
+            for wc in range((mi_cols + 15) // 16):
+                w = 0
+                if prev is not None:
+                    for k in range(16):
+                        c = wc * 16 + k
+                        if c < mi_cols:
+                            w |= (prev[r][c] & 7) << (3 * k)
+                self.wr(R_SP_ADDR, (r << 16) | wc)
+                self.wr(R_SP_DATA0, w & 0xFFFFFFFF)
+                self.wr(R_SP_DATA1, w >> 32)
 
     def read_cdf_rows(self, rows=None):
         """The tile's working CDF store (the adapted rows after a tile; only between tiles): DEF_ADDR bit 31 reads a
