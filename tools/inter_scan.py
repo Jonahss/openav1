@@ -31,7 +31,13 @@ def scan(path):
         feat["frames"] += 1
         if not h.FrameIsIntra:
             feat["inter_frames"] += 1
-            feat["scaled"] += sum(1 for i in range(7) if h.__dict__.get("ref_scaled", [0] * 7)[i]) if hasattr(h, "ref_scaled") else 0
+            # scaled references (7.11.3.3): any reference whose size differs from the frame's
+            th0 = d.tiles[tl[0]][0]
+            for r in range(1, 8):
+                xs = ((th0.RefUpscaledWidths[r] << 14) + (th0.FrameWidth // 2)) // th0.FrameWidth
+                ys = ((th0.RefFrameHeights[r] << 14) + (th0.FrameHeight // 2)) // th0.FrameHeight
+                if xs != (1 << 14) or ys != (1 << 14):
+                    feat["scaled"] += 1
         for k, ti in enumerate(tl):
             th, data = d.tiles[ti]
             dec = tm.TileDecoder(th, data, None, frame=ctx)
