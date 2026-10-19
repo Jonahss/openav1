@@ -125,7 +125,7 @@ module blk_syntax
         S_DLF, S_DLF_GO, S_DLF_W, S_DLF_REM_W, S_DLF_ABS_W, S_DLF_SIGN, S_DLF_SIGN_W, S_DLF_NEXT,
         S_YMODE, S_YMODE_W, S_ANGY, S_ANGY_GO, S_ANGY_W, S_UV, S_UV_W, S_CFLS, S_CFLS_W, S_CFLU, S_CFLU_GO, S_CFLU_W,
         S_CFLV, S_CFLV_GO, S_CFLV_W, S_ANGUV, S_ANGUV_GO, S_ANGUV_W, S_FI, S_FI_GO, S_FI_W, S_FIM, S_FIM_W,
-        S_TXD, S_TXD_GO, S_TXD_W, S_RBC,
+        S_TXD, S_TXD_GO, S_TXD_W, S_RBC0, S_RBC, S_CMV, S_CMV_W, S_CMV_P,
         S_RES_PLANE, S_RES_TX, S_TX_CTX_W, S_TX_A, S_TX_A_W, S_TXTYPE, S_TXTYPE_W, S_TX_B, S_TX_B_W, S_TX_UPD, S_TX_EMIT,
         S_RES_NEXT, S_END, S_END_W, S_DONE,
         S_PAL, S_PAL_W, S_PTOK, S_PTOK_W, S_HOLD, S_IBC, S_IBC_GO, S_IBC_W,
@@ -156,6 +156,11 @@ module blk_syntax
     logic [4:0]  bs;
     logic [5:0]  bw4, bh4;
     logic [7:0]  bwp, bhp;                     // pixels
+    // chroma motion of a sub-8x8 luma block (blk_rec_t.cmv): the scan over the covered luma 4x4s
+    logic [2:0]  cm_r, cm_c, cm_nr, cm_nc, cm_ur, cm_uc;
+    logic [MIW-1:0] cm_row0, cm_col0;
+    logic        cmv_intra;
+    logic [303:0] cmv;
     logic        skip, lossless, hc;
     logic [2:0]  seg;
     logic [3:0]  ymode, uvmode;
@@ -377,7 +382,7 @@ module blk_syntax
                     .new_mv_ctx(mvs_new_ctx), .ref_mv_ctx(mvs_ref_ctx), .zero_mv_ctx(mvs_zero_ctx), .drl_ctx(mvs_drl),
                     .rd_row(mvs_rd_row), .rd_col(mvs_rd_col), .rd_ent(mvr_ent), .rd_written(mvr_written),
                     .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col);
-    assign nb_rd = (st == S_NBA) || (st == S_NBA_W) || (st == S_NBL) || (st == S_NBL_W) || (st == S_OV_W) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_P);
+    assign nb_rd = (st == S_NBA) || (st == S_NBA_W) || (st == S_NBL) || (st == S_NBL_W) || (st == S_OV_W) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_P);
     always_comb begin
         if (st == S_NBA || st == S_NBA_W) begin mvr_row = br - MIW'(1); mvr_col = bc; end
         else if (st == S_NBL || st == S_NBL_W) begin mvr_row = br; mvr_col = bc - MIW'(1); end
@@ -1312,12 +1317,12 @@ module blk_syntax
                 S_PTOK_W: if (pal_done_tok) st <= S_TXD;
                 // ---- tx size
                 S_TXD: begin
-                    if (lossless) begin txsz <= TX_4X4; st <= S_RBC; end
+                    if (lossless) begin txsz <= TX_4X4; st <= S_RBC0; end
                     else begin
                         txsz <= max_rect;
                         if (inter_any) st <= S_VTX_INIT;
                         else if (bs > BLOCK_4X4 && hdr.tx_mode == 2'd2) st <= S_TXD_GO;
-                        else st <= S_RBC;
+                        else st <= S_RBC0;
                     end
                 end
                 // ---- read_block_tx_size for inter blocks: a walk over the max-tx units; with TX_MODE_SELECT and
@@ -1357,7 +1362,7 @@ module blk_syntax
                     if (vt_d == 2'd0) begin                                   // next max-tx unit, raster order
                         if (vt_uc + vt_uw4 < bw4) begin vt_uc <= vt_uc + vt_uw4; nd_c[0] <= vt_uc + vt_uw4; st <= S_VTX_NODE; end
                         else if (vt_ur + vt_uh4 < bh4) begin vt_uc <= 6'd0; nd_c[0] <= 6'd0; vt_ur <= vt_ur + vt_uh4; nd_r[0] <= vt_ur + vt_uh4; st <= S_VTX_NODE; end
-                        else st <= S_RBC;
+                        else st <= S_RBC0;
                         nd_tx[0] <= max_rect;
                     end else begin                                             // next child of the parent, raster order
                         logic [1:0] pd;
@@ -1382,7 +1387,51 @@ module blk_syntax
                 S_TXD_GO: st <= S_TXD_W;
                 S_TXD_W: if (sq_done) begin
                     txsz <= (sq_sym == 4'd0) ? max_rect : (sq_sym == 4'd1) ? split_tx_size(max_rect) : split_tx_size(split_tx_size(max_rect));
-                    st <= S_RBC;
+                    st <= S_RBC0;
+                end
+                S_RBC0: begin
+                    // chroma of a sub-8x8 luma block (compute_prediction): scan the covered luma 4x4s for someUseIntra and
+                    // the motion of each chroma prediction unit (model chroma_mv_units) before the record is published
+                    logic [4:0] psz;
+                    cmv_intra <= 1'b0; cmv <= '0;
+                    psz = subsampled_size(bs, hdr.ssx, hdr.ssy);
+                    cm_nr <= 3'(num4x4h(psz) << hdr.ssy); cm_nc <= 3'(num4x4w(psz) << hdr.ssx);
+                    cm_ur <= (bh4 == 6'd1 && hdr.ssy) ? 3'd2 : 3'd1; cm_uc <= (bw4 == 6'd1 && hdr.ssx) ? 3'd2 : 3'd1;
+                    cm_row0 <= (br >> hdr.ssy) << hdr.ssy; cm_col0 <= (bc >> hdr.ssx) << hdr.ssx;
+                    cm_r <= 3'd0; cm_c <= 3'd0;
+                    st <= (is_inter_b && !use_ibc && hc && ((bw4 == 6'd1 && hdr.ssx) || (bh4 == 6'd1 && hdr.ssy))) ? S_CMV : S_RBC;
+                end
+                S_CMV: begin
+                    logic [MIW-1:0] rr, cc;
+                    int ku;
+                    rr = cm_row0 + MIW'(cm_r); cc = cm_col0 + MIW'(cm_c);
+                    ku = int'(cm_r) * int'(cm_uc) + int'(cm_c);
+                    if (rr >= hdr.mi_rows || cc >= hdr.mi_cols) begin
+                        // outside the frame: nothing to read (RefFrames None)
+                        if (cm_c + 3'd1 < cm_nc) cm_c <= cm_c + 3'd1;
+                        else begin cm_c <= 3'd0; if (cm_r + 3'd1 < cm_nr) cm_r <= cm_r + 3'd1; else st <= S_RBC; end
+                    end else if (rr >= br && rr < br + MIW'(bh4) && cc >= bc && cc < bc + MIW'(bw4)) begin
+                        // the block's own 4x4s (not in mv_mem yet): its own motion, never intra here
+                        if (cm_r < cm_ur && cm_c < cm_uc)
+                            cmv[76 * ku +: 76] <= {interp[1], interp[0], 16'(mv1_col), 16'(mv1_row), 16'(mv_col), 16'(mv_row), rf1, rf0};
+                        if (cm_c + 3'd1 < cm_nc) cm_c <= cm_c + 3'd1;
+                        else begin cm_c <= 3'd0; if (cm_r + 3'd1 < cm_nr) cm_r <= cm_r + 3'd1; else st <= S_RBC; end
+                    end else begin
+                        nb_row <= rr; nb_col <= cc; st <= S_CMV_W;
+                    end
+                end
+                S_CMV_W: st <= S_CMV_P;
+                S_CMV_P: begin
+                    int ku;
+                    ku = int'(cm_r) * int'(cm_uc) + int'(cm_c);
+                    if (mvr_written) begin
+                        if (mvr_ent.ref0 == R_INTRA) cmv_intra <= 1'b1;
+                        if (cm_r < cm_ur && cm_c < cm_uc)
+                            cmv[76 * ku +: 76] <= {mvr_ent.interp1, mvr_ent.interp0, mvr_ent.mv1_col, mvr_ent.mv1_row,
+                                                                                mvr_ent.mv_col, mvr_ent.mv_row, mvr_ent.ref1, mvr_ent.ref0};
+                    end
+                    if (cm_c + 3'd1 < cm_nc) begin cm_c <= cm_c + 3'd1; st <= S_CMV; end
+                    else begin cm_c <= 3'd0; if (cm_r + 3'd1 < cm_nr) begin cm_r <= cm_r + 3'd1; st <= S_CMV; end else st <= S_RBC; end
                 end
                 S_RBC: if (!mvm_busy) begin
                     // the block record is complete here (everything but the residual): publish it for the
@@ -1394,6 +1443,7 @@ module blk_syntax
                     blk_rec.interintra <= interintra; blk_rec.interintra_mode <= ii_mode; blk_rec.wedge_interintra <= wedge_ii; blk_rec.wedge_index <= wedge_idx;
                     blk_rec.wedge_sign <= wedge_sign; blk_rec.mask_type <= mask_type; blk_rec.comp_group_idx <= comp_group_idx; blk_rec.compound_idx <= compound_idx;
                     blk_rec.interp0 <= interp[0]; blk_rec.interp1 <= interp[1];
+                    blk_rec.cmv_intra <= cmv_intra; blk_rec.cmv <= cmv_intra ? 304'd0 : cmv;   // someUseIntra: one unit with the block's own motion
                     blk_rec.r <= br; blk_rec.c <= bc; blk_rec.bsize <= bs; blk_rec.skip <= skip; blk_rec.seg <= seg;
                     blk_rec.lossless <= lossless; blk_rec.has_chroma <= hc; blk_rec.ymode <= is_inter_b ? imode : {1'b0, ymode}; blk_rec.uvmode <= uvmode;
                     blk_rec.angle_y <= ang_y; blk_rec.angle_uv <= ang_uv; blk_rec.cfl_u <= cfl_u; blk_rec.cfl_v <= cfl_v;

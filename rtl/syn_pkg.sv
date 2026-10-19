@@ -188,6 +188,12 @@ package syn_pkg;
         logic        compound_idx;
         logic [1:0]  interp0;                  // interp_filter[dir]
         logic [1:0]  interp1;
+        // chroma of a sub-8x8 luma block (7.11.3.1 / compute_prediction: a 4-wide block with 4:2:x or a 4-high block
+        // with x:2:0): someUseIntra over the covered luma 4x4s, and when it is clear the motion of the luma 4x4 each
+        // chroma prediction unit takes (unit k at [76k +: 76]: ref0[3:0], ref1[7:4], mv0 row[23:8] col[39:24],
+        // mv1 row[55:40] col[71:56] (signed 16), interp0[73:72], interp1[75:74]); units in row-major order, unused zero
+        logic        cmv_intra;
+        logic [303:0] cmv;
     } blk_rec_t;
 
     // Per-4x4 motion information of the current frame (spec IsInters / RefFrames / Mvs / MiSizes as the MV

@@ -640,6 +640,7 @@ class TileDecoder:
                             self.CompoundIdxs[r + y][c + x] = self.compound_idx
                         self.InterpFilters[r + y][c + x] = list(self.interp_filter)
                         self.Mvs[r + y][c + x] = [list(self.Mv[i]) for i in range(1 + isCompound)]
+        self.cmv = self.chroma_mv_units()
         self.compute_prediction()
         self.residual()
         for y in range(bh4):
@@ -662,6 +663,7 @@ class TileDecoder:
                                 cfl=(self.CflAlphaU, self.CflAlphaV), intrabc=self.use_intrabc,
                                 mv=(tuple(self.Mv[0]) if self.use_intrabc else None),
                                 inter=self.is_inter, ref=tuple(self.RefFrame), mvs=[tuple(m) for m in self.Mv[:1 + isCompound]],
+                                cmv=self.cmv,
                                 motion_mode=self.motion_mode, compound_type=self.compound_type,
                                 interintra=self.interintra, interp=tuple(self.interp_filter), skip_mode=self.skip_mode,
                                 # the optional inter fields, zero where the syntax did not read them (as the RTL record has them)
@@ -2303,6 +2305,42 @@ class TileDecoder:
         return T.Tx_Height[self.InterTxSizes[row][col - 1]]
 
     # ---- residual ---------------------------------------------------------------------------------
+    def chroma_mv_units(self):
+        """Stage 2a block record extension (RTL blk_rec_t.cmv): for an inter block whose chroma is predicted per luma
+        4x4 (compute_prediction's sub-8x8 rule: a 4-wide block with 4:2:x, or a 4-high block with x:2:0), the
+        someUseIntra flag and, when it is clear, the (RefFrames, Mvs, InterpFilters) of the luma 4x4 each chroma
+        prediction unit takes its motion from, in unit order (rows of units, then columns). None otherwise."""
+        h = self.h
+        if not self.is_inter or self.use_intrabc or not self.HasChroma or h.NumPlanes == 1:
+            return None
+        bw4 = T.Num_4x4_Blocks_Wide[self.MiSize]
+        bh4 = T.Num_4x4_Blocks_High[self.MiSize]
+        subX, subY = h.subsampling_x, h.subsampling_y
+        if not ((bw4 == 1 and subX) or (bh4 == 1 and subY)):
+            return None
+        planeSz = self.get_plane_residual_size(self.MiSize, 1)
+        num4x4W = T.Num_4x4_Blocks_Wide[planeSz]
+        num4x4H = T.Num_4x4_Blocks_High[planeSz]
+        candRow = (self.MiRow >> subY) << subY
+        candCol = (self.MiCol >> subX) << subX
+        some = 0
+        for r in range(num4x4H << subY):
+            for c in range(num4x4W << subX):
+                rr, cc = candRow + r, candCol + c
+                if rr < h.MiRows and cc < h.MiCols and self.RefFrames[rr][cc] is not None \
+                        and self.RefFrames[rr][cc][0] == INTRA_FRAME:
+                    some = 1
+        units = []
+        if not some:
+            predW = T.Block_Width[self.MiSize] >> subX
+            predH = T.Block_Height[self.MiSize] >> subY
+            for r, _y in enumerate(range(0, num4x4H * 4, predH)):
+                for c, _x in enumerate(range(0, num4x4W * 4, predW)):
+                    rr, cc = candRow + r, candCol + c
+                    units.append(dict(ref=tuple(self.RefFrames[rr][cc]), mvs=[tuple(m) for m in self.Mvs[rr][cc]],
+                                      interp=tuple(self.InterpFilters[rr][cc])))
+        return dict(intra=some, units=units)
+
     def get_plane_residual_size(self, subsize, plane):
         subx = self.h.subsampling_x if plane > 0 else 0
         suby = self.h.subsampling_y if plane > 0 else 0
