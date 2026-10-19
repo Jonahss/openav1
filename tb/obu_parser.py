@@ -16,6 +16,16 @@ OBU_SEQUENCE_HEADER, OBU_TEMPORAL_DELIMITER, OBU_FRAME_HEADER, OBU_TILE_GROUP, O
     OBU_REDUNDANT_FRAME_HEADER, OBU_TILE_LIST, OBU_PADDING = 1, 2, 3, 4, 5, 6, 7, 8, 15
 KEY_FRAME, INTER_FRAME, INTRA_ONLY_FRAME, SWITCH_FRAME = 0, 1, 2, 3
 NUM_REF_FRAMES, REFS_PER_FRAME, TOTAL_REFS_PER_FRAME = 8, 7, 8
+# reference frame names (RefFrame values): INTRA_FRAME = 0, LAST_FRAME .. ALTREF_FRAME = 1 .. 7
+INTRA_FRAME, LAST_FRAME, LAST2_FRAME, LAST3_FRAME, GOLDEN_FRAME, BWDREF_FRAME, ALTREF2_FRAME, ALTREF_FRAME = range(8)
+# global motion (5.9.24 / 7.10.2.1): types and the parameter coding constants (spec constants table)
+IDENTITY, TRANSLATION, ROTZOOM, AFFINE = 0, 1, 2, 3
+WARPEDMODEL_PREC_BITS = 16
+GM_ABS_TRANS_BITS, GM_ABS_TRANS_ONLY_BITS, GM_ABS_ALPHA_BITS = 12, 9, 12
+GM_ALPHA_PREC_BITS, GM_TRANS_PREC_BITS, GM_TRANS_ONLY_PREC_BITS = 15, 6, 3
+GM_IDENTITY = [0, 0, 1 << WARPEDMODEL_PREC_BITS, 0, 0, 1 << WARPEDMODEL_PREC_BITS]     # gm_params[ref] of an IDENTITY model
+SWITCHABLE = 4                                             # interpolation_filter
+DEFAULT_LF_REF_DELTAS = [1, 0, 0, 0, -1, 0, -1, -1]
 PRIMARY_REF_NONE = 7
 SELECT_SCREEN_CONTENT_TOOLS, SELECT_INTEGER_MV = 2, 2
 MAX_SEGMENTS, SEG_LVL_MAX, SEG_LVL_REF_FRAME = 8, 8, 5
@@ -114,6 +124,24 @@ class Decoder:
         self.RefValid = [0] * 8
         self.RefFrameType = [0] * 8
         self.RefOrderHint = [0] * 8
+        # the rest of the reference frame update process (7.20): what later frame headers read back
+        self.RefFrameId = [0] * 8
+        self.RefUpscaledWidth = [0] * 8
+        self.RefFrameWidth = [0] * 8
+        self.RefFrameHeight = [0] * 8
+        self.RefRenderWidth = [0] * 8
+        self.RefRenderHeight = [0] * 8
+        self.RefMiCols = [0] * 8
+        self.RefMiRows = [0] * 8
+        self.RefShowableFrame = [0] * 8
+        self.SavedOrderHints = [[0] * 8 for _ in range(8)]              # [slot][refFrame]
+        self.SavedGmParams = [[list(GM_IDENTITY) for _ in range(8)] for _ in range(8)]   # [slot][refFrame][6]
+        self.SavedLoopFilterRefDeltas = [list(DEFAULT_LF_REF_DELTAS) for _ in range(8)]
+        self.SavedLoopFilterModeDeltas = [[0, 0] for _ in range(8)]
+        self.SavedFeatureEnabled = [[[0] * SEG_LVL_MAX for _ in range(MAX_SEGMENTS)] for _ in range(8)]
+        self.SavedFeatureData = [[[0] * SEG_LVL_MAX for _ in range(MAX_SEGMENTS)] for _ in range(8)]
+        self.SavedBitDepth = [0] * 8
+        self.SavedSubsampling = [(0, 0)] * 8
 
     # ---- containers --------------------------------------------------------------------------------
     def feed_ivf(self, data):
@@ -389,8 +417,14 @@ class Decoder:
                 if s.decoder_model_info_present_flag and not s.equal_picture_interval:
                     br.f(s.frame_presentation_time_length_minus_1 + 1)
                 if s.frame_id_numbers_present_flag:
-                    br.f(idLen)
+                    br.f(idLen)                               # display_frame_id
                 h.frame_type = self.RefFrameType[h.frame_to_show_map_idx]
+                h.refresh_frame_flags = allFrames if h.frame_type == KEY_FRAME else 0
+                # (load_grain_params: film grain is not modelled)
+                self.ref_load(h, h.frame_to_show_map_idx)         # 7.21 reference frame loading process
+                if h.frame_type == KEY_FRAME:
+                    h.show_frame = 1
+                    self.ref_update(h)                            # 7.20 with refresh_frame_flags = allFrames
                 return
             h.frame_type = br.f(2)
             h.FrameIsIntra = int(h.frame_type in (INTRA_ONLY_FRAME, KEY_FRAME))
@@ -456,22 +490,79 @@ class Decoder:
         if not h.FrameIsIntra or h.refresh_frame_flags != allFrames:
             if h.error_resilient_mode and s.enable_order_hint:
                 for i in range(NUM_REF_FRAMES):
-                    br.f(s.OrderHintBits)
+                    ref_order_hint = br.f(s.OrderHintBits)
+                    if ref_order_hint != self.RefOrderHint[i]:
+                        self.RefValid[i] = 0                  # (this spec text; the errata also set RefOrderHint[i])
+        h.ref_frame_idx = [0] * REFS_PER_FRAME
+        h.OrderHints = [0] * 8                                # by RefFrame (INTRA_FRAME unused)
+        h.RefFrameSignBias = [0] * 8
+        h.allow_high_precision_mv = 0
+        h.interpolation_filter = 0
+        h.is_motion_mode_switchable = 0
+        h.use_ref_frame_mvs = 0
         if h.FrameIsIntra:
             self.frame_size(br, h)
             self.render_size(br, h)
             if h.allow_screen_content_tools and h.UpscaledWidth == h.FrameWidth:
                 h.allow_intrabc = br.f(1)
         else:
-            raise NotImplementedError("inter frame headers are not parsed")
+            if not s.enable_order_hint:
+                frame_refs_short_signaling = 0
+            else:
+                frame_refs_short_signaling = br.f(1)
+                if frame_refs_short_signaling:
+                    last_frame_idx = br.f(3)
+                    gold_frame_idx = br.f(3)
+                    self.set_frame_refs(h, last_frame_idx, gold_frame_idx)
+            for i in range(REFS_PER_FRAME):
+                if not frame_refs_short_signaling:
+                    h.ref_frame_idx[i] = br.f(3)
+                if s.frame_id_numbers_present_flag:
+                    br.f(s.delta_frame_id_length_minus_2 + 2)     # delta_frame_id_minus_1 (expectedFrameId: not checked)
+            if h.frame_size_override_flag and not h.error_resilient_mode:
+                self.frame_size_with_refs(br, h)
+            else:
+                self.frame_size(br, h)
+                self.render_size(br, h)
+            h.allow_high_precision_mv = 0 if h.force_integer_mv else br.f(1)
+            # read_interpolation_filter
+            if br.f(1):                                       # is_filter_switchable
+                h.interpolation_filter = SWITCHABLE
+            else:
+                h.interpolation_filter = br.f(2)
+            h.is_motion_mode_switchable = br.f(1)
+            if h.error_resilient_mode or not s.enable_ref_frame_mvs:
+                h.use_ref_frame_mvs = 0
+            else:
+                h.use_ref_frame_mvs = br.f(1)
+            for i in range(REFS_PER_FRAME):
+                refFrame = LAST_FRAME + i
+                hint = self.RefOrderHint[h.ref_frame_idx[i]]
+                h.OrderHints[refFrame] = hint
+                h.RefFrameSignBias[refFrame] = int(self.get_relative_dist(hint, h.order_hint) > 0) if s.enable_order_hint else 0
         if s.reduced_still_picture_header or h.disable_cdf_update:
             h.disable_frame_end_update_cdf = 1
         else:
             h.disable_frame_end_update_cdf = br.f(1)
-        # primary_ref_frame == NONE here (intra): setup_past_independence
         h.loop_filter_delta_enabled = 1
-        h.loop_filter_ref_deltas = [1, 0, 0, 0, -1, 0, -1, -1]
-        h.loop_filter_mode_deltas = [0, 0]
+        if h.primary_ref_frame == PRIMARY_REF_NONE:
+            # init_non_coeff_cdfs (the tile model loads the defaults) + setup_past_independence
+            h.prev_frame_slot = None
+            h.loop_filter_ref_deltas = list(DEFAULT_LF_REF_DELTAS)
+            h.loop_filter_mode_deltas = [0, 0]
+            h.FeatureEnabled = [[0] * SEG_LVL_MAX for _ in range(MAX_SEGMENTS)]
+            h.FeatureData = [[0] * SEG_LVL_MAX for _ in range(MAX_SEGMENTS)]
+            h.PrevGmParams = [list(GM_IDENTITY) for _ in range(8)]
+        else:
+            # load_cdfs(ref_frame_idx[primary_ref_frame]) is the tile model's (saved CDFs per slot); load_previous():
+            prev = h.ref_frame_idx[h.primary_ref_frame]
+            h.prev_frame_slot = prev
+            h.PrevGmParams = [list(g) for g in self.SavedGmParams[prev]]
+            h.loop_filter_ref_deltas = list(self.SavedLoopFilterRefDeltas[prev])     # load_loop_filter_params
+            h.loop_filter_mode_deltas = list(self.SavedLoopFilterModeDeltas[prev])
+            h.FeatureEnabled = [list(r) for r in self.SavedFeatureEnabled[prev]]      # load_segmentation_params
+            h.FeatureData = [list(r) for r in self.SavedFeatureData[prev]]
+        # (motion_field_estimation: the tile model's, from the saved MVs)
         self.tile_info(br, h)
         self.quantization_params(br, h)
         self.segmentation_params(br, h)
@@ -495,11 +586,14 @@ class Decoder:
         self.cdef_params(br, h)
         self.lr_params(br, h)
         self.read_tx_mode(br, h)
-        h.reference_select = 0                        # frame_reference_mode: intra
-        h.skip_mode_present = 0                       # skip_mode_params: intra
-        h.allow_warped_motion = 0
+        h.reference_select = 0 if h.FrameIsIntra else br.f(1)      # frame_reference_mode
+        self.skip_mode_params(br, h)
+        if h.FrameIsIntra or h.error_resilient_mode or not s.enable_warped_motion:
+            h.allow_warped_motion = 0
+        else:
+            h.allow_warped_motion = br.f(1)
         h.reduced_tx_set = br.f(1)
-        # global_motion_params: nothing read for intra frames
+        self.global_motion_params(br, h)
         self.film_grain_params(br, h)
         # derived / renamed for tile_model compatibility
         h.BitDepth = s.BitDepth
@@ -527,7 +621,11 @@ class Decoder:
         else:
             h.FrameWidth = s.max_frame_width_minus_1 + 1
             h.FrameHeight = s.max_frame_height_minus_1 + 1
-        # superres_params
+        self.superres_params(br, h)
+
+    def superres_params(self, br, h):
+        """superres_params() + compute_image_size(): FrameWidth holds the upscaled width on entry."""
+        s = self.seq
         h.use_superres = br.f(1) if s.enable_superres else 0
         if h.use_superres:
             h.SuperresDenom = br.f(SUPERRES_DENOM_BITS) + SUPERRES_DENOM_MIN
@@ -545,6 +643,239 @@ class Decoder:
             h.RenderHeight = br.f(16) + 1
         else:
             h.RenderWidth, h.RenderHeight = h.UpscaledWidth, h.FrameHeight
+
+    def frame_size_with_refs(self, br, h):
+        for i in range(REFS_PER_FRAME):
+            if br.f(1):                                       # found_ref
+                slot = h.ref_frame_idx[i]
+                h.FrameWidth = self.RefUpscaledWidth[slot]    # UpscaledWidth, then superres_params derives FrameWidth
+                h.FrameHeight = self.RefFrameHeight[slot]
+                h.RenderWidth = self.RefRenderWidth[slot]
+                h.RenderHeight = self.RefRenderHeight[slot]
+                self.superres_params(br, h)
+                return
+        self.frame_size(br, h)
+        self.render_size(br, h)
+
+    def get_relative_dist(self, a, b):
+        s = self.seq
+        if not s.enable_order_hint:
+            return 0
+        diff = a - b
+        m = 1 << (s.OrderHintBits - 1)
+        return (diff & (m - 1)) - (diff & m)
+
+    def set_frame_refs(self, h, last_frame_idx, gold_frame_idx):
+        """7.8 set frame refs process: ref_frame_idx[] from the LAST / GOLDEN slots and the slots' order hints."""
+        s = self.seq
+        idx = [-1] * REFS_PER_FRAME
+        idx[LAST_FRAME - LAST_FRAME] = last_frame_idx
+        idx[GOLDEN_FRAME - LAST_FRAME] = gold_frame_idx
+        used = [0] * NUM_REF_FRAMES
+        used[last_frame_idx] = used[gold_frame_idx] = 1
+        cur = 1 << (s.OrderHintBits - 1)
+        shifted = [cur + self.get_relative_dist(self.RefOrderHint[i], h.order_hint) for i in range(NUM_REF_FRAMES)]
+
+        def find_latest_backward():
+            ref, latest = -1, 0
+            for i in range(NUM_REF_FRAMES):
+                hint = shifted[i]
+                if not used[i] and hint >= cur and (ref < 0 or hint >= latest):
+                    ref, latest = i, hint
+            return ref
+
+        def find_earliest_backward():
+            ref, earliest = -1, 0
+            for i in range(NUM_REF_FRAMES):
+                hint = shifted[i]
+                if not used[i] and hint >= cur and (ref < 0 or hint < earliest):
+                    ref, earliest = i, hint
+            return ref
+
+        def find_latest_forward():
+            ref, latest = -1, 0
+            for i in range(NUM_REF_FRAMES):
+                hint = shifted[i]
+                if not used[i] and hint < cur and (ref < 0 or hint >= latest):
+                    ref, latest = i, hint
+            return ref
+
+        ref = find_latest_backward()
+        if ref >= 0:
+            idx[ALTREF_FRAME - LAST_FRAME] = ref; used[ref] = 1
+        ref = find_earliest_backward()
+        if ref >= 0:
+            idx[BWDREF_FRAME - LAST_FRAME] = ref; used[ref] = 1
+        ref = find_earliest_backward()
+        if ref >= 0:
+            idx[ALTREF2_FRAME - LAST_FRAME] = ref; used[ref] = 1
+        for refFrame in (LAST2_FRAME, LAST3_FRAME, BWDREF_FRAME, ALTREF2_FRAME, ALTREF_FRAME):
+            if idx[refFrame - LAST_FRAME] < 0:
+                ref = find_latest_forward()
+                if ref >= 0:
+                    idx[refFrame - LAST_FRAME] = ref; used[ref] = 1
+        ref, earliest = -1, 0
+        for i in range(NUM_REF_FRAMES):
+            hint = shifted[i]
+            if ref < 0 or hint < earliest:
+                ref, earliest = i, hint
+        for i in range(REFS_PER_FRAME):
+            if idx[i] < 0:
+                idx[i] = ref
+        h.ref_frame_idx = idx
+
+    def skip_mode_params(self, br, h):
+        s = self.seq
+        h.skip_mode_present = 0
+        h.SkipModeFrame = [0, 0]
+        if h.FrameIsIntra or not h.reference_select or not s.enable_order_hint:
+            return
+        forwardIdx = backwardIdx = -1
+        forwardHint = backwardHint = 0
+        for i in range(REFS_PER_FRAME):
+            refHint = self.RefOrderHint[h.ref_frame_idx[i]]
+            if self.get_relative_dist(refHint, h.order_hint) < 0:
+                if forwardIdx < 0 or self.get_relative_dist(refHint, forwardHint) > 0:
+                    forwardIdx, forwardHint = i, refHint
+            elif self.get_relative_dist(refHint, h.order_hint) > 0:
+                if backwardIdx < 0 or self.get_relative_dist(refHint, backwardHint) < 0:
+                    backwardIdx, backwardHint = i, refHint
+        if forwardIdx < 0:
+            return
+        if backwardIdx >= 0:
+            h.SkipModeFrame = [LAST_FRAME + min(forwardIdx, backwardIdx), LAST_FRAME + max(forwardIdx, backwardIdx)]
+        else:
+            secondForwardIdx, secondForwardHint = -1, 0
+            for i in range(REFS_PER_FRAME):
+                refHint = self.RefOrderHint[h.ref_frame_idx[i]]
+                if self.get_relative_dist(refHint, forwardHint) < 0:
+                    if secondForwardIdx < 0 or self.get_relative_dist(refHint, secondForwardHint) > 0:
+                        secondForwardIdx, secondForwardHint = i, refHint
+            if secondForwardIdx < 0:
+                return
+            h.SkipModeFrame = [LAST_FRAME + min(forwardIdx, secondForwardIdx), LAST_FRAME + max(forwardIdx, secondForwardIdx)]
+        h.skip_mode_present = br.f(1)
+
+    # ---- 5.9.24 / 5.9.25 global motion
+    def global_motion_params(self, br, h):
+        h.GmType = [IDENTITY] * 8
+        h.gm_params = [list(GM_IDENTITY) for _ in range(8)]
+        if h.FrameIsIntra:
+            return
+        for ref in range(LAST_FRAME, ALTREF_FRAME + 1):
+            if br.f(1):                                       # is_global
+                if br.f(1):                                   # is_rot_zoom
+                    typ = ROTZOOM
+                else:
+                    typ = TRANSLATION if br.f(1) else AFFINE  # is_translation
+            else:
+                typ = IDENTITY
+            h.GmType[ref] = typ
+            if typ >= ROTZOOM:
+                self.read_global_param(br, h, typ, ref, 2)
+                self.read_global_param(br, h, typ, ref, 3)
+                if typ == AFFINE:
+                    self.read_global_param(br, h, typ, ref, 4)
+                    self.read_global_param(br, h, typ, ref, 5)
+                else:
+                    h.gm_params[ref][4] = -h.gm_params[ref][3]
+                    h.gm_params[ref][5] = h.gm_params[ref][2]
+            if typ >= TRANSLATION:
+                self.read_global_param(br, h, typ, ref, 0)
+                self.read_global_param(br, h, typ, ref, 1)
+
+    def read_global_param(self, br, h, typ, ref, idx):
+        absBits, precBits = GM_ABS_ALPHA_BITS, GM_ALPHA_PREC_BITS
+        if idx < 2:
+            if typ == TRANSLATION:
+                absBits = GM_ABS_TRANS_ONLY_BITS - (not h.allow_high_precision_mv)
+                precBits = GM_TRANS_ONLY_PREC_BITS - (not h.allow_high_precision_mv)
+            else:
+                absBits, precBits = GM_ABS_TRANS_BITS, GM_TRANS_PREC_BITS
+        precDiff = WARPEDMODEL_PREC_BITS - precBits
+        rnd = (1 << WARPEDMODEL_PREC_BITS) if idx % 3 == 2 else 0
+        sub = (1 << precBits) if idx % 3 == 2 else 0
+        mx = 1 << absBits
+        r = (h.PrevGmParams[ref][idx] >> precDiff) - sub
+        h.gm_params[ref][idx] = (self.decode_signed_subexp_with_ref(br, -mx, mx + 1, r) << precDiff) + rnd
+
+    def decode_signed_subexp_with_ref(self, br, low, high, r):
+        return self.decode_unsigned_subexp_with_ref(br, high - low, r - low) + low
+
+    def decode_unsigned_subexp_with_ref(self, br, mx, r):
+        v = self.decode_subexp(br, mx)
+        if (r << 1) <= mx:
+            return self.inverse_recenter(r, v)
+        return mx - 1 - self.inverse_recenter(mx - 1 - r, v)
+
+    @staticmethod
+    def decode_subexp(br, numSyms):
+        i = mk = 0
+        k = 3
+        while True:
+            b2 = k + i - 1 if i else k
+            a = 1 << b2
+            if numSyms <= mk + 3 * a:
+                return br.ns(numSyms - mk) + mk             # subexp_final_bits
+            if br.f(1):                                       # subexp_more_bits
+                i += 1
+                mk += a
+            else:
+                return br.f(b2) + mk                          # subexp_bits
+
+    @staticmethod
+    def inverse_recenter(r, v):
+        if v > 2 * r:
+            return v
+        if v & 1:
+            return r - ((v + 1) >> 1)
+        return r + (v >> 1)
+
+    # ---- 7.20 / 7.21 reference frame update and loading (the header-level state; pictures, MVs, segment ids and
+    # CDFs are the tile model's)
+    def ref_update(self, h):
+        s = self.seq
+        for i in range(NUM_REF_FRAMES):
+            if (h.refresh_frame_flags >> i) & 1:
+                self.RefValid[i] = 1
+                self.RefFrameId[i] = h.current_frame_id
+                self.RefUpscaledWidth[i] = h.UpscaledWidth
+                self.RefFrameWidth[i] = h.FrameWidth
+                self.RefFrameHeight[i] = h.FrameHeight
+                self.RefRenderWidth[i] = h.RenderWidth
+                self.RefRenderHeight[i] = h.RenderHeight
+                self.RefMiCols[i] = h.MiCols
+                self.RefMiRows[i] = h.MiRows
+                self.RefFrameType[i] = h.frame_type
+                self.RefShowableFrame[i] = h.showable_frame
+                self.SavedBitDepth[i] = s.BitDepth
+                self.SavedSubsampling[i] = (s.subsampling_x, s.subsampling_y)
+                self.RefOrderHint[i] = h.order_hint
+                self.SavedOrderHints[i] = list(h.OrderHints)
+                self.SavedGmParams[i] = [list(g) for g in h.gm_params]
+                self.SavedLoopFilterRefDeltas[i] = list(h.loop_filter_ref_deltas)
+                self.SavedLoopFilterModeDeltas[i] = list(h.loop_filter_mode_deltas)
+                self.SavedFeatureEnabled[i] = [list(r) for r in h.FeatureEnabled]
+                self.SavedFeatureData[i] = [list(r) for r in h.FeatureData]
+
+    def ref_load(self, h, i):
+        """7.21: the frame-level state of slot i into h (show_existing_frame)."""
+        h.current_frame_id = self.RefFrameId[i]
+        h.UpscaledWidth = self.RefUpscaledWidth[i]
+        h.FrameWidth = self.RefFrameWidth[i]
+        h.FrameHeight = self.RefFrameHeight[i]
+        h.RenderWidth = self.RefRenderWidth[i]
+        h.RenderHeight = self.RefRenderHeight[i]
+        h.MiCols = self.RefMiCols[i]
+        h.MiRows = self.RefMiRows[i]
+        h.order_hint = self.RefOrderHint[i]
+        h.showable_frame = self.RefShowableFrame[i]
+        h.OrderHints = list(self.SavedOrderHints[i])
+        h.gm_params = [list(g) for g in self.SavedGmParams[i]]
+        h.loop_filter_ref_deltas = list(self.SavedLoopFilterRefDeltas[i])
+        h.loop_filter_mode_deltas = list(self.SavedLoopFilterModeDeltas[i])
+        h.FeatureEnabled = [list(r) for r in self.SavedFeatureEnabled[i]]
+        h.FeatureData = [list(r) for r in self.SavedFeatureData[i]]
 
     @staticmethod
     def tile_log2(blkSize, target):
@@ -654,14 +985,17 @@ class Decoder:
 
     def segmentation_params(self, br, h):
         h.segmentation_enabled = br.f(1)
-        h.FeatureEnabled = [[0] * 8 for _ in range(8)]
-        h.FeatureData = [[0] * 8 for _ in range(8)]
         h.segmentation_update_map = h.segmentation_temporal_update = 0
         if h.segmentation_enabled:
-            # primary_ref_frame == NONE for intra frames
-            h.segmentation_update_map = 1
-            h.segmentation_temporal_update = 0
-            update_data = 1
+            if h.primary_ref_frame == PRIMARY_REF_NONE:
+                h.segmentation_update_map = 1
+                h.segmentation_temporal_update = 0
+                update_data = 1
+            else:                                             # FeatureEnabled / FeatureData hold the loaded values
+                h.segmentation_update_map = br.f(1)
+                if h.segmentation_update_map:
+                    h.segmentation_temporal_update = br.f(1)
+                update_data = br.f(1)
             if update_data:
                 for i in range(MAX_SEGMENTS):
                     for j in range(SEG_LVL_MAX):
@@ -676,6 +1010,9 @@ class Decoder:
                             else:
                                 val = clip3(0, lim, br.f(bits))
                         h.FeatureData[i][j] = val
+        else:
+            h.FeatureEnabled = [[0] * SEG_LVL_MAX for _ in range(MAX_SEGMENTS)]
+            h.FeatureData = [[0] * SEG_LVL_MAX for _ in range(MAX_SEGMENTS)]
         h.SegIdPreSkip = 0
         h.LastActiveSegId = 0
         for i in range(MAX_SEGMENTS):
@@ -859,6 +1196,7 @@ class Decoder:
             pos += tileSize
         if tg_end == NumTiles - 1:
             self.SeenFrameHeader = 0
+            self.ref_update(h)                                # 7.20: the decoded frame into its slots
 
     def tile_header(self, h, tileRow, tileCol):
         """A per-tile copy of the frame header with the tile bounds, shaped like tile_model.FrameHeader."""
