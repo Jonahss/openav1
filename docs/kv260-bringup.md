@@ -79,7 +79,10 @@ bit-exact against dav1d: 20 of 20 frames identical, 15.8 s for the run with the 
 0.20 s a frame). At 80 MHz the same build misses timing by 1 ns under Vivado's default strategy (the window line
 mapping at the end of the reconstruction's coordinate path, 39 logic levels) and closes with 38 ps to spare under
 `KV260_STRATEGY=Performance_ExtraTimingOpt`; that bitstream decodes the same stream bit-exact in 10.9 s with the
-picture on the screen. The framebuffer's spare lines are too small for a 1080p picture, so the DMA target is a region the
+picture on the screen. After the 2026-10-18 timing pass (`docs/frame-memory.md`, "Timing at 80 MHz": the window address, the edge-gather limits, the
+palette sort, the intra predictor's edge-bank writes and the residual add) the 80 MHz window build closes under the default
+strategy (WNS +0.051 ns, no failing endpoint) and decodes 1080p 20/20 and foreman 120/120 bit-exact in the same 10.9 s /
+4.2 s; `fw-t80c` on the board. The framebuffer's spare lines are too small for a 1080p picture, so the DMA target is a region the
 kernel never sees: the board boots with `mem=3584M` (a `boot.scr` with that in `bootargs`; the 512 MB from
 0x8_6000_0000 are then free) and `decode.py --window --dma-base 0x860000000 --dma-size 0x20000000` maps it through
 `/dev/mem`. The first run read back only the stale bytes already in that memory: the decoder had put the right

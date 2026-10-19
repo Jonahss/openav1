@@ -147,5 +147,47 @@ attribute outputs compared only while their valid is high). The seeds are ones t
 recording with CDEF or loop restoration on shows those blocks busy in the STATUS register, which the netlist
 with them nulled cannot (seed 7: 281,257 STATUS-read mismatches and not one anywhere else, including the DMA).
 The first of those replays disagreed on `awsize` / `awburst` on every write address: not the netlist, the
-recording. Verilator gives one VCD identifier to nets it finds equal (the write and read channels' constant size
+recording.
+
+### Timing at 80 MHz (2026-10-18)
+
+The 80 MHz 1080p window build missed timing by 1.03 ns under Vivado's default implementation strategy (1053
+failing endpoints; `Performance_ExtraTimingOpt` closed it with 38 ps to spare, which is a strategy's result rather
+than the design's). The report had three path families, all fixed in RTL on the `timing80` branch:
+
+- **Window address** (-1.03 ns, 39 logic levels, the ten worst paths): from reconstruction's transform-size register
+  through the availability flags and the edge-gather limit clamps into the frame memory, whose `row % FRAME_WIN` and
+  `line * words-per-row + plane base` were synthesised as a divider and adders in front of the UltraRAM address.
+  Now the window line is a table over the superblock row (two LUT levels), the address is a concatenation of line
+  and group with only the plane base added (its low bits are zero), and `recon_top` registers the two limits in
+  `R_SETUP` (they are constant over a transform block and used only by the edge gather). Same addresses for every
+  legal coordinate: the memory fuzz, the window suite and the gate-level replays are unchanged in result.
+- **Intra edge filter / upsampler** (-0.56 ns, 26 levels, 70 % routing): the read addresses of the edge banks were
+  computed from the step counter with clamps in the same cycle as the LUT-RAM read, the filter arithmetic and the
+  write-request mux. `ipred` now computes the six indices the next cycle reads where the sequencer sets the next
+  step (a lookahead register, as the pixel loop already had).
+- **Palette sort** (-0.56 ns, 24 levels): the 8-round compare-exchange network of the palette colours ran in one
+  cycle; it is split over two states (same network, one more cycle per palette plane).
+
+With those three fixed the default strategy closed (+0.025 ns), but the next build of the same design missed by 1.09 ns
+on the intra predictor alone: at 89 % LUT utilisation the placement moves a routing-dominated family by a nanosecond
+between runs. Two more read-modify-write paths were therefore cut at the write, so that the arithmetic and the routing
+to the memory are no longer in series:
+
+- **`ipred` edge-bank writes** are registered and land one cycle after they are posted (the filter / upsample
+  arithmetic behind a bank read, then the request mux and the routing to the eight copies of each bank). The
+  sequencer never reads an entry the cycle after writing it except across two transitions, which take a one-cycle
+  bubble (`S_EF_PRE` after the corner write, `S_UP_DONE` after the last upsample step); the edge filter already
+  bypasses its own last two writes through `o0` / `o1`, the upsampler reads only positions it has not yet written.
+- **`recon_top` residual add**: the sum of the group read last cycle is registered and written the cycle after
+  (`R_ADD_LAST2` drains the last write before `R_FIN`). Groups are each written once and read before their own add.
+
+Result (default strategy, 80 MHz, 1080p window): WNS +0.051 ns, no failing endpoint of 151,087, 104.8k LUT, 50
+UltraRAM; on the board 1080p 20/20 and foreman 120/120 bit-exact (10.9 s / 4.2 s). The worst paths are now the
+transform engine's transpose pack (`col_reg -> pk_in`, 0.05 ns), the palette delta into the CDF store's address
+(0.10 ns) and the level engine's DSP cascade (0.16 ns): the design is at the device's ceiling for this clock, and
+more margin means either lower utilisation or a pipeline stage in those three. Netlist replays and the board run
+are the verification; the cycle counts of the recordings grow by the bubbles and the drain state (g4: 51,717 to
+51,764).
+ Verilator gives one VCD identifier to nets it finds equal (the write and read channels' constant size
 and burst), and `vcd2vec` kept one name per identifier, so the write channel's constants were recorded as zero.
