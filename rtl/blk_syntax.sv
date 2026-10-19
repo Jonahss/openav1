@@ -102,7 +102,12 @@ module blk_syntax
     input  logic        mvm_busy,
     output logic [MIW-1:0] mvr_row, mvr_col,
     input  mv_ent_t     mvr_ent,
-    input  logic        mvr_written
+    input  logic        mvr_written,
+    // motion field band read port (temporal MV candidates)
+    output logic [2:0]  mf_ref,
+    output logic [MIW-2:0] mf_y8, mf_x8,
+    input  logic        mf_valid,
+    input  logic signed [15:0] mf_row, mf_col
 );
     localparam logic [4:0] BLOCK_4X4 = 5'd0, BLOCK_8X8 = 5'd3, BLOCK_64X64 = 5'd12;
     localparam logic [3:0] DC_PRED = 4'd0, UV_CFL_PRED = 4'd13;
@@ -317,8 +322,15 @@ module blk_syntax
     assign has_pal = (pal_y != 4'd0) || (pal_uv != 4'd0);
 
     // ---------------------------------------------------------------- MV stack (7.10.2) for intra block copy
-    mv_stack u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs,
-                    .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
+    // stack outputs of inter blocks (stage 1: the inter chain reads them; intra block copy uses pred_*)
+    logic [3:0] mvs_n; logic signed [17:0] mvs_st0_row [4], mvs_st0_col [4], mvs_st1_row [4], mvs_st1_col [4], mvs_gmv_row [2], mvs_gmv_col [2];
+    logic [2:0] mvs_new_ctx, mvs_ref_ctx; logic mvs_zero_ctx; logic [1:0] mvs_drl [3];
+    mv_stack u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs, .ref0(4'd0), .ref1(4'd15), .is_comp(1'b0),
+                    .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .n_found(mvs_n),
+                    .st0_row(mvs_st0_row), .st0_col(mvs_st0_col), .st1_row(mvs_st1_row), .st1_col(mvs_st1_col), .gmv_row(mvs_gmv_row), .gmv_col(mvs_gmv_col),
+                    .new_mv_ctx(mvs_new_ctx), .ref_mv_ctx(mvs_ref_ctx), .zero_mv_ctx(mvs_zero_ctx), .drl_ctx(mvs_drl),
+                    .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written),
+                    .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col);
     assign mvm_r = br; assign mvm_c = bc; assign mvm_bw4 = bw4; assign mvm_bh4 = bh4;
     assign mvm_data = '{is_inter: use_ibc, is_intrabc: use_ibc, ref0: 4'd0, ref1: 4'd15, mv_row: 16'(mv_row), mv_col: 16'(mv_col),
                         mv1_row: 16'sd0, mv1_col: 16'sd0, newmv_fam: 1'b0, globalmv_fam: 1'b0, bsize: bs, skip_mode: 1'b0,

@@ -24,6 +24,10 @@ HDR_FIELDS = [  # (name, width) in syn_pkg::hdr_t order (MSB first)
 REC_FIELDS = [  # syn_pkg::rec_hdr_t order (MSB first)
     ("enable_intra_edge_filter", 1), ("dq_ydc", 7), ("dq_udc", 7), ("dq_uac", 7), ("dq_vdc", 7), ("dq_vac", 7),
     ("seg_altq_en", 8), ("seg_altq", 72), ("using_qmatrix", 1), ("qm_level", 96)]
+ENT_FIELDS = [  # syn_pkg::mv_ent_t order (MSB first): one 4x4 unit's motion info in mv_mem
+    ("is_inter", 1), ("is_intrabc", 1), ("ref0", 4), ("ref1", 4), ("mv_row", 16), ("mv_col", 16), ("mv1_row", 16), ("mv1_col", 16),
+    ("newmv_fam", 1), ("globalmv_fam", 1), ("bsize", 5), ("skip_mode", 1), ("comp_group_idx", 1), ("compound_idx", 1),
+    ("interp0", 2), ("interp1", 2), ("seg_pred", 1)]
 IHDR_FIELDS = [  # syn_pkg::ihdr_t order (MSB first)
     ("is_inter", 1), ("reference_select", 1), ("skip_mode_present", 1), ("skip_mode_frame0", 3), ("skip_mode_frame1", 3),
     ("allow_hp_mv", 1), ("force_integer_mv", 1), ("interp_filter", 3), ("motion_mode_switchable", 1), ("allow_warped_motion", 1),

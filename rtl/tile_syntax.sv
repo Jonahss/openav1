@@ -13,7 +13,9 @@ module tile_syntax
   import syn_pkg::*;
 #(
     parameter int ML2R = 9,                  // log2 of the motion-info memory rows / columns (4x4 units)
-    parameter int ML2C = 10
+    parameter int ML2C = 10,
+    parameter int MFL2R = 4,                 // log2 rows / columns of the motion field band (8x8 units)
+    parameter int MFL2C = 9
 ) (
     input  logic              clk,
     input  logic              rst,
@@ -32,6 +34,12 @@ module tile_syntax
     input  logic              rb_en,
     input  logic [CDF_AW-1:0] rb_addr,
     output logic [245:0]      rb_data,
+    // motion field band (spec 7.9 MotionFieldMvs): written by the host / projection engine, read by the MV stacks
+    input  logic              mf_we,
+    input  logic [2:0]        mf_wref,
+    input  logic [MIW-2:0]    mf_wy8, mf_wx8,
+    input  logic              mf_wvalid,
+    input  logic signed [15:0] mf_wrow, mf_wcol,
     // control
     input  logic              tile_start,
     output logic              tile_busy,
@@ -168,6 +176,10 @@ module tile_syntax
     mv_mem #(.ML2R(ML2R), .ML2C(ML2C)) u_mvm (.clk, .rst, .we(mvm_we), .w_r(mvm_r), .w_c(mvm_c), .w_bw4(mvm_bw4), .w_bh4(mvm_bh4),
                                               .w_data(mvm_data), .busy(mvm_busy), .clr(mvm_clr), .clr_row(sb_r), .clr_n(sb4),
                                               .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
+    logic [2:0] mf_ref; logic [MIW-2:0] mf_y8, mf_x8; logic mf_valid; logic signed [15:0] mf_row, mf_col;
+    mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_ref(mf_wref), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
+                                                  .w_row(mf_wrow), .w_col(mf_wcol), .rd_ref(mf_ref), .rd_y8(mf_y8), .rd_x8(mf_x8),
+                                                  .rd_valid(mf_valid), .rd_row(mf_row), .rd_col(mf_col));
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     tx_rec_t b_tx;
     always_comb begin tx_rec = b_tx; tx_rec.slot = q_slot_w; end
@@ -181,7 +193,8 @@ module tile_syntax
                       .seg_ul, .seg_u, .seg_l, .ctx_we, .w_ymode, .w_skip, .w_seg, .w_txsz, .w_is_inter, .w_vartx, .w_txsz_col, .w_txsz_row, .ctx_wbusy,
                       .tx_req, .tx_plane, .tx_x4, .tx_y4, .tx_sz_o(tx_sz), .tx_bsize, .tx_valid, .az_ctx, .dcs_ctx, .tx_we, .w_cul, .w_dccat, .rbc_we, .ctx_tbusy,
                       .cf_tx, .cf_ptype, .cf_start_a, .cf_az_ctx, .cf_done_a, .cf_all_zero, .cf_start_b, .cf_tx_type, .cf_dcs_ctx, .cf_done_b, .cf_eob, .cf_cul, .cf_dccat,
-                      .mvm_we, .mvm_r, .mvm_c, .mvm_bw4, .mvm_bh4, .mvm_data, .mvm_busy, .mvr_row, .mvr_col, .mvr_ent, .mvr_written);
+                      .mvm_we, .mvm_r, .mvm_c, .mvm_bw4, .mvm_bh4, .mvm_data, .mvm_busy, .mvr_row, .mvr_col, .mvr_ent, .mvr_written,
+                      .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col);
 
     // ------------------------------------------------------------------ partition / superblock FSM
     typedef struct packed {
