@@ -41,6 +41,16 @@ def zero_counts(cdfs):
     return cdfs
 
 
+class TileSummary:
+    """What end_frame needs from a decoded tile, so the TileDecoder (full-frame arrays for every per-4x4 quantity) can be
+    dropped as soon as its symbols are checked: a frame of 100+ tiles held as decoders took tens of GB."""
+    def __init__(self, dec, keep_cdf):
+        self.h = dec.h
+        self.SegmentIds, self.RefFrames, self.Mvs = dec.SegmentIds, dec.RefFrames, dec.Mvs
+        self.cdf = dec.cdf if keep_cdf else None
+        self.frame = dec.frame
+
+
 class Slot:
     def __init__(self):
         self.cdfs = None

@@ -211,8 +211,9 @@ def main():
                     tot_s += ns; tot_c += nc; tot_b += nb
                     tot_inter[0] += sum(1 for b in dec.blocks if b.get("inter") and not b.get("intrabc"))
                     tot_inter[1] += sum(1 for b in dec.blocks if b.get("inter") and len(b.get("mvs", ())) == 2)
-                    dec.events = []                                 # the frame's coefficient events are checked; free them
-                    decoders.append(dec)
+                    # keep only what the sequence state needs; the decoder's full-frame arrays go (memory)
+                    decoders.append(sm.TileSummary(dec, keep_cdf=(len(decoders) == h.context_update_tile_id)))
+                    del dec
                 except Mismatch as m:
                     kind = "intra" if h.FrameIsIntra else "inter"
                     print(f"tile {n_tiles - 1} (frame {fi}, {kind}, order_hint {h.order_hint}): MISMATCH: {m}")
