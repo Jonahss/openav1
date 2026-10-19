@@ -26,7 +26,7 @@ mkdir -p "$out"
 # rtl in dependency order; keep in step with the dec_top entry of tb/runner.py (packages first, leaves before users)
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq sym_path coef_rd blk_ctx
        pal_syntax mv_mem mf_band seg_band mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
-       frame_mem_w frame_mem_uram recon_top cdef_pkg lr_pkg mi_store rec_fifo lf_top cdef_top lr_top sr_top dec_top"
+       mc_tables_pkg mc_filt ref_fetch warp_setup frame_mem_w frame_mem_uram recon_top cdef_pkg lr_pkg mi_store rec_fifo lf_top cdef_top lr_top sr_top dec_top"
 # -t dec_host: the AXI-Lite register file + DMA engine around dec_top (its sources plus itself), e.g. for a
 # whole-decoder netlist replay of a window configuration, where only dec_host's engine can drive flush_done.
 [ "$top" = dec_host ] && files="$files dec_host"
