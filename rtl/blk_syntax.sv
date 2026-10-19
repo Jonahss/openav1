@@ -252,7 +252,7 @@ module blk_syntax
     logic [223:0] ls_rec;
     always_comb for (int i = 0; i < 7; i++) ls_rec[32 * i +: 32] = (ws_nv != 4'd0) ? ls_v[i] : ls_1[i];
     function automatic logic signed [31:0] ls_product(input logic signed [15:0] a, input logic signed [15:0] b);
-        return (32'(a) * 32'(b)) >>> 2 + 32'(a) + 32'(b);
+        return ((32'(a) * 32'(b)) >>> 2) + 32'(a) + 32'(b);          // the shift binds looser than +: parenthesised
     endfunction
     // transform-size tree (read_var_tx_size) walked with an explicit node stack, leaves listed in decode
     // order (= transform_tree order: both are z-order over the same quadtree)
