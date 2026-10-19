@@ -753,6 +753,7 @@ module blk_syntax
         mvs_start <= 1'b0; mvm_we <= 1'b0;
         if (rst) begin
             st <= S_IDLE; unsupported <= 1'b0; tx_done <= 1'b0; read_deltas <= 1'b0; cdef_flags <= '0;
+            blk_rec <= '0;                     // defined until the first record (the netlist stores some fields inverted: gate replay 2026-10-19)
         end else begin
             if (tile_start) begin
                 cur_qidx <= hdr.base_q_idx;

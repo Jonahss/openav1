@@ -29,6 +29,7 @@ import seq_model as sm          # noqa: E402
 import tile_model as tm         # noqa: E402
 
 ACK_DELAY = int(os.environ.get("TS_ACK_DELAY", "0"))
+DBG_TX = int(os.environ["TS_DBG_TX"]) if os.environ.get("TS_DBG_TX") else None
 # coordinate widths: must match syn_pkg::MIW / SBW / PXW (4x4-unit, 64x64-superblock and pixel positions / counts)
 from host_regs import MIW, SBW, PXW, HDR_FIELDS, IHDR_FIELDS, pack, unpack, hdr_vals, ihdr_vals   # noqa: E402,F401  (cocotb-free: the board driver shares them)
 BLK_FIELDS = [
@@ -577,6 +578,16 @@ async def collect(dut, dec, tag0, stats):
                     assert not bad, f"{tag0} LR unit {lr_i}: mismatches (rtl, model) {bad}"
                     lr_i += 1
                     stats["lrunits"] += 1
+                if DBG_TX is not None and DBG_TX - 18 <= tx_i <= DBG_TX:
+                    # blk_ctx internals around a transform block (TS_DBG_TX=<record index>): the write of the previous
+                    # block's categories and the read that forms this block's contexts
+                    c = dut.u_ctx
+                    if int(c.tx_we.value):
+                        dut._log.info(f"DBG tx_we at tx_i {tx_i}: plane {int(c.t_plane.value)} x4 {int(c.t_x4.value)} y4 {int(c.t_y4.value)} w4 {int(c.t_w4.value)} h4 {int(c.t_h4.value)} dccat {int(c.w_dccat.value)} cul {int(c.w_cul.value)} tst {int(c.tst.value)} rstt {int(c.rstt.value)} t_we_pend {int(c.t_we_pend.value)} t_pend {int(c.t_pend.value)} tx_req {int(c.tx_req.value)} rbc_we {int(c.rbc_we.value)}")
+                    if int(c.al_we.value):
+                        dut._log.info(f"DBG al_we at tx_i {tx_i}: waddr {int(c.al_waddr.value):x} wdata {int(c.al_wdata.value):032x} rdata {int(c.al_rdata.value):032x} tst {int(c.tst.value)} rstt {int(c.rstt.value)}")
+                    if int(c.tx_valid.value):
+                        dut._log.info(f"DBG tx_valid at tx_i {tx_i}: plane {int(c.t_plane.value)} x4 {int(c.t_x4.value)} y4 {int(c.t_y4.value)} dcs_ctx {int(c.dcs_ctx.value)} dcs_wide_r {int(c.dcs_wide_r.value)} a_msk {int(c.a_msk.value):04x} l_msk {int(c.l_msk.value):04x} t_aw {int(c.t_aw.value):032x} t_lw {int(c.t_lw.value):032x}")
                 if int(dut.tx_done.value):
                     idle = 0
                     got = unpack(TX_FIELDS, int(dut.tx_rec.value))

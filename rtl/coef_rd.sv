@@ -341,7 +341,7 @@ module coef_rd
                         quant_mem[{w_slot, pos}] <= sign ? -21'(val20) : 21'(val20);
                         nz_row_ok[w_slot][pos[9:5]] <= 1'b1;        // the word itself is written through nz_we below
                         cul <= cul_sum > 7'd63 ? 6'd63 : cul_sum[5:0];
-                        if (pos == 10'd0 && val20 != 20'd0) dccat <= sign ? 2'd1 : 2'd2;
+                        if (pos == 10'd0) dccat <= sign ? 2'd1 : 2'd2;      // from the level before the 20-bit mask (spec 5.11.39): a golomb value of 2^20 wraps to 0 but keeps its category
                     end
                     if (c + 11'd1 == eob) st <= S_DONE;
                     else begin c <= c + 11'd1; st <= P_POS; end
