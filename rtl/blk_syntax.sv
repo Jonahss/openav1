@@ -141,7 +141,7 @@ module blk_syntax
         S_II, S_II_GO, S_II_W, S_IIM_GO, S_IIM_W, S_WII_GO, S_WII_W, S_WIDX_GO, S_WIDX_W,
         S_MM, S_OV, S_OV_W, S_OV_P, S_WS, S_WS_W, S_WS_P, S_MM2, S_OBMC_GO, S_OBMC_W, S_MMS_GO, S_MMS_W,
         S_CT, S_CGI_GO, S_CGI_W, S_CT2, S_CIDX_GO, S_CIDX_W, S_CTYPE_GO, S_CTYPE_W, S_CT3, S_WIDX2_GO, S_WIDX2_W, S_WSGN_W, S_MASK_W,
-        S_IF, S_IF_D, S_IF_GO, S_IF_W, S_IF_END
+        S_IF, S_IF_D, S_IF_GO, S_IF_W, S_IF_END, S_NBW
     } st_t;
     st_t st, lit_ret;
     // cycle counter per state (simulation profiling; read through the hierarchy by the testbench)
@@ -775,9 +775,11 @@ module blk_syntax
                     mv1_row <= 18'sd0; mv1_col <= 18'sd0; mv_list <= 1'b0; ref_mv_idx <= 2'd0; motion_mode <= 2'd0; compound_type <= 3'd2;
                     interintra <= 1'b0; ii_mode <= 2'd0; wedge_ii <= 1'b0; wedge_idx <= 4'd0; wedge_sign <= 1'b0; mask_type <= 1'b0;
                     comp_group_idx <= 1'b0; compound_idx <= 1'b1; interp[0] <= 2'd0; interp[1] <= 2'd0; seg_pred_sym <= 1'b0; seg_pre <= 1'b1;
-                    nb_req <= 1'b1; pal_clr <= 1'b1;
-                    st <= S_NB;
+                    pal_clr <= 1'b1;
+                    st <= S_NBW;
                 end
+                // the previous block's motion entry must be written before this block's neighbour reads (inter contexts)
+                S_NBW: if (!mvm_busy) begin nb_req <= 1'b1; st <= S_NB; end
                 S_NB: if (nb_valid) begin
                     hc <= has_chroma;
                     if (inter_frm) st <= S_NBA;
@@ -1017,7 +1019,7 @@ module blk_syntax
                 // ---- drl_mode
                 S_DRL: begin
                     ref_mv_idx <= 2'd0;
-                    if (has_newmv(imode)) begin drl_i <= 2'd0; drl_end <= 2'd2; st <= S_DRL_IT; end
+                    if (imode == NEWMV || imode == NEW_NEWMV) begin drl_i <= 2'd0; drl_end <= 2'd2; st <= S_DRL_IT; end
                     else if (has_nearmv(imode)) begin ref_mv_idx <= 2'd1; drl_i <= 2'd1; drl_end <= 2'd3; st <= S_DRL_IT; end
                     else begin mv_list <= 1'b0; st <= S_AMV; end
                 end

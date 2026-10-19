@@ -45,7 +45,7 @@ package syn_pkg;
         logic        delta_lf_multi;
         logic        disable_cdf_update;
         logic [5:0]  lr_type;                  // FrameRestorationType[p] at [2p+1:2p] (0 NONE, 1 WIENER, 2 SGRPROJ, 3 SWITCHABLE)
-        logic [5:0]  lr_size;                  // log2(LoopRestorationSize[p]) - 6 at [2p+1:2p]
+        logic [5:0]  lr_size;                  // log2(LoopRestorationSize[p]) - 5 at [2p+1:2p] (32 .. 256; chroma units can be 32)
         logic [PXW-1:0] frame_height;
         logic [PXW-1:0] upscaled_width;
         logic        use_superres;             // 7.16 upscaling: LR unit columns scale by SuperresDenom / SUPERRES_NUM

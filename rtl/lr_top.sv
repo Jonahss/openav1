@@ -77,7 +77,7 @@ module lr_top
         sub_x = (plane != 2'd0) && hdr.ssx; sub_y = (plane != 2'd0) && hdr.ssy;
         bd = hdr.bit_depth;
         ftype = hdr.lr_type[2 * plane +: 2];
-        unit_log2 = 4'd6 + 4'(hdr.lr_size[2 * plane +: 2]);
+        unit_log2 = 4'd5 + 4'(hdr.lr_size[2 * plane +: 2]);
         begin
             logic [PXW-1:0] stripe_num;
             stripe_num = (ly + PXW'(8)) >> 6;

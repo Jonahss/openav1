@@ -647,7 +647,14 @@ class TileDecoder:
                                 mv=(tuple(self.Mv[0]) if self.use_intrabc else None),
                                 inter=self.is_inter, ref=tuple(self.RefFrame), mvs=[tuple(m) for m in self.Mv[:1 + isCompound]],
                                 motion_mode=self.motion_mode, compound_type=self.compound_type,
-                                interintra=self.interintra, interp=tuple(self.interp_filter), skip_mode=self.skip_mode))
+                                interintra=self.interintra, interp=tuple(self.interp_filter), skip_mode=self.skip_mode,
+                                # the optional inter fields, zero where the syntax did not read them (as the RTL record has them)
+                                interintra_mode=self.interintra_mode if self.interintra else 0,
+                                wedge_interintra=self.wedge_interintra if self.interintra else 0,
+                                wedge_index=self.wedge_index if ((self.interintra and self.wedge_interintra) or (self.is_inter and self.compound_type == COMPOUND_WEDGE)) else 0,
+                                wedge_sign=self.wedge_sign if (self.is_inter and self.compound_type == COMPOUND_WEDGE and not self.interintra) else 0,
+                                mask_type=self.mask_type if (self.is_inter and self.compound_type == COMPOUND_DIFFWTD) else 0,
+                                comp_group_idx=getattr(self, "comp_group_idx", 0), compound_idx=getattr(self, "compound_idx", 1)))
 
     def reset_block_context(self, bw4, bh4):
         h = self.h

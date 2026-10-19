@@ -146,7 +146,7 @@ module lr_syntax
                         logic sx, sy;
                         logic [SBW-1:0] urows, ucols, urs, ure, ucs, uce;
                         sx = (plane != 0) && hdr.ssx; sy = (plane != 0) && hdr.ssy;
-                        lg = 4'd6 + 4'(hdr.lr_size[2*plane +: 2]);
+                        lg = 4'd5 + 4'(hdr.lr_size[2*plane +: 2]);
                         urows = count_units(lg, round2(hdr.frame_height, sy));
                         ucols = count_units(lg, round2(hdr.upscaled_width, sx));
                         urs = ceil_div_pow2(16'(r) * (16'd4 >> sy), lg);

@@ -124,7 +124,7 @@ def hdr_vals(th, dec=None, frame_parity=0):
              delta_q_res=th.delta_q_res, delta_lf_present=th.delta_lf_present, delta_lf_res=th.delta_lf_res,
              delta_lf_multi=th.delta_lf_multi, disable_cdf_update=th.disable_cdf_update,
              lr_type=sum(th.FrameRestorationType[p] << (2 * p) for p in range(3)),
-             lr_size=sum((th.LoopRestorationSize[p].bit_length() - 1 - 6) << (2 * p) for p in range(3)),
+             lr_size=sum(((th.LoopRestorationSize[p].bit_length() - 1 - 5) & 3) << (2 * p) for p in range(3)),   # log2(size) - 5: 32 .. 256
              frame_height=th.FrameHeight, upscaled_width=th.UpscaledWidth,
              use_superres=th.use_superres, superres_denom=th.SuperresDenom if th.use_superres else 8)
     return v
