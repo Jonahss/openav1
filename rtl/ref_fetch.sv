@@ -86,6 +86,7 @@ module ref_fetch #(
         return 16'(c);
     endfunction
 
+    logic [4:0] burst_len;                                // declared before its first use (xsim / Vivado implicit-net rule)
     assign req_ready = (st == F_IDLE);
     assign m_axi_arsize  = 3'b011;                        // 8 bytes
     assign m_axi_arburst = 2'b01;                         // INCR
@@ -99,7 +100,6 @@ module ref_fetch #(
     // burst length: <= 16 beats, <= beats_left, never across a 4 KB boundary
     logic [9:0] to4k;
     assign to4k = 10'((13'd4096 - 13'(cur_addr[11:0])) >> 3);
-    logic [4:0] burst_len;
     always_comb begin
         burst_len = 5'd16;
         if (beats_left < 16'(burst_len)) burst_len = 5'(beats_left);
