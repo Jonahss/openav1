@@ -93,7 +93,7 @@ class FrameRecon(tm.TileDecoder):
         {slot: dict(planes, upscaled_width, frame_height)} of final pictures (7.20). ctx: the tile_model.FrameCtx
         of the frame (CDFs, segmentation map, motion field) from tb/seq_model.py."""
         super().__init__(hdr, data, hook, frame=ctx)
-        self.frame = frame
+        self.fstore = frame                      # the frame store dict (planes, refs); self.frame stays the FrameCtx (TileSummary reads it)
         h = hdr
         if "planes" not in frame:
             frame["planes"] = []
@@ -195,7 +195,7 @@ class FrameRecon(tm.TileDecoder):
         """(planes, upscaled width, frame height) of reference refFrame from the frame store."""
         h = self.h
         refIdx = h.ref_frame_idx[refFrame - tm.LAST_FRAME]
-        ref = self.frame["refs"][refIdx]
+        ref = self.fstore["refs"][refIdx]
         return ref["planes"], ref["upscaled_width"], ref["frame_height"]
 
     def predict_inter(self, plane, x, y, w, hh, candRow, candCol):
