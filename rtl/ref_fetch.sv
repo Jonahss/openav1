@@ -125,7 +125,9 @@ module ref_fetch #(
 
     // the samples of a beat (8 bytes): 8 one-byte samples or 4 16-bit samples
     function automatic logic [PW-1:0] beat_sample(input logic [63:0] d, input logic fmt16, input int k);
-        if (fmt16) return PW'(d[k*16 +: 16]);
+        // 16-bit samples occupy lanes 0..3 only (the beat loop stops at nk); the masked index keeps the
+        // select in range for the unrolled k = 4..7 copies, which Vivado elaborates even though they never run
+        if (fmt16) return PW'(d[(k & 3)*16 +: 16]);
         return PW'(d[k*8 +: 8]);
     endfunction
 
