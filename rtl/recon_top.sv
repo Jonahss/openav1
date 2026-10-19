@@ -17,6 +17,7 @@ module recon_top
   import tx_tables_pkg::*;
   import q_tables_pkg::*;
   import syn_pkg::*;
+  import mc_tables_pkg::*;
 #(
     parameter int FBX = 9,                   // frame buffer x address bits
     parameter int ITX_LANES = 4,             // 1-D transform engines (rows, then columns, at once): 4 for throughput, 2 fits the K26
@@ -161,7 +162,7 @@ module recon_top
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
                               B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR,
-                              B_MC_INIT, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_FETCH, B_MC_FILT} bst_t;
+                              B_MC_INIT, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
@@ -218,10 +219,101 @@ module recon_top
     logic        rf_req_valid, rf_req_ready, rf_done, rf_err, rf_lst;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_out_valid;
+    logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
     logic [3:0]  mc_fx, mc_fy;
-    logic [1:0]  mc_mode;
+    logic [2:0]  mc_mode;
+    logic [127:0] mc_out_pair;
     logic [6:0]  mc_out_x, mc_out_y; logic [47:0] mc_out_pix4; logic [3:0] mc_out_mask;
     logic [PXW-1:0] mc_ox; logic [1:0] mc_osh;              // output sample x, and its lane shift within the 4-group
+    // OBMC (7.11.3.10, stage 2b.1): after a plane's own prediction, each overlap neighbour of b.obmc predicts a
+    // (predW x predH) region with its own motion (single, through the same fetch / filter) and the frame memory is
+    // read-modify-written: fb = Round2(m fb + (64 - m) pred, 6) with Obmc_Mask[predH][row] (above) / [predW][col] (left)
+    logic        ob_active, ob_done, ob_pass;               // in an overlap prediction; both passes done for this plane; 0 above, 1 left
+    logic [2:0]  ob_k;                                       // entry index within the pass
+    logic [4:0]  mc_psz;                                     // the plane's block size (the above pass needs >= BLOCK_8X8)
+    logic [5:0]  ob_mlen;                                    // mask length (predH above, predW left)
+    logic        ob_rd_v, ob_rd2_v, ob_wr_v;                 // read-modify-write pipeline: A (read issued), A2 (data lands), B (write)
+    logic [47:0] ob_a2_pix; logic [PXW-1:0] ob_a2_x, ob_a2_y; logic [3:0] ob_a2_be; logic [6:0] ob_a2_m [4];
+    logic [47:0] ob_a_pix, ob_b_pix;
+    logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
+    logic [3:0]  ob_a_be, ob_b_be;
+    logic [6:0]  ob_a_m [4];                                 // per-lane mask values
+    // Masked compound (7.11.3.12 - 7.11.3.14, stage 2b.2): the block's luma mask in 8 banks (row parity, x & 3) of 7 bits,
+    // entry (y >> 1) * 32 + (x >> 2): luma reads one value per lane, 4:2:0 chroma averages the four luma values of its
+    // 2x2 (two reads per bank), 4:2:2 the two of its row. WEDGE is filled from the master masks before the prediction,
+    // DIFFWTD from the luma pair output as it is blended; list 1 of a masked block runs mc_filt in mode 4 (pair) and the
+    // blend fb = clip(Round2(m p0 + (64 - m) p1, 6 + post)) happens here.
+    logic [6:0]  mask_bank [8][0:2047];
+    logic        mk_we [8];
+    logic [10:0] mk_waddr [8];
+    logic [6:0]  mk_wdata [8];
+    logic [10:0] mk_ra0 [8], mk_ra1 [8];                    // two read ports per bank
+    logic [6:0]  mk_q0 [8], mk_q1 [8];
+    logic        mb_active;                                  // the block is a masked compound (WEDGE / DIFFWTD)
+    logic        mb_diff;                                    // DIFFWTD (else WEDGE)
+    logic [6:0]  mk_x, mk_y;                                 // wedge fill position (luma, block-relative)
+    logic [2:0]  mk_d;                                       // wedge master direction
+    logic [5:0]  mk_xoff, mk_yoff;
+    logic        mk_inv;
+    logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
+    logic [127:0] mb_a_pair, mb_a2_pair;
+    logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
+    logic [3:0]  mb_a_be, mb_a2_be, mb_b_be;
+    logic [6:0]  mb_a2_m [4];                                // DIFFWTD luma: the mask computed in A, carried to A2
+    logic [47:0] mb_b_pix;
+    logic [3:0]  mc_post;                                    // InterPostRound of the block's compound prediction
+    always_ff @(posedge clk) begin
+        for (int k = 0; k < 8; k++) begin
+            if (mk_we[k]) mask_bank[k][mk_waddr[k]] <= mk_wdata[k];
+            mk_q0[k] <= mask_bank[k][mk_ra0[k]];
+            mk_q1[k] <= mask_bank[k][mk_ra1[k]];
+        end
+    end
+    // Inter-intra (7.11.3.1 / 7.11.3.13, stage 2b.3): the plane's intra prediction (ipred through the transform flow with
+    // a virtual transform record of the block size, written into the frame memory first), then the single inter
+    // prediction blended in through the OBMC read-modify-write path: fb = Round2(m intra + (64 - m) inter, 6), m from
+    // Ii_Weights_1d (sizeScale = 128 / max(w, h) of the plane block) or the wedge buffer (wedge_interintra)
+    logic        ii_active, ii_wedge, ii_req, ii_run, ii_done;
+    logic [1:0]  ii_pl;
+    logic [PXW-1:0] ii_x, ii_y;
+    logic [4:0]  ii_txsz;
+    logic [3:0]  ii_mode;                                    // ipred mode: DC 0, V 1, H 2, SMOOTH 9
+    logic [2:0]  ii_lsh;                                     // log2(sizeScale)
+    function automatic logic [2:0] ii_scale_shift(input logic [7:0] w, input logic [7:0] h);   // log2(128 / max(w, h))
+        logic [7:0] m;
+        m = (w > h) ? w : h;
+        if (m >= 8'd128) return 3'd0;
+        if (m >= 8'd64) return 3'd1;
+        if (m >= 8'd32) return 3'd2;
+        if (m >= 8'd16) return 3'd3;
+        if (m >= 8'd8) return 3'd4;
+        if (m >= 8'd4) return 3'd5;
+        return 3'd6;
+    endfunction
+    function automatic logic [6:0] diff_mask(input logic signed [15:0] p0, input logic signed [15:0] p1, input logic [3:0] bd,
+                                             input logic [3:0] post, input logic mtype);
+        logic signed [16:0] d;
+        logic [16:0] a;
+        logic [6:0] m;
+        d = 17'(p0) - 17'(p1);
+        a = (d < 0) ? 17'(-d) : 17'(d);
+        a = (a + (17'd1 << (bd - 4'd8 + post - 4'd1))) >> (bd - 4'd8 + post);         // Round2(diff, bd - 8 + post)
+        m = (a[16:4] + 13'd38 > 13'd64) ? 7'd64 : 7'(a[16:4] + 13'd38);                // clip3(0, 64, 38 + diff / 16)
+        return mtype ? 7'd64 - m : m;
+    endfunction
+    function automatic logic [6:0] obmc_mask(input logic [5:0] len, input logic [5:0] i);
+        case (len)
+            6'd2:  return (i == 0) ? 7'd45 : 7'd64;
+            6'd4:  case (i) 6'd0: return 7'd39; 6'd1: return 7'd50; 6'd2: return 7'd59; default: return 7'd64; endcase
+            6'd8:  case (i) 6'd0: return 7'd36; 6'd1: return 7'd42; 6'd2: return 7'd48; 6'd3: return 7'd53; 6'd4: return 7'd57; 6'd5: return 7'd61; default: return 7'd64; endcase
+            6'd16: case (i) 6'd0: return 7'd34; 6'd1: return 7'd37; 6'd2: return 7'd40; 6'd3: return 7'd43; 6'd4: return 7'd46; 6'd5: return 7'd49;
+                            6'd6: return 7'd52; 6'd7: return 7'd54; 6'd8: return 7'd56; 6'd9: return 7'd58; 6'd10: return 7'd60; 6'd11: return 7'd61; default: return 7'd64; endcase
+            default: case (i) 6'd0: return 7'd33; 6'd1: return 7'd35; 6'd2: return 7'd36; 6'd3: return 7'd38; 6'd4: return 7'd40; 6'd5: return 7'd41; 6'd6: return 7'd43;
+                              6'd7: return 7'd44; 6'd8: return 7'd45; 6'd9: return 7'd47; 6'd10: return 7'd48; 6'd11: return 7'd50; 6'd12: return 7'd51; 6'd13: return 7'd52;
+                              6'd14: return 7'd53; 6'd15: return 7'd55; 6'd16: return 7'd56; 6'd17: return 7'd57; 6'd18: return 7'd58; 6'd19: return 7'd59;
+                              6'd20: return 7'd60; 6'd21: return 7'd60; 6'd22: return 7'd61; 6'd23: return 7'd62; default: return 7'd64; endcase
+        endcase
+    endfunction
     logic        pw_we, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4; logic [47:0] pw_d4;
 
     ref_fetch #(.PW(12)) u_rf (.clk, .rst,
@@ -235,7 +327,7 @@ module recon_top
         .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
         .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0), .fx(mc_fx), .fy(mc_fy),
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
-        .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask));
+        .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
 
     // 7.11.3.15 distance weights: {BckWeight (list 1), FwdWeight (list 0)} from the order-hint distances
     function automatic int rel_dist(input ihdr_t ih, input logic [7:0] oa, input logic [7:0] ob);
@@ -339,9 +431,10 @@ module recon_top
     assign mi_cd_idx = b.cdef_idx;
     assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf};
     always_ff @(posedge clk) begin
-        mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0;
+        mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0;
+        if (mc_done) mc_fin <= 1'b1;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0;
+            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0;
         end else case (bst)
             B_IDLE: if (blk_take) begin
                 b <= ev_blk; blk_ready <= 1'b0; bst <= B_FT0;
@@ -415,12 +508,34 @@ module recon_top
                 mc_bmode <= (b.compound_type == 3'd4) ? 2'd3 : 2'd2;
                 wts = dist_weights(ihdr, b.ref0, b.ref1);
                 mc_wt0 <= wts[4:0]; mc_wt1 <= wts[9:5];
-                if (b.motion_mode != 2'd0 || b.interintra || (comp && b.compound_type != 3'd2 && b.compound_type != 3'd4)
+                if (b.motion_mode == 2'd2 || (comp && b.compound_type == 3'd3)
                     || ihdr.ref_scaled[int'(b.ref0) - 1] || (comp && ihdr.ref_scaled[int'(b.ref1) - 1])
                     || ((b.ymode == 5'd15 || b.ymode == 5'd23) && !ihdr.force_integer_mv && bw4 >= 6'd2 && bh4 >= 6'd2
                         && (gm_type_of(ihdr, b.ref0) > 2'd1 || (comp && gm_type_of(ihdr, b.ref1) > 2'd1))))
                     mc_unsup <= 1'b1;
-                mc_pl <= 2'd0; bst <= B_MC_PL;
+                mc_pl <= 2'd0; ob_active <= 1'b0; ob_done <= 1'b0; mb_active <= 1'b0;
+                ii_active <= b.interintra; ii_wedge <= b.interintra && b.wedge_interintra;
+                ii_mode <= (b.interintra_mode == 2'd0) ? 4'd0 : (b.interintra_mode == 2'd1) ? 4'd1 : (b.interintra_mode == 2'd2) ? 4'd2 : 4'd9;
+                mc_post <= 4'd14 - ((hdr.bit_depth == 4'd12) ? 4'd5 : 4'd3) - 4'd7;        // compound: InterRound1 = 7
+                if ((comp && (b.compound_type == 3'd0 || b.compound_type == 3'd1)) || (b.interintra && b.wedge_interintra)) begin
+                    logic [10:0] cb;
+                    logic [1:0] shape;
+                    logic [7:0] bw, bh;
+                    mb_active <= comp; mb_diff <= comp && (b.compound_type == 3'd1);
+                    bw = 8'(num4x4w(b.bsize)) << 2; bh = 8'(num4x4h(b.bsize)) << 2;
+                    shape = (bh4 > bw4) ? 2'd0 : (bh4 < bw4) ? 2'd1 : 2'd2;
+                    cb = wedge_codebook(shape, b.wedge_index);
+                    mk_d <= cb[10:8];
+                    mk_xoff <= 6'(8'd32 - ((8'(cb[7:4]) * bw) >> 3)); mk_yoff <= 6'(8'd32 - ((8'(cb[3:0]) * bh) >> 3));
+                    mk_inv <= (b.wedge_sign != wedge_flip(b.bsize, b.wedge_index));
+                    mk_x <= 7'd0; mk_y <= 7'd0;
+                    bst <= ((comp && b.compound_type == 3'd0) || (b.interintra && b.wedge_interintra)) ? B_MC_MASK : B_MC_PL;
+                end else bst <= B_MC_PL;
+            end
+            B_MC_MASK: begin
+                // the wedge mask of the block, four luma samples a cycle (wedge blocks are at most 32 x 32)
+                if (mk_x + 7'd4 < (8'(num4x4w(b.bsize)) << 2)) mk_x <= mk_x + 7'd4;
+                else begin mk_x <= 7'd0; if (mk_y + 7'd1 < (8'(num4x4h(b.bsize)) << 2)) mk_y <= mk_y + 7'd1; else bst <= B_MC_PL; end
             end
             B_MC_PL: begin
                 logic sx, sy;
@@ -428,7 +543,7 @@ module recon_top
                 logic cmv_units;
                 sx = (mc_pl != 2'd0) && hdr.ssx; sy = (mc_pl != 2'd0) && hdr.ssy;
                 psz = subsampled_size(b.bsize, sx, sy);
-                mc_sx <= sx; mc_sy <= sy;
+                mc_sx <= sx; mc_sy <= sy; mc_psz <= psz;
                 mc_pw <= 8'(num4x4w(psz)) << 2; mc_ph <= 8'(num4x4h(psz)) << 2;
                 mc_bx <= PXW'((PXW'(b.c) >> sx) << 2); mc_by <= PXW'((PXW'(b.r) >> sy) << 2);
                 // chroma of a sub-8x8 luma block: per-luma-4x4 units from b.cmv unless someUseIntra
@@ -442,8 +557,14 @@ module recon_top
                     mc_uc <= 2'd1; mc_ur <= 2'd1;
                 end
                 mc_ui <= 2'd0; mc_uj <= 2'd0;
-                bst <= B_MC_UNIT;
+                if (b.interintra) begin
+                    ii_pl <= mc_pl; ii_x <= PXW'((PXW'(b.c) >> sx) << 2); ii_y <= PXW'((PXW'(b.r) >> sy) << 2);
+                    ii_txsz <= max_tx_size_rect(psz);
+                    ii_lsh <= ii_scale_shift(8'(num4x4w(psz)) << 2, 8'(num4x4h(psz)) << 2);
+                    ii_req <= 1'b1; bst <= B_MC_II;
+                end else bst <= B_MC_UNIT;
             end
+            B_MC_II: if (ii_done) bst <= B_MC_UNIT;                              // the intra prediction is in the frame memory
             B_MC_UNIT: begin
                 int k;
                 logic [75:0] u;
@@ -486,7 +607,7 @@ module recon_top
                 dw = ref_dims[32 * int'(slot) +: 16]; dh = ref_dims[32 * int'(slot) + 16 +: 16];
                 rf_lastx <= ((dw + 16'(mc_sx)) >> mc_sx) - 16'd1; rf_lasty <= ((dh + 16'(mc_sy)) >> mc_sy) - 16'd1;
                 rf_lst <= mc_l;
-                mc_mode <= mc_l ? mc_bmode : (mc_comp ? 2'd1 : 2'd0);
+                mc_mode <= ob_active ? 3'd0 : mc_l ? (mb_active ? 3'd4 : 3'(mc_bmode)) : (mc_comp ? 3'd1 : 3'd0);
                 rf_req_valid <= 1'b1;
                 bst <= B_MC_FETCH;
             end
@@ -494,17 +615,185 @@ module recon_top
                 if (rf_req_valid && rf_req_ready) rf_req_valid <= 1'b0;       // accepted
                 if (rf_done) begin mc_start <= 1'b1; bst <= B_MC_FILT; end
             end
-            B_MC_FILT: if (mc_done) begin
-                if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
+            B_MC_FILT: if ((mc_done || mc_fin) && !ob_rd_v && !ob_rd2_v && !ob_wr_v && !mb_a_v && !mb_b_v) begin   // the run finished and the blend pipelines drained
+                mc_fin <= 1'b0;
+                if (ob_active) begin ob_k <= ob_k + 3'd1; bst <= B_MC_OB; end
+                else if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
                 else if (mc_sc + 2'd1 < mc_nsc) begin mc_sc <= mc_sc + 2'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
                 else if (mc_sr + 2'd1 < mc_nsr) begin mc_sc <= 2'd0; mc_sr <= mc_sr + 2'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
                 else if (mc_uj + 2'd1 < mc_uc) begin mc_uj <= mc_uj + 2'd1; bst <= B_MC_UNIT; end
                 else if (mc_ui + 2'd1 < mc_ur) begin mc_uj <= 2'd0; mc_ui <= mc_ui + 2'd1; bst <= B_MC_UNIT; end
-                else if (mc_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin mc_pl <= mc_pl + 2'd1; bst <= B_MC_PL; end
-                else begin blk_ready <= 1'b1; bst <= B_IDLE; end
+                else bst <= B_MC_PLEND;
+            end
+            B_MC_PLEND: begin
+                if (b.motion_mode == 2'd1 && !ob_done) begin ob_done <= 1'b1; ob_pass <= 1'b0; ob_k <= 3'd0; bst <= B_MC_OB; end
+                else begin
+                    ob_done <= 1'b0; ob_active <= 1'b0;
+                    if (mc_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin mc_pl <= mc_pl + 2'd1; bst <= B_MC_PL; end
+                    else begin blk_ready <= 1'b1; bst <= B_IDLE; end
+                end
+            end
+            B_MC_OB: begin
+                // the next overlap neighbour of this pass (above: entries 0 .. 3, needs the plane block >= BLOCK_8X8; left: 4 .. 7)
+                logic [50:0] e;
+                logic [7:0] pw, ph, sw4;
+                e = b.obmc[51 * (int'(ob_pass) * 4 + int'(ob_k)) +: 51];
+                ob_active <= 1'b1;
+                if (ob_k == 3'd4 || !e[0] || (!ob_pass && mc_psz < 5'd3)) begin
+                    if (!ob_pass) begin ob_pass <= 1'b1; ob_k <= 3'd0; end
+                    else begin ob_active <= 1'b0; bst <= B_MC_PLEND; end
+                end else begin
+                    sw4 = 8'(e[10:6]) << 2;                                         // step4 * MI_SIZE
+                    if (!ob_pass) begin
+                        pw = (sw4 >> mc_sx); if (pw > mc_pw) pw = mc_pw;             // min(w, (step4 * 4) >> subX)
+                        ph = (8'd32 >> mc_sy); if (ph > (mc_ph >> 1)) ph = mc_ph >> 1; // min(h >> 1, 32 >> subY)
+                        mc_ux <= mc_bx + PXW'((PXW'(e[5:1]) << 2) >> mc_sx); mc_uy <= mc_by;
+                        ob_mlen <= 6'(ph);
+                    end else begin
+                        pw = (8'd32 >> mc_sx); if (pw > (mc_pw >> 1)) pw = mc_pw >> 1;
+                        ph = (sw4 >> mc_sy); if (ph > mc_ph) ph = mc_ph;
+                        mc_ux <= mc_bx; mc_uy <= mc_by + PXW'((PXW'(e[5:1]) << 2) >> mc_sy);
+                        ob_mlen <= 6'(pw);
+                    end
+                    mc_uw <= pw; mc_uh <= ph;
+                    u_ref0 <= e[14:11]; u_mv0r <= e[30:15]; u_mv0c <= e[46:31]; u_i0 <= e[48:47]; u_i1 <= e[50:49];
+                    mc_nsc <= 2'd1; mc_nsr <= 2'd1; mc_sr <= 2'd0; mc_sc <= 2'd0; mc_l <= 1'b0;
+                    bst <= B_MC_STRIP;
+                end
             end
             default: bst <= B_IDLE;
         endcase
+    end
+
+    // OBMC read-modify-write pipeline: A = the prediction group and its mask values (the frame memory read is issued
+    // from these registers), B = the blended group to write. One group per cycle.
+    always_ff @(posedge clk) begin
+        ob_rd_v <= 1'b0; ob_rd2_v <= 1'b0; ob_wr_v <= 1'b0;
+        if (!rst) begin
+            if (mc_out_valid && (ob_active || ii_active)) begin
+                ob_rd_v <= 1'b1;
+                ob_a_pix <= mc_out_pix4 << (12 * mc_osh);
+                ob_a_be <= mc_out_mask << mc_osh;
+                ob_a_x <= {mc_ox[PXW-1:2], 2'b00}; ob_a_y <= mc_py + PXW'(mc_out_y);
+                for (int l = 0; l < 4; l++) begin
+                    logic [6:0] i, j;
+                    i = 7'(mb_by); j = 7'(mb_bx) + 7'(l) - 7'(mc_osh);                     // block-relative position (plane samples)
+                    if (ob_active) ob_a_m[l] <= ob_pass ? obmc_mask(ob_mlen, 6'(mc_out_x + 7'(l) - 7'(mc_osh))) : obmc_mask(ob_mlen, 6'(mc_out_y));
+                    else if (ii_wedge) ob_a_m[l] <= 7'd0;                                  // from the wedge buffer, in the A cycle
+                    else case (ii_mode)
+                        4'd1: ob_a_m[l] <= ii_weight(i << ii_lsh);                          // II_V_PRED
+                        4'd2: ob_a_m[l] <= ii_weight(j << ii_lsh);                          // II_H_PRED
+                        4'd9: ob_a_m[l] <= ii_weight(((i < j) ? i : j) << ii_lsh);          // II_SMOOTH_PRED
+                        default: ob_a_m[l] <= 7'd32;                                        // II_DC_PRED
+                    endcase
+                end
+            end
+            // the frame memory read issued from the A registers lands one cycle later (registered read): A2 holds the
+            // group meanwhile, and the blend uses fb_rdata4 in the A2 cycle
+            ob_rd2_v <= ob_rd_v; ob_a2_pix <= ob_a_pix; ob_a2_x <= ob_a_x; ob_a2_y <= ob_a_y; ob_a2_be <= ob_a_be;
+            if (ii_active && ii_wedge) ob_a2_m <= mb_wm;                                   // the wedge buffer's values for the A group
+            else ob_a2_m <= ob_a_m;
+            if (ob_rd2_v) begin
+                ob_wr_v <= 1'b1; ob_b_x <= ob_a2_x; ob_b_y <= ob_a2_y; ob_b_be <= ob_a2_be;
+                for (int l = 0; l < 4; l++) begin
+                    logic [19:0] v;
+                    v = 20'(ob_a2_m[l]) * 20'(fb_rdata4[l*12 +: 12]) + (20'd64 - 20'(ob_a2_m[l])) * 20'(ob_a2_pix[l*12 +: 12]);
+                    ob_b_pix[l*12 +: 12] <= 12'((v + 20'd32) >> 6);
+                end
+            end
+        end
+    end
+
+    // mask bank ports: the wedge fill (B_MC_MASK) writes four luma samples a cycle; a masked block's pair output reads
+    // the mask of its group in the same cycle (luma: one value per lane; 4:2:0 chroma: the four luma values of each
+    // lane's 2x2 -> both row-parity banks, two column words per x bank; 4:2:2: the two of its row) and, for DIFFWTD
+    // luma, writes the mask it computes from the pair. The data lands with the A stage, which blends; B writes.
+    logic [PXW-1:0] mb_bx, mb_by;                            // block-relative position of the output group (plane samples)
+    assign mb_bx = mc_px - mc_bx + PXW'(mc_out_x);
+    assign mb_by = mc_py - mc_by + PXW'(mc_out_y);
+    logic [6:0] mb_dm [4];                                   // DIFFWTD luma: the mask of the current group
+    logic [6:0] wv [4];                                      // the wedge fill's four master values
+    always_comb begin
+        logic [10:0] rowbase, colw;
+        rowbase = 11'd0; colw = 11'd0;
+        for (int k = 0; k < 8; k++) begin mk_we[k] = 1'b0; mk_waddr[k] = 11'd0; mk_wdata[k] = 7'd0; mk_ra0[k] = 11'd0; mk_ra1[k] = 11'd0; end
+        for (int l = 0; l < 4; l++) mb_dm[l] = 7'd0;
+        for (int l = 0; l < 4; l++) wv[l] = wedge_master(mk_d, 6'(mk_yoff + 6'(mk_y)), 6'(mk_xoff + 6'(mk_x) + 6'(l)));
+        if (bst == B_MC_MASK) begin
+            for (int l = 0; l < 4; l++) begin
+                mk_we[(mk_y[0] ? 4 : 0) + l] = 1'b1;
+                mk_waddr[(mk_y[0] ? 4 : 0) + l] = 11'(mk_y[6:1]) * 11'd32 + 11'(mk_x[6:2]);
+                mk_wdata[(mk_y[0] ? 4 : 0) + l] = mk_inv ? 7'd64 - wv[l] : wv[l];
+            end
+        end
+        if (mc_out_valid && (mb_active || (ii_active && ii_wedge))) begin
+            if (mc_pl == 2'd0 || !(mc_sx || mc_sy)) begin
+                // luma (or 4:4:4 chroma): the row's parity banks, one lane per x bank
+                rowbase = 11'(mb_by[PXW-1:1]) * 11'd32 + 11'(mb_bx[PXW-1:2]);
+                for (int l = 0; l < 4; l++) begin
+                    mk_ra0[(mb_by[0] ? 4 : 0) + l] = rowbase;
+                    if (mc_pl == 2'd0 && mb_active && mb_diff) begin
+                        mb_dm[l] = diff_mask(signed'(mc_out_pair[16*l +: 16]), signed'(mc_out_pair[64 + 16*l +: 16]), hdr.bit_depth, mc_post, b.mask_type);
+                        mk_we[(mb_by[0] ? 4 : 0) + l] = 1'b1; mk_waddr[(mb_by[0] ? 4 : 0) + l] = rowbase; mk_wdata[(mb_by[0] ? 4 : 0) + l] = mb_dm[l];
+                    end
+                end
+            end else begin
+                // subsampled chroma: luma columns 2x .. 2x + 7 = column words 2k and 2k + 1 of every x bank (k = x >> 2)
+                colw = 11'(mb_bx[PXW-1:2]) << 1;
+                if (mc_sy) begin                                   // 4:2:0: luma rows 2y and 2y + 1 = row word y, both parities
+                    rowbase = 11'(mb_by) * 11'd32;
+                    for (int k = 0; k < 8; k++) begin mk_ra0[k] = rowbase + colw; mk_ra1[k] = rowbase + colw + 11'd1; end
+                end else begin                                     // 4:2:2: luma row y, its parity's banks
+                    rowbase = 11'(mb_by[PXW-1:1]) * 11'd32;
+                    for (int k = 0; k < 4; k++) begin mk_ra0[(mb_by[0] ? 4 : 0) + k] = rowbase + colw; mk_ra1[(mb_by[0] ? 4 : 0) + k] = rowbase + colw + 11'd1; end
+                end
+            end
+        end
+    end
+    // the masked blend pipeline: A (the mask data of the group lands, blend), B (write)
+    logic        mb_a_sub, mb_a_sy, mb_a_p;                  // the A group's plane kind: subsampled, 4:2:0, row parity
+    logic [6:0]  mb_wm [4];                                  // the mask values of the A group's lanes, from the banks
+    logic [8:0] mb_sum4 [4], mb_sum2 [4];                    // the 4:2:0 / 4:2:2 luma sums of each lane's group
+    always_comb begin
+        int hi;
+        hi = mb_a_p ? 4 : 0;
+        for (int l = 0; l < 4; l++) begin
+            int lo;
+            lo = ((l & 1) != 0) ? 2 : 0;                          // lanes 0, 2 use x banks 0 / 1; lanes 1, 3 use 2 / 3
+            mb_sum4[l] = (l < 2) ? 9'(mk_q0[lo]) + 9'(mk_q0[lo + 1]) + 9'(mk_q0[4 + lo]) + 9'(mk_q0[5 + lo])
+                                 : 9'(mk_q1[lo]) + 9'(mk_q1[lo + 1]) + 9'(mk_q1[4 + lo]) + 9'(mk_q1[5 + lo]);
+            mb_sum2[l] = (l < 2) ? 9'(mk_q0[hi + lo]) + 9'(mk_q0[hi + lo + 1]) : 9'(mk_q1[hi + lo]) + 9'(mk_q1[hi + lo + 1]);
+            if (!mb_a_sub) mb_wm[l] = mk_q0[hi + l];
+            else if (mb_a_sy) mb_wm[l] = 7'((mb_sum4[l] + 9'd2) >> 2);   // 4:2:0: four values, column word by lane >> 1
+            else mb_wm[l] = 7'((mb_sum2[l] + 9'd1) >> 1);                 // 4:2:2: two values of the row's parity
+        end
+    end
+    logic [6:0]  mb_a_dm [4];
+    always_ff @(posedge clk) begin
+        mb_a_v <= 1'b0; mb_b_v <= 1'b0;
+        if (!rst) begin
+            if (mc_out_valid && (ii_active && ii_wedge)) begin                  // flags only: the RMW path blends
+                mb_a_sub <= (mc_pl != 2'd0) && (mc_sx || mc_sy); mb_a_sy <= mc_sy; mb_a_p <= mb_by[0];
+            end
+            if (mc_out_valid && mb_active) begin
+                mb_a_v <= 1'b1; mb_a_pair <= mc_out_pair;
+                mb_a_x <= {mc_ox[PXW-1:2], 2'b00}; mb_a_y <= mc_py + PXW'(mc_out_y); mb_a_be <= mc_out_mask << mc_osh;
+                mb_a_sub <= (mc_pl != 2'd0) && (mc_sx || mc_sy); mb_a_sy <= mc_sy; mb_a_p <= mb_by[0];
+                mb_a_dm <= mb_dm;
+            end
+            if (mb_a_v) begin
+                mb_b_v <= 1'b1; mb_b_x <= mb_a_x; mb_b_y <= mb_a_y; mb_b_be <= mb_a_be;
+                for (int l = 0; l < 4; l++) begin
+                    logic [6:0] m;
+                    logic signed [23:0] v;
+                    logic signed [15:0] p0, p1;
+                    m = (mc_pl == 2'd0 && mb_diff) ? mb_a_dm[l] : mb_wm[l];
+                    p0 = signed'(mb_a_pair[16*l +: 16]); p1 = signed'(mb_a_pair[64 + 16*l +: 16]);
+                    v = (24'(signed'({1'b0, m})) * 24'(p0) + 24'(signed'({1'b0, 7'd64 - m})) * 24'(p1) + (24'sd1 <<< (mc_post + 4'd5))) >>> (mc_post + 4'd6);
+                    mb_b_pix[l*12 +: 12] <= (v < 24'sd0) ? 12'd0 : (v > 24'(pix_max)) ? pix_max : 12'(v);
+                end
+            end
+        end
     end
 
     // ================================================================ BlockDecoded flags + MaxLuma
@@ -605,9 +894,9 @@ module recon_top
         max_x = PXW'(((PXW'(hdr.mi_cols) << 2) >> sub_x) - PXW'(1));
         max_y = PXW'(((PXW'(hdr.mi_rows) << 2) >> sub_y) - PXW'(1));
         base_x = PXW'((PXW'(b.c) >> sub_x) << 2); base_y = PXW'((PXW'(b.r) >> sub_y) << 2);
-        is_pal = (t.plane == 2'd0) ? (b.pal_y != 4'd0) : (b.pal_uv != 4'd0);
-        is_cfl = (t.plane != 2'd0) && (b.uvmode == UV_CFL_PRED);
-        mode = (t.plane == 2'd0) ? b.ymode[3:0] : (is_cfl ? DC_PRED : b.uvmode);
+        is_pal = !ii_run && ((t.plane == 2'd0) ? (b.pal_y != 4'd0) : (b.pal_uv != 4'd0));
+        is_cfl = !ii_run && (t.plane != 2'd0) && (b.uvmode == UV_CFL_PRED);
+        mode = ii_run ? ii_mode : (t.plane == 2'd0) ? b.ymode[3:0] : (is_cfl ? DC_PRED : b.uvmode);
         have_l = ((t.plane == 2'd0) ? av_l : av_lc) || (t.x > base_x);
         have_a = ((t.plane == 2'd0) ? av_u : av_uc) || (t.y > base_y);
         above_px = (PXW'(tw_px) < max_x - t.x + PXW'(1)) ? tw_px : 7'(max_x - t.x + PXW'(1));
@@ -663,8 +952,8 @@ module recon_top
     logic ft_sel;
     assign ft_sel = (is_dir(mode) && !((t.plane == 2'd0) && b.use_fi)) ? ((t.plane == 2'd0) ? ft_y : ft_uv) : 1'b0;
     ipred #(.PW(12)) u_ip (.clk, .rst, .edge_we, .edge_side, .edge_idx, .edge_data, .edge_we4, .edge_data4,
-                           .start(ip_start), .mode, .use_filter_intra((t.plane == 2'd0) && b.use_fi), .filter_intra_mode(b.fi_mode),
-                           .angle_delta((t.plane == 2'd0) ? b.angle_y : b.angle_uv), .log2w(l2w), .log2h(l2h), .bit_depth(hdr.bit_depth),
+                           .start(ip_start), .mode, .use_filter_intra(!ii_run && (t.plane == 2'd0) && b.use_fi), .filter_intra_mode(b.fi_mode),
+                           .angle_delta(ii_run ? 3'sd0 : (t.plane == 2'd0) ? b.angle_y : b.angle_uv), .log2w(l2w), .log2h(l2h), .bit_depth(hdr.bit_depth),
                            .have_left(have_l), .have_above(have_a), .filter_type(ft_sel), .edge_filter_en(rh.enable_intra_edge_filter),
                            .above_px, .left_px, .busy(ip_busy), .done(ip_done),
                            .out_valid(ip_ov), .out_x(ip_ox), .out_y(ip_oy), .out_pix4(ip_pix4));
@@ -929,11 +1218,15 @@ module recon_top
         // within its 4-group is lane-shifted (the frame memory's 4-wide port is aligned)
         mc_ox = mc_px + PXW'(mc_out_x);
         mc_osh = mc_ox[1:0];
-        if (mc_out_valid) begin
+        if (mc_out_valid && !ob_active && !ii_active && !(mb_active && mc_l)) begin
             fb4_we = 1'b1; fb4_plane = mc_pl;
             fb4_x = FBX'({mc_ox[PXW-1:2], 2'b00}); fb4_y = FBY'(mc_py + PXW'(mc_out_y));
             fb4_wdata = mc_out_pix4 << (12 * mc_osh); fb4_be = mc_out_mask << mc_osh;
         end
+        // OBMC: read the group to blend (stage A), write the blended group (stage B)
+        if (ob_rd_v) begin fb_re = 1'b1; fb_plane = mc_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
+        if (ob_wr_v) begin fb4_we = 1'b1; fb4_plane = mc_pl; fb4_x = FBX'(ob_b_x); fb4_y = FBY'(ob_b_y); fb4_wdata = ob_b_pix; fb4_be = ob_b_be; end
+        if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = mc_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
     assign mi_tx_plane = t.plane; assign mi_tx_sz = t.txsz;
@@ -942,9 +1235,9 @@ module recon_top
 
     // ---------------------------------------------------------------- sequential
     always_ff @(posedge clk) begin
-        tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0; mi_tx_we <= 1'b0;
+        tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0; mi_tx_we <= 1'b0; ii_done <= 1'b0;
         if (rst) begin
-            rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0);
+            rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0); ii_run <= 1'b0;
             bdf_wr <= '0; fy <= '0; l_sb_r <= '0; l_sb_c <= '0;
         end else begin
             // 5.11.3 clear_block_decoded_flags at each superblock start
@@ -952,12 +1245,17 @@ module recon_top
             case (rs)
                 R_IDLE: if (tx_take) begin
                     t <= ev_tx; rs <= R_SETUP;
+                end else if (ii_req) begin
+                    // inter-intra: the intra prediction of the plane block through the edge / ipred flow
+                    t <= '{plane: ii_pl, x: ii_x, y: ii_y, txsz: ii_txsz, txtype: 4'd0, eob: 11'd0, skip: 1'b1, lossless: 1'b0, slot: 3'd0};
+                    ii_run <= 1'b1; rs <= R_SETUP;
                 end
                 R_SETUP: begin
                     ci <= 7'd0; cj <= 7'd0; px_valid <= 1'b0; ek <= 9'd0; ep_valid <= 1'b0;
                     n_edges <= 2 * (9'(tw_px) + 9'(th_px));
                     above_lim_r <= above_lim; left_lim_r <= left_lim;
-                    if (b.intrabc || b.is_inter) rs <= R_RESID;         // predicted whole by the block copy / motion compensation
+                    if (ii_run) rs <= R_EDGE;                           // inter-intra: the intra prediction of the block
+                    else if (b.intrabc || b.is_inter) rs <= R_RESID;    // predicted whole by the block copy / motion compensation
                     else if (is_pal) rs <= R_PAL;
                     else rs <= R_EDGE;
                 end
@@ -990,7 +1288,8 @@ module recon_top
                 end
                 R_IP_W: if (ip_done) begin
                     ci <= 7'd0; cj <= 7'd0; px_valid <= 1'b0;
-                    rs <= is_cfl ? R_CFL_L : R_RESID;
+                    if (ii_run) begin ii_run <= 1'b0; ii_done <= 1'b1; rs <= R_IDLE; end
+                    else rs <= is_cfl ? R_CFL_L : R_RESID;
                 end
                 // ---- CfL: load the luma region, then the DC prediction, run, write back
                 R_CFL_L: begin

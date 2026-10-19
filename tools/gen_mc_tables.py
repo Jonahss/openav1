@@ -97,6 +97,11 @@ for (bsize, wedge), f in sorted(flip.items()):
 lines += ["            default: return 1'b0;",
           "        endcase",
           "    endfunction",
+          "    // Ii_Weights_1d (7.11.3.13 intra variant mask), index i * sizeScale, 0 .. 127",
+          "    localparam logic [5:0] II_WEIGHTS [0:127] = '{" + ", ".join(f"6'd{v}" for v in T.Ii_Weights_1d) + "};",
+          "    function automatic logic [6:0] ii_weight(input logic [6:0] i);",
+          "        return 7'(II_WEIGHTS[i]);",
+          "    endfunction",
           "endpackage"]
 Path(__file__).resolve().parent.parent.joinpath("rtl", "mc_tables_pkg.sv").write_text("\n".join(lines) + "\n")
 print("rtl/mc_tables_pkg.sv:", len(vals), "wedge master entries + taps")

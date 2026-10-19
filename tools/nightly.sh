@@ -44,8 +44,8 @@ if [ -d "$ARGON" ]; then
   # the model's pictures in the AXI memory model (tb/test_dec_inter.py); test10046 is the stage-2a-clean Argon stream
   run dec_inter_argon    FBX=12 FBY=9 TS_STAGE=recon TS_IVF="$ARGON/test10046.obu" python tb/runner.py dec_top test_dec_inter
 fi
-# the stage-2a streams encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
-GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
+# the stage-2a / 2b streams (OBMC, wedge + DIFFWTD masks, inter-intra) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
+GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
 run dec_inter            TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
 echo "DONE rc=$rc $(date -Is)" >> "$out"
 cat "$out"
