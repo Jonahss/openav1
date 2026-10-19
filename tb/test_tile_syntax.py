@@ -40,7 +40,7 @@ BLK_FIELDS = [
     ("is_inter", 1), ("intrabc", 1), ("mv_row", 18), ("mv_col", 18),
     ("skip_mode", 1), ("ref0", 4), ("ref1", 4), ("mv1_row", 18), ("mv1_col", 18), ("motion_mode", 2), ("compound_type", 3),
     ("interintra", 1), ("interintra_mode", 2), ("wedge_interintra", 1), ("wedge_index", 4), ("wedge_sign", 1), ("mask_type", 1),
-    ("comp_group_idx", 1), ("compound_idx", 1), ("interp0", 2), ("interp1", 2), ("cmv_intra", 1), ("cmv", 304)]
+    ("comp_group_idx", 1), ("compound_idx", 1), ("interp0", 2), ("interp1", 2), ("cmv_intra", 1), ("cmv", 304), ("obmc", 408)]
 TX_FIELDS = [("plane", 2), ("x", PXW), ("y", PXW), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1), ("slot", 3)]
 LR_FIELDS = [("plane", 2), ("unit_row", SBW), ("unit_col", SBW), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
@@ -57,6 +57,18 @@ def pack_cmv(cmv):
             w = rf0 | (rf1 << 4) | ((mv0[0] & 0xFFFF) << 8) | ((mv0[1] & 0xFFFF) << 24) | ((mv1[0] & 0xFFFF) << 40) \
                 | ((mv1[1] & 0xFFFF) << 56) | (u["interp"][0] << 72) | (u["interp"][1] << 74)
             v |= w << (76 * k)
+    return v
+
+
+def pack_obmc(ob):
+    """blk_rec_t.obmc from the model's obmc_neighbours: above entries 0..3, left 4..7, entry k at [51k +: 51]."""
+    v = 0
+    if ob:
+        for base, lst in ((0, ob["above"]), (4, ob["left"])):
+            for k, e in enumerate(lst):
+                w = 1 | (e["off"] << 1) | (e["step4"] << 6) | (e["ref"] << 11) | ((e["mv"][0] & 0xFFFF) << 15) \
+                    | ((e["mv"][1] & 0xFFFF) << 31) | (e["interp"][0] << 47) | (e["interp"][1] << 49)
+                v |= w << (51 * (base + k))
     return v
 
 
@@ -563,11 +575,12 @@ async def collect(dut, dec, tag0, stats):
                                    wedge_index=m.get("wedge_index", 0), wedge_sign=m.get("wedge_sign", 0), mask_type=m.get("mask_type", 0),
                                    comp_group_idx=m.get("comp_group_idx", 0), compound_idx=m.get("compound_idx", 1),
                                    interp0=m["interp"][0], interp1=m["interp"][1],
-                                   cmv_intra=(m["cmv"]["intra"] if m.get("cmv") else 0), cmv=pack_cmv(m.get("cmv")))
+                                   cmv_intra=(m["cmv"]["intra"] if m.get("cmv") else 0), cmv=pack_cmv(m.get("cmv")),
+                                   obmc=pack_obmc(m.get("obmc")))
                     elif "skip_mode" in m:                      # an intra block of an inter frame: the inter fields at their defaults
                         exp.update(skip_mode=0, ref0=0, ref1=15, mv1_row=0, mv1_col=0, motion_mode=0, compound_type=2, interintra=0,
                                    interintra_mode=0, wedge_interintra=0, wedge_index=0, wedge_sign=0, mask_type=0, comp_group_idx=0,
-                                   compound_idx=1, interp0=0, interp1=0, cmv_intra=0, cmv=0)
+                                   compound_idx=1, interp0=0, interp1=0, cmv_intra=0, cmv=0, obmc=0)
 
                     def cols(v, n):
                         return [(v >> (12 * k)) & 0xFFF for k in range(n)]

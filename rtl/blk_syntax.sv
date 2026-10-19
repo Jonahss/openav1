@@ -140,6 +140,7 @@ module blk_syntax
         S_DRL, S_DRL_IT, S_DRL_GO, S_DRL_W, S_AMV, S_AMV_NEXT, S_MVFR, S_MVFR_GO, S_MVFR_W, S_MVHP, S_MVHP_GO, S_MVHP_W,
         S_II, S_II_GO, S_II_W, S_IIM_GO, S_IIM_W, S_WII_GO, S_WII_W, S_WIDX_GO, S_WIDX_W,
         S_MM, S_OV, S_OV_W, S_OV_P, S_WS, S_WS_W, S_WS_P, S_MM2, S_OBMC_GO, S_OBMC_W, S_MMS_GO, S_MMS_W,
+        S_OB_A, S_OB_A_W, S_OB_A_P, S_OB_L, S_OB_L_W, S_OB_L_P,
         S_CT, S_CGI_GO, S_CGI_W, S_CT2, S_CIDX_GO, S_CIDX_W, S_CTYPE_GO, S_CTYPE_W, S_CT3, S_WIDX2_GO, S_WIDX2_W, S_WSGN_W, S_MASK_W,
         S_IF, S_IF_D, S_IF_GO, S_IF_W, S_IF_END, S_NBW
     } st_t;
@@ -161,6 +162,10 @@ module blk_syntax
     logic [MIW-1:0] cm_row0, cm_col0;
     logic        cmv_intra;
     logic [303:0] cmv;
+    // OBMC overlap neighbours (blk_rec_t.obmc): the scan of overlapped_motion_compensation's candidates
+    logic [MIW-1:0] ob_x;                      // x4 (above pass) or y4 (left pass)
+    logic [2:0]  ob_n, ob_lim, ob_i;
+    logic [407:0] obmc;
     logic        skip, lossless, hc;
     logic [2:0]  seg;
     logic [3:0]  ymode, uvmode;
@@ -382,7 +387,20 @@ module blk_syntax
                     .new_mv_ctx(mvs_new_ctx), .ref_mv_ctx(mvs_ref_ctx), .zero_mv_ctx(mvs_zero_ctx), .drl_ctx(mvs_drl),
                     .rd_row(mvs_rd_row), .rd_col(mvs_rd_col), .rd_ent(mvr_ent), .rd_written(mvr_written),
                     .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col);
-    assign nb_rd = (st == S_NBA) || (st == S_NBA_W) || (st == S_NBL) || (st == S_NBL_W) || (st == S_OV_W) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_P);
+    function automatic logic [2:0] ob_limit(input logic [5:0] n4);   // min(4, log2(n4)) for n4 in 1 .. 32
+        if (n4 >= 6'd16) return 3'd4;
+        if (n4 >= 6'd8) return 3'd3;
+        if (n4 >= 6'd4) return 3'd2;
+        if (n4 >= 6'd2) return 3'd1;
+        return 3'd0;
+    endfunction
+    function automatic logic [4:0] ob_step(input logic [5:0] n4);    // clip3(2, 16, n4)
+        if (n4 < 6'd2) return 5'd2;
+        if (n4 > 6'd16) return 5'd16;
+        return 5'(n4);
+    endfunction
+    assign nb_rd = (st == S_NBA) || (st == S_NBA_W) || (st == S_NBL) || (st == S_NBL_W) || (st == S_OV_W) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_P)
+                 || (st == S_OB_A_W) || (st == S_OB_A_P) || (st == S_OB_L_W) || (st == S_OB_L_P);
     always_comb begin
         if (st == S_NBA || st == S_NBA_W) begin mvr_row = br - MIW'(1); mvr_col = bc; end
         else if (st == S_NBL || st == S_NBL_W) begin mvr_row = br; mvr_col = bc - MIW'(1); end
@@ -1138,9 +1156,52 @@ module blk_syntax
                     else st <= S_MMS_GO;
                 end
                 S_OBMC_GO: st <= S_OBMC_W;
-                S_OBMC_W: if (sq_done) begin motion_mode <= sq_sym[0] ? 2'd1 : 2'd0; st <= S_CT; end
+                S_OBMC_W: if (sq_done) begin
+                    motion_mode <= sq_sym[0] ? 2'd1 : 2'd0;
+                    obmc <= '0; ob_x <= bc; ob_n <= 3'd0; ob_lim <= ob_limit(bw4); ob_i <= 3'd0;
+                    st <= sq_sym[0] ? S_OB_A : S_CT;
+                end
                 S_MMS_GO: st <= S_MMS_W;
-                S_MMS_W: if (sq_done) begin motion_mode <= sq_sym[1:0]; st <= S_CT; end
+                S_MMS_W: if (sq_done) begin
+                    motion_mode <= sq_sym[1:0];
+                    obmc <= '0; ob_x <= bc; ob_n <= 3'd0; ob_lim <= ob_limit(bw4); ob_i <= 3'd0;
+                    st <= (sq_sym[1:0] == 2'd1) ? S_OB_A : S_CT;
+                end
+                // ---- OBMC overlap neighbours (7.11.3.10, model obmc_neighbours): above row, then left column
+                S_OB_A: begin
+                    if (avail_u && ob_n < ob_lim && ob_x < hdr.mi_cols && ob_x < bc + MIW'(bw4)) begin
+                        nb_row <= br - MIW'(1); nb_col <= ob_x | MIW'(1); st <= S_OB_A_W;
+                    end else begin
+                        ob_x <= br; ob_n <= 3'd0; ob_lim <= ob_limit(bh4); ob_i <= 3'd4; st <= S_OB_L;
+                    end
+                end
+                S_OB_A_W: st <= S_OB_A_P;
+                S_OB_A_P: begin
+                    logic [4:0] step4;
+                    step4 = ob_step(num4x4w(mvr_ent.bsize));
+                    if (mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
+                        obmc[51 * int'(ob_i) +: 51] <= {mvr_ent.interp1, mvr_ent.interp0, mvr_ent.mv_col, mvr_ent.mv_row, mvr_ent.ref0, step4, 5'(ob_x - bc), 1'b1};
+                        ob_n <= ob_n + 3'd1; ob_i <= ob_i + 3'd1;
+                    end
+                    ob_x <= ob_x + MIW'(step4);
+                    st <= S_OB_A;
+                end
+                S_OB_L: begin
+                    if (avail_l && ob_n < ob_lim && ob_x < hdr.mi_rows && ob_x < br + MIW'(bh4)) begin
+                        nb_row <= ob_x | MIW'(1); nb_col <= bc - MIW'(1); st <= S_OB_L_W;
+                    end else st <= S_CT;
+                end
+                S_OB_L_W: st <= S_OB_L_P;
+                S_OB_L_P: begin
+                    logic [4:0] step4;
+                    step4 = ob_step(num4x4h(mvr_ent.bsize));
+                    if (mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
+                        obmc[51 * int'(ob_i) +: 51] <= {mvr_ent.interp1, mvr_ent.interp0, mvr_ent.mv_col, mvr_ent.mv_row, mvr_ent.ref0, step4, 5'(ob_x - br), 1'b1};
+                        ob_n <= ob_n + 3'd1; ob_i <= ob_i + 3'd1;
+                    end
+                    ob_x <= ob_x + MIW'(step4);
+                    st <= S_OB_L;
+                end
                 // ---- read_compound_type (5.11.29)
                 S_CT: begin
                     comp_group_idx <= 1'b0; compound_idx <= 1'b1;
@@ -1444,6 +1505,7 @@ module blk_syntax
                     blk_rec.wedge_sign <= wedge_sign; blk_rec.mask_type <= mask_type; blk_rec.comp_group_idx <= comp_group_idx; blk_rec.compound_idx <= compound_idx;
                     blk_rec.interp0 <= interp[0]; blk_rec.interp1 <= interp[1];
                     blk_rec.cmv_intra <= cmv_intra; blk_rec.cmv <= cmv_intra ? 304'd0 : cmv;   // someUseIntra: one unit with the block's own motion
+                    blk_rec.obmc <= (is_inter_b && motion_mode == 2'd1) ? obmc : 408'd0;
                     blk_rec.r <= br; blk_rec.c <= bc; blk_rec.bsize <= bs; blk_rec.skip <= skip; blk_rec.seg <= seg;
                     blk_rec.lossless <= lossless; blk_rec.has_chroma <= hc; blk_rec.ymode <= is_inter_b ? imode : {1'b0, ymode}; blk_rec.uvmode <= uvmode;
                     blk_rec.angle_y <= ang_y; blk_rec.angle_uv <= ang_uv; blk_rec.cfl_u <= cfl_u; blk_rec.cfl_v <= cfl_v;

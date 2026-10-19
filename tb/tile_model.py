@@ -641,6 +641,7 @@ class TileDecoder:
                         self.InterpFilters[r + y][c + x] = list(self.interp_filter)
                         self.Mvs[r + y][c + x] = [list(self.Mv[i]) for i in range(1 + isCompound)]
         self.cmv = self.chroma_mv_units()
+        self.obmc = self.obmc_neighbours()
         self.compute_prediction()
         self.residual()
         for y in range(bh4):
@@ -663,7 +664,7 @@ class TileDecoder:
                                 cfl=(self.CflAlphaU, self.CflAlphaV), intrabc=self.use_intrabc,
                                 mv=(tuple(self.Mv[0]) if self.use_intrabc else None),
                                 inter=self.is_inter, ref=tuple(self.RefFrame), mvs=[tuple(m) for m in self.Mv[:1 + isCompound]],
-                                cmv=self.cmv,
+                                cmv=self.cmv, obmc=self.obmc,
                                 motion_mode=self.motion_mode, compound_type=self.compound_type,
                                 interintra=self.interintra, interp=tuple(self.interp_filter), skip_mode=self.skip_mode,
                                 # the optional inter fields, zero where the syntax did not read them (as the RTL record has them)
@@ -2340,6 +2341,41 @@ class TileDecoder:
                     units.append(dict(ref=tuple(self.RefFrames[rr][cc]), mvs=[tuple(m) for m in self.Mvs[rr][cc]],
                                       interp=tuple(self.InterpFilters[rr][cc])))
         return dict(intra=some, units=units)
+
+    def obmc_neighbours(self):
+        """Stage 2b record extension (blk_rec_t.obmc): for an OBMC block, the overlap neighbours exactly as
+        overlapped_motion_compensation walks them (above: x4 from MiCol in steps of the candidate's clipped width,
+        at (MiRow - 1, x4 | 1), the first min(4, Mi_Width_Log2) inter ones; left likewise down the rows), each with
+        its offset from the block, step, reference, MV and filters. None unless motion_mode == OBMC."""
+        if not self.is_inter or self.use_intrabc or self.motion_mode != OBMC:
+            return None
+        h = self.h
+        above, left = [], []
+        if self.AvailU:
+            w4 = T.Num_4x4_Blocks_Wide[self.MiSize]
+            x4, n = self.MiCol, 0
+            lim = min(4, T.Mi_Width_Log2[self.MiSize])
+            while n < lim and x4 < min(h.MiCols, self.MiCol + w4):
+                cr, cc = self.MiRow - 1, x4 | 1
+                step4 = clip3(2, 16, T.Num_4x4_Blocks_Wide[self.MiSizes[cr][cc]])
+                if self.RefFrames[cr][cc][0] > INTRA_FRAME:
+                    n += 1
+                    above.append(dict(off=x4 - self.MiCol, step4=step4, ref=self.RefFrames[cr][cc][0],
+                                      mv=tuple(self.Mvs[cr][cc][0]), interp=tuple(self.InterpFilters[cr][cc])))
+                x4 += step4
+        if self.AvailL:
+            h4 = T.Num_4x4_Blocks_High[self.MiSize]
+            y4, n = self.MiRow, 0
+            lim = min(4, T.Mi_Height_Log2[self.MiSize])
+            while n < lim and y4 < min(h.MiRows, self.MiRow + h4):
+                cr, cc = y4 | 1, self.MiCol - 1
+                step4 = clip3(2, 16, T.Num_4x4_Blocks_High[self.MiSizes[cr][cc]])
+                if self.RefFrames[cr][cc][0] > INTRA_FRAME:
+                    n += 1
+                    left.append(dict(off=y4 - self.MiRow, step4=step4, ref=self.RefFrames[cr][cc][0],
+                                     mv=tuple(self.Mvs[cr][cc][0]), interp=tuple(self.InterpFilters[cr][cc])))
+                y4 += step4
+        return dict(above=above, left=left)
 
     def get_plane_residual_size(self, subsize, plane):
         subx = self.h.subsampling_x if plane > 0 else 0

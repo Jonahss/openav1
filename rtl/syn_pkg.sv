@@ -194,6 +194,10 @@ package syn_pkg;
         // mv1 row[55:40] col[71:56] (signed 16), interp0[73:72], interp1[75:74]); units in row-major order, unused zero
         logic        cmv_intra;
         logic [303:0] cmv;
+        // OBMC (7.11.3.10): the overlap neighbours, above entries 0 .. 3 then left 4 .. 7, entry k at [51k +: 51]:
+        // valid[0], offset from the block in 4x4s[5:1], step4[10:6], ref0[14:11], mv row[30:15] col[46:31] (signed 16),
+        // interp0[48:47], interp1[50:49]; zero unless motion_mode == OBMC
+        logic [407:0] obmc;
     } blk_rec_t;
 
     // Per-4x4 motion information of the current frame (spec IsInters / RefFrames / Mvs / MiSizes as the MV
