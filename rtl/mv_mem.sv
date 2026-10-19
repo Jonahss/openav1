@@ -28,9 +28,9 @@ module mv_mem
     localparam int WC = 1 << ML2C;
     // The entry store is written in the canonical RAM shape synthesis recognises (Vivado: one always_ff holding
     // only the write and the registered read of a flat vector array, addresses and data as plain signals, the
-    // struct cast on outside). Anything fancier and the 2^(ML2R+ML2C) x 42-bit array becomes flops.
+    // struct cast on outside). Anything fancier and the 2^(ML2R+ML2C) x $bits(mv_ent_t) array becomes flops.
     localparam int EW = $bits(mv_ent_t);
-    (* ram_style = "ultra" *) logic [EW-1:0] mem [0:N-1];       // 2^15 x 42 at 1024x512: 5 UltraRAMs, not 42 BRAMs
+    (* ram_style = "ultra" *) logic [EW-1:0] mem [0:N-1];       // 2^14 x 85 in the 1080p window build (32-row ring): 8 UltraRAMs
     logic           m_we;
     logic [ML2R+ML2C-1:0] m_waddr, m_raddr;
     logic [EW-1:0]  m_wdata, m_rdata;

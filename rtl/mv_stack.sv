@@ -88,8 +88,8 @@ module mv_stack
         if (!is_point && step16 && cand_len < 6'd4) cand_len = 6'd4;
         cand_w = is_point ? 16'd4 : 16'(cand_len) * 16'd2;
         cand_ok = rd_written && rd_ent.is_intrabc;                      // written this frame, IsInters && RefFrames[0] == INTRA_FRAME
-        cand_row = lower_int(rd_ent.mv_row);
-        cand_col = lower_int(rd_ent.mv_col);
+        cand_row = lower_int(18'(signed'(rd_ent.mv_row)));
+        cand_col = lower_int(18'(signed'(rd_ent.mv_col)));
         for (int k = 0; k < 8; k++)
             hit[k] = (4'(k) < n_found) && (st_row[k] == cand_row) && (st_col[k] == cand_col);
     end

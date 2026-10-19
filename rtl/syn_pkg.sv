@@ -171,11 +171,27 @@ package syn_pkg;
 
     // Per-4x4 motion information of the current frame (spec IsInters / RefFrames / Mvs / MiSizes as the MV
     // stack needs them); "written this frame" is a separate bitmap in mv_mem, cleared per superblock row
+    // Motion info of one 4x4 unit of the current frame (mv_mem): what the MV stack, the warp-sample and OBMC scans and
+    // the inter neighbour contexts read back (spec IsInters / RefFrames / Mvs / YModes (two bits of it) / MiSizes /
+    // SkipModes / CompGroupIdxs / CompoundIdxs / InterpFilters / Above|LeftSegPredContext). 85 bits.
     typedef struct packed {
+        logic        is_inter;                 // IsInters (intra block copy included)
         logic        is_intrabc;
+        logic [3:0]  ref0;                     // RefFrames[0]: 0 INTRA_FRAME, 1 .. 7 LAST_FRAME .. ALTREF_FRAME
+        logic [3:0]  ref1;                     // RefFrames[1]: 15 = NONE
+        logic signed [15:0] mv_row;            // Mvs[0] (|mv| < 1 << 14 by conformance; 16 bits hold it)
+        logic signed [15:0] mv_col;
+        logic signed [15:0] mv1_row;           // Mvs[1]
+        logic signed [15:0] mv1_col;
+        logic        newmv_fam;                // YMode has a NEWMV component (NEWMV, NEW_NEWMV, NEAR_NEWMV, NEW_NEARMV, NEAREST_NEWMV, NEW_NEARESTMV)
+        logic        globalmv_fam;             // YMode is GLOBALMV or GLOBAL_GLOBALMV
         logic [4:0]  bsize;
-        logic signed [17:0] mv_row;
-        logic signed [17:0] mv_col;
+        logic        skip_mode;
+        logic        comp_group_idx;
+        logic        compound_idx;
+        logic [1:0]  interp0;                  // InterpFilters[dir]
+        logic [1:0]  interp1;
+        logic        seg_pred;                 // seg_id_predicted of the block (Above / LeftSegPredContext)
     } mv_ent_t;
 
     // Per-transform-block record; Quant is read through coef_rd's port while tx_done is held.

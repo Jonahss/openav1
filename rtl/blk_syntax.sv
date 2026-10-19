@@ -320,7 +320,9 @@ module blk_syntax
     mv_stack u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs,
                     .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
     assign mvm_r = br; assign mvm_c = bc; assign mvm_bw4 = bw4; assign mvm_bh4 = bh4;
-    assign mvm_data = '{is_intrabc: use_ibc, bsize: bs, mv_row: mv_row, mv_col: mv_col};
+    assign mvm_data = '{is_inter: use_ibc, is_intrabc: use_ibc, ref0: 4'd0, ref1: 4'd15, mv_row: 16'(mv_row), mv_col: 16'(mv_col),
+                        mv1_row: 16'sd0, mv1_col: 16'sd0, newmv_fam: 1'b0, globalmv_fam: 1'b0, bsize: bs, skip_mode: 1'b0,
+                        comp_group_idx: 1'b0, compound_idx: 1'b1, interp0: 2'd0, interp1: 2'd0, seg_pred: 1'b0};   // intra frames: intrabc or intra
 
     // txfm_split context of the current node (8.3.2): above / left transform widths against the node's size
     logic [4:0]  vt_tx;
