@@ -23,7 +23,80 @@ for i in range(0, len(vals), 16):
 lines += ["    };",
           "    function automatic logic signed [8:0] subpel_tap(input logic [2:0] f, input logic [3:0] p, input logic [2:0] t);",
           "        return SUBPEL_TAPS[{f, p, t}];",
+          "    endfunction"]
+
+# ---- wedge masks (7.11.3.11): the six 64 x 64 master masks (recon_model._wedge_masks builds them from the spec's 1-D
+# masters), the codebook (direction, x offset, y offset per block shape and wedge) and the flip sign per (bsize, wedge)
+import recon_model as rm  # noqa: E402
+MASTER = 64
+master = [[[0] * MASTER for _ in range(MASTER)] for _ in range(6)]
+import intra_model as im  # noqa: E402
+w = h = MASTER
+for j in range(w):
+    shift = MASTER // 4
+    for i in range(0, h, 2):
+        master[rm.WEDGE_OBLIQUE63][i][j] = T.Wedge_Master_Oblique_Even[im.clip3(0, MASTER - 1, j - shift)]
+        shift -= 1
+        master[rm.WEDGE_OBLIQUE63][i + 1][j] = T.Wedge_Master_Oblique_Odd[im.clip3(0, MASTER - 1, j - shift)]
+        master[rm.WEDGE_VERTICAL][i][j] = T.Wedge_Master_Vertical[j]
+        master[rm.WEDGE_VERTICAL][i + 1][j] = T.Wedge_Master_Vertical[j]
+for i in range(h):
+    for j in range(w):
+        msk = master[rm.WEDGE_OBLIQUE63][i][j]
+        master[rm.WEDGE_OBLIQUE27][j][i] = msk
+        master[rm.WEDGE_OBLIQUE117][i][w - 1 - j] = 64 - msk
+        master[rm.WEDGE_OBLIQUE153][w - 1 - j][i] = 64 - msk
+        master[rm.WEDGE_HORIZONTAL][j][i] = master[rm.WEDGE_VERTICAL][i][j]
+# check against the model's table for every wedge block size
+import tile_model as tm  # noqa: E402
+def block_shape(bsize):
+    w4, h4 = T.Num_4x4_Blocks_Wide[bsize], T.Num_4x4_Blocks_High[bsize]
+    return 0 if h4 > w4 else 1 if h4 < w4 else 2
+flip = {}
+for bsize in range(tm.BLOCK_8X8, len(T.Wedge_Bits)):
+    if T.Wedge_Bits[bsize] > 0:
+        bw, bh = T.Block_Width[bsize], T.Block_Height[bsize]
+        for wedge in range(16):
+            d, xo, yo = T.Wedge_Codebook[block_shape(bsize)][wedge]
+            xoff = MASTER // 2 - ((xo * bw) >> 3)
+            yoff = MASTER // 2 - ((yo * bh) >> 3)
+            m0 = rm.WEDGE_MASKS[bsize][0][wedge]
+            m1 = rm.WEDGE_MASKS[bsize][1][wedge]
+            direct = [[master[d][yoff + i][xoff + j] for j in range(bw)] for i in range(bh)]
+            if direct == m0:
+                flip[(bsize, wedge)] = 0
+            else:
+                assert [[64 - v for v in r] for r in direct] == m0 and direct == m1
+                flip[(bsize, wedge)] = 1
+lines += ["    // WEDGE_MASTER[d][i][j] (7.11.3.11 MasterMask, d = HORIZONTAL 0, VERTICAL 1, OBLIQUE27 2, OBLIQUE63 3, OBLIQUE117 4,",
+          "    // OBLIQUE153 5), 7 bits each, entry (d * 64 + i) * 64 + j",
+          "    localparam logic [6:0] WEDGE_MASTER [0:6*64*64-1] = '{"]
+vals = [f"7'd{master[d][i][j]}" for d in range(6) for i in range(64) for j in range(64)]
+for i in range(0, len(vals), 32):
+    lines.append("        " + ", ".join(vals[i:i + 32]) + ("," if i + 32 < len(vals) else ""))
+lines += ["    };",
+          "    function automatic logic [6:0] wedge_master(input logic [2:0] d, input logic [5:0] i, input logic [5:0] j);",
+          "        return WEDGE_MASTER[{d, i, j}];",
+          "    endfunction",
+          "    // Wedge_Codebook[shape][wedge] = {direction[2:0], xoff8[3:0], yoff8[3:0]} (shape 0 h4 > w4, 1 h4 < w4, 2 square);",
+          "    // the block's mask offsets are MASK_MASTER_SIZE / 2 - ((xoff8 * bw) >> 3) and likewise for y",
+          "    function automatic logic [10:0] wedge_codebook(input logic [1:0] shape, input logic [3:0] wedge);",
+          "        case ({shape, wedge})"]
+for shape in range(3):
+    for wedge in range(16):
+        d, xo, yo = T.Wedge_Codebook[shape][wedge]
+        lines.append(f"            {{2'd{shape}, 4'd{wedge}}}: return {{3'd{d}, 4'd{xo}, 4'd{yo}}};")
+lines += ["            default: return 11'd0;",
+          "        endcase",
+          "    endfunction",
+          "    // flipSign of (bsize, wedge): WedgeMasks[bsize][flipSign][wedge] is the master region unchanged, [1 - flipSign] is 64 - it",
+          "    function automatic logic wedge_flip(input logic [4:0] bsize, input logic [3:0] wedge);",
+          "        case ({bsize, wedge})"]
+for (bsize, wedge), f in sorted(flip.items()):
+    lines.append(f"            {{5'd{bsize}, 4'd{wedge}}}: return 1'b{f};")
+lines += ["            default: return 1'b0;",
+          "        endcase",
           "    endfunction",
           "endpackage"]
 Path(__file__).resolve().parent.parent.joinpath("rtl", "mc_tables_pkg.sv").write_text("\n".join(lines) + "\n")
-print("rtl/mc_tables_pkg.sv:", len(vals), "taps")
+print("rtl/mc_tables_pkg.sv:", len(vals), "wedge master entries + taps")
