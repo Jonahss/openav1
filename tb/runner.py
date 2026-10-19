@@ -79,6 +79,14 @@ r.build(sources=sources, hdl_toplevel=top, parameters=params,
         build_dir=build_dir, build_args=build_args, waves=waves)
 if os.environ.get("TS_BUILD_ONLY") == "1":
     sys.exit(0)
-test_dir = Path(os.environ["TS_TEST_DIR"]).resolve() if os.environ.get("TS_TEST_DIR") else build_dir
+# TS_TEST_DIR: run two levels below it with an rtl link beside, so qm_rom's "../../rtl/qm_rom.hex" (relative to
+# the run directory, build/<top>/ by default) still resolves there (2026-10-19: $readmemh silently found nothing)
+if os.environ.get("TS_TEST_DIR"):
+    tdir = Path(os.environ["TS_TEST_DIR"]).resolve()
+    test_dir = tdir / "sim" / "run"; test_dir.mkdir(parents=True, exist_ok=True)
+    if not (tdir / "rtl").exists():
+        (tdir / "rtl").symlink_to(ROOT / "rtl")
+else:
+    test_dir = build_dir
 plusargs = [f"+vis={os.environ['TS_VIS']}"] if os.environ.get("TS_VIS") else []   # decode-progress trace (docs/vis-trace.md)
 r.test(hdl_toplevel=top, test_module=mod, build_dir=build_dir, test_dir=test_dir, waves=waves, plusargs=plusargs)
