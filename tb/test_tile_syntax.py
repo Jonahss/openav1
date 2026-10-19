@@ -396,10 +396,33 @@ async def tile_vs_model(dut):
                 if not th.FrameIsIntra:
                     stats["inter_blocks"] = stats.get("inter_blocks", 0) + sum(1 for b in dec.blocks if b.get("inter"))
                     stats["inter_frames"] = stats.get("inter_frames", 0) + (1 if k == 0 else 0)
+                if k == h.context_update_tile_id and os.environ.get("TS_RB", "1") == "1" and hasattr(dut, "rb_en"):
+                    # the frame's saved CDFs: the working store after this tile, read back as the host will (rb port)
+                    await check_cdf_readback(dut, dec, tag0, stats)
                 decoders.append(sm.TileSummary(dec, keep_cdf=(k == h.context_update_tile_id)))
                 del dec
             seq.end_frame(h, decoders, frame_cdfs=ctx.cdfs)
     dut._log.info(f"OK: {stats}")
+
+
+async def check_cdf_readback(dut, dec, tag0, stats):
+    """Every row of the working CDF store after a tile equals the model's adapted CDFs (counters included)."""
+    want = M.rows_of(dec.cdf)
+    bad = []
+    for i in range(M.ROWS):
+        dut.rb_en.value = 1
+        dut.rb_addr.value = i
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        v = int(dut.rb_data.value) & ((1 << M.ROW_BITS) - 1)
+        if v != want[i]:
+            bad.append(i)
+        await Timer(1, "ns")
+        dut.rb_en.value = 0
+    if bad:
+        name = next(n for n in M.TABLES if M.MAP[n]["base"] <= bad[0] < M.MAP[n]["base"] + M.MAP[n]["rows"])
+        raise AssertionError(f"{tag0}: {len(bad)} CDF rows differ after the tile, first row {bad[0]} ({name}+{bad[0] - M.MAP[name]['base']})")
+    stats["rb_rows"] = stats.get("rb_rows", 0) + M.ROWS
 
 
 async def load_frame_state(dut, h, ctx):
