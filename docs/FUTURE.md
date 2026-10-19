@@ -32,3 +32,10 @@ access to the skewed 64-bank memory; a different memory organisation (e.g. half-
 column access, or keeping blocks of up to 64 coefficients inside the engine and transposing by lane permutation)
 would trade cycles for those LUTs. The wrapper is also sequential per group (load, run, store); the memory has
 separate read and write ports, so the store of group k could overlap the load of group k+1.
+
+## warp_setup timing (2026-10-19)
+The warp parameter unit (rtl/warp_setup.sv) multiplies on a combinational 64 x 64 path straight into the round-shift,
+clamp and parameter registers: 61 logic levels, 16.5 ns out of context (synth warp_setup-2c2, 3.4k LUT / 14 DSP). It
+is ~18 cycles per warp block and sequential, so the fix is mechanical: register the product (one bubble state per
+product) and, if the multiplier alone still misses 10 ns, split it 32 x 64 + shift-add. Deferred until the warp stage
+is bit-exact end to end; whole-decoder timing with warp will show it first.
