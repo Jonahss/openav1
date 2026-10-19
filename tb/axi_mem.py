@@ -17,15 +17,12 @@ class AxiMem:
         self.errors = []
         self.rng = random.Random(seed)
         self.stall = stall
-        self.sig("awready").value = 0
-        self.sig("wready").value = 0
-        self.sig("bvalid").value = 0
-        self.sig("bresp").value = 0
-        self.sig("arready").value = 0
-        self.sig("rvalid").value = 0
-        self.sig("rdata").value = 0
-        self.sig("rresp").value = 0
-        self.sig("rlast").value = 0
+        # a master may have only the write or only the read channels (ref_fetch: read only)
+        for name in ("awready", "wready", "bvalid", "bresp", "arready", "rvalid", "rdata", "rresp", "rlast"):
+            try:
+                self.sig(name).value = 0
+            except AttributeError:
+                pass
 
     def sig(self, name):
         return getattr(self.dut, self.p + name)
