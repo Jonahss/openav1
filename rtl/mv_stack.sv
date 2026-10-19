@@ -296,8 +296,8 @@ module mv_stack
                 rf = g_sel ? ref1 : ref0;
                 g_typ <= (rf == 4'd0) ? 2'd0 : gmt(rf);
                 for (int j = 0; j < 6; j++) gp[j] <= (rf >= 4'd1 && rf <= 4'd7) ? gmp(rf, j) : 24'sd0;
-                g_x <= 17'(signed'({2'b0, c, 2'b0})) + 17'(signed'({9'b0, blk_w(bs)[7:1]})) - 17'sd1;   // MiCol * 4 + bw / 2 - 1
-                g_y <= 17'(signed'({2'b0, r, 2'b0})) + 17'(signed'({9'b0, blk_h(bs)[7:1]})) - 17'sd1;
+                g_x <= 17'(signed'({2'b0, c, 2'b0})) + 17'(signed'({10'b0, blk_w(bs) >> 1})) - 17'sd1;   // MiCol * 4 + bw / 2 - 1
+                g_y <= 17'(signed'({2'b0, r, 2'b0})) + 17'(signed'({10'b0, blk_h(bs) >> 1})) - 17'sd1;
                 st <= M_GM_B;
             end
             M_GM_B: begin

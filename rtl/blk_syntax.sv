@@ -1188,7 +1188,7 @@ module blk_syntax
                 end
                 S_IBC_GO: st <= S_IBC_W;
                 S_IBC_W: if (sq_done) begin
-                    if (sq_sym[0]) begin use_ibc <= 1'b1; read_deltas <= 1'b0; st <= S_MVS; end
+                    if (sq_sym[0]) begin use_ibc <= 1'b1; read_deltas <= 1'b0; interp[0] <= 2'd3; interp[1] <= 2'd3; st <= S_MVS; end   // intrabc: BILINEAR
                     else st <= S_YMODE;
                 end
                 // ---- intra block copy: find_mv_stack -> assign_mv / read_mv (MvCtx = 1; fr = 3, hp = 1 in intra frames)
