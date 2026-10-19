@@ -288,12 +288,11 @@ class FrameHeader:
         self.reference_select = self.skip_mode_present = self.allow_warped_motion = 0
         self.SkipModeFrame = [0, 0]
         self.interpolation_filter = self.is_motion_mode_switchable = 0
-        self.RefUpscaledWidths = [0] * 8                       # by RefFrame: the references' upscaled width / height
-        self.RefFrameHeights = [0] * 8
-        self.enable_interintra_compound = self.enable_masked_compound = self.enable_jnt_comp = 0
-        self.enable_dual_filter = self.enable_order_hint = self.enable_warped_motion = 0
-        self.OrderHintBits = 0
+        # the references' upscaled width / height (by RefFrame) and the sequence flags the tile syntax reads: set only
+        # when the trace carries them (traces since 2026-10-19), so that tools/xcheck_hdr.py skips them on older traces
         if len(rest) >= 32 + 79 + 21:
+            self.RefUpscaledWidths = [0] * 8
+            self.RefFrameHeights = [0] * 8
             r = rest[32 + 79:32 + 79 + 21]
             if self.frame_type in (1, 3):
                 for i in range(7):
@@ -405,8 +404,8 @@ class TileDecoder:
         self.AboveDcContext = [[0] * Cc for _ in range(3)]
         self.LeftLevelContext = [[0] * R for _ in range(3)]
         self.LeftDcContext = [[0] * R for _ in range(3)]
-        self.AboveSegPredContext = [0] * Cc
-        self.LeftSegPredContext = [0] * R
+        self.AboveSegPredContext = [0] * (Cc + 32)             # written for the whole block, past the frame edge
+        self.LeftSegPredContext = [0] * (R + 32)
         self.cdef_idx = {}
         self.DeltaLF = [0] * FRAME_LF_COUNT
         self.CurrentQIndex = h.base_q_idx

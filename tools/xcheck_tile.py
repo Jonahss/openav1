@@ -83,7 +83,14 @@ def run_tile(hdr_fields, data, sym_events, c_events, verbose, frame=None, check_
         flat = [v for r in rows for v in r]
         if flat != dvals:
             bad = [(i, flat[i], dvals[i]) for i in range(min(len(flat), len(dvals))) if flat[i] != dvals[i]]
-            raise Mismatch(f"C #{k} plane {plane} ({x4},{y4}) tx {tx}: dequant differs at {bad[:6]} (model eob {eob}, dav1d eob {deob})")
+            # the block holding this transform block (luma 4x4 units), for the syntax that feeds the dequantisation
+            sx = hdr.subsampling_x if plane else 0
+            sy = hdr.subsampling_y if plane else 0
+            blk = [b for b in dec.blocks if b["r"] <= (y4 << sy) < b["r"] + tm.T.Num_4x4_Blocks_High[b["size"]]
+                   and b["c"] <= (x4 << sx) < b["c"] + tm.T.Num_4x4_Blocks_Wide[b["size"]]]
+            raise Mismatch(f"C #{k} plane {plane} ({x4},{y4}) tx {tx} type {txtp}: dequant differs at {bad[:6]} (model eob {eob}, "
+                           f"dav1d eob {deob}); block {blk[-1] if blk else None}; qindex {dec.get_qindex(0, blk[-1]['seg']) if blk else '?'} "
+                           f"base_q_idx {hdr.base_q_idx} delta_q_present {hdr.delta_q_present} lossless {hdr.LosslessArray}")
     return counts["S"], len(model_c), len(dec.blocks), dec
 
 
@@ -149,6 +156,7 @@ def main():
         if len(d.tiles) != len(tiles):
             print(f"tile count: parser {len(d.tiles)} vs trace {len(tiles)}")
         seq = sm.SequenceState()
+        tot_inter = [0, 0]                                      # inter blocks, of which compound
         ti = 0
         fi = 0                                                  # index into d.frames (decoded frames)
         stop = False
@@ -170,6 +178,8 @@ def main():
                                                check_coefs=has_coefs)
                     ok += 1
                     tot_s += ns; tot_c += nc; tot_b += nb
+                    tot_inter[0] += sum(1 for b in dec.blocks if b.get("inter") and not b.get("intrabc"))
+                    tot_inter[1] += sum(1 for b in dec.blocks if b.get("inter") and len(b.get("mvs", ())) == 2)
                     decoders.append(dec)
                 except Mismatch as m:
                     kind = "intra" if h.FrameIsIntra else "inter"
@@ -180,8 +190,9 @@ def main():
             if stop:
                 break
             seq.end_frame(h, decoders, frame_cdfs=ctx.cdfs)
-    print(f"OK: {ok}/{len(tiles)} tiles, {tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks" if ok == len(tiles)
-          else f"{ok}/{len(tiles)} tiles OK ({tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks before the mismatch)")
+    inter = f", {tot_inter[0]} inter blocks ({tot_inter[1]} compound)" if stream is not None else ""
+    print(f"OK: {ok}/{len(tiles)} tiles, {tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks{inter}" if ok == len(tiles)
+          else f"{ok}/{len(tiles)} tiles OK ({tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks{inter} before the mismatch)")
     sys.exit(0 if ok == len(tiles) else 1)
 
 if __name__ == "__main__":

@@ -164,12 +164,20 @@ class SequenceState:
         R, Cc = h.MiRows, h.MiCols
         ref_frames = [[NONE] * Cc for _ in range(R)]
         mvs = [[[0, 0] for _ in range(Cc)] for _ in range(R)]
-        seg = [[0] * Cc for _ in range(R)]
+        # the frame's segmentation map (7.4 decode frame wrapup): the blocks' ids, except that a frame with
+        # segmentation enabled and segmentation_update_map = 0 stores the previous map verbatim, NOT the per-block
+        # minima its blocks used (the two differ where a block covered mixed ids; found on Argon test10147)
+        if h.segmentation_enabled and not h.segmentation_update_map:
+            prev = decoders[0].frame.prev_segment_ids if decoders else None
+            seg = [list(row) for row in prev] if prev is not None else [[0] * Cc for _ in range(R)]
+        else:
+            seg = [[0] * Cc for _ in range(R)]
         for d in decoders:
             th = d.h
             for row in range(th.MiRowStart, min(th.MiRowEnd, R)):
                 for col in range(th.MiColStart, min(th.MiColEnd, Cc)):
-                    seg[row][col] = d.SegmentIds[row][col]
+                    if not (h.segmentation_enabled and not h.segmentation_update_map):
+                        seg[row][col] = d.SegmentIds[row][col]
                     rf = d.RefFrames[row][col]
                     if rf is None:
                         continue
