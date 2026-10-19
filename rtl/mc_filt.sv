@@ -14,6 +14,7 @@
 //       mode 1 (park):   pred[i][4g + l] = p             (list 0 of a compound block)
 //       mode 2 (avg):    out = clip(Round2(pred + p, 1 + InterPostRound))
 //       mode 3 (dist):   out = clip(Round2(wt0 * pred + wt1 * p, 4 + InterPostRound))
+//       mode 4 (pair):   out_pair = {p (list 1), pred (list 0)} unblended, 16-bit signed lanes, for a masked blend outside
 // Filters: interp_x / interp_y are the block's interp_filter[1] / [0] (0 EIGHTTAP, 1 SMOOTH, 2 SHARP, 3 BILINEAR);
 // the 4-tap rows (4, 5) replace EIGHTTAP / SHARP and SMOOTH when w (resp. h) <= 4. Rounding: InterRound0 = 3 (5 at
 // 12-bit), InterRound1 = 11 single (9 at 12-bit) / 7 compound, InterPostRound = 14 - InterRound0 - InterRound1.
@@ -43,7 +44,7 @@ module mc_filt
     input  logic [3:0]    fx,                  // subpel phase (p >> 6) & 15
     input  logic [3:0]    fy,
     input  logic [3:0]    bit_depth,
-    input  logic [1:0]    mode,                // 0 single, 1 park, 2 average, 3 distance
+    input  logic [2:0]    mode,                // 0 single, 1 park, 2 average, 3 distance, 4 pair (masked blends outside)
     input  logic [4:0]    wt0,                 // distance weights (Quant_Dist_Lookup): parked list, this list
     input  logic [4:0]    wt1,
     output logic          busy,
@@ -53,7 +54,8 @@ module mc_filt
     output logic [6:0]    out_x,
     output logic [6:0]    out_y,
     output logic [4*PW-1:0] out_pix4,
-    output logic [3:0]    out_mask
+    output logic [3:0]    out_mask,
+    output logic [127:0]  out_pair             // mode 4: lane l: list 0 at [16l +: 16], list 1 at [64 + 16l +: 16] (signed)
 );
     localparam int PATCH_WPR = 18;                        // words per patch row
     localparam int PATCH_ROWS = 72;
@@ -79,7 +81,7 @@ module mc_filt
     logic [4:0]  p_ngrp;                                 // ceil(w / 4)
     logic [6:0]  p_nrow;                                 // h + 7
     logic [3:0]  p_bd;
-    logic [1:0]  p_mode;
+    logic [2:0]  p_mode;
     logic [4:0]  p_wt0, p_wt1;
     logic [3:0]  p_r0, p_r1, p_post;
     logic [3:0]  p_mask;
@@ -172,9 +174,9 @@ module mc_filt
                     p_ngrp <= 5'((w + 7'd3) >> 2); p_nrow <= h + 7'd7;
                     p_bd <= bit_depth; p_mode <= mode; p_wt0 <= wt0; p_wt1 <= wt1;
                     p_r0 <= (bit_depth == 4'd12) ? 4'd5 : 4'd3;
-                    p_r1 <= (mode != 2'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11;
+                    p_r1 <= (mode != 3'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11;
                     p_post <= 4'd14 - ((bit_depth == 4'd12) ? 4'd5 : 4'd3)
-                                    - ((mode != 2'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11);
+                                    - ((mode != 3'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11);
                     p_mask <= (w == 7'd2) ? 4'b0011 : 4'b1111;
                     for (int t = 0; t < 8; t++) begin
                         tx[t] <= subpel_tap(filt_id(interp_x, w <= 7'd4), fx, 3'(t));
@@ -244,19 +246,20 @@ module mc_filt
             end
             // v4: park, or blend / clip / output
             if (v3_v) begin
-                if (p_mode == 2'd1) begin
+                if (p_mode == 3'd1) begin
                     pwr_we <= 1'b1; pwr_addr <= 10'(v3_i) * 10'(GRP) + 10'(v3_g);
                     pwr_d <= {vs[3], vs[2], vs[1], vs[0]};
                 end else begin
                     out_valid <= 1'b1; out_x <= {v3_g, 2'b00}; out_y <= v3_i; out_mask <= p_mask;
+                    out_pair <= {vs[3], vs[2], vs[1], vs[0], v3_pred};
                     for (int l = 0; l < 4; l++) begin
                         logic signed [21:0] b, p0, p1, w0s, w1s;
                         w0s = 22'(signed'({1'b0, p_wt0})); w1s = 22'(signed'({1'b0, p_wt1}));
                         p0 = 22'(signed'(v3_pred[l*16 +: 16]));
                         p1 = 22'(vs[l]);
                         case (p_mode)
-                            2'd2: b = (p0 + p1 + (22'sd1 <<< p_post)) >>> (p_post + 4'd1);
-                            2'd3: b = (w0s * p0 + w1s * p1 + (22'sd1 <<< (p_post + 4'd3))) >>> (p_post + 4'd4);   // weights as signed: an unsigned operand would make the product unsigned
+                            3'd2: b = (p0 + p1 + (22'sd1 <<< p_post)) >>> (p_post + 4'd1);
+                            3'd3: b = (w0s * p0 + w1s * p1 + (22'sd1 <<< (p_post + 4'd3))) >>> (p_post + 4'd4);   // weights as signed: an unsigned operand would make the product unsigned
                             default: b = p1;
                         endcase
                         out_pix4[l*PW +: PW] <= (b < 22'sd0) ? PW'(0) : (b > 22'(pix_max)) ? pix_max : PW'(b);

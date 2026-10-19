@@ -65,12 +65,18 @@ async def run(dut, lst, w, h, interp_x, interp_y, fx, fy, bd, mode, wt0, wt1):
         if int(dut.out_valid.value):
             x, y = int(dut.out_x.value), int(dut.out_y.value)
             v4 = int(dut.out_pix4.value)
+            pr = int(dut.out_pair.value)
             m = int(dut.out_mask.value)
             for l in range(4):
                 if (m >> l) & 1:
                     assert x + l < w and y < h, f"output outside the unit: ({x + l}, {y}) in {w}x{h}"
                     assert got[y][x + l] is None, f"({x + l}, {y}) written twice"
-                    got[y][x + l] = (v4 >> (12 * l)) & 0xFFF
+                    if mode == 4:
+                        s0 = (pr >> (16 * l)) & 0xFFFF
+                        s1 = (pr >> (64 + 16 * l)) & 0xFFFF
+                        got[y][x + l] = (s0 - 65536 if s0 >> 15 else s0, s1 - 65536 if s1 >> 15 else s1)
+                    else:
+                        got[y][x + l] = (v4 >> (12 * l)) & 0xFFF
                     n += 1
         if int(dut.done.value):
             break
@@ -92,12 +98,12 @@ async def mc_filt_vs_model(dut):
         await RisingEdge(dut.clk)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = {"single": 0, "avg": 0, "dist": 0, "samples": 0, "clamped": 0}
+    stats = {"single": 0, "avg": 0, "dist": 0, "pair": 0, "samples": 0, "clamped": 0}
     for it in range(iters):
         bd = rng.choice([8, 10, 12])
         mx = (1 << bd) - 1
         w, h = rng.choice(SIZES), rng.choice(SIZES)
-        kind = rng.choice(["single", "single", "avg", "dist"])
+        kind = rng.choice(["single", "single", "avg", "dist", "pair"])
         compound = kind != "single"
         r0 = 3 + (2 if bd == 12 else 0)
         r1 = 7 if compound else (11 - (2 if bd == 12 else 0))
@@ -123,6 +129,8 @@ async def mc_filt_vs_model(dut):
                 mode = 3
                 row = rng.choice(T.Quant_Dist_Lookup)
                 wt0, wt1 = (row[0], row[1]) if rng.random() < 0.5 else (row[1], row[0])
+            elif kind == "pair":
+                mode, wt0, wt1 = 4, 0, 0
             else:
                 mode, wt0, wt1 = 0, 0, 0
             got, n, cycles = await run(dut, lst, w, h, interp_x, interp_y, fx, fy, bd, mode, wt0, wt1)
@@ -132,9 +140,11 @@ async def mc_filt_vs_model(dut):
             exp = [[clip1(preds[0][i][j]) for j in range(w)] for i in range(h)]
         elif kind == "avg":
             exp = [[clip1(im.round2(preds[0][i][j] + preds[1][i][j], 1 + post)) for j in range(w)] for i in range(h)]
-        else:
+        elif kind == "dist":
             exp = [[clip1(im.round2(wt0 * preds[0][i][j] + wt1 * preds[1][i][j], 4 + post)) for j in range(w)]
                    for i in range(h)]
+        else:
+            exp = [[(preds[0][i][j], preds[1][i][j]) for j in range(w)] for i in range(h)]
         assert n == w * h, f"iter {it}: got {n} samples, expected {w * h} ({w}x{h} {kind})"
         for i in range(h):
             for j in range(w):
