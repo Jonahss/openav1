@@ -103,5 +103,21 @@ lines += ["            default: return 1'b0;",
           "        return 7'(II_WEIGHTS[i]);",
           "    endfunction",
           "endpackage"]
+# warped motion (7.11.3.5 / 7.11.3.7): the warp filter taps and the division LUT, before the package end
+wf = T.Warped_Filters
+assert len(wf) == 193 and all(len(r) == 8 for r in wf) and all(-128 <= v <= 127 for r in wf for v in r)
+assert lines[-1] == "endpackage"
+warp = ["    // Warped_Filters[offs][t] (7.11.3.5, 193 rows of 8 taps, offs = Round2(sx, WARPEDDIFF_PREC_BITS) + 64), entry 8 offs + t",
+        "    localparam logic signed [7:0] WARPED_FILTERS [0:193*8-1] = '{"]
+for r in wf:
+    warp.append("        " + ", ".join(f"-8'sd{-v}" if v < 0 else f"8'sd{v}" for v in r) + ",")
+warp[-1] = warp[-1].rstrip(",")
+warp += ["    };",
+         "    function automatic logic signed [7:0] warp_tap(input logic [7:0] offs, input logic [2:0] t);",
+         "        return WARPED_FILTERS[{offs, t}];",
+         "    endfunction",
+         "    // Div_Lut (7.11.3.7 resolve_divisor), 257 entries of 15 bits",
+         "    localparam logic [14:0] DIV_LUT [0:256] = '{" + ", ".join(f"15'd{v}" for v in T.Div_Lut) + "};"]
+lines[-1:-1] = warp
 Path(__file__).resolve().parent.parent.joinpath("rtl", "mc_tables_pkg.sv").write_text("\n".join(lines) + "\n")
 print("rtl/mc_tables_pkg.sv:", len(vals), "wedge master entries + taps")
