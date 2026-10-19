@@ -249,7 +249,7 @@ module recon_top
     logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
     logic [9:0]  mc_xf0, mc_yf0;                             // startX & 1023, startY & 1023 of the strip
     logic [2:0]  mc_mode;
-    logic [127:0] mc_out_pair;
+    logic [135:0] mc_out_pair;                               // 2 lists x 4 lanes x 17-bit signed
     logic [6:0]  mc_out_x, mc_out_y; logic [47:0] mc_out_pix4; logic [3:0] mc_out_mask;
     logic [PXW-1:0] mc_ox; logic [1:0] mc_osh;              // output sample x, and its lane shift within the 4-group
     // OBMC (7.11.3.10, stage 2b.1): after a plane's own prediction, each overlap neighbour of b.obmc predicts a
@@ -283,7 +283,7 @@ module recon_top
     logic [5:0]  mk_xoff, mk_yoff;
     logic        mk_inv;
     logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
-    logic [127:0] mb_a_pair, mb_a2_pair;
+    logic [135:0] mb_a_pair, mb_a2_pair;
     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
     logic [3:0]  mb_a_be, mb_a2_be, mb_b_be;
     logic [6:0]  mb_a2_m [4];                                // DIFFWTD luma: the mask computed in A, carried to A2
@@ -317,15 +317,15 @@ module recon_top
         if (m >= 8'd4) return 3'd5;
         return 3'd6;
     endfunction
-    function automatic logic [6:0] diff_mask(input logic signed [15:0] p0, input logic signed [15:0] p1, input logic [3:0] bd,
+    function automatic logic [6:0] diff_mask(input logic signed [16:0] p0, input logic signed [16:0] p1, input logic [3:0] bd,
                                              input logic [3:0] post, input logic mtype);
-        logic signed [16:0] d;
-        logic [16:0] a;
+        logic signed [17:0] d;
+        logic [17:0] a;
         logic [6:0] m;
-        d = 17'(p0) - 17'(p1);
-        a = (d < 0) ? 17'(-d) : 17'(d);
-        a = (a + (17'd1 << (bd - 4'd8 + post - 4'd1))) >> (bd - 4'd8 + post);         // Round2(diff, bd - 8 + post)
-        m = (a[16:4] + 13'd38 > 13'd64) ? 7'd64 : 7'(a[16:4] + 13'd38);                // clip3(0, 64, 38 + diff / 16)
+        d = 18'(p0) - 18'(p1);
+        a = (d < 0) ? 18'(-d) : 18'(d);
+        a = (a + (18'd1 << (bd - 4'd8 + post - 4'd1))) >> (bd - 4'd8 + post);         // Round2(diff, bd - 8 + post)
+        m = (a[17:4] + 14'd38 > 14'd64) ? 7'd64 : 7'(a[17:4] + 14'd38);                // clip3(0, 64, 38 + diff / 16)
         return mtype ? 7'd64 - m : m;
     endfunction
     function automatic logic [6:0] obmc_mask(input logic [5:0] len, input logic [5:0] i);
@@ -858,7 +858,7 @@ module recon_top
                 for (int l = 0; l < 4; l++) begin
                     mk_ra0[(mb_by[0] ? 4 : 0) + l] = rowbase;
                     if (mc_pl == 2'd0 && mb_active && mb_diff) begin
-                        mb_dm[l] = diff_mask(signed'(mc_out_pair[16*l +: 16]), signed'(mc_out_pair[64 + 16*l +: 16]), hdr.bit_depth, mc_post, b.mask_type);
+                        mb_dm[l] = diff_mask(signed'(mc_out_pair[17*l +: 17]), signed'(mc_out_pair[68 + 17*l +: 17]), hdr.bit_depth, mc_post, b.mask_type);
                         mk_we[(mb_by[0] ? 4 : 0) + l] = 1'b1; mk_waddr[(mb_by[0] ? 4 : 0) + l] = rowbase; mk_wdata[(mb_by[0] ? 4 : 0) + l] = mb_dm[l];
                     end
                 end
@@ -911,9 +911,9 @@ module recon_top
                 for (int l = 0; l < 4; l++) begin
                     logic [6:0] m;
                     logic signed [23:0] v;
-                    logic signed [15:0] p0, p1;
+                    logic signed [16:0] p0, p1;
                     m = (mc_pl == 2'd0 && mb_diff) ? mb_a_dm[l] : mb_wm[l];
-                    p0 = signed'(mb_a_pair[16*l +: 16]); p1 = signed'(mb_a_pair[64 + 16*l +: 16]);
+                    p0 = signed'(mb_a_pair[17*l +: 17]); p1 = signed'(mb_a_pair[68 + 17*l +: 17]);
                     v = (24'(signed'({1'b0, m})) * 24'(p0) + 24'(signed'({1'b0, 7'd64 - m})) * 24'(p1) + (24'sd1 <<< (mc_post + 4'd5))) >>> (mc_post + 4'd6);
                     mb_b_pix[l*12 +: 12] <= (v < 24'sd0) ? 12'd0 : (v > 24'(pix_max)) ? pix_max : 12'(v);
                 end

@@ -126,9 +126,9 @@ async def run(dut, lst, w, h, interp_x, interp_y, xf, yf, bd, mode, wt0, wt1, xs
                     assert x + l < w and y < h, f"output outside the unit: ({x + l}, {y}) in {w}x{h}"
                     assert got[y][x + l] is None, f"({x + l}, {y}) written twice"
                     if mode == 4:
-                        s0 = (pr >> (16 * l)) & 0xFFFF
-                        s1 = (pr >> (64 + 16 * l)) & 0xFFFF
-                        got[y][x + l] = (s0 - 65536 if s0 >> 15 else s0, s1 - 65536 if s1 >> 15 else s1)
+                        s0 = (pr >> (17 * l)) & 0x1FFFF
+                        s1 = (pr >> (68 + 17 * l)) & 0x1FFFF
+                        got[y][x + l] = (s0 - (1 << 17) if s0 >> 16 else s0, s1 - (1 << 17) if s1 >> 16 else s1)
                     else:
                         got[y][x + l] = (v4 >> (12 * l)) & 0xFFF
                     n += 1

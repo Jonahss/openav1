@@ -22,7 +22,8 @@
 //       mode 1 (park):   pred[i][c] = p                  (list 0 of a compound block)
 //       mode 2 (avg):    out = clip(Round2(pred + p, 1 + InterPostRound))
 //       mode 3 (dist):   out = clip(Round2(wt0 * pred + wt1 * p, 4 + InterPostRound))
-//       mode 4 (pair):   out_pair = {p (list 1), pred (list 0)} unblended, 16-bit signed lanes, for a masked blend outside
+//       mode 4 (pair):   out_pair = {p (list 1), pred (list 0)} unblended, 17-bit signed lanes, for a masked blend outside
+//       (compound intermediates exceed 16 bits for extreme 10/12-bit content: up to ~40000 with the sharp filter)
 // Filters: interp_x / interp_y are the block's interp_filter[1] / [0] (0 EIGHTTAP, 1 SMOOTH, 2 SHARP, 3 BILINEAR);
 // the 4-tap rows (4, 5) replace EIGHTTAP / SHARP and SMOOTH when w (resp. h) <= 4. Rounding: InterRound0 = 3 (5 at
 // 12-bit), InterRound1 = 11 single (9 at 12-bit) / 7 compound, InterPostRound = 14 - InterRound0 - InterRound1.
@@ -74,7 +75,7 @@ module mc_filt
     output logic [6:0]    out_y,
     output logic [4*PW-1:0] out_pix4,
     output logic [3:0]    out_mask,
-    output logic [127:0]  out_pair             // mode 4: lane l: list 0 at [16l +: 16], list 1 at [64 + 16l +: 16] (signed)
+    output logic [135:0]  out_pair             // mode 4: lane l: list 0 at [17l +: 17], list 1 at [68 + 17l +: 17] (signed)
 );
     localparam int PATCH_WPR = 18;                        // words per patch row
     localparam int PATCH_ROWS = 72;
@@ -85,7 +86,7 @@ module mc_filt
     // ================================================================ memories
     logic [4*PW-1:0] patch_ram [0:PATCH_N-1];
     logic [63:0]     strip_ram [0:STRIP_ROWS*GRP-1];      // intermediate: 4 x 16-bit signed per word
-    logic [63:0]     pred_ram  [0:64*GRP-1];              // parked list-0 prediction: 4 x 16-bit signed per word
+    logic [67:0]     pred_ram  [0:64*GRP-1];              // parked list-0 prediction: 4 x 17-bit signed per word
 
     function automatic logic [11:0] patch_addr(input logic l, input logic [6:0] r, input logic [4:0] w4);
         return 12'(l) * 12'(PATCH_ROWS * PATCH_WPR) + 12'(r) * 12'(PATCH_WPR) + 12'(w4);
@@ -148,8 +149,8 @@ module mc_filt
     logic [11:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
     logic [10:0] srd_addr;  logic [63:0] srd_q, srd_q1;  // strip read (q1 with the v1 tags)
     logic [10:0] swr_addr;  logic [63:0] swr_d;  logic swr_we;
-    logic [9:0]  pdr_addr;  logic [63:0] pdr_q, pdr_q1;  // parked prediction read (q1 with the v1 tags)
-    logic [9:0]  pwr_addr;  logic [63:0] pwr_d;  logic pwr_we;
+    logic [9:0]  pdr_addr;  logic [67:0] pdr_q, pdr_q1;  // parked prediction read (q1 with the v1 tags)
+    logic [9:0]  pwr_addr;  logic [67:0] pwr_d;  logic pwr_we;
     logic [6:0]  srd_row;
     always_ff @(posedge clk) begin
         prd_q <= patch_ram[prd_addr];
@@ -211,13 +212,13 @@ module mc_filt
     logic        v0_v, v0_c;  logic [6:0] v0_k, v0_i;  logic [4:0] v0_g;  logic [3:0] v0_ph;
     logic        v1_v, v1_c;  logic [6:0] v1_k, v1_i;  logic [4:0] v1_g;  logic [3:0] v1_ph;
     logic [63:0] vwin [0:6];                             // the 7 strip words before srd_q1 (vwin[0] = oldest)
-    logic        v2_v;  logic [6:0] v2_i;  logic [4:0] v2_g;  logic [63:0] v2_pred;
+    logic        v2_v;  logic [6:0] v2_i;  logic [4:0] v2_g;  logic [67:0] v2_pred;
     logic signed [15:0] vsamp [0:3][0:7];
     logic signed [8:0]  vtap  [0:3][0:7];
-    logic        v3_v;  logic [6:0] v3_i;  logic [4:0] v3_g;  logic [63:0] v3_pred;
+    logic        v3_v;  logic [6:0] v3_i;  logic [4:0] v3_g;  logic [67:0] v3_pred;
     logic signed [24:0] vp [0:3][0:7];
-    logic        v4_v;  logic [6:0] v4_i;  logic [4:0] v4_g;  logic [63:0] v4_pred;
-    logic signed [15:0] vs [0:3];
+    logic        v4_v;  logic [6:0] v4_i;  logic [4:0] v4_g;  logic [67:0] v4_pred;
+    logic signed [16:0] vs [0:3];                       // the vertical output: 17 bits (compound intermediates)
     logic [PW-1:0] pix_max;
     assign pix_max = PW'((13'd1 << p_bd) - 13'd1);
 
@@ -379,7 +380,7 @@ module mc_filt
                 logic signed [27:0] s;
                 s = 28'sd0;
                 for (int t = 0; t < 8; t++) s = s + 28'(vp[l][t]);
-                vs[l] <= 16'((s + (28'sd1 <<< (p_r1 - 4'd1))) >>> p_r1);
+                vs[l] <= 17'((s + (28'sd1 <<< (p_r1 - 4'd1))) >>> p_r1);
             end
             // v5: park, or blend / clip / output
             if (v4_v) begin
@@ -392,7 +393,7 @@ module mc_filt
                     for (int l = 0; l < 4; l++) begin
                         logic signed [21:0] b, p0, p1, w0s, w1s;
                         w0s = 22'(signed'({1'b0, p_wt0})); w1s = 22'(signed'({1'b0, p_wt1}));
-                        p0 = 22'(signed'(v4_pred[l*16 +: 16]));
+                        p0 = 22'(signed'(v4_pred[l*17 +: 17]));
                         p1 = 22'(vs[l]);
                         case (p_mode)
                             3'd2: b = (p0 + p1 + (22'sd1 <<< p_post)) >>> (p_post + 4'd1);
