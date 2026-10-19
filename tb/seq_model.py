@@ -43,10 +43,17 @@ def zero_counts(cdfs):
 
 class TileSummary:
     """What end_frame needs from a decoded tile, so the TileDecoder (full-frame arrays for every per-4x4 quantity) can be
-    dropped as soon as its symbols are checked: a frame of 100+ tiles held as decoders took tens of GB."""
+    dropped as soon as its symbols are checked: a frame of 100+ tiles held as decoders took tens of GB. Only the tile's
+    own window [MiRowStart, MiRowEnd) x [MiColStart, MiColEnd) is kept (a 1,456-tile Argon frame held as full-frame
+    summaries took 30 GB); end_frame indexes it with (r0, c0)."""
     def __init__(self, dec, keep_cdf):
-        self.h = dec.h
-        self.SegmentIds, self.RefFrames, self.Mvs = dec.SegmentIds, dec.RefFrames, dec.Mvs
+        self.h = th = dec.h
+        R, Cc = th.MiRows, th.MiCols
+        self.r0, self.c0 = th.MiRowStart, th.MiColStart
+        r1, c1 = min(th.MiRowEnd, R), min(th.MiColEnd, Cc)
+        self.SegmentIds = [row[self.c0:c1] for row in dec.SegmentIds[self.r0:r1]]
+        self.RefFrames = [row[self.c0:c1] for row in dec.RefFrames[self.r0:r1]]
+        self.Mvs = [row[self.c0:c1] for row in dec.Mvs[self.r0:r1]]
         self.cdf = dec.cdf if keep_cdf else None
         self.frame = dec.frame
 
@@ -182,13 +189,16 @@ class SequenceState:
             seg = [list(row) for row in prev] if prev is not None else [[0] * Cc for _ in range(R)]
         else:
             seg = [[0] * Cc for _ in range(R)]
+        copy_seg = not (h.segmentation_enabled and not h.segmentation_update_map)
         for d in decoders:
             th = d.h
+            r0, c0 = getattr(d, "r0", 0), getattr(d, "c0", 0)       # a TileSummary holds its window; a decoder the frame
             for row in range(th.MiRowStart, min(th.MiRowEnd, R)):
+                d_seg, d_rf, d_mv = d.SegmentIds[row - r0], d.RefFrames[row - r0], d.Mvs[row - r0]
                 for col in range(th.MiColStart, min(th.MiColEnd, Cc)):
-                    if not (h.segmentation_enabled and not h.segmentation_update_map):
-                        seg[row][col] = d.SegmentIds[row][col]
-                    rf = d.RefFrames[row][col]
+                    if copy_seg:
+                        seg[row][col] = d_seg[col - c0]
+                    rf = d_rf[col - c0]
                     if rf is None:
                         continue
                     for lst in range(2):
@@ -196,7 +206,7 @@ class SequenceState:
                         if r > INTRA_FRAME:
                             dist = self.relative_dist(h, h.OrderHints[r], h.order_hint)
                             if dist < 0:
-                                mv = d.Mvs[row][col][lst]
+                                mv = d_mv[col - c0][lst]
                                 if abs(mv[0]) <= tm.REFMVS_LIMIT and abs(mv[1]) <= tm.REFMVS_LIMIT:
                                     ref_frames[row][col] = r
                                     mvs[row][col] = list(mv)

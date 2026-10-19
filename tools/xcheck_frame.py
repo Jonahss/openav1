@@ -24,9 +24,11 @@ import seq_model as sm      # noqa: E402
 
 
 class FrameState:
-    """Per-4x4 arrays of a whole frame, merged from its tile decoders (each only fills its own region)."""
+    """Per-4x4 arrays of a whole frame, merged from its tile decoders one at a time (each only fills its own region),
+    so a decoder can be dropped as soon as its tile is reconstructed (a 1,456-tile Argon frame held as decoders took
+    tens of GB)."""
 
-    def __init__(self, hdr, decs):
+    def __init__(self, hdr):
         self.h = hdr
         R, C = hdr.MiRows, hdr.MiCols
         self.Skips = [[0] * C for _ in range(R)]
@@ -35,30 +37,35 @@ class FrameState:
         self.SegmentIds = [[0] * C for _ in range(R)]
         self.DeltaLFs = [[None] * C for _ in range(R)]
         self.RefFrames = [[[0, -1]] * C for _ in range(R)]       # 7.14: isIntra, the reference and mode deltas
-        self.LoopfilterTxSizes = [[row[:] for row in d] for d in decs[0].LoopfilterTxSizes]
+        self.LoopfilterTxSizes = None
         self.cdef_idx = {}
         self.LrType, self.LrWiener, self.LrSgrSet, self.LrSgrXqd = {}, {}, {}, {}
-        for d in decs:
-            self.LrType.update(d.LrType); self.LrWiener.update(d.LrWiener)
-            self.LrSgrSet.update(d.LrSgrSet); self.LrSgrXqd.update(d.LrSgrXqd)
-            th = d.h
-            for r in range(th.MiRowStart, min(th.MiRowEnd, R)):
-                for c in range(th.MiColStart, min(th.MiColEnd, C)):
-                    self.Skips[r][c] = d.Skips[r][c]
-                    self.MiSizes[r][c] = d.MiSizes[r][c]
-                    self.YModes[r][c] = d.YModes[r][c]
-                    self.SegmentIds[r][c] = d.SegmentIds[r][c]
-                    self.DeltaLFs[r][c] = d.DeltaLFs[r][c]
-                    if d.RefFrames[r][c] is not None:
-                        self.RefFrames[r][c] = d.RefFrames[r][c]
-            for plane in range(hdr.NumPlanes):
-                subX = hdr.subsampling_x if plane > 0 else 0
-                subY = hdr.subsampling_y if plane > 0 else 0
-                src, dst = d.LoopfilterTxSizes[plane], self.LoopfilterTxSizes[plane]
-                for r in range(th.MiRowStart >> subY, min((th.MiRowEnd + subY) >> subY, len(dst))):
-                    for c in range(th.MiColStart >> subX, min((th.MiColEnd + subX) >> subX, len(dst[0]))):
-                        dst[r][c] = src[r][c]
-            self.cdef_idx.update(d.cdef_idx)
+
+    def add(self, d):
+        hdr = self.h
+        R, C = hdr.MiRows, hdr.MiCols
+        if self.LoopfilterTxSizes is None:
+            self.LoopfilterTxSizes = [[row[:] for row in pl] for pl in d.LoopfilterTxSizes]
+        self.LrType.update(d.LrType); self.LrWiener.update(d.LrWiener)
+        self.LrSgrSet.update(d.LrSgrSet); self.LrSgrXqd.update(d.LrSgrXqd)
+        self.cdef_idx.update(d.cdef_idx)
+        th = d.h
+        for r in range(th.MiRowStart, min(th.MiRowEnd, R)):
+            for c in range(th.MiColStart, min(th.MiColEnd, C)):
+                self.Skips[r][c] = d.Skips[r][c]
+                self.MiSizes[r][c] = d.MiSizes[r][c]
+                self.YModes[r][c] = d.YModes[r][c]
+                self.SegmentIds[r][c] = d.SegmentIds[r][c]
+                self.DeltaLFs[r][c] = d.DeltaLFs[r][c]
+                if d.RefFrames[r][c] is not None:
+                    self.RefFrames[r][c] = d.RefFrames[r][c]
+        for plane in range(hdr.NumPlanes):
+            subX = hdr.subsampling_x if plane > 0 else 0
+            subY = hdr.subsampling_y if plane > 0 else 0
+            src, dst = d.LoopfilterTxSizes[plane], self.LoopfilterTxSizes[plane]
+            for r in range(th.MiRowStart >> subY, min((th.MiRowEnd + subY) >> subY, len(dst))):
+                for c in range(th.MiColStart >> subX, min((th.MiColEnd + subX) >> subX, len(dst[0]))):
+                    dst[r][c] = src[r][c]
 
     def get_plane_residual_size(self, subsize, plane):
         subx = self.h.subsampling_x if plane > 0 else 0
@@ -162,14 +169,19 @@ def main():
         ph = next_parser_header() if phdrs is not None else None
         ctx = seq.start_frame(ph) if ph is not None else None
         frame = {"refs": store}
-        decs = []
-        for hdr, data in tl:
-            dec = rm.FrameRecon(hdr, data, frame, ctx=ctx)
-            dec.decode_tile()
-            decs.append(dec)
         hdr = tl[0][0]
+        state = FrameState(hdr)
+        summaries, blocks = [], []                      # what end_frame and the --blocks report need; the decoders go
+        for k, (thdr, data) in enumerate(tl):
+            dec = rm.FrameRecon(thdr, data, frame, ctx=ctx)
+            dec.decode_tile()
+            state.add(dec)
+            if ph is not None:
+                summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
+            if "--blocks" in sys.argv:
+                blocks.extend(dec.blocks)
+            del dec
         planes = frame["planes"]
-        state = FrameState(hdr, decs)
         # the whole post-processing chain always runs (reference frames are final pictures); the compare takes the
         # stage asked for
         by_stage = {"recon": [p[:] for p in planes] if stage == "recon" else None}
@@ -186,7 +198,7 @@ def main():
         by_stage["lr"] = planes
         final = planes
         if ph is not None:
-            seq.end_frame(ph, decs, frame_cdfs=ctx.cdfs)
+            seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
                     store[i] = dict(planes=final, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight)
@@ -220,14 +232,13 @@ def main():
                     for x in range(w):
                         if gr[x] != er[x]:
                             r4, c4 = (y << sy) >> 2, (x << sx) >> 2
-                            for dcd in decs:
-                                for b in dcd.blocks:
-                                    bh4 = T.Num_4x4_Blocks_High[b["size"]]; bw4 = T.Num_4x4_Blocks_Wide[b["size"]]
-                                    if b["r"] <= r4 < b["r"] + bh4 and b["c"] <= c4 < b["c"] + bw4:
-                                        key = (b["r"], b["c"])
-                                        if key not in hit:
-                                            hit[key] = [b, 0, (x, y, gr[x], er[x])]
-                                        hit[key][1] += 1
+                            for b in blocks:
+                                bh4 = T.Num_4x4_Blocks_High[b["size"]]; bw4 = T.Num_4x4_Blocks_Wide[b["size"]]
+                                if b["r"] <= r4 < b["r"] + bh4 and b["c"] <= c4 < b["c"] + bw4:
+                                    key = (b["r"], b["c"])
+                                    if key not in hit:
+                                        hit[key] = [b, 0, (x, y, gr[x], er[x])]
+                                    hit[key][1] += 1
                 for key, (b, n, first) in list(hit.items())[:12]:
                     print(f"    block r{b['r']} c{b['c']} size {b['size']} ({T.Block_Width[b['size']]}x{T.Block_Height[b['size']]}): {n} bad; "
                           f"inter {b.get('inter')} skip {b['skip']} ymode {b['ymode']} ref {b.get('ref')} mvs {b.get('mvs')} "

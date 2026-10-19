@@ -26,39 +26,100 @@ class Mismatch(Exception):
     pass
 
 
-def run_tile(hdr_fields, data, sym_events, c_events, verbose, frame=None, check_coefs=True):
+class TileEvents:
+    """A tile's trace events, read lazily from the byte spans of its D sections (frames_of indexes them): the symbol
+    events are pulled one at a time as the model reads symbols, the C events collect as they pass. Holding a frame's
+    events as Python lists took tens of GB on a 10-million-line Argon frame."""
+    def __init__(self, fh, spans):
+        self.fh, self.spans = fh, spans
+        self.coefs = []
+        self.nsym = 0                           # symbol events handed out
+        self._lines = self._iter_lines()
+        self._peek = None
+
+    def _iter_lines(self):
+        for start, end in self.spans:
+            self.fh.seek(start)
+            for line in self.fh.read(end - start).decode().split("\n"):
+                if line and line[0] in "SUC":
+                    yield line
+
+    def _next_line(self):
+        if self._peek is not None:
+            line, self._peek = self._peek, None
+            return line
+        return next(self._lines, None)
+
+    def next_sym(self):
+        """The next S event (A/B/E tuple as before), with a following U merged into a B; None when the tile has no more.
+        C events met on the way are appended to self.coefs."""
+        while True:
+            line = self._next_line()
+            if line is None:
+                return None
+            f = line.split()
+            k = f[0]
+            if k == "S":
+                self.nsym += 1
+                if f[1] == "A":
+                    n = int(f[2])
+                    return ("A", n, int(f[3]), int(f[4]), int(f[5]), [int(x) for x in f[6:6 + n]])
+                if f[1] == "B":
+                    ev = ["B", int(f[2]), int(f[3]), int(f[4]), None]
+                    nxt = self._next_line()
+                    if nxt is not None and nxt[0] == "U":
+                        g = nxt.split()
+                        ev[4] = (int(g[1]), int(g[2]), int(g[3]))
+                    else:
+                        self._peek = nxt
+                    return ev
+                return ("E", int(f[2]), int(f[3]))
+            if k == "C":
+                plane, x4, y4, tx, txtp, eob, w, h = [int(x) for x in f[1:9]]
+                n = min(w, 32) * min(h, 32)
+                self.coefs.append((plane, x4, y4, tx, txtp, eob, w, h, [int(x) for x in f[9:9 + n]]))
+            # a stray U (not after a B) cannot happen; ignored
+
+    def drain(self):
+        """Read the rest of the tile: returns the number of symbol events the model did not consume."""
+        extra = 0
+        while self.next_sym() is not None:
+            extra += 1
+        return extra
+
+
+def run_tile(hdr_fields, data, events, verbose, frame=None, check_coefs=True):
     hdr = tm.FrameHeader(hdr_fields)
-    idx = [0]
     counts = {"S": 0}
 
     def hook(kind, N, symbol, rng, before, after, name):
         counts["S"] += 1
-        if idx[0] >= len(sym_events):
+        ev = events.next_sym()
+        if ev is None:
             raise Mismatch(f"model read {name} (N={N}) but dav1d logged no more symbols in this tile")
-        ev = sym_events[idx[0]]
-        idx[0] += 1
+        idx = events.nsym
         ekind = ev[0]
         if ekind == "A":
             n, val, erng, cnt, icdf = ev[1], ev[2], ev[3], ev[4], ev[5]
             if n != N - 1 or val != symbol:
-                raise Mismatch(f"{name}: model N={N} sym={symbol}; dav1d A n={n} val={val} (event #{idx[0]})")
+                raise Mismatch(f"{name}: model N={N} sym={symbol}; dav1d A n={n} val={val} (event #{idx})")
             model_icdf = [32768 - before[i] for i in range(N - 1)]
             if model_icdf != icdf or before[N] != cnt:
-                raise Mismatch(f"{name}: CDF differs. model icdf={model_icdf} cnt={before[N]}; dav1d icdf={icdf} cnt={cnt} (event #{idx[0]})")
+                raise Mismatch(f"{name}: CDF differs. model icdf={model_icdf} cnt={before[N]}; dav1d icdf={icdf} cnt={cnt} (event #{idx})")
         elif ekind == "B":
             f, bit, erng, upd = ev[1], ev[2], ev[3], ev[4]
             if N != 2 or bit != symbol:
-                raise Mismatch(f"{name}: model N={N} sym={symbol}; dav1d B bit={bit} (event #{idx[0]})")
+                raise Mismatch(f"{name}: model N={N} sym={symbol}; dav1d B bit={bit} (event #{idx})")
             if 32768 - before[0] != f:
-                raise Mismatch(f"{name}: bool prob differs. model f={32768 - before[0]} dav1d f={f} (event #{idx[0]})")
+                raise Mismatch(f"{name}: bool prob differs. model f={32768 - before[0]} dav1d f={f} (event #{idx})")
             if upd is not None and before[2] != upd[0]:
-                raise Mismatch(f"{name}: bool counter differs. model {before[2]} dav1d {upd[0]} (event #{idx[0]})")
+                raise Mismatch(f"{name}: bool counter differs. model {before[2]} dav1d {upd[0]} (event #{idx})")
         else:  # E
             bit, erng = ev[1], ev[2]
             if N != 2 or before[0] != 16384 or bit != symbol:
-                raise Mismatch(f"{name}: model N={N} cdf0={before[0]} sym={symbol}; dav1d E bit={bit} (event #{idx[0]})")
+                raise Mismatch(f"{name}: model N={N} cdf0={before[0]} sym={symbol}; dav1d E bit={bit} (event #{idx})")
         if rng != erng:
-            raise Mismatch(f"{name}: range after symbol differs: model {rng} dav1d {erng} (event #{idx[0]})")
+            raise Mismatch(f"{name}: range after symbol differs: model {rng} dav1d {erng} (event #{idx})")
 
     dec = tm.TileDecoder(hdr, data, hook, frame=frame)
     try:
@@ -67,10 +128,12 @@ def run_tile(hdr_fields, data, sym_events, c_events, verbose, frame=None, check_
         b = dec.blocks[-1] if dec.blocks else None
         cur = f"MiRow={getattr(dec, 'MiRow', '?')} MiCol={getattr(dec, 'MiCol', '?')} MiSize={getattr(dec, 'MiSize', '?')}"
         raise Mismatch(f"{m} | at {cur}; last completed block {b}") from None
-    if idx[0] != len(sym_events):
-        raise Mismatch(f"model consumed {idx[0]} symbols, dav1d logged {len(sym_events)}")
+    extra = events.drain()
+    if extra:
+        raise Mismatch(f"model consumed {events.nsym - extra} symbols, dav1d logged {events.nsym}")
     # coefficient blocks
     model_c = [e for e in dec.events if e[0] == "C"]
+    c_events = events.coefs
     if not check_coefs:
         return counts["S"], len(model_c), len(dec.blocks), dec
     if len(model_c) != len(c_events):
@@ -103,54 +166,65 @@ def main():
     path = args[0]
     stream = args[1] if len(args) > 1 else None
 
+    fh = open(path, "rb")
+
     def frames_of(path):
-        """Yield the trace's frames one at a time as lists of tiles (dict hdr/data/syms/coefs), so memory holds one
-        frame's events rather than the whole stream (a large Argon stream parsed whole took 15 GB)."""
+        """Yield the trace's frames one at a time as lists of tiles (dict hdr/data/spans): an index pass over the
+        file that records, per tile, the byte spans of its D sections; the events themselves are read by TileEvents
+        when the tile is checked. (Events held as Python lists took 15 GB for a frame, then 30+ GB on the 10-million-
+        line Argon frames; the index is a few numbers per superblock row.)"""
         pending = []        # tiles of the frame being set up (T/H come first for all tiles of a frame)
         active = {}         # (tile_row, tile_col) -> tile, for the frame being decoded (D routes events)
         order = []          # the active frame's tiles in T order
-        cur = None
-        with open(path) as fh:
-            for line in fh:
-                if not line or line[0] == "#":
-                    continue
-                f = line.split()
-                k = f[0]
-                if k == "T":                       # msac init: T then H, for every tile, before decoding starts
+        cur = None          # the tile whose T/H is being read
+        span_tile = None    # the tile whose D section is open, and where it started
+        span_start = 0
+        pos = 0
+        with open(path, "rb") as idx:
+            for line in idx:
+                n = len(line)
+                c0 = line[:1]
+                if c0 == b"T":
+                    if span_tile is not None:
+                        span_tile["spans"].append((span_start, pos))
+                        span_tile = None
                     if active and not pending:     # a new frame starts: the decoded one is complete
                         yield order
                         active, order = {}, []
-                    cur = dict(hdr=None, data=bytes.fromhex(f[3]) if len(f) > 3 else b"", syms=[], coefs=[])
+                    f = line.split()
+                    cur = dict(hdr=None, data=bytes.fromhex(f[3].decode()) if len(f) > 3 else b"", spans=[])
                     pending.append(cur)
-                elif k == "H":
-                    cur["hdr"] = [int(x) for x in f[1:]]
-                elif k == "D":                     # a tile's superblock row starts decoding
+                elif c0 == b"H":
+                    cur["hdr"] = [int(x) for x in line.split()[1:]]
+                elif c0 == b"D":                   # a tile's superblock row starts decoding
+                    if span_tile is not None:
+                        span_tile["spans"].append((span_start, pos))
                     if pending:
                         active = {(t["hdr"][0], t["hdr"][1]): t for t in pending}
                         order = pending
                         pending = []
-                    cur = active[(int(f[1]), int(f[2]))]
-                elif k == "S":
-                    if f[1] == "A":
-                        n = int(f[2])
-                        cur["syms"].append(("A", n, int(f[3]), int(f[4]), int(f[5]), [int(x) for x in f[6:6 + n]]))
-                    elif f[1] == "B":
-                        cur["syms"].append(["B", int(f[2]), int(f[3]), int(f[4]), None])
-                    else:
-                        cur["syms"].append(("E", int(f[2]), int(f[3])))
-                elif k == "U":
-                    last = cur["syms"][-1]
-                    assert last[0] == "B"
-                    last[4] = (int(f[1]), int(f[2]), int(f[3]))
-                elif k == "C":
-                    plane, x4, y4, tx, txtp, eob, w, h = [int(x) for x in f[1:9]]
-                    n = min(w, 32) * min(h, 32)
-                    cur["coefs"].append((plane, x4, y4, tx, txtp, eob, w, h, [int(x) for x in f[9:9 + n]]))
+                    f = line.split()
+                    span_tile = active[(int(f[1]), int(f[2]))]
+                    span_start = pos + n
+                pos += n
+        if span_tile is not None:
+            span_tile["spans"].append((span_start, pos))
         if pending:                                # tiles announced but never decoded (should not happen)
             active = {(t["hdr"][0], t["hdr"][1]): t for t in pending}
             order = pending
         if order:
             yield order
+
+    def events_of(t):
+        return TileEvents(fh, t["spans"])
+
+    def tile_has_coefs(t):
+        """Whether the trace carries C events (a mask-1 trace has none): decided from the first tile's first span."""
+        for start, end in t["spans"][:1]:
+            fh.seek(start)
+            return b"\nC " in b"\n" + fh.read(end - start)
+        return False
+
     ok = 0
     tot_s = tot_c = tot_b = 0
     n_tiles = 0
@@ -159,14 +233,14 @@ def main():
     if stream is None:
         for ftiles in frames_of(path):
             if has_coefs is None:
-                has_coefs = any(t["coefs"] for t in ftiles)
+                has_coefs = any(tile_has_coefs(t) for t in ftiles)
             for t in ftiles:
                 n_tiles += 1
                 if max_tiles is not None and n_tiles > max_tiles:
                     stopped = True
                     break
                 try:
-                    ns, nc, nb, _ = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose, check_coefs=has_coefs)
+                    ns, nc, nb, _ = run_tile(t["hdr"], t["data"], events_of(t), verbose, check_coefs=has_coefs)
                     ok += 1
                     tot_s += ns; tot_c += nc; tot_b += nb
                 except Mismatch as m:
@@ -183,7 +257,7 @@ def main():
         fi = 0                                                  # decoded frames consumed
         for ftiles in frames_of(path):
             if has_coefs is None:
-                has_coefs = any(t["coefs"] for t in ftiles)
+                has_coefs = any(tile_has_coefs(t) for t in ftiles)
             # the parser's header of this decoded frame, applying show_existing_frame events on the way
             h = None
             for h in hdr_iter:
@@ -205,7 +279,7 @@ def main():
                     stopped = True
                     break
                 try:
-                    ns, nc, nb, dec = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose, frame=ctx,
+                    ns, nc, nb, dec = run_tile(t["hdr"], t["data"], events_of(t), verbose, frame=ctx,
                                                check_coefs=has_coefs)
                     ok += 1
                     tot_s += ns; tot_c += nc; tot_b += nb
