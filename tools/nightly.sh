@@ -40,7 +40,13 @@ if [ -d "$ARGON" ]; then
   # inter frames through the RTL tile syntax vs the model (the frame sequence: inherited CDFs, segmentation map, motion field)
   IIVFS=$(for s in 10046 10001 10041; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
   run tile_syntax_inter  TS_IVF="$IIVFS" python tb/runner.py tile_syntax
+  # inter frames through the whole decoder (stage 2a: translational MC, average / distance compound), references =
+  # the model's pictures in the AXI memory model (tb/test_dec_inter.py); test10046 is the stage-2a-clean Argon stream
+  run dec_inter_argon    FBX=12 FBY=9 TS_STAGE=recon TS_IVF="$ARGON/test10046.obu" python tb/runner.py dec_top test_dec_inter
 fi
+# the stage-2a streams encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
+GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
+run dec_inter            TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
 echo "DONE rc=$rc $(date -Is)" >> "$out"
 cat "$out"
 exit $rc
