@@ -20,6 +20,7 @@ import cdef_model as cdm    # noqa: E402
 import lr_model as lrm      # noqa: E402
 import superres_model as srm  # noqa: E402
 import av1_tables as T      # noqa: E402
+import seq_model as sm      # noqa: E402
 
 
 class FrameState:
@@ -116,6 +117,7 @@ def main():
         if hdr.tile_row == 0 and hdr.tile_col == 0:
             frames.append([])
         frames[-1].append((hdr, t["data"]))
+    d = None
     if "--stream" in sys.argv:
         import obu_parser as op
         d = op.Decoder()
@@ -130,30 +132,62 @@ def main():
         print(f"output order (decoded frame per picture): {shown}")
     else:
         shown = list(range(len(frames)))
+    has_inter = any(not tl[0][0].FrameIsIntra or tl[0][0].primary_ref_frame != 7 for tl in frames)
+    if has_inter and d is None:
+        sys.exit("inter frames (or CDF inheritance) need --stream <file>: the sequence state follows the parsed headers")
     refs = read_ref_frames(ref, [frames[k][0][0] for k in shown])
     if len(refs) < len(frames):
         print(f"reference has {len(refs)} frames, trace {len(frames)}")
+    # the sequence state (CDFs, segmentation maps, motion fields) and the reference frame store (final pictures)
+    seq = sm.SequenceState()
+    store = {}
+    phdrs = iter(d.frame_headers) if d is not None else None
+
+    def next_parser_header():
+        """The parser's header of the next decoded frame, applying show_existing_frame events on the way."""
+        while True:
+            ph = next(phdrs)
+            if ph.show_existing_frame:
+                seq.show_existing(ph)
+                if ph.frame_type == 0 and ph.frame_to_show_map_idx in store:        # a shown key frame refreshes every slot
+                    for i in range(8):
+                        store[i] = store[ph.frame_to_show_map_idx]
+                continue
+            return ph
     total_bad = 0
     for fi, tl in enumerate(frames):
-        frame = {}
+        ph = next_parser_header() if phdrs is not None else None
+        ctx = seq.start_frame(ph) if ph is not None else None
+        frame = {"refs": store}
         decs = []
         for hdr, data in tl:
-            dec = rm.FrameRecon(hdr, data, frame)
+            dec = rm.FrameRecon(hdr, data, frame, ctx=ctx)
             dec.decode_tile()
             decs.append(dec)
         hdr = tl[0][0]
         planes = frame["planes"]
         state = FrameState(hdr, decs)
-        if stage in ("lf", "cdef", "lr"):
-            lfm.LoopFilter(hdr, state, planes).apply()
+        # the whole post-processing chain always runs (reference frames are final pictures); the compare takes the
+        # stage asked for
+        by_stage = {"recon": [p[:] for p in planes] if stage == "recon" else None}
+        lfm.LoopFilter(hdr, state, planes).apply()
+        by_stage["lf"] = planes
         deblocked = planes
-        if stage in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+        if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             planes = cdm.Cdef(hdr, state, planes).apply()
-        if stage in ("cdef", "lr") and hdr.use_superres:          # 7.16: both LR inputs are upscaled
+        if hdr.use_superres:                                        # 7.16: both LR inputs are upscaled
             deblocked = srm.upscale(hdr, deblocked)
             planes = srm.upscale(hdr, planes) if planes is not deblocked else deblocked
-        if stage == "lr":
-            planes = lrm.LoopRestoration(hdr, state, deblocked, planes).apply()
+        by_stage["cdef"] = planes
+        planes = lrm.LoopRestoration(hdr, state, deblocked, planes).apply()
+        by_stage["lr"] = planes
+        final = planes
+        if ph is not None:
+            seq.end_frame(ph, decs, frame_cdfs=ctx.cdfs)
+            for i in range(8):
+                if (ph.refresh_frame_flags >> i) & 1:
+                    store[i] = dict(planes=final, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight)
+        planes = by_stage[stage] if by_stage.get(stage) is not None else final
         outs = [o for o, k in enumerate(shown) if k == fi and o < len(refs)]
         if not outs:
             print(f"frame {fi}: not shown (no output picture to compare)")
