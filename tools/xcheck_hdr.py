@@ -22,7 +22,12 @@ FIELDS = ["tile_row", "tile_col", "MiColStart", "MiColEnd", "MiRowStart", "MiRow
           "segmentation_temporal_update", "SegIdPreSkip", "LastActiveSegId", "LosslessArray", "seg_qidx",
           "FeatureEnabled", "FeatureData", "NumPlanes", "FrameIsIntra", "SegQMLevel", "loop_filter_level",
           "loop_filter_sharpness", "loop_filter_delta_enabled", "loop_filter_ref_deltas", "loop_filter_mode_deltas",
-          "cdef_y_strengths", "cdef_uv_strengths"]
+          "cdef_y_strengths", "cdef_uv_strengths",
+          # inter (traces with the 79 trailing values)
+          "order_hint", "refresh_frame_flags", "error_resilient_mode", "force_integer_mv", "show_frame",
+          "showable_frame", "allow_high_precision_mv", "interpolation_filter", "is_motion_mode_switchable",
+          "use_ref_frame_mvs", "reference_select", "skip_mode_present", "SkipModeFrame", "allow_warped_motion",
+          "ref_frame_idx", "OrderHints", "GmType", "gm_params"]
 
 
 def main():
@@ -49,6 +54,8 @@ def main():
         for fld in FIELDS:
             a = getattr(th, fld, "MISSING")
             b = getattr(dh, fld, "MISSING")
+            if b == "MISSING":
+                continue                                  # a field this trace does not carry (older trace format)
             if fld == "FeatureData":
                 # dav1d stores ref = -1 when disabled; the spec stores 0 with FeatureEnabled = 0
                 # ... and keeps the coded value unclipped; the spec clips to Segmentation_Feature_Max (255 / 63 / 7 / 0)
@@ -57,6 +64,8 @@ def main():
             if fld == "FeatureEnabled":
                 # dav1d cannot distinguish "enabled with value 0" from disabled for value features (see FrameHeader)
                 a = [[(1 if (a[s][j] and (th.FeatureData[s][j] != 0 or j >= 5)) else 0) for j in range(8)] for s in range(8)]
+            if fld == "LastActiveSegId" and b == -1:
+                b = 0                                     # dav1d: -1 when no feature is active; the spec: 0
             if fld == "LoopRestorationSize" and not any(t != 0 for t in dh.FrameRestorationType):
                 continue                                  # unit size is unused (and unset in dav1d) without LR
             if fld == "cdef_damping" and (not dh.enable_cdef or dh.CodedLossless or dh.allow_intrabc):

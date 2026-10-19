@@ -259,10 +259,34 @@ class FrameHeader:
             self.loop_filter_mode_deltas = [0, 0]
             self.cdef_y_strengths = [0] * 8
             self.cdef_uv_strengths = [0] * 8
+        # inter fields (79 values, traces since 2026-10-18); names as in tb/obu_parser.py
+        self.ref_frame_idx = [0] * 7
+        self.OrderHints = [0] * 8
+        self.GmType = [0] * 8
+        self.gm_params = [[0, 0, 1 << 16, 0, 0, 1 << 16] for _ in range(8)]
+        self.reference_select = self.skip_mode_present = self.allow_warped_motion = 0
+        self.SkipModeFrame = [0, 0]
+        self.interpolation_filter = self.is_motion_mode_switchable = 0
+        if len(rest) >= 32 + 79:
+            r = rest[32:32 + 79]
+            (self.order_hint, self.refresh_frame_flags, self.error_resilient_mode, self.force_integer_mv,
+             self.show_frame, self.showable_frame) = r[0:6]
+            (self.allow_high_precision_mv, self.interpolation_filter, self.is_motion_mode_switchable,
+             self.use_ref_frame_mvs) = r[6:10]
+            self.reference_select, skip_allowed, self.skip_mode_present, sm0, sm1, self.allow_warped_motion = r[10:16]
+            self.SkipModeFrame = [1 + sm0, 1 + sm1] if skip_allowed else [0, 0]     # set whenever skip mode is allowed (5.9.22)
+            is_inter = self.frame_type in (1, 3)
+            if is_inter:
+                self.ref_frame_idx = list(r[16:23])
+                self.OrderHints = [0] + list(r[23:30])
+            for i in range(7):                            # dav1d's gmv[i]: type, matrix[6] (spec order)
+                g = r[30 + 7 * i: 37 + 7 * i]
+                self.GmType[1 + i] = g[0]
+                self.gm_params[1 + i] = list(g[1:7])
         self.NumPlanes = 1 if self.layout == 0 else 3
         self.FrameIsIntra = self.frame_type in (0, 2)
-        assert self.FrameIsIntra, "tile_model handles intra frames only"
-        assert self.primary_ref_frame == 7, "CDF inheritance from a reference frame is not modelled"
+        # the tile decode (TileDecoder) still handles intra frames without CDF inheritance only; the header object
+        # itself is built for every frame so that tools/xcheck_hdr.py can check inter headers
         self.SegQMLevel = [[0] * 8 for _ in range(3)]
         for s in range(8):
             if self.using_qmatrix and not self.LosslessArray[s]:
@@ -301,6 +325,8 @@ def make_cdfs(base_q_idx):
 # =================================================================================================
 class TileDecoder:
     def __init__(self, hdr, data, hook=None):
+        assert hdr.FrameIsIntra, "tile_model handles intra frames only"
+        assert hdr.primary_ref_frame == 7, "CDF inheritance from a reference frame is not modelled"
         self.h = hdr
         self.dec = SymbolDecoder(data, hdr.disable_cdf_update, hook)
         self.cdf = make_cdfs(hdr.base_q_idx)

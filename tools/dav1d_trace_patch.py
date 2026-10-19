@@ -438,6 +438,23 @@ patch(src / "decode.c", [
         /* cdef strengths: y_strength[8] uv_strength[8] (only the first 1 << n_bits are meaningful) */
         for (int i = 0; i < 8; i++) fprintf(dav1d_trace_fp, " %d", h->cdef.y_strength[i]);
         for (int i = 0; i < 8; i++) fprintf(dav1d_trace_fp, " %d", h->cdef.uv_strength[i]);
+        /* inter (2026-10-18, 79 values): order hint, refresh flags, error resilient, force_integer_mv, show_frame,
+           showable_frame; hp, interpolation filter, switchable motion mode, use_ref_frame_mvs; reference_select,
+           skip mode allowed / enabled / refs[2], warp_motion; ref_frame_idx[7]; the references' order hints [7]
+           (-1 without references); global motion per reference: type + matrix[6] */
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d", h->frame_offset, h->refresh_frame_flags, h->error_resilient_mode,
+                h->force_integer_mv, h->show_frame, h->showable_frame);
+        fprintf(dav1d_trace_fp, " %d %d %d %d", h->hp, (int) h->subpel_filter_mode, h->switchable_motion_mode,
+                h->use_ref_frame_mvs);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d", h->switchable_comp_refs, h->skip_mode_allowed, h->skip_mode_enabled,
+                h->skip_mode_refs[0], h->skip_mode_refs[1], h->warp_motion);
+        for (int i = 0; i < 7; i++) fprintf(dav1d_trace_fp, " %d", IS_INTER_OR_SWITCH(h) ? h->refidx[i] : -1);
+        for (int i = 0; i < 7; i++)
+            fprintf(dav1d_trace_fp, " %d", IS_INTER_OR_SWITCH(h) ? f->refp[i].p.frame_hdr->frame_offset : -1);
+        for (int i = 0; i < 7; i++) {
+            fprintf(dav1d_trace_fp, " %d", (int) h->gmv[i].type);
+            for (int j = 0; j < 6; j++) fprintf(dav1d_trace_fp, " %d", h->gmv[i].matrix[j]);
+        }
         fputc('\n', dav1d_trace_fp);
     }
 '''),
