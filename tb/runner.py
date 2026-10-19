@@ -7,6 +7,12 @@ from pathlib import Path
 from cocotb_tools.runner import get_runner
 
 ROOT = Path(__file__).resolve().parent.parent
+# The repo's own Verilator (toolchain/oss-cad-suite, 5.053 = atium / sexica) ahead of a system one: the Pi's apt 5.032
+# miscompares pixels from the second 32-row band on (2026-10-19: "seed 1 mono" failed on every commit back to the
+# pre-inter main under 5.032 and was identical under 5.053; the 2026-10-18 dec_host "row 32+" failure was the same)
+_tc = ROOT / "toolchain" / "oss-cad-suite" / "bin"
+if (_tc / "verilator").exists():
+    os.environ["PATH"] = str(_tc) + os.pathsep + os.environ.get("PATH", "")
 top = sys.argv[1] if len(sys.argv) > 1 else "smoke"
 mod = sys.argv[2] if len(sys.argv) > 2 else f"test_{top}"
 waves = os.environ.get("WAVES", "0") == "1"
@@ -19,7 +25,7 @@ EXTRA = {"itx_lvl": ["itx_pair.sv"], "mc_filt": ["mc_tables_pkg.sv"], "ref_fetch
                          "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mf_band.sv", "seg_band.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv"],
          "dec_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "q_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                      "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mf_band.sv", "seg_band.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv", "tile_syntax.sv",
-                     "itx_pair.sv", "itx_lvl.sv", "itx_row.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "frame_mem.sv", "frame_mem_w.sv", "frame_mem_uram.sv", "recon_top.sv",
+                     "itx_pair.sv", "itx_lvl.sv", "itx_row.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "mc_tables_pkg.sv", "mc_filt.sv", "ref_fetch.sv", "frame_mem.sv", "frame_mem_w.sv", "frame_mem_uram.sv", "recon_top.sv",
                      "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "rec_fifo.sv", "lf_top.sv", "cdef_top.sv", "lr_top.sv", "sr_top.sv"],
          "mv_stack_tb": ["blk_tables_pkg.sv", "syn_pkg.sv", "mv_mem.sv", "mf_band.sv", "mv_stack.sv"],
          "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lf_top.sv"],

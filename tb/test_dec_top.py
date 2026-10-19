@@ -71,10 +71,11 @@ def start_feed(dut, coro):
     _feed_task[0] = cocotb.start_soon(coro)
     return _feed_task[0]
 
-async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0):
+async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0, rows=None):
+    """rows: the tile's starting CDF rows (an inter frame's inherited CDFs); default: the defaults for base_q_idx."""
     dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, frame_parity))
     dut.rh.value = TT.pack(REC_FIELDS, rec_vals(th))
-    for i, row in enumerate(M.default_rows(th.base_q_idx)):
+    for i, row in enumerate(rows if rows is not None else M.default_rows(th.base_q_idx)):
         dut.def_we.value = 1
         dut.def_addr.value = i
         dut.def_data.value = row
@@ -225,7 +226,9 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
     compare and which frame buffer holds the RTL result (0 = deblocked frame, 1 = CdefFrame)."""
     buf = 0
     if STAGE in ("lf", "cdef", "lr"):
-        state = xf.FrameState(hdr, decs)
+        state = xf.FrameState(hdr)
+        for d in decs:
+            state.add(d)
         lfm.LoopFilter(hdr, state, planes).apply()
         dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
         stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)

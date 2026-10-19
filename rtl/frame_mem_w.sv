@@ -15,6 +15,7 @@ module frame_mem_w #(
     input  logic [FBX-1:0] x4,
     input  logic [FBY-1:0] y4,
     input  logic [4*PW-1:0] d4,
+    input  logic [3:0]    be4 = 4'hF,     // lane enables of the 4-wide write (inter prediction units 2 samples wide)
     output logic          we,
     output logic [3:0]    be,
     output logic [1:0]    plane,
@@ -24,7 +25,7 @@ module frame_mem_w #(
 );
     always_comb begin
         we = we1 || we4;
-        be = we4 ? 4'hF : (4'b0001 << x1[1:0]);
+        be = we4 ? be4 : (4'b0001 << x1[1:0]);
         plane = we4 ? plane4 : plane1;
         x = we4 ? x4 : x1;
         y = we4 ? y4 : y1;

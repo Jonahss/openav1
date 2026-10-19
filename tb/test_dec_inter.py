@@ -1,0 +1,184 @@
+"""Inter streams through the whole decoder (dec_top) against the model, frame by frame (stage 2a).
+
+The frame sequence follows tb/seq_model.py (inherited CDFs, segmentation map, motion field: loaded into the DUT's
+header / band ports as the host will program them). The reference pictures are the model's own reconstructed
+frames (STAGE deep: TS_STAGE=recon compares and references the pre-filter pictures, lr the final ones): they are
+written into the AXI memory model that ref_fetch reads, at one base per (slot, plane), and the slot table
+registers point the RTL at them. So a motion compensation bug cannot hide in a filter bug and vice versa.
+Env: TS_IVF=a.obu,b.obu (required), TS_STAGE (recon | lf | cdef | lr), TS_FRAMES, TD_DEBUG.
+"""
+import os
+from pathlib import Path
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import ClockCycles, RisingEdge, Timer
+
+import test_dec_top as TD
+import test_tile_syntax as TT
+import seq_model as sm
+import cdf_map as M
+import obu_parser as op
+from axi_mem import AxiMem
+
+SLOT_BASE = 1 << 32                 # slot s, plane p at SLOT_BASE + s * SLOT_STRIDE + p * PLANE_STRIDE (40-bit addresses)
+SLOT_STRIDE = 0x0400_0000
+PLANE_STRIDE = 0x0100_0000
+
+
+def plane_geometry(hdr, planes):
+    """(width, height, stride bytes) per plane of a stored picture, in the DMA flush layout."""
+    bps = 2 if hdr.BitDepth > 8 else 1
+    out = []
+    for p in range(hdr.NumPlanes):
+        w, h = len(planes[p][0]), len(planes[p])
+        out.append((w, h, ((w * bps + 7) // 8) * 8))
+    return out
+
+
+def load_slot(mem, hdr, slot, planes):
+    """Write a reference picture into the AXI memory at its slot's bases."""
+    bps = 2 if hdr.BitDepth > 8 else 1
+    for p, (w, h, stride) in enumerate(plane_geometry(hdr, planes)):
+        base = SLOT_BASE + slot * SLOT_STRIDE + p * PLANE_STRIDE
+        for y in range(h):
+            row = planes[p][y]
+            if bps == 1:
+                data = bytes(row)
+            else:
+                data = b"".join(v.to_bytes(2, "little") for v in row)
+            mem.load(base + y * stride, data)
+
+
+@cocotb.test()
+async def dec_inter_vs_model(dut):
+    debug = bool(os.environ.get("TD_DEBUG"))
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    if hasattr(dut, "clk2x"):
+        cocotb.start_soon(Clock(dut.clk2x, 5, unit="ns").start())
+
+        async def phase_gen():
+            while True:
+                await RisingEdge(dut.clk)
+                await Timer(2.5, "ns")
+                dut.phase.value = 1
+                await Timer(5, "ns")
+                dut.phase.value = 0
+        dut.phase.value = 0
+        cocotb.start_soon(phase_gen())
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "ihdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start",
+              "pipe_en", "frame_start", "n_tile_cols", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y", "mf_we", "sp_we",
+              "ref_slot", "ref_planes", "ref_dims", "ref_fmt16"):
+        if hasattr(dut, s):
+            getattr(dut, s).value = 0
+    mem = AxiMem(dut, dut.clk, seed=1, stall=0.2)
+    cocotb.start_soon(mem.run_read())
+    dut.rst.value = 1
+    TD.run_tile._perf_prev = None
+    await ClockCycles(dut.clk, 3)
+    dut.rst.value = 0
+    await RisingEdge(dut.clk)
+    stats = dict(frames=0, inter_frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, cdef_cycles=0,
+                 lr_cycles=0, stage=TD.STAGE, ref_loads=0)
+    ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
+    assert ivfs, "TS_IVF=<stream.obu>[,...] is required"
+    frames_sel = {int(x) for x in os.environ.get("TS_FRAMES", "").split(",") if x}
+    for path in ivfs:
+        d = op.Decoder()
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        if path.endswith(".obu"):
+            d.feed_annexb(raw)
+        else:
+            d.feed_ivf(raw)
+        name = Path(path).name
+        seq = sm.SequenceState()
+        store = {}                              # slot -> dict(planes, upscaled_width, frame_height, hdr)
+        loaded = {}                             # slot -> id(planes) written into the AXI memory
+        hdr_iter = iter(d.frame_headers)
+        for fi, tile_idx in enumerate(d.frames):
+            ph = None
+            for ph in hdr_iter:
+                if ph.show_existing_frame:
+                    seq.show_existing(ph)
+                    if ph.frame_type == 0 and ph.frame_to_show_map_idx in store:
+                        for i in range(8):
+                            store[i] = store[ph.frame_to_show_map_idx]
+                    continue
+                break
+            assert ph is not None and not ph.show_existing_frame, f"{name}: frame {fi} has no parsed header"
+            ctx = seq.start_frame(ph)
+            th0 = d.tiles[tile_idx[0]][0]
+            if frames_sel and fi not in frames_sel:
+                # keep the sequence state and the reference store in step without running the RTL
+                frame = {"refs": store}
+                summaries = []
+                for k, ti in enumerate(tile_idx):
+                    th, data = d.tiles[ti]
+                    dec = TD.RecFrame(th, data, frame, ctx=ctx)
+                    dec.decode_tile()
+                    summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
+                    del dec
+                planes = frame["planes"]
+                seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+                for i in range(8):
+                    if (ph.refresh_frame_flags >> i) & 1:
+                        store[i] = dict(planes=planes, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0)
+                continue
+            tag = f"{name} frame {fi}"
+            # ---- the frame-level state into the DUT: inter header, bands, and the references
+            dut.ihdr.value = TT.pack(TT.IHDR_FIELDS, TT.ihdr_vals(th0))
+            await TT.load_frame_state(dut, ph, ctx)
+            if not ph.FrameIsIntra:
+                ref_slot = 0
+                ref_planes = 0
+                ref_dims = 0
+                for i in range(7):
+                    slot = ph.ref_frame_idx[i]
+                    ref_slot |= slot << (3 * i)
+                    assert slot in store, f"{tag}: reference {i + 1} points at empty slot {slot}"
+                    st = store[slot]
+                    if loaded.get(slot) != id(st["planes"]):
+                        load_slot(mem, st["hdr"], slot, st["planes"])
+                        loaded[slot] = id(st["planes"])
+                        stats["ref_loads"] += 1
+                    for p, (w, h, stride) in enumerate(plane_geometry(st["hdr"], st["planes"])):
+                        base = SLOT_BASE + slot * SLOT_STRIDE + p * PLANE_STRIDE
+                        ref_planes |= (base | (stride << 40)) << (72 * (3 * slot + p))
+                    ref_dims |= (st["upscaled_width"] | (st["frame_height"] << 16)) << (32 * slot)
+                dut.ref_slot.value = ref_slot
+                dut.ref_planes.value = ref_planes
+                dut.ref_dims.value = ref_dims
+                dut.ref_fmt16.value = 1 if th0.BitDepth > 8 else 0
+                stats["inter_frames"] += 1
+            rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else M.default_rows(th0.base_q_idx)
+            # ---- tiles: the model decodes each, the RTL follows, records compared
+            frame = {"refs": store}
+            events, blocks_all, decs, summaries = [], [], [], []
+            for k, ti in enumerate(tile_idx):
+                th, data = d.tiles[ti]
+                ttag = f"{tag} tile ({th.MiColStart},{th.MiRowStart})"
+                dec = TD.RecFrame(th, data, frame, ctx=ctx)
+                dec.decode_tile()
+                decs.append(dec)
+                summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
+                events.extend(dec.pred_events)
+                events.extend(dec.recon_events)
+                blocks_all.extend(dec.blocks)
+                stats["blocks"] += len(dec.blocks)
+                await TD.run_tile(dut, th, dec, data, ttag, stats, debug, fi, rows=rows)
+                await ClockCycles(dut.clk, 4)
+                assert not int(dut.unsupported.value), f"{ttag}: RTL flagged an unsupported feature (inter beyond stage 2a?)"
+            planes_cmp, buf = await TD.finish_frame(dut, th0, decs, frame["planes"], tag, stats)
+            dut.h_buf.value = buf
+            await TD.compare_frame(dut, th0, planes_cmp, tag, stats, events, blocks_all)
+            stats["frames"] += 1
+            dut._log.info(f"{tag}: identical ({len(tile_idx)} tiles, {th0.MiCols * 4}x{th0.MiRows * 4} MI area, bd{th0.BitDepth}, "
+                          f"{'inter' if not ph.FrameIsIntra else 'intra'}, {sum(1 for b in blocks_all if b.get('inter'))} inter blocks)")
+            # ---- the frame becomes a reference (the stage's pictures: the RTL reads the same ones)
+            seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+            for i in range(8):
+                if (ph.refresh_frame_flags >> i) & 1:
+                    store[i] = dict(planes=planes_cmp, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0)
+            del decs
+    assert not mem.errors, f"AXI errors: {mem.errors[:4]}"
+    dut._log.info(f"OK: {stats}")

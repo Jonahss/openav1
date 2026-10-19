@@ -79,7 +79,29 @@ module recon_top
     output logic [1:0]  fb4_plane,
     output logic [FBX-1:0] fb4_x,
     output logic [FBY-1:0] fb4_y,
-    output logic [47:0] fb4_wdata
+    output logic [47:0] fb4_wdata,
+    output logic [3:0]  fb4_be,               // lane enables of the 4-wide write (inter prediction units 2 samples wide)
+    // ---- inter prediction (stage 2a, docs/inter-syntax.md / the design note §8): the inter header, the reference
+    //      slot table (software: REF_SLOT, the slots' plane bases / strides / sizes) and the AXI read master of ref_fetch
+    input  ihdr_t       ihdr,
+    input  logic [20:0] ref_slot,             // slot of LAST_FRAME + i at [3i +: 3]
+    input  logic [1727:0] ref_planes,         // slot s, plane p: {stride[31:0], base[39:0]} at [72 (3s + p) +: 72]
+    input  logic [255:0] ref_dims,            // slot s: {frame height[15:0], upscaled width[15:0]} at [32s +: 32]
+    input  logic        ref_fmt16,            // reference samples are 16-bit LE (else one byte each)
+    output logic        mc_unsup,             // sticky: an inter block used a feature beyond stage 2a (masks, OBMC, warp, scaled references)
+    output logic [39:0] m_axi_araddr,
+    output logic [7:0]  m_axi_arlen,
+    output logic [2:0]  m_axi_arsize,
+    output logic [1:0]  m_axi_arburst,
+    output logic [3:0]  m_axi_arcache,
+    output logic [2:0]  m_axi_arprot,
+    output logic        m_axi_arvalid,
+    input  logic        m_axi_arready,
+    input  logic [63:0] m_axi_rdata,
+    input  logic [1:0]  m_axi_rresp,
+    input  logic        m_axi_rlast,
+    input  logic        m_axi_rvalid,
+    output logic        m_axi_rready
 );
     localparam logic [3:0] DC_PRED = 4'd0, UV_CFL_PRED = 4'd13, SMOOTH_PRED = 4'd9, SMOOTH_H_PRED = 4'd11;
     localparam logic [3:0] IDTX = 4'd9;
@@ -137,8 +159,9 @@ module recon_top
             if (6'(k) >= 6'(start) && 6'(k) < 6'(start) + n) mm_merge[8 * k +: 8] = e;
     endfunction
 
-    typedef enum logic [3:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
-                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR} bst_t;
+    typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
+                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR,
+                              B_MC_INIT, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_FETCH, B_MC_FILT} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
@@ -169,6 +192,87 @@ module recon_top
     assign ib_rx1 = ib_clip(ib_x0 + PXS'(signed'({7'b0, ib_j})) + PXS'(1), ib_lastx);
     assign ib_ry0 = ib_clip(ib_y0 + PXS'(signed'({7'b0, ib_i})), ib_lasty);
     assign ib_ry1 = ib_clip(ib_y0 + PXS'(signed'({7'b0, ib_i})) + PXS'(1), ib_lasty);
+    // ---- inter prediction (7.11.3, stage 2a: translational, unscaled; single / AVERAGE / DISTANCE): the block is
+    // predicted whole, plane by plane, unit by unit (one unit per plane, or the per-luma-4x4 chroma units of a sub-8x8
+    // block from b.cmv), in strips of at most 64 x 64, list by list: ref_fetch brings the clamped reference region into
+    // mc_filt's patch, mc_filt filters (and blends list 1 with the parked list 0) and its output goes to the frame
+    // memory through the fb4 port; the transform flow then adds residuals (R_SETUP -> R_RESID, like intrabc).
+    logic [1:0]  mc_pl;
+    logic        mc_sx, mc_sy;
+    logic [7:0]  mc_pw, mc_ph;                               // plane block size
+    logic [PXW-1:0] mc_bx, mc_by;                            // plane block origin
+    logic [7:0]  mc_uw, mc_uh;                               // unit size
+    logic [1:0]  mc_ur, mc_uc, mc_ui, mc_uj;                 // unit grid and index
+    logic        mc_cmv;                                     // units take their motion from b.cmv
+    logic [PXW-1:0] mc_ux, mc_uy;                            // unit origin
+    logic [1:0]  mc_nsr, mc_nsc, mc_sr, mc_sc;               // 64 x 64 strips of the unit
+    logic [PXW-1:0] mc_px, mc_py;                            // strip origin
+    logic [6:0]  mc_sw, mc_sh;                               // strip size
+    logic        mc_l, mc_comp;
+    logic [1:0]  mc_bmode;                                   // list-1 blend mode: 2 average, 3 distance
+    logic [4:0]  mc_wt0, mc_wt1;
+    logic [3:0]  u_ref0, u_ref1;                             // the unit's motion
+    logic signed [15:0] u_mv0r, u_mv0c, u_mv1r, u_mv1c;
+    logic [1:0]  u_i0, u_i1;
+    // ref_fetch request / mc_filt run
+    logic        rf_req_valid, rf_req_ready, rf_done, rf_err, rf_lst;
+    logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
+    logic        mc_start, mc_busy, mc_done, mc_out_valid;
+    logic [3:0]  mc_fx, mc_fy;
+    logic [1:0]  mc_mode;
+    logic [6:0]  mc_out_x, mc_out_y; logic [47:0] mc_out_pix4; logic [3:0] mc_out_mask;
+    logic [PXW-1:0] mc_ox; logic [1:0] mc_osh;              // output sample x, and its lane shift within the 4-group
+    logic        pw_we, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4; logic [47:0] pw_d4;
+
+    ref_fetch #(.PW(12)) u_rf (.clk, .rst,
+        .req_valid(rf_req_valid), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(ref_fmt16), .req_base(rf_base),
+        .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
+        .req_w(mc_sw), .req_h(mc_sh), .done(rf_done), .err(rf_err),
+        .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
+        .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
+        .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4));
+    mc_filt #(.PW(12)) u_mc (.clk, .rst,
+        .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
+        .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0), .fx(mc_fx), .fy(mc_fy),
+        .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
+        .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask));
+
+    // 7.11.3.15 distance weights: {BckWeight (list 1), FwdWeight (list 0)} from the order-hint distances
+    function automatic int rel_dist(input ihdr_t ih, input logic [7:0] oa, input logic [7:0] ob);
+        int diff, m;
+        if (!ih.enable_order_hint) return 0;
+        diff = int'(oa) - int'(ob);
+        m = 1 << (int'(ih.order_hint_bits) - 1);
+        return (diff & (m - 1)) - (diff & m);
+    endfunction
+    function automatic logic [9:0] dist_weights(input ihdr_t ih, input logic [3:0] r0, input logic [3:0] r1);
+        int dist0, dist1, d0, d1, i, c0, c1;
+        logic order, found;
+        logic [4:0] qdw [4][2];
+        logic [4:0] qdl [4][2];
+        qdw = '{'{5'd2, 5'd3}, '{5'd2, 5'd5}, '{5'd2, 5'd7}, '{5'd1, 5'd31}};
+        qdl = '{'{5'd9, 5'd7}, '{5'd11, 5'd5}, '{5'd12, 5'd4}, '{5'd13, 5'd3}};
+        dist0 = rel_dist(ih, ih.order_hints[8 * (int'(r0) - 1) +: 8], ih.order_hint);
+        dist1 = rel_dist(ih, ih.order_hints[8 * (int'(r1) - 1) +: 8], ih.order_hint);
+        if (dist0 < 0) dist0 = -dist0;
+        if (dist1 < 0) dist1 = -dist1;
+        if (dist0 > 31) dist0 = 31;
+        if (dist1 > 31) dist1 = 31;
+        d0 = dist1; d1 = dist0;
+        order = (d0 <= d1);
+        i = 3; found = 1'b0;
+        if (d0 != 0 && d1 != 0)
+            for (int k = 0; k < 3; k++)
+                if (!found) begin
+                    c0 = int'(qdw[k][order]); c1 = int'(qdw[k][!order]);
+                    if (order ? (d0 * c0 > d1 * c1) : (d0 * c0 < d1 * c1)) begin i = k; found = 1'b1; end
+                end
+        return {qdl[i][!order], qdl[i][order]};
+    endfunction
+    function automatic logic [1:0] gm_type_of(input ihdr_t ih, input logic [3:0] r);
+        return ih.gm_type[2 * (int'(r) - 1) +: 2];
+    endfunction
+
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
     typedef enum logic [4:0] {
         R_IDLE, R_SETUP,
@@ -235,9 +339,9 @@ module recon_top
     assign mi_cd_idx = b.cdef_idx;
     assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf};
     always_ff @(posedge clk) begin
-        mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0;
+        mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0;
+            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0;
         end else case (bst)
             B_IDLE: if (blk_take) begin
                 b <= ev_blk; blk_ready <= 1'b0; bst <= B_FT0;
@@ -268,6 +372,8 @@ module recon_top
                     wr_j <= 1'b0; wr_i <= wr_i + 6'd1; bst <= B_WR;
                 end else if (b.intrabc) begin
                     bst <= B_IBC_INIT;
+                end else if (b.is_inter) begin
+                    bst <= B_MC_INIT;
                 end else begin
                     blk_ready <= 1'b1; bst <= B_IDLE;
                 end
@@ -298,6 +404,103 @@ module recon_top
                 if (ib_j + 8'd1 < ib_w) begin ib_j <= ib_j + 8'd1; bst <= B_IBC_R0; end
                 else if (ib_i + 8'd1 < ib_h) begin ib_j <= 8'd0; ib_i <= ib_i + 8'd1; bst <= B_IBC_R0; end
                 else if (ib_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin ib_pl <= ib_pl + 2'd1; bst <= B_IBC_PL; end
+                else begin blk_ready <= 1'b1; bst <= B_IDLE; end
+            end
+            // ---- inter prediction (stage 2a): see the declarations above
+            B_MC_INIT: if (rs == R_IDLE) begin
+                logic comp;
+                logic [9:0] wts;
+                comp = (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7);
+                mc_comp <= comp;
+                mc_bmode <= (b.compound_type == 3'd4) ? 2'd3 : 2'd2;
+                wts = dist_weights(ihdr, b.ref0, b.ref1);
+                mc_wt0 <= wts[4:0]; mc_wt1 <= wts[9:5];
+                if (b.motion_mode != 2'd0 || b.interintra || (comp && b.compound_type != 3'd2 && b.compound_type != 3'd4)
+                    || ihdr.ref_scaled[int'(b.ref0) - 1] || (comp && ihdr.ref_scaled[int'(b.ref1) - 1])
+                    || ((b.ymode == 5'd15 || b.ymode == 5'd23) && !ihdr.force_integer_mv && bw4 >= 6'd2 && bh4 >= 6'd2
+                        && (gm_type_of(ihdr, b.ref0) > 2'd1 || (comp && gm_type_of(ihdr, b.ref1) > 2'd1))))
+                    mc_unsup <= 1'b1;
+                mc_pl <= 2'd0; bst <= B_MC_PL;
+            end
+            B_MC_PL: begin
+                logic sx, sy;
+                logic [4:0] psz;
+                logic cmv_units;
+                sx = (mc_pl != 2'd0) && hdr.ssx; sy = (mc_pl != 2'd0) && hdr.ssy;
+                psz = subsampled_size(b.bsize, sx, sy);
+                mc_sx <= sx; mc_sy <= sy;
+                mc_pw <= 8'(num4x4w(psz)) << 2; mc_ph <= 8'(num4x4h(psz)) << 2;
+                mc_bx <= PXW'((PXW'(b.c) >> sx) << 2); mc_by <= PXW'((PXW'(b.r) >> sy) << 2);
+                // chroma of a sub-8x8 luma block: per-luma-4x4 units from b.cmv unless someUseIntra
+                cmv_units = (mc_pl != 2'd0) && ((bw4 == 6'd1 && hdr.ssx) || (bh4 == 6'd1 && hdr.ssy)) && !b.cmv_intra;
+                mc_cmv <= cmv_units;
+                if (cmv_units) begin
+                    mc_uw <= (8'(num4x4w(b.bsize)) << 2) >> sx; mc_uh <= (8'(num4x4h(b.bsize)) << 2) >> sy;
+                    mc_uc <= (bw4 == 6'd1 && hdr.ssx) ? 2'd2 : 2'd1; mc_ur <= (bh4 == 6'd1 && hdr.ssy) ? 2'd2 : 2'd1;
+                end else begin
+                    mc_uw <= 8'(num4x4w(psz)) << 2; mc_uh <= 8'(num4x4h(psz)) << 2;
+                    mc_uc <= 2'd1; mc_ur <= 2'd1;
+                end
+                mc_ui <= 2'd0; mc_uj <= 2'd0;
+                bst <= B_MC_UNIT;
+            end
+            B_MC_UNIT: begin
+                int k;
+                logic [75:0] u;
+                k = int'(mc_ui) * int'(mc_uc) + int'(mc_uj);
+                u = b.cmv[76 * k +: 76];
+                if (mc_cmv) begin
+                    u_ref0 <= u[3:0]; u_ref1 <= u[7:4]; u_mv0r <= u[23:8]; u_mv0c <= u[39:24]; u_mv1r <= u[55:40]; u_mv1c <= u[71:56];
+                    u_i0 <= u[73:72]; u_i1 <= u[75:74];
+                end else begin
+                    u_ref0 <= b.ref0; u_ref1 <= b.ref1; u_mv0r <= 16'(b.mv_row); u_mv0c <= 16'(b.mv_col);
+                    u_mv1r <= 16'(b.mv1_row); u_mv1c <= 16'(b.mv1_col); u_i0 <= b.interp0; u_i1 <= b.interp1;
+                end
+                mc_ux <= mc_bx + PXW'(mc_uj) * PXW'(mc_uw); mc_uy <= mc_by + PXW'(mc_ui) * PXW'(mc_uh);
+                mc_nsc <= 2'((mc_uw + 8'd63) >> 6); mc_nsr <= 2'((mc_uh + 8'd63) >> 6);
+                mc_sr <= 2'd0; mc_sc <= 2'd0; mc_l <= 1'b0;
+                bst <= B_MC_STRIP;
+            end
+            B_MC_STRIP: begin
+                // the strip's geometry and this list's reference position (7.11.3.3 for an unscaled reference:
+                // integer part x + ((2 mv) >> subX) >> 4, phase its low 4 bits)
+                logic [7:0] rem_w, rem_h;
+                logic signed [19:0] mvx2, mvy2;
+                logic [3:0] rref;
+                logic [2:0] slot;
+                logic [15:0] dw, dh;
+                logic [PXW-1:0] px, py;
+                rem_w = mc_uw - (8'(mc_sc) << 6); rem_h = mc_uh - (8'(mc_sr) << 6);
+                mc_sw <= (rem_w > 8'd64) ? 7'd64 : 7'(rem_w); mc_sh <= (rem_h > 8'd64) ? 7'd64 : 7'(rem_h);
+                px = mc_ux + (PXW'(mc_sc) << 6); py = mc_uy + (PXW'(mc_sr) << 6);
+                mc_px <= px; mc_py <= py;
+                mvx2 = (20'(mc_l ? u_mv1c : u_mv0c) * 20'sd2) >>> mc_sx;
+                mvy2 = (20'(mc_l ? u_mv1r : u_mv0r) * 20'sd2) >>> mc_sy;
+                mc_fx <= mvx2[3:0]; mc_fy <= mvy2[3:0];
+                rf_x0 <= 17'(signed'({2'b0, px})) + 17'(mvx2 >>> 4);
+                rf_y0 <= 17'(signed'({2'b0, py})) + 17'(mvy2 >>> 4);
+                rref = mc_l ? u_ref1 : u_ref0;
+                slot = ref_slot[3 * (int'(rref) - 1) +: 3];
+                rf_base <= ref_planes[72 * (3 * int'(slot) + int'(mc_pl)) +: 40];
+                rf_stride <= ref_planes[72 * (3 * int'(slot) + int'(mc_pl)) + 40 +: 32];
+                dw = ref_dims[32 * int'(slot) +: 16]; dh = ref_dims[32 * int'(slot) + 16 +: 16];
+                rf_lastx <= ((dw + 16'(mc_sx)) >> mc_sx) - 16'd1; rf_lasty <= ((dh + 16'(mc_sy)) >> mc_sy) - 16'd1;
+                rf_lst <= mc_l;
+                mc_mode <= mc_l ? mc_bmode : (mc_comp ? 2'd1 : 2'd0);
+                rf_req_valid <= 1'b1;
+                bst <= B_MC_FETCH;
+            end
+            B_MC_FETCH: begin
+                if (rf_req_valid && rf_req_ready) rf_req_valid <= 1'b0;       // accepted
+                if (rf_done) begin mc_start <= 1'b1; bst <= B_MC_FILT; end
+            end
+            B_MC_FILT: if (mc_done) begin
+                if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
+                else if (mc_sc + 2'd1 < mc_nsc) begin mc_sc <= mc_sc + 2'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
+                else if (mc_sr + 2'd1 < mc_nsr) begin mc_sc <= 2'd0; mc_sr <= mc_sr + 2'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
+                else if (mc_uj + 2'd1 < mc_uc) begin mc_uj <= mc_uj + 2'd1; bst <= B_MC_UNIT; end
+                else if (mc_ui + 2'd1 < mc_ur) begin mc_uj <= 2'd0; mc_ui <= mc_ui + 2'd1; bst <= B_MC_UNIT; end
+                else if (mc_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin mc_pl <= mc_pl + 2'd1; bst <= B_MC_PL; end
                 else begin blk_ready <= 1'b1; bst <= B_IDLE; end
             end
             default: bst <= B_IDLE;
@@ -484,11 +687,11 @@ module recon_top
     // cycle counters per transform-FSM state and per block-FSM state (simulation profiling; read through the
     // hierarchy by the testbench, never reset except by rst)
     logic [31:0] perf_rs [0:31];
-    logic [31:0] perf_bst [0:15];
+    logic [31:0] perf_bst [0:31];
     always_ff @(posedge clk) begin
         if (rst) begin
             for (int i = 0; i < 32; i++) perf_rs[i] <= 32'd0;
-            for (int i = 0; i < 16; i++) perf_bst[i] <= 32'd0;
+            for (int i = 0; i < 32; i++) perf_bst[i] <= 32'd0;
         end else begin
             perf_rs[rs] <= perf_rs[rs] + 32'd1;
             perf_bst[bst] <= perf_bst[bst] + 32'd1;
@@ -657,7 +860,7 @@ module recon_top
     always_comb begin
         fb_re = 1'b0; fb_we = 1'b0; fb_plane = t.plane; fb_x = '0; fb_y = '0; fb_wdata = 12'd0;
         fb2_we = 1'b0; fb2_plane = t.plane; fb2_x = '0; fb2_y = '0; fb2_wdata = 12'd0;
-        fb4_we = 1'b0; fb4_plane = t.plane; fb4_x = '0; fb4_y = '0; fb4_wdata = 48'd0;
+        fb4_we = 1'b0; fb4_plane = t.plane; fb4_x = '0; fb4_y = '0; fb4_wdata = 48'd0; fb4_be = 4'hF;
         edge_we = 1'b0; edge_side = ep_side; edge_idx = ep_idx; edge_data = ep_const ? ep_val : fb_rdata;
         edge_we4 = 1'b0;
         for (int l = 0; l < 4; l++) begin                                    // group lanes with the clamp to above_lim
@@ -722,6 +925,15 @@ module recon_top
             B_IBC_WR: begin fb2_we = 1'b1; fb2_plane = ib_pl; fb2_x = FBX'(ib_bx + PXW'(ib_j)); fb2_y = FBY'(ib_by + PXW'(ib_i)); fb2_wdata = ib_out; end
             default: ;
         endcase
+        // motion compensation output: 4 samples at (strip origin + out_x, + out_y); a 2-wide unit at an x offset of 2
+        // within its 4-group is lane-shifted (the frame memory's 4-wide port is aligned)
+        mc_ox = mc_px + PXW'(mc_out_x);
+        mc_osh = mc_ox[1:0];
+        if (mc_out_valid) begin
+            fb4_we = 1'b1; fb4_plane = mc_pl;
+            fb4_x = FBX'({mc_ox[PXW-1:2], 2'b00}); fb4_y = FBY'(mc_py + PXW'(mc_out_y));
+            fb4_wdata = mc_out_pix4 << (12 * mc_osh); fb4_be = mc_out_mask << mc_osh;
+        end
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
     assign mi_tx_plane = t.plane; assign mi_tx_sz = t.txsz;
@@ -745,7 +957,7 @@ module recon_top
                     ci <= 7'd0; cj <= 7'd0; px_valid <= 1'b0; ek <= 9'd0; ep_valid <= 1'b0;
                     n_edges <= 2 * (9'(tw_px) + 9'(th_px));
                     above_lim_r <= above_lim; left_lim_r <= left_lim;
-                    if (b.intrabc) rs <= R_RESID;                        // predicted whole by the block copy
+                    if (b.intrabc || b.is_inter) rs <= R_RESID;         // predicted whole by the block copy / motion compensation
                     else if (is_pal) rs <= R_PAL;
                     else rs <= R_EDGE;
                 end

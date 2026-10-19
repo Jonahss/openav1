@@ -45,6 +45,24 @@ module dec_top
     input  logic [MIW-5:0]    sp_wwc,
     input  logic [47:0]       sp_wdata,
     // control
+    // ---- inter prediction (stage 2a): the reference slot table (dec_host registers) and ref_fetch's AXI read master
+    input  logic [20:0]       ref_slot,            // slot of LAST_FRAME + i at [3i +: 3]
+    input  logic [1727:0]     ref_planes,          // slot s, plane p: {stride[31:0], base[39:0]} at [72 (3s + p) +: 72]
+    input  logic [255:0]      ref_dims,            // slot s: {frame height[15:0], upscaled width[15:0]} at [32s +: 32]
+    input  logic              ref_fmt16,
+    output logic [39:0]       m_axi_araddr,
+    output logic [7:0]        m_axi_arlen,
+    output logic [2:0]        m_axi_arsize,
+    output logic [1:0]        m_axi_arburst,
+    output logic [3:0]        m_axi_arcache,
+    output logic [2:0]        m_axi_arprot,
+    output logic              m_axi_arvalid,
+    input  logic              m_axi_arready,
+    input  logic [63:0]       m_axi_rdata,
+    input  logic [1:0]        m_axi_rresp,
+    input  logic              m_axi_rlast,
+    input  logic              m_axi_rvalid,
+    output logic              m_axi_rready,
     input  logic              tile_start,
     output logic              tile_busy,
     output logic              tile_done,           // syntax finished and every block reconstructed (1-cycle pulse)
@@ -123,6 +141,7 @@ module dec_top
     logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
     logic fb2_we; logic [1:0] fb2_plane; logic [FBX-1:0] fb2_x; logic [FBY-1:0] fb2_y; logic [11:0] fb2_wdata;
     logic fb4_we; logic [1:0] fb4_plane; logic [FBX-1:0] fb4_x; logic [FBY-1:0] fb4_y; logic [47:0] fb4_wdata, fb_rdata4;
+    logic [3:0] fb4_be; logic mc_unsup;
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [SBW-1:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
@@ -134,7 +153,10 @@ module dec_top
                                             .mi_cd_clr, .mi_cd_we, .mi_cd_row64, .mi_cd_col64, .mi_cd_mask, .mi_cd_idx,
                                             .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata, .fb_rdata4,
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
-                                            .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata);
+                                            .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
+                                            .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_fmt16, .mc_unsup,
+                                            .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot,
+                                            .m_axi_arvalid, .m_axi_arready, .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready);
 
     // per-4x4 state + deblocking filter; the filter owns the frame buffer port while it runs
     logic [MIW-1:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
@@ -202,7 +224,7 @@ module dec_top
     logic w_rc_we, w_lf_we, w_sr0_we; logic [3:0] w_rc_be, w_lf_be, w_sr0_be; logic [1:0] w_rc_pl, w_lf_pl, w_sr0_pl;
     logic [FBX-1:0] w_rc_x, w_lf_x, w_sr0_x; logic [FBY-1:0] w_rc_y, w_lf_y, w_sr0_y; logic [47:0] w_rc_d, w_lf_d, w_sr0_d;
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_rc (.we1(fb_we || fb2_we), .plane1(fb2_we ? fb2_plane : fb_plane), .x1(fb2_we ? fb2_x : fb_x), .y1(fb2_we ? fb2_y : fb_y), .d1(fb2_we ? fb2_wdata : fb_wdata),
-                                                .we4(fb4_we), .plane4(fb4_plane), .x4(fb4_x), .y4(fb4_y), .d4(fb4_wdata),
+                                                .we4(fb4_we), .plane4(fb4_plane), .x4(fb4_x), .y4(fb4_y), .d4(fb4_wdata), .be4(fb4_be),
                                                 .we(w_rc_we), .be(w_rc_be), .plane(w_rc_pl), .x(w_rc_x), .y(w_rc_y), .data(w_rc_d));
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_lf (.we1(lf_we), .plane1(lf_plane), .x1(lf_x), .y1(lf_y), .d1(lf_wdata),
                                                 .we4(lf4_we), .plane4(lf_plane), .x4(lf4_x), .y4(lf4_y), .d4(lf4_wdata),
@@ -310,7 +332,7 @@ module dec_top
         else if ((FRAME_WIN > 0) && tile_busy && (hdr.sb128 || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en
                                                   || n_tile_cols != 6'd1)) win_unsup <= 1'b1;
     end
-    assign unsupported = ts_unsup || win_unsup;
+    assign unsupported = ts_unsup || win_unsup || mc_unsup;        // mc_unsup: an inter feature beyond stage 2a
 `ifndef SYNTHESIS
     always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin                      // window trace (simulation only)
         if (lf_pend && lf_done) $display("[win] t=%0t LF done row %0d (n_rows %0d) rel_upto->%0d", $time, lf_next, n_rows, (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next);
