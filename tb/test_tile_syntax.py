@@ -31,11 +31,14 @@ ACK_DELAY = int(os.environ.get("TS_ACK_DELAY", "0"))
 # coordinate widths: must match syn_pkg::MIW / SBW / PXW (4x4-unit, 64x64-superblock and pixel positions / counts)
 from host_regs import MIW, SBW, PXW, HDR_FIELDS, IHDR_FIELDS, pack, unpack, hdr_vals, ihdr_vals   # noqa: E402,F401  (cocotb-free: the board driver shares them)
 BLK_FIELDS = [
-    ("r", MIW), ("c", MIW), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 4), ("uvmode", 4),
+    ("r", MIW), ("c", MIW), ("bsize", 5), ("skip", 1), ("seg", 3), ("lossless", 1), ("has_chroma", 1), ("ymode", 5), ("uvmode", 4),
     ("angle_y", 3), ("angle_uv", 3), ("cfl_u", 6), ("cfl_v", 6), ("use_fi", 1), ("fi_mode", 3), ("txsz", 5), ("qidx", 8),
     ("delta_lf", 28), ("cdef_valid", 1), ("cdef_idx", 3), ("cdef_units", 4),
     ("pal_y", 4), ("pal_uv", 4), ("col_y", 96), ("col_u", 96), ("col_v", 96),
-    ("is_inter", 1), ("mv_row", 18), ("mv_col", 18)]
+    ("is_inter", 1), ("intrabc", 1), ("mv_row", 18), ("mv_col", 18),
+    ("skip_mode", 1), ("ref0", 4), ("ref1", 4), ("mv1_row", 18), ("mv1_col", 18), ("motion_mode", 2), ("compound_type", 3),
+    ("interintra", 1), ("interintra_mode", 2), ("wedge_interintra", 1), ("wedge_index", 4), ("wedge_sign", 1), ("mask_type", 1),
+    ("comp_group_idx", 1), ("compound_idx", 1), ("interp0", 2), ("interp1", 2)]
 TX_FIELDS = [("plane", 2), ("x", PXW), ("y", PXW), ("txsz", 5), ("txtype", 4), ("eob", 11), ("skip", 1), ("lossless", 1), ("slot", 3)]
 LR_FIELDS = [("plane", 2), ("unit_row", SBW), ("unit_col", SBW), ("lr_type", 2), ("wiener", 42), ("sgr_set", 4), ("xqd", 16)]
 
@@ -438,13 +441,29 @@ async def collect(dut, dec, tag0, stats):
                                angle_uv=m["angle"][1], cfl_u=m["cfl"][0], cfl_v=m["cfl"][1], use_fi=m["fi"], fi_mode=m["fim"] if m["fi"] else 0,
                                txsz=m["tx"], qidx=m["qidx"], dlf=m["dlf"],
                                pal_y=m["pal"][0], pal_uv=m["pal"][1], col_y=m["col_y"], col_u=m["col_u"], col_v=m["col_v"],
-                               is_inter=m.get("intrabc", 0), mv_row=(m["mv"][0] if m.get("mv") else 0), mv_col=(m["mv"][1] if m.get("mv") else 0))
+                               is_inter=m.get("intrabc", 0) or m.get("inter", 0), intrabc=m.get("intrabc", 0),
+                               mv_row=(m["mvs"][0][0] if m.get("inter") else (m["mv"][0] if m.get("mv") else 0)),
+                               mv_col=(m["mvs"][0][1] if m.get("inter") else (m["mv"][1] if m.get("mv") else 0)))
+                    if m.get("inter"):
+                        rf = m["ref"]
+                        exp.update(skip_mode=m["skip_mode"], ref0=rf[0], ref1=(rf[1] if rf[1] >= 0 else 15),
+                                   mv1_row=(m["mvs"][1][0] if len(m["mvs"]) > 1 else 0), mv1_col=(m["mvs"][1][1] if len(m["mvs"]) > 1 else 0),
+                                   motion_mode=m["motion_mode"], compound_type=m["compound_type"], interintra=m["interintra"],
+                                   interintra_mode=m.get("interintra_mode", 0), wedge_interintra=m.get("wedge_interintra", 0),
+                                   wedge_index=m.get("wedge_index", 0), wedge_sign=m.get("wedge_sign", 0), mask_type=m.get("mask_type", 0),
+                                   comp_group_idx=m.get("comp_group_idx", 0), compound_idx=m.get("compound_idx", 1),
+                                   interp0=m["interp"][0], interp1=m["interp"][1])
+                    elif "skip_mode" in m:                      # an intra block of an inter frame: the inter fields at their defaults
+                        exp.update(skip_mode=0, ref0=0, ref1=15, mv1_row=0, mv1_col=0, motion_mode=0, compound_type=2, interintra=0,
+                                   interintra_mode=0, wedge_interintra=0, wedge_index=0, wedge_sign=0, mask_type=0, comp_group_idx=0,
+                                   compound_idx=1, interp0=0, interp1=0)
 
                     def cols(v, n):
                         return [(v >> (12 * k)) & 0xFFF for k in range(n)]
                     gsigned = dict(got, angle_y=to_signed(got["angle_y"], 3), angle_uv=to_signed(got["angle_uv"], 3),
                                    cfl_u=to_signed(got["cfl_u"], 6), cfl_v=to_signed(got["cfl_v"], 6),
                                    mv_row=to_signed(got["mv_row"], 18), mv_col=to_signed(got["mv_col"], 18),
+                                   mv1_row=to_signed(got["mv1_row"], 18), mv1_col=to_signed(got["mv1_col"], 18),
                                    dlf=[to_signed((got["delta_lf"] >> (7 * i)) & 0x7F, 7) for i in range(4)],
                                    col_y=cols(got["col_y"], m["pal"][0]), col_u=cols(got["col_u"], m["pal"][1]), col_v=cols(got["col_v"], m["pal"][1]))
                     bad = {k: (gsigned[k], exp[k]) for k in exp if gsigned[k] != exp[k]}

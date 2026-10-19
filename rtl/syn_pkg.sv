@@ -80,6 +80,8 @@ package syn_pkg;
         logic [7:0]  seg_ref_en;               // FeatureEnabled[s][SEG_LVL_REF_FRAME]
         logic [23:0] seg_ref_data;             // FeatureData[s][SEG_LVL_REF_FRAME] at [3s +: 3]
         logic [7:0]  seg_globalmv_en;          // FeatureEnabled[s][SEG_LVL_GLOBALMV]
+        logic        seg_update_map;           // segmentation_update_map (1 when primary_ref_frame is NONE)
+        logic        seg_temporal_update;      // segmentation_temporal_update
     } ihdr_t;
 
     // Frame-level parameters only the reconstruction stage needs (software fills this in).
@@ -145,7 +147,7 @@ package syn_pkg;
         logic [2:0]  seg;
         logic        lossless;
         logic        has_chroma;
-        logic [3:0]  ymode;
+        logic [4:0]  ymode;                    // YMode: intra 0 .. 12, inter 13 .. 24
         logic [3:0]  uvmode;
         logic signed [2:0] angle_y;
         logic signed [2:0] angle_uv;
@@ -164,9 +166,28 @@ package syn_pkg;
         logic [95:0] col_y;                    // sorted palette colours, colour k at [12k +: 12]
         logic [95:0] col_u;
         logic [95:0] col_v;                    // (not sorted)
-        logic        is_inter;                 // intra block copy (use_intrabc): predicted from the current frame
+        logic        is_inter;                 // inter block or intra block copy (use_intrabc)
+        logic        intrabc;                  // use_intrabc
         logic signed [17:0] mv_row;            // Mv[0] in 1/8 luma samples (integer for intrabc)
         logic signed [17:0] mv_col;
+        // inter blocks (5.11.23 .. 5.11.33); zero otherwise
+        logic        skip_mode;
+        logic [3:0]  ref0;                     // RefFrame[0..1]: 0 INTRA_FRAME, 1 .. 7 LAST .. ALTREF, 15 NONE
+        logic [3:0]  ref1;
+        logic signed [17:0] mv1_row;           // Mv[1]
+        logic signed [17:0] mv1_col;
+        logic [1:0]  motion_mode;              // 0 SIMPLE, 1 OBMC, 2 LOCALWARP
+        logic [2:0]  compound_type;            // 0 WEDGE, 1 DIFFWTD, 2 AVERAGE, 3 INTRA, 4 DISTANCE
+        logic        interintra;
+        logic [1:0]  interintra_mode;
+        logic        wedge_interintra;
+        logic [3:0]  wedge_index;
+        logic        wedge_sign;
+        logic        mask_type;
+        logic        comp_group_idx;
+        logic        compound_idx;
+        logic [1:0]  interp0;                  // interp_filter[dir]
+        logic [1:0]  interp1;
     } blk_rec_t;
 
     // Per-4x4 motion information of the current frame (spec IsInters / RefFrames / Mvs / MiSizes as the MV

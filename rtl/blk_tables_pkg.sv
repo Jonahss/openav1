@@ -378,6 +378,60 @@ package blk_tables_pkg;
       default: tx_type_inter_inv_set1 = 4'd0;
     endcase
   endfunction
+  function automatic logic [1:0] size_group(input logic [4:0] i);  // Size_Group[bsize]
+    case (i)
+      5'd0: size_group = 2'd0;
+      5'd1: size_group = 2'd0;
+      5'd2: size_group = 2'd0;
+      5'd3: size_group = 2'd1;
+      5'd4: size_group = 2'd1;
+      5'd5: size_group = 2'd1;
+      5'd6: size_group = 2'd2;
+      5'd7: size_group = 2'd2;
+      5'd8: size_group = 2'd2;
+      5'd9: size_group = 2'd3;
+      5'd10: size_group = 2'd3;
+      5'd11: size_group = 2'd3;
+      5'd12: size_group = 2'd3;
+      5'd13: size_group = 2'd3;
+      5'd14: size_group = 2'd3;
+      5'd15: size_group = 2'd3;
+      5'd16: size_group = 2'd0;
+      5'd17: size_group = 2'd0;
+      5'd18: size_group = 2'd1;
+      5'd19: size_group = 2'd1;
+      5'd20: size_group = 2'd2;
+      5'd21: size_group = 2'd2;
+      default: size_group = 2'd0;
+    endcase
+  endfunction
+  function automatic logic [2:0] wedge_bits(input logic [4:0] i);  // Wedge_Bits[bsize]
+    case (i)
+      5'd0: wedge_bits = 3'd0;
+      5'd1: wedge_bits = 3'd0;
+      5'd2: wedge_bits = 3'd0;
+      5'd3: wedge_bits = 3'd4;
+      5'd4: wedge_bits = 3'd4;
+      5'd5: wedge_bits = 3'd4;
+      5'd6: wedge_bits = 3'd4;
+      5'd7: wedge_bits = 3'd4;
+      5'd8: wedge_bits = 3'd4;
+      5'd9: wedge_bits = 3'd4;
+      5'd10: wedge_bits = 3'd0;
+      5'd11: wedge_bits = 3'd0;
+      5'd12: wedge_bits = 3'd0;
+      5'd13: wedge_bits = 3'd0;
+      5'd14: wedge_bits = 3'd0;
+      5'd15: wedge_bits = 3'd0;
+      5'd16: wedge_bits = 3'd0;
+      5'd17: wedge_bits = 3'd0;
+      5'd18: wedge_bits = 3'd4;
+      5'd19: wedge_bits = 3'd4;
+      5'd20: wedge_bits = 3'd0;
+      5'd21: wedge_bits = 3'd0;
+      default: wedge_bits = 3'd0;
+    endcase
+  endfunction
   function automatic logic [3:0] tx_type_inter_inv_set2(input logic [3:0] i);  // Tx_Type_Inter_Inv_Set2[v]
     case (i)
       4'd0: tx_type_inter_inv_set2 = 4'd9;

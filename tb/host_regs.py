@@ -34,7 +34,7 @@ IHDR_FIELDS = [  # syn_pkg::ihdr_t order (MSB first)
     ("use_ref_frame_mvs", 1), ("enable_dual_filter", 1), ("enable_interintra_compound", 1), ("enable_masked_compound", 1),
     ("enable_jnt_comp", 1), ("enable_order_hint", 1), ("order_hint_bits", 3), ("order_hint", 8), ("order_hints", 56),
     ("ref_sign_bias", 7), ("ref_scaled", 7), ("gm_type", 14), ("gm_params", 1008), ("seg_ref_en", 8), ("seg_ref_data", 24),
-    ("seg_globalmv_en", 8)]
+    ("seg_globalmv_en", 8), ("seg_update_map", 1), ("seg_temporal_update", 1)]
 LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
     ("frame_width", PXW), ("frame_height", PXW), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
     ("ref_delta_intra", 7), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
@@ -61,6 +61,8 @@ def unpack(fields, v):
 def ihdr_vals(th):
     """ihdr_t fields for frame header th (all zero for an intra frame, whose parser leaves the inter fields unset)."""
     z = dict((n, 0) for n, _ in IHDR_FIELDS)
+    z["force_integer_mv"] = 1                 # every intra frame (the syntax reads whole-sample intrabc MVs)
+    z["seg_update_map"] = 1
     if getattr(th, "FrameIsIntra", 1):
         return z
     g = lambda n, d=0: getattr(th, n, d)      # noqa: E731
@@ -91,7 +93,8 @@ def ihdr_vals(th):
         sr_en |= int(bool(th.FeatureEnabled[s][5])) << s
         sr_d |= (th.FeatureData[s][5] & 7) << (3 * s)
         sg |= int(bool(th.FeatureEnabled[s][7])) << s
-    v.update(seg_ref_en=sr_en, seg_ref_data=sr_d, seg_globalmv_en=sg)
+    v.update(seg_ref_en=sr_en, seg_ref_data=sr_d, seg_globalmv_en=sg,
+             seg_update_map=int(getattr(th, "segmentation_update_map", 1)), seg_temporal_update=int(getattr(th, "segmentation_temporal_update", 0)))
     z.update(v)
     return z
 

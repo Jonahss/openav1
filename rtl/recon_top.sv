@@ -257,7 +257,7 @@ module recon_top
             B_WR: begin
                 if (wr_i == 6'd0 && !wr_j) ft_uv <= (av_uc && is_smooth(nb_auv[7:4])) || (av_lc && is_smooth(nb_luv[7:4]));
                 mm_we <= 1'b1; mm_waddr <= mm_addr;
-                mm_wdata <= mm_merge(mm_rdata, wr_j ? 4'd0 : b.c[3:0], wr_n, {b.uvmode, b.ymode});
+                mm_wdata <= mm_merge(mm_rdata, wr_j ? 4'd0 : b.c[3:0], wr_n, {b.uvmode, b.ymode[3:0]});
                 bst <= B_WR_W;
             end
             B_WR_W: begin
@@ -266,7 +266,7 @@ module recon_top
                     wr_j <= 1'b1; bst <= B_WR;
                 end else if (wr_i + 6'd1 < bh4) begin
                     wr_j <= 1'b0; wr_i <= wr_i + 6'd1; bst <= B_WR;
-                end else if (b.is_inter) begin
+                end else if (b.intrabc) begin
                     bst <= B_IBC_INIT;
                 end else begin
                     blk_ready <= 1'b1; bst <= B_IDLE;
@@ -404,7 +404,7 @@ module recon_top
         base_x = PXW'((PXW'(b.c) >> sub_x) << 2); base_y = PXW'((PXW'(b.r) >> sub_y) << 2);
         is_pal = (t.plane == 2'd0) ? (b.pal_y != 4'd0) : (b.pal_uv != 4'd0);
         is_cfl = (t.plane != 2'd0) && (b.uvmode == UV_CFL_PRED);
-        mode = (t.plane == 2'd0) ? b.ymode : (is_cfl ? DC_PRED : b.uvmode);
+        mode = (t.plane == 2'd0) ? b.ymode[3:0] : (is_cfl ? DC_PRED : b.uvmode);
         have_l = ((t.plane == 2'd0) ? av_l : av_lc) || (t.x > base_x);
         have_a = ((t.plane == 2'd0) ? av_u : av_uc) || (t.y > base_y);
         above_px = (PXW'(tw_px) < max_x - t.x + PXW'(1)) ? tw_px : 7'(max_x - t.x + PXW'(1));
@@ -745,7 +745,7 @@ module recon_top
                     ci <= 7'd0; cj <= 7'd0; px_valid <= 1'b0; ek <= 9'd0; ep_valid <= 1'b0;
                     n_edges <= 2 * (9'(tw_px) + 9'(th_px));
                     above_lim_r <= above_lim; left_lim_r <= left_lim;
-                    if (b.is_inter) rs <= R_RESID;                       // predicted whole by the block copy
+                    if (b.intrabc) rs <= R_RESID;                        // predicted whole by the block copy
                     else if (is_pal) rs <= R_PAL;
                     else rs <= R_EDGE;
                 end

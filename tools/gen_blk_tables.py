@@ -38,6 +38,8 @@ fn1("tx_type_intra_inv_set1", 4, T.Tx_Type_Intra_Inv_Set1, 3, "Tx_Type_Intra_Inv
 fn1("tx_type_intra_inv_set2", 4, T.Tx_Type_Intra_Inv_Set2, 3, "Tx_Type_Intra_Inv_Set2[v]")
 fn1("filter_intra_mode_to_intra_dir", 4, T.Filter_Intra_Mode_To_Intra_Dir, 3, "Filter_Intra_Mode_To_Intra_Dir[m]")
 fn1("tx_type_inter_inv_set1", 4, T.Tx_Type_Inter_Inv_Set1, 4, "Tx_Type_Inter_Inv_Set1[v]")
+fn1("size_group", 2, T.Size_Group, 5, "Size_Group[bsize]")
+fn1("wedge_bits", 3, T.Wedge_Bits, 5, "Wedge_Bits[bsize]")
 fn1("tx_type_inter_inv_set2", 4, T.Tx_Type_Inter_Inv_Set2, 4, "Tx_Type_Inter_Inv_Set2[v]")
 fn1("tx_type_inter_inv_set3", 4, T.Tx_Type_Inter_Inv_Set3, 1, "Tx_Type_Inter_Inv_Set3[v]")
 fn1("sb_size_bsize", 5, [T.ENUM["BLOCK_64X64"], T.ENUM["BLOCK_128X128"]], 1, "superblock block size by use_128x128")

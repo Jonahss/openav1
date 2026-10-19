@@ -15,7 +15,9 @@ module tile_syntax
     parameter int ML2R = 9,                  // log2 of the motion-info memory rows / columns (4x4 units)
     parameter int ML2C = 10,
     parameter int MFL2R = 4,                 // log2 rows / columns of the motion field band (8x8 units)
-    parameter int MFL2C = 9
+    parameter int MFL2C = 9,
+    parameter int SPL2R = 5,                 // log2 rows / 16-column words of the segmentation map band
+    parameter int SPL2W = 6
 ) (
     input  logic              clk,
     input  logic              rst,
@@ -40,6 +42,11 @@ module tile_syntax
     input  logic [MIW-2:0]    mf_wy8, mf_wx8,
     input  logic              mf_wvalid,
     input  logic signed [15:0] mf_wrow, mf_wcol,
+    // segmentation map band (PrevSegmentIds): 16 ids per 48-bit word, written by the host / reference engine
+    input  logic              sp_we,
+    input  logic [MIW-1:0]    sp_wrow,
+    input  logic [MIW-5:0]    sp_wwc,
+    input  logic [47:0]       sp_wdata,
     // control
     input  logic              tile_start,
     output logic              tile_busy,
@@ -180,6 +187,8 @@ module tile_syntax
     mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_ref(mf_wref), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
                                                   .w_row(mf_wrow), .w_col(mf_wcol), .rd_ref(mf_ref), .rd_y8(mf_y8), .rd_x8(mf_x8),
                                                   .rd_valid(mf_valid), .rd_row(mf_row), .rd_col(mf_col));
+    logic [MIW-1:0] sp_row; logic [MIW-5:0] sp_wc; logic [47:0] sp_data;
+    seg_band #(.SPL2R(SPL2R), .SPL2W(SPL2W)) u_sp (.clk, .we(sp_we), .w_row(sp_wrow), .w_wc(sp_wwc), .w_data(sp_wdata), .rd_row(sp_row), .rd_wc(sp_wc), .rd_data(sp_data));
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     tx_rec_t b_tx;
     always_comb begin tx_rec = b_tx; tx_rec.slot = q_slot_w; end
@@ -194,7 +203,7 @@ module tile_syntax
                       .tx_req, .tx_plane, .tx_x4, .tx_y4, .tx_sz_o(tx_sz), .tx_bsize, .tx_valid, .az_ctx, .dcs_ctx, .tx_we, .w_cul, .w_dccat, .rbc_we, .ctx_tbusy,
                       .cf_tx, .cf_ptype, .cf_start_a, .cf_az_ctx, .cf_done_a, .cf_all_zero, .cf_start_b, .cf_tx_type, .cf_dcs_ctx, .cf_done_b, .cf_eob, .cf_cul, .cf_dccat,
                       .mvm_we, .mvm_r, .mvm_c, .mvm_bw4, .mvm_bh4, .mvm_data, .mvm_busy, .mvr_row, .mvr_col, .mvr_ent, .mvr_written,
-                      .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col);
+                      .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col, .sp_row, .sp_wc, .sp_data);
 
     // ------------------------------------------------------------------ partition / superblock FSM
     typedef struct packed {
