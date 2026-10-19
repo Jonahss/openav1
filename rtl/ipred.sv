@@ -115,15 +115,29 @@ module ipred #(
                 end
         end
     end
+    // The resolved bank writes are registered and land one cycle after they are posted: the filter / upsample
+    // arithmetic behind a bank read and the routing to the replicated banks (one copy per read port) were one path
+    // (-1.09 ns at 80 MHz with the read addresses already registered, 2026-10-18). A value read the cycle after it
+    // was posted therefore reads the old entry; the sequencer never does that except across two transitions, which
+    // take a one-cycle bubble (S_EF_PRE after the corner write, S_UP_DONE after the last upsample step): the edge
+    // filter already bypasses its own last two writes through o0 / o1, the upsampler reads only positions it has
+    // not yet written (and buf[1] from up_save1), and every other write precedes its first read by two cycles.
+    logic          bweA_r [4], bweL_r [4];
+    logic [6:0]    bwaA_r [4], bwaL_r [4];
+    logic [PW-1:0] bwdA_r [4], bwdL_r [4];
+    always_ff @(posedge clk) for (int b = 0; b < 4; b++) begin
+        bweA_r[b] <= bweA[b] && !rst; bwaA_r[b] <= bwaA[b]; bwdA_r[b] <= bwdA[b];
+        bweL_r[b] <= bweL[b] && !rst; bwaL_r[b] <= bwaL[b]; bwdL_r[b] <= bwdL[b];
+    end
     always_ff @(posedge clk) begin
-        if (bweA[0]) A0[bwaA[0]] <= bwdA[0];
-        if (bweA[1]) A1[bwaA[1]] <= bwdA[1];
-        if (bweA[2]) A2[bwaA[2]] <= bwdA[2];
-        if (bweA[3]) A3[bwaA[3]] <= bwdA[3];
-        if (bweL[0]) L0[bwaL[0]] <= bwdL[0];
-        if (bweL[1]) L1[bwaL[1]] <= bwdL[1];
-        if (bweL[2]) L2[bwaL[2]] <= bwdL[2];
-        if (bweL[3]) L3[bwaL[3]] <= bwdL[3];
+        if (bweA_r[0]) A0[bwaA_r[0]] <= bwdA_r[0];
+        if (bweA_r[1]) A1[bwaA_r[1]] <= bwdA_r[1];
+        if (bweA_r[2]) A2[bwaA_r[2]] <= bwdA_r[2];
+        if (bweA_r[3]) A3[bwaA_r[3]] <= bwdA_r[3];
+        if (bweL_r[0]) L0[bwaL_r[0]] <= bwdL_r[0];
+        if (bweL_r[1]) L1[bwaL_r[1]] <= bwdL_r[1];
+        if (bweL_r[2]) L2[bwaL_r[2]] <= bwdL_r[2];
+        if (bweL_r[3]) L3[bwaL_r[3]] <= bwdL_r[3];
     end
     logic [PW-1:0] TL_in;                    // top-left as written through the port
 
@@ -283,7 +297,7 @@ module ipred #(
 
     // ------------------------------------------------------------------ control state
     typedef enum logic [3:0] {
-        S_IDLE, S_SETUP, S_CORNER, S_EF, S_UP_A, S_UP_L, S_DC_SUM, S_PIX, S_FI2, S_DRAIN, S_DONE
+        S_IDLE, S_SETUP, S_CORNER, S_EF_PRE, S_EF, S_UP_A, S_UP_L, S_UP_DONE, S_DC_SUM, S_PIX, S_FI2, S_DRAIN, S_DONE
     } state_t;
     state_t state;
 
@@ -760,9 +774,10 @@ module ipred #(
                     ef_sz   <= ef_sz_l;
                 end
                 k <= (l_ha || l_hl) ? 9'd1 : 9'd0;      // S_UP_A expects k == 0 on entry
-                state <= (l_ha || l_hl) ? S_EF : S_UP_A;
+                state <= (l_ha || l_hl) ? S_EF_PRE : S_UP_A;    // the corner write lands during S_EF_PRE
                 la_v <= (l_ha || l_hl) ? ef_la(1, l_ha ? int'(ef_sz_a) : int'(ef_sz_l)) : up_la(0, 1);
             end
+            S_EF_PRE: state <= S_EF;
             S_EF: begin
                 if (ef_str == 0 || k >= ef_sz) begin
                     if (!ef_side && l_hl) begin
@@ -818,13 +833,14 @@ module ipred #(
                     end
                 end else begin
                     if (k == 9'd1) begin
-                        state <= S_PIX;
+                        state <= S_UP_DONE;                        // this step's writes land during S_UP_DONE
                     end else begin
                         k <= k - 9'd1;
                         la_v <= up_la(int'(k) - 1, int'(ef_sz));
                     end
                 end
             end
+            S_UP_DONE: state <= S_PIX;
             S_DC_SUM: begin
                 if (k < dc_n) begin dc_sum <= dc_sum + dc_part; k <= k + 9'd8; end
                 else begin

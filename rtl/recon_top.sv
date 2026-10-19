@@ -175,7 +175,7 @@ module recon_top
         R_PAL, R_PAL_LAST,
         R_EDGE, R_IP_START, R_IP_W,
         R_CFL_L, R_CFL_D, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST,
+        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2,
         R_FIN, R_MIW
     } rst_t;
     rst_t rs;
@@ -614,6 +614,10 @@ module recon_top
             else dq_out = TW'(v);
         end
     end
+    always_ff @(posedge clk) begin                            // add stage: sum of the group read last cycle, written next cycle
+        a_valid <= p_valid && (rs == R_ADD || rs == R_ADD_LAST) && !rst;
+        add_r <= add_out4; aadd_x_r <= padd_x_r; aadd_y_r <= padd_y_r;
+    end
     always_ff @(posedge clk) begin                            // dequant stage 1 -> 2
         dq_v2 <= p_valid && (rs == R_DQ || rs == R_DQ_LAST) && !rst;
         dq_ci2 <= pci; dq_cj2 <= pcj; q_eff_r <= q_eff; q_data_r <= q_data;
@@ -628,6 +632,14 @@ module recon_top
     // to the UltraRAM address pin was the core build's worst clock-crossing path at 100 MHz).
     logic [FBX-1:0] padd_x_r;
     logic [FBY-1:0] padd_y_r;
+    // The sum is registered too and written the cycle after: the residual read out of the transform engine's
+    // banks, the add, the clamp and the frame memory's write-port mux and capture were one path (0.00 ns at 80 MHz,
+    // 2026-10-18). Groups of a block are each written once and read (for the prediction) before their own add, so
+    // the later landing changes nothing; R_ADD_LAST2 drains the last write before R_FIN.
+    logic           a_valid;
+    logic [47:0]    add_r;
+    logic [FBX-1:0] aadd_x_r;
+    logic [FBY-1:0] aadd_y_r;
     assign add_xx = flip_lr ? 7'(tw_px - 7'd4 - cj) : cj;
     assign add_yy = flip_ud ? 7'(th_px - 7'd1 - ci) : ci;
     logic [47:0] add_out4;
@@ -695,9 +707,9 @@ module recon_top
             // dequant: one coefficient per clock (address (ci, cj) out, the previous position's data in)
             R_DQ, R_DQ_LAST, R_ITX_START: if (dq_v2) begin itx_we = 1'b1; itx_addr = {dq_ci2[4:0], dq_cj2[4:0]}; itx_data = dq_out; end
             // residual add: read the group at (ci, cj) through port 1, write the previous group through port 4
-            R_ADD, R_ADD_LAST: begin
+            R_ADD, R_ADD_LAST, R_ADD_LAST2: begin
                 if (rs == R_ADD) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(add_xx)); fb_y = FBY'(t.y + PXW'(add_yy)); end
-                if (p_valid) begin fb4_we = 1'b1; fb4_x = padd_x_r; fb4_y = padd_y_r; fb4_wdata = add_out4; end
+                if (a_valid) begin fb4_we = 1'b1; fb4_x = aadd_x_r; fb4_y = aadd_y_r; fb4_wdata = add_r; end
             end
             default: ;
         endcase
@@ -812,7 +824,8 @@ module recon_top
                     else if (ci + 7'd1 < th_px) begin cj <= 7'd0; ci <= ci + 7'd1; end
                     else rs <= R_ADD_LAST;
                 end
-                R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_FIN; end
+                R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_ADD_LAST2; end
+                R_ADD_LAST2: begin rs <= R_FIN; end
                 // ---- bookkeeping + ack
                 R_FIN: begin
                     // mark the block's area: one row per clock, rows sb_row_p+1 .. sb_row_p+step_y (the RAM write
