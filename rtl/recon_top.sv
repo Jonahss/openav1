@@ -168,7 +168,7 @@ module recon_top
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
                               B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR,
-                              B_MC_INIT, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
+                              B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
@@ -212,7 +212,22 @@ module recon_top
     logic [1:0]  mc_ur, mc_uc, mc_ui, mc_uj;                 // unit grid and index
     logic        mc_cmv;                                     // units take their motion from b.cmv
     logic [PXW-1:0] mc_ux, mc_uy;                            // unit origin
-    logic [2:0]  mc_nsr, mc_nsc, mc_sr, mc_sc;               // 64 x 64 strips of the unit (32 x 32 in frames with a scaled reference)
+    logic [4:0]  mc_nsr, mc_nsc, mc_sr, mc_sc;               // 64 x 64 strips of the unit (32 x 32 in frames with a scaled reference, 8 x 8 when warped)
+    // warped motion (stage 2c.2): per list, whether the block warps and its parameters / shear (warp_setup per block)
+    logic        w_use [2];
+    logic signed [23:0] w_p [2][6];
+    logic signed [15:0] w_al [2], w_be [2], w_ga [2], w_de [2];
+    logic [1:0]  w_cand;                                     // lists that may warp (setup decides the validity)
+    logic        wl;                                         // the list being set up
+    logic        ws_start, ws_mode, ws_busy, ws_done, ws_valid;
+    logic signed [23:0] ws_p [6], ws_gm [6];
+    logic signed [15:0] ws_alpha, ws_beta, ws_gamma, ws_delta;
+    logic [15:0] ws_midx, ws_midy;
+    logic [3:0]  ws_ref;
+    logic        unit_warp;                                  // the unit is predicted in 8 x 8 strips (some list warps)
+    bst_t        after_wset;                                 // where B_MC_INIT continues after the warp setup
+    logic        mc_warp;                                    // the strip being run is a warp (this list)
+    logic [15:0] mc_wsx, mc_wsy;                             // sx4 / sy4 of the strip
     logic        frame_scl;                                  // the frame references a scaled picture: 32 x 32 strips, 7.11.3.3 positions
     assign frame_scl = |ihdr.ref_scaled;
     logic [6:0]  rf_w, rf_h;                                 // ref_fetch request: unit size in reference samples (strip size unscaled)
@@ -339,7 +354,7 @@ module recon_top
         .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
         .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
         .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
-        .warp(1'b0), .w_alpha(16'sd0), .w_beta(16'sd0), .w_gamma(16'sd0), .w_delta(16'sd0), .w_sx4(16'd0), .w_sy4(16'd0),   // stage 2c.2 pending
+        .warp(mc_warp), .w_alpha(w_al[mc_l]), .w_beta(w_be[mc_l]), .w_gamma(w_ga[mc_l]), .w_delta(w_de[mc_l]), .w_sx4(mc_wsx), .w_sy4(mc_wsy),
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
         .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
 
@@ -522,10 +537,14 @@ module recon_top
                 mc_bmode <= (b.compound_type == 3'd4) ? 2'd3 : 2'd2;
                 wts = dist_weights(ihdr, b.ref0, b.ref1);
                 mc_wt0 <= wts[4:0]; mc_wt1 <= wts[9:5];
-                if (b.motion_mode == 2'd2 || (comp && b.compound_type == 3'd3)
-                    || ((b.ymode == 5'd15 || b.ymode == 5'd23) && !ihdr.force_integer_mv && bw4 >= 6'd2 && bh4 >= 6'd2
-                        && (gm_type_of(ihdr, b.ref0) > 2'd1 || (comp && gm_type_of(ihdr, b.ref1) > 2'd1))))
-                    mc_unsup <= 1'b1;
+                if (comp && b.compound_type == 3'd3) mc_unsup <= 1'b1;
+                // warp candidates (7.11.3.1): LOCALWARP (list 0), or GLOBALMV / GLOBAL_GLOBALMV with a non-translational
+                // gm_type and an unscaled reference; never with force_integer_mv. warp_setup settles the validity.
+                w_cand[0] <= !ihdr.force_integer_mv && (b.motion_mode == 2'd2
+                             || ((b.ymode == 5'd15 || b.ymode == 5'd23) && gm_type_of(ihdr, b.ref0) > 2'd1 && !ihdr.ref_scaled[int'(b.ref0) - 1]));
+                w_cand[1] <= !ihdr.force_integer_mv && comp
+                             && (b.ymode == 5'd15 || b.ymode == 5'd23) && gm_type_of(ihdr, b.ref1) > 2'd1 && !ihdr.ref_scaled[int'(b.ref1) - 1];
+                wl <= 1'b0; w_use[0] <= 1'b0; w_use[1] <= 1'b0;
                 mc_pl <= 2'd0; ob_active <= 1'b0; ob_done <= 1'b0; mb_active <= 1'b0;
                 ii_active <= b.interintra; ii_wedge <= b.interintra && b.wedge_interintra;
                 ii_mode <= (b.interintra_mode == 2'd0) ? 4'd0 : (b.interintra_mode == 2'd1) ? 4'd1 : (b.interintra_mode == 2'd2) ? 4'd2 : 4'd9;
@@ -542,8 +561,26 @@ module recon_top
                     mk_xoff <= 6'(8'd32 - ((8'(cb[7:4]) * bw) >> 3)); mk_yoff <= 6'(8'd32 - ((8'(cb[3:0]) * bh) >> 3));
                     mk_inv <= (b.wedge_sign != wedge_flip(b.bsize, b.wedge_index));
                     mk_x <= 7'd0; mk_y <= 7'd0;
-                    bst <= ((comp && b.compound_type == 3'd0) || (b.interintra && b.wedge_interintra)) ? B_MC_MASK : B_MC_PL;
-                end else bst <= B_MC_PL;
+                    after_wset <= ((comp && b.compound_type == 3'd0) || (b.interintra && b.wedge_interintra)) ? B_MC_MASK : B_MC_PL;
+                end else after_wset <= B_MC_PL;
+                bst <= B_MC_WSET;
+            end
+            B_MC_WSET: begin                                                     // warp parameters of list wl, if a candidate
+                if (w_cand[wl]) begin
+                    ws_start <= 1'b1; ws_mode <= !(wl == 1'b0 && b.motion_mode == 2'd2);
+                    bst <= B_MC_WSET_W;
+                end else if (wl) bst <= after_wset;
+                else wl <= 1'b1;
+            end
+            B_MC_WSET_W: begin
+                ws_start <= 1'b0;
+                if (ws_done) begin
+                    w_use[wl] <= ws_valid;
+                    for (int j = 0; j < 6; j++) w_p[wl][j] <= ws_p[j];
+                    w_al[wl] <= ws_alpha; w_be[wl] <= ws_beta; w_ga[wl] <= ws_gamma; w_de[wl] <= ws_delta;
+                    if (wl) bst <= after_wset;
+                    else begin wl <= 1'b1; bst <= B_MC_WSET; end
+                end
             end
             B_MC_MASK: begin
                 // the wedge mask of the block, four luma samples a cycle (wedge blocks are at most 32 x 32)
@@ -591,9 +628,15 @@ module recon_top
                     u_mv1r <= 16'(b.mv1_row); u_mv1c <= 16'(b.mv1_col); u_i0 <= b.interp0; u_i1 <= b.interp1;
                 end
                 mc_ux <= mc_bx + PXW'(mc_uj) * PXW'(mc_uw); mc_uy <= mc_by + PXW'(mc_ui) * PXW'(mc_uh);
-                mc_nsc <= frame_scl ? 3'((mc_uw + 8'd31) >> 5) : 3'((mc_uw + 8'd63) >> 6);
-                mc_nsr <= frame_scl ? 3'((mc_uh + 8'd31) >> 5) : 3'((mc_uh + 8'd63) >> 6);
-                mc_sr <= 3'd0; mc_sc <= 3'd0; mc_l <= 1'b0;
+                begin
+                    logic uw;
+                    // warp needs a plane block of at least 8 x 8 (sub-8x8 chroma units never warp)
+                    uw = (w_use[0] || (mc_comp && w_use[1])) && !mc_cmv && mc_uw >= 8'd8 && mc_uh >= 8'd8;
+                    unit_warp <= uw;
+                    mc_nsc <= uw ? 5'(mc_uw >> 3) : frame_scl ? 5'((mc_uw + 8'd31) >> 5) : 5'((mc_uw + 8'd63) >> 6);
+                    mc_nsr <= uw ? 5'(mc_uh >> 3) : frame_scl ? 5'((mc_uh + 8'd31) >> 5) : 5'((mc_uh + 8'd63) >> 6);
+                end
+                mc_sr <= 5'd0; mc_sc <= 5'd0; mc_l <= 1'b0;
                 bst <= B_MC_STRIP;
             end
             B_MC_STRIP: begin
@@ -609,15 +652,14 @@ module recon_top
                 logic [PXW-1:0] px, py;
                 logic [6:0] sw, sh;
                 logic signed [21:0] ox, oy;
-                if (frame_scl) begin
-                    rem_w = mc_uw - (8'(mc_sc) << 5); rem_h = mc_uh - (8'(mc_sr) << 5);
-                    sw = (rem_w > 8'd32) ? 7'd32 : 7'(rem_w); sh = (rem_h > 8'd32) ? 7'd32 : 7'(rem_h);
-                    px = mc_ux + (PXW'(mc_sc) << 5); py = mc_uy + (PXW'(mc_sr) << 5);
-                end else begin
-                    rem_w = mc_uw - (8'(mc_sc) << 6); rem_h = mc_uh - (8'(mc_sr) << 6);
-                    sw = (rem_w > 8'd64) ? 7'd64 : 7'(rem_w); sh = (rem_h > 8'd64) ? 7'd64 : 7'(rem_h);
-                    px = mc_ux + (PXW'(mc_sc) << 6); py = mc_uy + (PXW'(mc_sr) << 6);
-                end
+                logic [2:0] ss;
+                logic [7:0] smax;
+                logic signed [21:0] srcx, srcy;
+                ss = unit_warp ? 3'd3 : frame_scl ? 3'd5 : 3'd6;                  // strip size: 8, 32 or 64
+                smax = 8'd1 << ss;
+                rem_w = mc_uw - (8'(mc_sc) << ss); rem_h = mc_uh - (8'(mc_sr) << ss);
+                sw = (rem_w > smax) ? 7'(smax) : 7'(rem_w); sh = (rem_h > smax) ? 7'(smax) : 7'(rem_h);
+                px = mc_ux + (PXW'(mc_sc) << ss); py = mc_uy + (PXW'(mc_sr) << ss);
                 mc_sw <= sw; mc_sh <= sh; sc_sw <= sw; sc_sh <= sh;
                 mc_px <= px; mc_py <= py;
                 mvx2 = (20'(mc_l ? u_mv1c : u_mv0c) * 20'sd2) >>> mc_sx;
@@ -630,7 +672,16 @@ module recon_top
                 rf_lastx <= ((dw + 16'(mc_sx)) >> mc_sx) - 16'd1; rf_lasty <= ((dh + 16'(mc_sy)) >> mc_sy) - 16'd1;
                 rf_lst <= mc_l;
                 mc_mode <= ob_active ? 3'd0 : mc_l ? (mb_active ? 3'd4 : 3'(mc_bmode)) : (mc_comp ? 3'd1 : 3'd0);
-                if (!frame_scl) begin
+                mc_warp <= unit_warp && w_use[mc_l];
+                if (unit_warp && w_use[mc_l]) begin
+                    // block_warp (7.11.3.5): the 8x8's centre in luma units through the affine model (16.16);
+                    // the integer / fractional parts and the 15 x 15 region come in B_MC_STRIP2
+                    srcx = 22'((22'(px) + 22'd4) << mc_sx); srcy = 22'((22'(py) + 22'd4) << mc_sy);
+                    sc_bx <= 39'(w_p[mc_l][2]) * 39'(srcx) + 39'(w_p[mc_l][3]) * 39'(srcy) + 39'(w_p[mc_l][0]);
+                    sc_by <= 39'(w_p[mc_l][4]) * 39'(srcx) + 39'(w_p[mc_l][5]) * 39'(srcy) + 39'(w_p[mc_l][1]);
+                    sc_xs <= 12'd1024; sc_ys <= 12'd1024; mc_xf0 <= 10'd32; mc_yf0 <= 10'd32;
+                    rf_w <= 7'd8; rf_h <= 7'd8;
+                end else if (!frame_scl) begin
                     mc_xf0 <= {mvx2[3:0], 6'b100000}; mc_yf0 <= {mvy2[3:0], 6'b100000}; sc_xs <= 12'd1024; sc_ys <= 12'd1024;
                     rf_x0 <= 17'(signed'({2'b0, px})) + 17'(mvx2 >>> 4);
                     rf_y0 <= 17'(signed'({2'b0, py})) + 17'(mvy2 >>> 4);
@@ -647,7 +698,12 @@ module recon_top
                 bst <= B_MC_STRIP2;
             end
             B_MC_STRIP2: begin
-                if (frame_scl) begin
+                if (mc_warp) begin
+                    logic signed [38:0] x4, y4;
+                    x4 = sc_bx >>> mc_sx; y4 = sc_by >>> mc_sy;
+                    rf_x0 <= 17'(x4 >>> 16) - 17'sd4; rf_y0 <= 17'(y4 >>> 16) - 17'sd4;    // the patch starts at ix4 - 7
+                    mc_wsx <= x4[15:0]; mc_wsy <= y4[15:0];
+                end else if (frame_scl) begin
                     // startX = Round2Signed(baseX, 8) + 32, then the strip's offset in steps; the patch covers
                     // (((w - 1) xStep + 1023) >> 10) + 8 reference columns (rows likewise): ref_fetch's w + 7
                     logic signed [31:0] stx, sty;
@@ -670,8 +726,8 @@ module recon_top
                 mc_fin <= 1'b0;
                 if (ob_active) begin ob_k <= ob_k + 3'd1; bst <= B_MC_OB; end
                 else if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
-                else if (mc_sc + 3'd1 < mc_nsc) begin mc_sc <= mc_sc + 3'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
-                else if (mc_sr + 3'd1 < mc_nsr) begin mc_sc <= 3'd0; mc_sr <= mc_sr + 3'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
+                else if (mc_sc + 5'd1 < mc_nsc) begin mc_sc <= mc_sc + 5'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
+                else if (mc_sr + 5'd1 < mc_nsr) begin mc_sc <= 5'd0; mc_sr <= mc_sr + 5'd1; mc_l <= 1'b0; bst <= B_MC_STRIP; end
                 else if (mc_uj + 2'd1 < mc_uc) begin mc_uj <= mc_uj + 2'd1; bst <= B_MC_UNIT; end
                 else if (mc_ui + 2'd1 < mc_ur) begin mc_uj <= 2'd0; mc_ui <= mc_ui + 2'd1; bst <= B_MC_UNIT; end
                 else bst <= B_MC_PLEND;
@@ -708,14 +764,29 @@ module recon_top
                     end
                     mc_uw <= pw; mc_uh <= ph;
                     u_ref0 <= e[14:11]; u_mv0r <= e[30:15]; u_mv0c <= e[46:31]; u_i0 <= e[48:47]; u_i1 <= e[50:49];
-                    mc_nsc <= frame_scl ? 3'((pw + 8'd31) >> 5) : 3'd1; mc_nsr <= frame_scl ? 3'((ph + 8'd31) >> 5) : 3'd1;
-                    mc_sr <= 3'd0; mc_sc <= 3'd0; mc_l <= 1'b0;
+                    unit_warp <= 1'b0;                                           // OBMC neighbour predictions never warp
+                    mc_nsc <= frame_scl ? 5'((pw + 8'd31) >> 5) : 5'd1; mc_nsr <= frame_scl ? 5'((ph + 8'd31) >> 5) : 5'd1;
+                    mc_sr <= 5'd0; mc_sc <= 5'd0; mc_l <= 1'b0;
                     bst <= B_MC_STRIP;
                 end
             end
             default: bst <= B_IDLE;
         endcase
     end
+
+    // warp_setup: the affine parameters and shear of the list being set up (B_MC_WSET); local from the record's
+    // least-squares sums (list 0, LOCALWARP), global from ihdr.gm_params of the list's reference
+    assign ws_ref = wl ? b.ref1 : b.ref0;
+    assign ws_midx = 16'({b.c, 2'b00}) + 16'({bw4, 1'b0}) - 16'd1;
+    assign ws_midy = 16'({b.r, 2'b00}) + 16'({bh4, 1'b0}) - 16'd1;
+    always_comb for (int j = 0; j < 6; j++) ws_gm[j] = ihdr.gm_params[24 * (6 * (int'(ws_ref) - 1) + j) +: 24];
+    warp_setup u_ws (
+        .clk, .rst, .start(ws_start), .mode(ws_mode),
+        .ls_a00(b.ls[0 +: 32]), .ls_a01(b.ls[32 +: 32]), .ls_a11(b.ls[64 +: 32]), .ls_bx0(b.ls[96 +: 32]),
+        .ls_bx1(b.ls[128 +: 32]), .ls_by0(b.ls[160 +: 32]), .ls_by1(b.ls[192 +: 32]),
+        .mv_row(16'(b.mv_row)), .mv_col(16'(b.mv_col)), .mid_x(ws_midx), .mid_y(ws_midy), .gm_p(ws_gm),
+        .busy(ws_busy), .done(ws_done), .valid(ws_valid), .p(ws_p),
+        .alpha(ws_alpha), .beta(ws_beta), .gamma(ws_gamma), .delta(ws_delta));
 
     // OBMC read-modify-write pipeline: A = the prediction group and its mask values (the frame memory read is issued
     // from these registers), B = the blended group to write. One group per cycle.
