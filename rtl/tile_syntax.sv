@@ -27,6 +27,10 @@ module tile_syntax
     input  logic              def_we,
     input  logic [CDF_AW-1:0] def_addr,
     input  logic [245:0]      def_data,
+    // cdf read-back (host, between tiles): rb_en/rb_addr -> rb_data one cycle later, the adapted working row
+    input  logic              rb_en,
+    input  logic [CDF_AW-1:0] rb_addr,
+    output logic [245:0]      rb_data,
     // control
     input  logic              tile_start,
     output logic              tile_busy,
@@ -91,9 +95,11 @@ module tile_syntax
                     .cdf_wb_we(k_wb_we), .cdf_wb_addr(k_wb_addr), .cdf_wb_data(k_wb_data), .cdf_wb_pre(k_wb_pre), .cdf_wb_pre_addr(k_wb_pre_addr),
                     .req_valid(k_req_valid), .req_ready(req_ready && sel_k), .req_kind(k_req_kind), .req_n(k_req_n), .req_cdf(k_req_cdf), .req_cnt(k_req_cnt),
                     .resp_valid(resp_valid && sel_k), .resp_sym, .resp_cdf, .resp_cnt);
+    assign rb_data = rd_data;
     always_comb begin
         rd_en   = sel_k ? k_rd_en   : c_rd_en;
         rd_addr = sel_k ? k_rd_addr : c_rd_addr;
+        if (rb_en && !tile_busy) begin rd_en = 1'b1; rd_addr = rb_addr; end     // host read-back of the working store
         // the write-back trails its symbol by a cycle, when the request's owner may already have changed
         wb_we   = k_wb_we | c_wb_we;
         wb_addr = k_wb_we ? k_wb_addr : c_wb_addr;

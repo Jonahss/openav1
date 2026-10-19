@@ -3,7 +3,8 @@ testbenches. One row per CDF (all context indices flattened row-major); a row is
 CDF entries (32768 - cdf[k], k < N-1, entry N-1 = 0, unused entries 0) at bits [16k +: 16] and the 6-bit
 adaptation counter at [245:240] -- exactly msac's req_cdf/req_cnt.
 
-Only the tables an intra frame can use are mapped (inter tables are not stored).
+The intra tables come first (their addresses never move, so intra recordings stay valid); the inter tables
+(INTER_TABLES) follow, appended 2026-10-18 for the inter syntax stage.
 """
 import sys
 from pathlib import Path
@@ -28,6 +29,12 @@ INTRA_TABLES = COEF_TABLES + [
     # intra block copy (inter-style syntax inside intra frames): var-tx split, inter tx types, MV coding
     "Txfm_Split", "Inter_Tx_Type_Set1", "Inter_Tx_Type_Set2", "Inter_Tx_Type_Set3",
     "Mv_Joint", "Mv_Class", "Mv_Class0_Bit", "Mv_Class0_Fr", "Mv_Class0_Hp", "Mv_Sign", "Mv_Bit", "Mv_Fr", "Mv_Hp"]
+# inter frames (5.11.7 .. 5.11.33), in the order the block syntax reads them
+INTER_TABLES = ["Y_Mode", "Is_Inter", "Skip_Mode", "Comp_Mode", "Comp_Ref_Type", "Uni_Comp_Ref", "Comp_Ref", "Comp_Bwd_Ref",
+                "Single_Ref", "Compound_Mode", "New_Mv", "Zero_Mv", "Ref_Mv", "Drl_Mode", "Interp_Filter", "Motion_Mode",
+                "Use_Obmc", "Inter_Intra", "Inter_Intra_Mode", "Wedge_Inter_Intra", "Wedge_Index", "Comp_Group_Idx",
+                "Compound_Idx", "Compound_Type"]
+TABLES = INTRA_TABLES + INTER_TABLES
 
 
 def _shape(v):
@@ -42,7 +49,7 @@ def build_map():
     d = tm.make_cdfs(0)
     m = {}
     base = 0
-    for name in INTRA_TABLES:
+    for name in TABLES:
         dims, N = _shape(d[name])
         rows = 1
         for x in dims:
@@ -54,6 +61,7 @@ def build_map():
 
 MAP, ROWS = build_map()
 COEF_ROWS = sum(MAP[n]["rows"] for n in COEF_TABLES)
+INTRA_ROWS = sum(MAP[n]["rows"] for n in INTRA_TABLES)      # rows [0, INTRA_ROWS) are all an intra frame uses
 
 
 def addr(name, *idx):
@@ -84,9 +92,13 @@ def unpack_row(v, N):
 
 def default_rows(base_q_idx):
     """The whole store's default contents for a tile of a frame with this base_q_idx: list of ROWS ints."""
-    d = tm.make_cdfs(base_q_idx)
+    return rows_of(tm.make_cdfs(base_q_idx))
+
+
+def rows_of(d):
+    """A model CDF dict (tile_model.make_cdfs shape, adapted or not) as the store's ROWS row ints."""
     out = [0] * ROWS
-    for name in INTRA_TABLES:
+    for name in TABLES:
         e = MAP[name]
 
         def flat(v, depth):
@@ -101,7 +113,7 @@ def default_rows(base_q_idx):
 
 
 if __name__ == "__main__":
-    print(f"{ROWS} rows ({COEF_ROWS} coefficient rows), {ROWS * ROW_BITS / 8 / 1024:.1f} KiB")
-    for n in INTRA_TABLES:
+    print(f"{ROWS} rows ({COEF_ROWS} coefficient rows, {INTRA_ROWS} intra rows), {ROWS * ROW_BITS / 8 / 1024:.1f} KiB")
+    for n in TABLES:
         e = MAP[n]
         print(f"  {n:24s} base {e['base']:5d} dims {e['dims']} N {e['N']}")

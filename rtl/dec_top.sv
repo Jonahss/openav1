@@ -30,6 +30,9 @@ module dec_top
     input  logic              def_we,
     input  logic [CDF_AW-1:0] def_addr,
     input  logic [245:0]      def_data,
+    input  logic              rb_en,           // cdf read-back (tile_syntax)
+    input  logic [CDF_AW-1:0] rb_addr,
+    output logic [245:0]      rb_data,
     // control
     input  logic              tile_start,
     output logic              tile_busy,
@@ -87,7 +90,7 @@ module dec_top
     // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
     // superblock row up), the filters' info and reconstruction's mode map 64 rows (the four superblock rows live
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
-    tile_syntax #(.ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data,
+    tile_syntax #(.ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2)) u_ts (.clk, .rst, .hdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                       .sb_start_o(sb_start), .sb_r_o(sb_r), .sb_c_o(sb_c), .blk_info, .blk_done, .blk_rec,
                       .tx_done, .tx_rec, .tx_ack, .lr_done, .lr_rec, .q_slot_w, .q_slot_r, .q_addr, .q_data,

@@ -199,6 +199,18 @@ class HostDecoder:
         for i, w in enumerate(words(v, nwords)):
             self.wr(base + 4 * i, w)
 
+    def read_cdf_rows(self, rows=None):
+        """The tile's working CDF store (the adapted rows after a tile; only between tiles): DEF_ADDR bit 31 reads a
+        row back into DEF_DATA. rows: an iterable of row addresses (default all of them)."""
+        out = {}
+        for i in (range(M.ROWS) if rows is None else rows):
+            self.wr(R_DEF_ADDR, i | (1 << 31))
+            v = 0
+            for k in range(8):
+                v |= self.rd(R_DEF + 4 * k) << (32 * k)
+            out[i] = v & ((1 << M.ROW_BITS) - 1)
+        return out
+
     def write_seq(self, pairs):
         """(address, value) pairs in order, or a prebuilt (addrs, vals) pair of arrays for the fast backend."""
         if self.fast is not None:

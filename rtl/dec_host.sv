@@ -25,7 +25,9 @@
 //   0x028 HDATA     R   sample x [11:0] (the address stays)
 //   0x030 HDATA2    R   {4'd0, sample x+1, 4'd0, sample x}: then x += 2 and the next four are fetched
 //   0x034 HDATA4    R   {x+3, x+2, x+1, x}[7:0] (8-bit pictures): then x += 4 and the next four are fetched
-//   0x02C DEF_ADDR  W   CDF default row address; the write strobes def_we with DEF_DATA
+//   0x02C DEF_ADDR  W   CDF default row address; the write strobes def_we with DEF_DATA. Bit 31 set: read back
+//                       that row of the tile's working store into DEF_DATA[0..7] instead (the adapted CDFs after a tile;
+//                       only between tiles: a decoding tile owns the store). Reads wait until the row is in.
 //   0x040-0x05C DEF_DATA[0..7]  RW  246-bit default row
 //   0x080-0x0BC HDR[0..15]  RW  syn_pkg::hdr_t     0x0C0-0x0FC RH[0..15]  RW  rec_hdr_t
 //   0x100-0x13C LH[0..15]   RW  lf_hdr_t           0x140-0x17C CH[0..15]  RW  cdef_hdr_t
@@ -139,6 +141,8 @@ module dec_host
     logic              in_valid, in_ready, in_eos;
     logic              def_we;
     logic [CDF_AW-1:0] def_addr;
+    logic              rb_en, rb_l1;                 // cdf read-back: request pulse, row-in cycle
+    logic [245:0]      rb_data;
     logic [245:0]      def_data;
     logic [5:0]        start;                                // tile, frame, lf, cdef, sr, lr
     logic              tile_busy, tile_done, tile_done_lvl, unsupported;
@@ -160,7 +164,7 @@ module dec_host
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
-        .def_we, .def_addr, .def_data,
+        .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_data,
         .tile_start(start[0]), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
         .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done, .frame_done_lvl,
         .row_final, .row_final_idx, .flush_done,
@@ -410,7 +414,7 @@ module dec_host
     assign s_axi_rresp   = 2'b00;
     assign do_write = aw_v && w_v && !s_axi_bvalid;
     assign h_data_read = (ri == 10'h00A) || (ri == 10'h00C) || (ri == 10'h00D);
-    assign do_read  = ar_v && !(h_data_read && !(hbuf_ok && !dma_busy));
+    assign do_read  = ar_v && !(h_data_read && !(hbuf_ok && !dma_busy)) && !(rb_en || rb_l1);
     logic [9:0] wi, ri;                                      // word index
     assign wi = aw_a[11:2];
     assign ri = ar_a[11:2];
@@ -425,11 +429,13 @@ module dec_host
             ctrl <= 32'd0; haddr <= 32'd0; def_addr_r <= '0;
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
-            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0;
             dma_cfg <= '0; dma_start <= 1'b0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
         end else begin
             start <= '0; push <= 1'b0; def_we <= 1'b0; h_fetch <= 1'b0; dma_start <= 1'b0;
+            rb_en <= 1'b0; rb_l1 <= rb_en;
+            if (rb_l1) begin for (int i = 0; i < 7; i++) def_w[i] <= rb_data[32*i +: 32]; def_w[7] <= 32'(rb_data[245:224]); end
             if (ctrl[0]) f_badw <= 1'b0;
             if (s_axi_awvalid && s_axi_awready) begin aw_a <= s_axi_awaddr; aw_v <= 1'b1; end
             if (s_axi_wvalid && s_axi_wready) begin w_d <= s_axi_wdata; w_s <= s_axi_wstrb; w_v <= 1'b1; end
@@ -444,7 +450,7 @@ module dec_host
                     10'h007: begin if (w_s[0]) begin push <= 1'b1; push_d <= {2'd0, 24'd0, w_d[7:0]}; end else f_badw <= 1'b1; end
                     10'h008: begin if (w_s == 4'hF) begin push <= 1'b1; push_d <= {2'd3, w_d}; end else f_badw <= 1'b1; end
                     10'h009: begin haddr <= strb(haddr, w_d, w_s); h_fetch <= 1'b1; end
-                    10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; def_we <= 1'b1; end
+                    10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; if (w_d[31]) rb_en <= 1'b1; else def_we <= 1'b1; end
                     10'h060: dma_cfg <= strb(dma_cfg, w_d, w_s);                                              // 0x180
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
                     default: begin

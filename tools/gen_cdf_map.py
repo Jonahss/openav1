@@ -14,9 +14,10 @@ def main():
            "package cdf_map_pkg;",
            f"  localparam int CDF_ROWS = {M.ROWS};",
            f"  localparam int CDF_COEF_ROWS = {M.COEF_ROWS};   // rows [0, CDF_COEF_ROWS) depend on base_q_idx",
+           f"  localparam int CDF_INTRA_ROWS = {M.INTRA_ROWS};   // rows [0, CDF_INTRA_ROWS) are all an intra frame uses",
            f"  localparam int CDF_AW = {max(1, (M.ROWS - 1).bit_length())};",
            ""]
-    for name in M.INTRA_TABLES:
+    for name in M.TABLES:
         e = M.MAP[name]
         u = name.upper()
         out.append(f"  localparam int CDF_{u} = {e['base']};   // dims {e['dims']} N={e['N']}")

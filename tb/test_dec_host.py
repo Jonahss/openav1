@@ -97,6 +97,26 @@ async def run_tile(ax, th, dec, data, tag, stats):
     stats["bytes"] += len(data)
 
 
+async def check_cdf_readback(ax, dec, tag, stats, rows=None):
+    """DEF_ADDR bit 31: the working store's rows after the tile must be the model's adapted CDFs (counters too)."""
+    want = M.rows_of(dec.cdf)
+    if rows is None:
+        rows = range(M.ROWS)
+    bad = 0
+    for i in rows:
+        await ax.write(R_DEF_ADDR, i | (1 << 31))
+        v = 0
+        for k in range(8):
+            v |= (await ax.read(R_DEF + 4 * k, record=False)) << (32 * k)
+        if v != want[i]:
+            bad += 1
+            if bad <= 5:
+                name = next(n for n in M.TABLES if M.MAP[n]["base"] <= i < M.MAP[n]["base"] + M.MAP[n]["rows"])
+                cocotb.log.info(f"{tag}: CDF row {i} ({name}+{i - M.MAP[name]['base']}) RTL {v:062x} model {want[i]:062x}")
+    assert bad == 0, f"{tag}: {bad} CDF rows differ after the tile"
+    stats["rb_checks"] = stats.get("rb_checks", 0) + 1
+
+
 DMA_BASE = 0x7_1234_5678 & ~7                                # an odd-looking, 8-aligned 40-bit address
 
 
@@ -283,6 +303,8 @@ async def dec_host_streams(dut):
             decs.append(dec)
             hdr0 = th
             await run_tile(ax, th, dec, data, f"{tag} tile {ti} ({th.MiColStart},{th.MiRowStart})", stats)
+            if stats.get("rb_checks", 0) < 2 and not th.disable_cdf_update:
+                await check_cdf_readback(ax, dec, f"{tag} tile {ti}", stats)
         planes = frame["planes"]
         if STAGE == "lf":
             state = xf.FrameState(hdr0, decs)
