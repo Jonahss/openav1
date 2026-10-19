@@ -34,6 +34,7 @@ class FrameState:
         self.YModes = [[0] * C for _ in range(R)]
         self.SegmentIds = [[0] * C for _ in range(R)]
         self.DeltaLFs = [[None] * C for _ in range(R)]
+        self.RefFrames = [[[0, -1]] * C for _ in range(R)]       # 7.14: isIntra, the reference and mode deltas
         self.LoopfilterTxSizes = [[row[:] for row in d] for d in decs[0].LoopfilterTxSizes]
         self.cdef_idx = {}
         self.LrType, self.LrWiener, self.LrSgrSet, self.LrSgrXqd = {}, {}, {}, {}
@@ -48,6 +49,8 @@ class FrameState:
                     self.YModes[r][c] = d.YModes[r][c]
                     self.SegmentIds[r][c] = d.SegmentIds[r][c]
                     self.DeltaLFs[r][c] = d.DeltaLFs[r][c]
+                    if d.RefFrames[r][c] is not None:
+                        self.RefFrames[r][c] = d.RefFrames[r][c]
             for plane in range(hdr.NumPlanes):
                 subX = hdr.subsampling_x if plane > 0 else 0
                 subY = hdr.subsampling_y if plane > 0 else 0
@@ -207,6 +210,29 @@ def main():
                             first = (x, y, gr[x], er[x])
             total_bad += bad
             tag = "OK " if bad == 0 else "BAD"
+            if bad and "--blocks" in sys.argv:
+                # the blocks holding differing samples, with their inter syntax (which feature is wrong?)
+                sx = hdr.subsampling_x if p else 0
+                sy = hdr.subsampling_y if p else 0
+                hit = {}
+                for y in range(h):
+                    gr, er = got[y], exp[y]
+                    for x in range(w):
+                        if gr[x] != er[x]:
+                            r4, c4 = (y << sy) >> 2, (x << sx) >> 2
+                            for dcd in decs:
+                                for b in dcd.blocks:
+                                    bh4 = T.Num_4x4_Blocks_High[b["size"]]; bw4 = T.Num_4x4_Blocks_Wide[b["size"]]
+                                    if b["r"] <= r4 < b["r"] + bh4 and b["c"] <= c4 < b["c"] + bw4:
+                                        key = (b["r"], b["c"])
+                                        if key not in hit:
+                                            hit[key] = [b, 0, (x, y, gr[x], er[x])]
+                                        hit[key][1] += 1
+                for key, (b, n, first) in list(hit.items())[:12]:
+                    print(f"    block r{b['r']} c{b['c']} size {b['size']} ({T.Block_Width[b['size']]}x{T.Block_Height[b['size']]}): {n} bad; "
+                          f"inter {b.get('inter')} skip {b['skip']} ymode {b['ymode']} ref {b.get('ref')} mvs {b.get('mvs')} "
+                          f"mm {b.get('motion_mode')} ct {b.get('compound_type')} ii {b.get('interintra')} interp {b.get('interp')} "
+                          f"skip_mode {b.get('skip_mode')} seg {b['seg']}; first {first}")
             print(f"frame {fi} (picture {o}) plane {p} {w}x{h}: {tag} {bad} differing samples" + (f", first at x={first[0]} y={first[1]} model={first[2]} dav1d={first[3]}" if first else ""))
     print("OK" if total_bad == 0 else f"{total_bad} differing samples")
     sys.exit(1 if total_bad else 0)

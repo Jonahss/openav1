@@ -15,6 +15,9 @@ INTRA_FRAME = 0
 SEG_LVL_ALT_LF_Y_V = 1
 
 
+NEARESTMV, GLOBALMV, GLOBAL_GLOBALMV = 13, 15, 23
+
+
 def clip3(lo, hi, x):
     return lo if x < lo else hi if x > hi else x
 
@@ -70,7 +73,8 @@ class LoopFilter:
         txSz = d.LoopfilterTxSizes[plane][row >> subY][col >> subX]
         planeSize = d.get_plane_residual_size(MiSize, plane)
         skip = d.Skips[row][col]
-        isIntra = True
+        rf = d.RefFrames[row][col] if getattr(d, "RefFrames", None) is not None else None
+        isIntra = rf is None or rf[0] <= INTRA_FRAME
         prevTxSz = d.LoopfilterTxSizes[plane][prevRow >> subY][prevCol >> subX]
         if pss == 0:
             isBlockEdge = (xP % T.Block_Width[planeSize]) == 0
@@ -102,8 +106,11 @@ class LoopFilter:
         h = self.h
         d = self.d
         segment = d.SegmentIds[row][col]
-        ref = INTRA_FRAME
-        modeType = 0
+        rf = d.RefFrames[row][col] if getattr(d, "RefFrames", None) is not None else None
+        ref = rf[0] if rf is not None else INTRA_FRAME
+        mode = d.YModes[row][col]
+        # 7.14.4: inter modes other than the global ones take mode delta 1; intra and GLOBALMV / GLOBAL_GLOBALMV take 0
+        modeType = 1 if (mode >= NEARESTMV and mode not in (GLOBALMV, GLOBAL_GLOBALMV)) else 0
         dlf = d.DeltaLFs[row][col] or [0, 0, 0, 0]
         if not h.delta_lf_multi:
             deltaLF = dlf[0]
