@@ -14,9 +14,9 @@ module tile_syntax
 #(
     parameter int ML2R = 9,                  // log2 of the motion-info memory rows / columns (4x4 units)
     parameter int ML2C = 10,
-    parameter int MFL2R = 4,                 // log2 rows / columns of the motion field band (8x8 units)
+    parameter int MFL2R = 8,                 // log2 rows / columns of the motion field band (8x8 units; dec_top sizes the board's)
     parameter int MFL2C = 9,
-    parameter int SPL2R = 5,                 // log2 rows / 16-column words of the segmentation map band
+    parameter int SPL2R = 9,                 // log2 rows / 16-column words of the segmentation map band
     parameter int SPL2W = 6
 ) (
     input  logic              clk,

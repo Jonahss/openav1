@@ -25,6 +25,7 @@ import av1_tables as T          # noqa: E402
 import cdf_map as M             # noqa: E402
 import gen_stream as g          # noqa: E402
 import obu_parser as op         # noqa: E402
+import seq_model as sm          # noqa: E402
 import tile_model as tm         # noqa: E402
 
 ACK_DELAY = int(os.environ.get("TS_ACK_DELAY", "0"))
@@ -51,13 +52,13 @@ def to_signed(v, bits):
 class RecDecoder(tm.TileDecoder):
     """Records what the RTL emits: per block and per transform block."""
 
-    def __init__(self, hdr, data):
-        super().__init__(hdr, data, None)
+    def __init__(self, hdr, data, frame=None):
+        super().__init__(hdr, data, None, frame=frame)
         self.tx_recs = []
         self.lr_recs = []
         self.symlog = []
         self.idmap = {}
-        for name in M.INTRA_TABLES:
+        for name in M.TABLES:
             e = M.MAP[name]
 
             def walk(v, depth, idx):
@@ -234,8 +235,10 @@ async def tile_vs_model(dut):
                 dut.phase.value = 0
         dut.phase.value = 0
         cocotb.start_soon(phase_gen())
-    for s in ("in_valid", "in_eos", "def_we", "rb_en", "rb_addr", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "ihdr", "blk_ack", "pm_plane", "pm_x", "pm_y"):
-        getattr(dut, s).value = 0
+    for s in ("in_valid", "in_eos", "def_we", "rb_en", "rb_addr", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "ihdr", "blk_ack", "pm_plane", "pm_x", "pm_y",
+              "mf_we", "mf_wref", "mf_wy8", "mf_wx8", "mf_wvalid", "mf_wrow", "mf_wcol", "sp_we", "sp_wrow", "sp_wwc", "sp_wdata"):
+        if hasattr(dut, s):
+            getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
@@ -335,39 +338,108 @@ async def tile_vs_model(dut):
             d, args = gen(seed, W, H, fmt)
             jobs.append((f"seed {seed} {fmt}", d, args))
     for label, d, args in jobs:
-        frame_of = {ti: fi for fi, tl in enumerate(getattr(d, "frames", [])) for ti in tl}
+        frames = list(getattr(d, "frames", None) or [list(range(len(d.tiles)))])
+        frame_of = {ti: fi for fi, tl in enumerate(frames) for ti in tl}
         frames_sel = {int(x) for x in os.environ.get("TS_FRAMES", "").split(",") if x}   # decoded-frame indices to run (default all)
-        for ti, (th, data) in enumerate(d.tiles):
-            if frames_sel and frame_of.get(ti, ti) not in frames_sel:
+        # the frame sequence: CDFs, the segmentation map and the motion field a frame inherits (seq_model), as the host
+        # will program them; frames with show_existing_frame only update the sequence state
+        seq = sm.SequenceState()
+        hdr_iter = iter(getattr(d, "frame_headers", []))
+        for fi, tl in enumerate(frames):
+            h = None
+            for h in hdr_iter:
+                if h.show_existing_frame:
+                    seq.show_existing(h)
+                    continue
+                break
+            if h is None or h.show_existing_frame:
+                h = d.tiles[tl[0]][0]
+            ctx = seq.start_frame(h)
+            if frames_sel and fi not in frames_sel:
+                decs = [RecDecoder(d.tiles[ti][0], d.tiles[ti][1], frame=ctx) for ti in tl]
+                for dec in decs:
+                    dec.decode_tile()
+                seq.end_frame(h, [sm.TileSummary(dec, keep_cdf=(k == h.context_update_tile_id)) for k, dec in enumerate(decs)], frame_cdfs=ctx.cdfs)
                 continue
-            tag0 = f"{label} bd{args['bd']} tile {ti} ({th.MiColStart},{th.MiRowStart})"
-            dec = RecDecoder(th, data)
-            dec.decode_tile()
-            hv = hdr_vals(th, dec, frame_of.get(ti, ti))
-            dut.hdr.value = pack(HDR_FIELDS, hv)
-            dut.ihdr.value = pack(IHDR_FIELDS, ihdr_vals(th))
-            # defaults for base_q_idx
-            for i, row in enumerate(M.default_rows(th.base_q_idx)):
-                dut.def_we.value = 1
-                dut.def_addr.value = i
-                dut.def_data.value = row
+            rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else M.default_rows(h.base_q_idx)
+            await load_frame_state(dut, h, ctx)
+            decoders = []
+            for k, ti in enumerate(tl):
+                th, data = d.tiles[ti]
+                tag0 = f"{label} bd{args['bd']} frame {fi} tile {ti} ({th.MiColStart},{th.MiRowStart})"
+                dec = RecDecoder(th, data, frame=ctx)
+                dec.decode_tile()
+                hv = hdr_vals(th, dec, fi)
+                dut.hdr.value = pack(HDR_FIELDS, hv)
+                dut.ihdr.value = pack(IHDR_FIELDS, ihdr_vals(th))
+                # the frame's starting CDFs (the defaults for base_q_idx, or the primary reference's saved ones)
+                for i, row in enumerate(rows):
+                    dut.def_we.value = 1
+                    dut.def_addr.value = i
+                    dut.def_data.value = row
+                    await RisingEdge(dut.clk)
+                dut.def_we.value = 0
+                symlog.clear()
+                nblog.clear()
+                dut.tile_start.value = 1
                 await RisingEdge(dut.clk)
-            dut.def_we.value = 0
-            symlog.clear()
-            nblog.clear()
-            dut.tile_start.value = 1
-            await RisingEdge(dut.clk)
-            await Timer(1, "ns")
-            dut.tile_start.value = 0
-            feeder = start_feed(dut, feed_bytes(dut, data))
-            symlog.clear()
-            try:
-                await collect(dut, dec, tag0, stats)
-            except AssertionError:
-                dump(dec)
-                raise
-            await ClockCycles(dut.clk, 4)
+                await Timer(1, "ns")
+                dut.tile_start.value = 0
+                feeder = start_feed(dut, feed_bytes(dut, data))
+                symlog.clear()
+                try:
+                    await collect(dut, dec, tag0, stats)
+                except AssertionError:
+                    dump(dec)
+                    raise
+                await ClockCycles(dut.clk, 4)
+                if not th.FrameIsIntra:
+                    stats["inter_blocks"] = stats.get("inter_blocks", 0) + sum(1 for b in dec.blocks if b.get("inter"))
+                    stats["inter_frames"] = stats.get("inter_frames", 0) + (1 if k == 0 else 0)
+                decoders.append(sm.TileSummary(dec, keep_cdf=(k == h.context_update_tile_id)))
+                del dec
+            seq.end_frame(h, decoders, frame_cdfs=ctx.cdfs)
     dut._log.info(f"OK: {stats}")
+
+
+async def load_frame_state(dut, h, ctx):
+    """The frame-side state of an inter frame into the DUT's band memories: the previous segmentation map (3 bits per
+    4x4, 16 per word; zeros when there is none) and the motion field (one entry per 8x8 and reference; valid = 0 for
+    the spec's MV_INVALID). Intra frames clear both (nothing reads them)."""
+    if h.FrameIsIntra and not hasattr(dut, "sp_we"):
+        return
+    prev = ctx.prev_segment_ids
+    rows, cols = h.MiRows, h.MiCols
+    for r in range(rows):
+        for wc in range((cols + 15) // 16):
+            w = 0
+            if prev is not None:
+                for k in range(16):
+                    c = wc * 16 + k
+                    if c < cols:
+                        w |= (prev[r][c] & 7) << (3 * k)
+            dut.sp_we.value = 1
+            dut.sp_wrow.value = r
+            dut.sp_wwc.value = wc
+            dut.sp_wdata.value = w
+            await RisingEdge(dut.clk)
+    dut.sp_we.value = 0
+    mf = ctx.motion_field
+    if not h.FrameIsIntra:
+        for ref in range(1, 8):
+            for y8 in range(rows // 2 + 1):
+                for x8 in range(cols // 2 + 1):
+                    mv = mf[ref][y8][x8] if (mf is not None and y8 < len(mf[ref]) and x8 < len(mf[ref][y8])) else [tm.MV_INVALID, tm.MV_INVALID]
+                    valid = mv[0] != tm.MV_INVALID
+                    dut.mf_we.value = 1
+                    dut.mf_wref.value = ref - 1
+                    dut.mf_wy8.value = y8
+                    dut.mf_wx8.value = x8
+                    dut.mf_wvalid.value = int(valid)
+                    dut.mf_wrow.value = (mv[0] & 0xFFFF) if valid else 0
+                    dut.mf_wcol.value = (mv[1] & 0xFFFF) if valid else 0
+                    await RisingEdge(dut.clk)
+        dut.mf_we.value = 0
 
 
 async def collect(dut, dec, tag0, stats):
