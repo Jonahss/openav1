@@ -455,6 +455,13 @@ patch(src / "decode.c", [
             fprintf(dav1d_trace_fp, " %d", (int) h->gmv[i].type);
             for (int j = 0; j < 6; j++) fprintf(dav1d_trace_fp, " %d", h->gmv[i].matrix[j]);
         }
+        /* + 21: the references' upscaled width and height [7][2] (is_scaled), then the sequence flags the tile
+           syntax reads: inter_intra, masked_compound, jnt_comp, dual_filter, order_hint, order_hint_n_bits, warped_motion */
+        for (int i = 0; i < 7; i++)
+            fprintf(dav1d_trace_fp, " %d %d", IS_INTER_OR_SWITCH(h) ? f->refp[i].p.p.w : -1,
+                    IS_INTER_OR_SWITCH(h) ? f->refp[i].p.p.h : -1);
+        fprintf(dav1d_trace_fp, " %d %d %d %d %d %d %d", sh->inter_intra, sh->masked_compound, sh->jnt_comp,
+                sh->dual_filter, sh->order_hint, sh->order_hint_n_bits, sh->warped_motion);
         fputc('\n', dav1d_trace_fp);
     }
 '''),

@@ -27,7 +27,9 @@ FIELDS = ["tile_row", "tile_col", "MiColStart", "MiColEnd", "MiRowStart", "MiRow
           "order_hint", "refresh_frame_flags", "error_resilient_mode", "force_integer_mv", "show_frame",
           "showable_frame", "allow_high_precision_mv", "interpolation_filter", "is_motion_mode_switchable",
           "use_ref_frame_mvs", "reference_select", "skip_mode_present", "SkipModeFrame", "allow_warped_motion",
-          "ref_frame_idx", "OrderHints", "GmType", "gm_params"]
+          "ref_frame_idx", "OrderHints", "GmType", "gm_params",
+          "RefUpscaledWidths", "RefFrameHeights", "enable_interintra_compound", "enable_masked_compound",
+          "enable_jnt_comp", "enable_dual_filter", "enable_order_hint", "OrderHintBits", "enable_warped_motion"]
 
 
 def main():

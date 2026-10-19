@@ -606,6 +606,19 @@ class Decoder:
         h.enable_cdef = s.enable_cdef
         h.enable_restoration = s.enable_restoration
         h.enable_superres = s.enable_superres
+        h.enable_interintra_compound = s.enable_interintra_compound
+        h.enable_masked_compound = s.enable_masked_compound
+        h.enable_jnt_comp = s.enable_jnt_comp
+        h.enable_dual_filter = s.enable_dual_filter
+        h.enable_order_hint = s.enable_order_hint
+        h.OrderHintBits = s.OrderHintBits
+        h.enable_warped_motion = s.enable_warped_motion
+        h.RefUpscaledWidths = [0] * 8                          # by RefFrame (7.11.3.3 is_scaled)
+        h.RefFrameHeights = [0] * 8
+        if not h.FrameIsIntra:
+            for i in range(REFS_PER_FRAME):
+                h.RefUpscaledWidths[LAST_FRAME + i] = self.RefUpscaledWidth[h.ref_frame_idx[i]]
+                h.RefFrameHeights[LAST_FRAME + i] = self.RefFrameHeight[h.ref_frame_idx[i]]
 
     @staticmethod
     def get_qindex(h, ignore_delta_q, sid):

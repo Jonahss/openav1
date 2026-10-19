@@ -7,20 +7,26 @@ the arithmetic decoder's range afterwards, and (for adaptive symbols) the CDF ro
 Dequantised coefficient blocks (C events) are compared as well. The first mismatch stops the tile
 and names the syntax element, so context-derivation mistakes are located exactly.
 
-Usage: tools/xcheck_tile.py <trace.txt> [--max-tiles N] [-v]
+Usage: tools/xcheck_tile.py <trace.txt> [stream.ivf|.obu] [--max-tiles N] [-v]
+With the stream, the frames are decoded in order with the sequence state (tb/seq_model.py): CDFs inherited from
+reference slots, segmentation maps, motion fields for temporal MV candidates. Inter streams need it; the header
+parser (tb/obu_parser.py) supplies the per-frame values the trace header does not carry (context_update_tile_id,
+refresh flags, show_existing_frame).
 """
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tb"))
 import tile_model as tm  # noqa: E402
+import seq_model as sm   # noqa: E402
+import obu_parser as op  # noqa: E402
 
 
 class Mismatch(Exception):
     pass
 
 
-def run_tile(hdr_fields, data, sym_events, c_events, verbose):
+def run_tile(hdr_fields, data, sym_events, c_events, verbose, frame=None, check_coefs=True):
     hdr = tm.FrameHeader(hdr_fields)
     idx = [0]
     counts = {"S": 0}
@@ -54,7 +60,7 @@ def run_tile(hdr_fields, data, sym_events, c_events, verbose):
         if rng != erng:
             raise Mismatch(f"{name}: range after symbol differs: model {rng} dav1d {erng} (event #{idx[0]})")
 
-    dec = tm.TileDecoder(hdr, data, hook)
+    dec = tm.TileDecoder(hdr, data, hook, frame=frame)
     try:
         dec.decode_tile()
     except Mismatch as m:
@@ -65,6 +71,8 @@ def run_tile(hdr_fields, data, sym_events, c_events, verbose):
         raise Mismatch(f"model consumed {idx[0]} symbols, dav1d logged {len(sym_events)}")
     # coefficient blocks
     model_c = [e for e in dec.events if e[0] == "C"]
+    if not check_coefs:
+        return counts["S"], len(model_c), len(dec.blocks), dec
     if len(model_c) != len(c_events):
         raise Mismatch(f"model produced {len(model_c)} coefficient blocks, dav1d {len(c_events)}")
     for k, (m, d) in enumerate(zip(model_c, c_events)):
@@ -76,14 +84,17 @@ def run_tile(hdr_fields, data, sym_events, c_events, verbose):
         if flat != dvals:
             bad = [(i, flat[i], dvals[i]) for i in range(min(len(flat), len(dvals))) if flat[i] != dvals[i]]
             raise Mismatch(f"C #{k} plane {plane} ({x4},{y4}) tx {tx}: dequant differs at {bad[:6]} (model eob {eob}, dav1d eob {deob})")
-    return counts["S"], len(model_c), len(dec.blocks)
+    return counts["S"], len(model_c), len(dec.blocks), dec
 
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    if "--max-tiles" in sys.argv:
+        args = [a for a in args if a != sys.argv[sys.argv.index("--max-tiles") + 1]]
     verbose = "-v" in sys.argv
     max_tiles = int(sys.argv[sys.argv.index("--max-tiles") + 1]) if "--max-tiles" in sys.argv else None
     path = args[0]
+    stream = args[1] if len(args) > 1 else None
     tiles = []
     cur = None          # tile receiving header fields (T/H come first for all tiles of a frame)
     pending = []        # tiles of the frame being set up
@@ -123,23 +134,55 @@ def main():
                 cur["coefs"].append((plane, x4, y4, tx, txtp, eob, w, h, [int(x) for x in f[9:9 + n]]))
     ok = 0
     tot_s = tot_c = tot_b = 0
-    for ti, t in enumerate(tiles[:max_tiles] if max_tiles else tiles):
-        try:
-            ns, nc, nb = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose)
-            ok += 1
-            tot_s += ns; tot_c += nc; tot_b += nb
-            if verbose:
-                print(f"tile {ti}: OK {ns} symbols, {nb} blocks, {nc} coefficient blocks")
-        except Mismatch as m:
-            print(f"tile {ti}: MISMATCH: {m}")
-        except Exception as e:  # model crash
-            import traceback
-            print(f"tile {ti}: MODEL ERROR: {type(e).__name__}: {e}")
-            if verbose:
-                traceback.print_exc()
-    print(f"{ok}/{len(tiles)} tiles bit-exact; {tot_s} symbols, {tot_b} blocks, {tot_c} coefficient blocks")
+    has_coefs = any(t["coefs"] for t in tiles)          # a mask-1 trace carries no C events: symbols only
+    if stream is None:
+        for ti, t in enumerate(tiles[:max_tiles] if max_tiles else tiles):
+            try:
+                ns, nc, nb, _ = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose, check_coefs=has_coefs)
+                ok += 1
+                tot_s += ns; tot_c += nc; tot_b += nb
+            except Mismatch as m:
+                print(f"tile {ti}: MISMATCH: {m}")
+                break
+    else:
+        d = op.parse_file(stream)
+        if len(d.tiles) != len(tiles):
+            print(f"tile count: parser {len(d.tiles)} vs trace {len(tiles)}")
+        seq = sm.SequenceState()
+        ti = 0
+        fi = 0                                                  # index into d.frames (decoded frames)
+        stop = False
+        for h in d.frame_headers:
+            if h.show_existing_frame:
+                seq.show_existing(h)
+                continue
+            tile_idx = d.frames[fi]
+            fi += 1
+            ctx = seq.start_frame(h)
+            decoders = []
+            for _ in tile_idx:
+                if max_tiles is not None and ti >= max_tiles:
+                    stop = True
+                    break
+                t = tiles[ti]
+                try:
+                    ns, nc, nb, dec = run_tile(t["hdr"], t["data"], t["syms"], t["coefs"], verbose, frame=ctx,
+                                               check_coefs=has_coefs)
+                    ok += 1
+                    tot_s += ns; tot_c += nc; tot_b += nb
+                    decoders.append(dec)
+                except Mismatch as m:
+                    kind = "intra" if h.FrameIsIntra else "inter"
+                    print(f"tile {ti} (frame {fi - 1}, {kind}, order_hint {h.order_hint}): MISMATCH: {m}")
+                    stop = True
+                    break
+                ti += 1
+            if stop:
+                break
+            seq.end_frame(h, decoders, frame_cdfs=ctx.cdfs)
+    print(f"OK: {ok}/{len(tiles)} tiles, {tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks" if ok == len(tiles)
+          else f"{ok}/{len(tiles)} tiles OK ({tot_s} symbols, {tot_c} coefficient blocks, {tot_b} blocks before the mismatch)")
     sys.exit(0 if ok == len(tiles) else 1)
-
 
 if __name__ == "__main__":
     main()
