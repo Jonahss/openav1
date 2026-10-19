@@ -4,7 +4,9 @@
 verified against the reference decoders at every stage, and brought up on a low-cost FPGA (AMD Kria KV260)
 before anyone talks about silicon. Year one targets **intra-only 1080p** (key frames / still pictures /
 AVIF): the arithmetic decoder, the whole tile syntax, prediction, transforms, reconstruction and the
-in-loop filters. Inter prediction (motion compensation, reference buffers) is the next mountain.
+in-loop filters. Inter prediction is in progress: the inter block syntax (references, MV prediction with the
+full candidate stack, compound and motion modes) decodes Argon inter frames in RTL symbol-exactly against the Python
+model (branch `inter`); motion compensation and the reference buffers in DDR are the next stage.
 
 Why: hardware AV1 decoders exist inside phones and TVs, but there is no open one you can read, simulate,
 change and put on your own board. This project is that. It is also an experiment in how far one careful
