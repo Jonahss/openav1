@@ -6,7 +6,11 @@ Idempotent: refuses to run twice. Usage: tools/dav1d_trace_patch.py third_party/
 Trace format v3 (one event per line, enabled by DAV1D_TRACE=<path|->, DAV1D_TRACE_MASK bits
 1 sym, 2 coef, 4 pred, 8 recon; --threads 1 and an asm-free build are required):
   H <tile_row> <tile_col> <col_start> <col_end> <row_start> <row_end> <frame header fields...>  (before each T; see setup_tile hook)
+  HX <update_data> <refidx[0..6]> <preskip> <last_active_segid> <frame_ref_short_signaling> <error_resilient_mode>  (before each H)
   T <tile_bytes> <disable_cdf_update> <hex tile bytes>
+  M <by4> <bx4> <bs> <ref0> <ref1> <cnt> <ctx> (<y0> <x0> <y1> <x1> <weight>)*cnt   (mask bit 16: the MV stack after refmvs_find)
+  G <by4> <bx4> <bs> <seg_id> <skip> <seg_pred>   (mask bit 16: every block's segment id after its mode info)
+  GC <by4> <bx4> <seg_ctx> <pred> <have_top> <have_left> <l> <a> <al>   (mask bit 16: a read segment id's context inputs)
   D <tile_row> <tile_col> <sby>   (a tile's superblock row starts decoding; with several tiles dav1d interleaves them)
   S A <n> <val> <rng> <cnt> <icdf[0..n-1]> [<icdf'[0..n-1]> <cnt'>]   (n = N-1; inverted CDFs)
   S B <f> <bit> <rng>        followed by  U <cnt> <f'> <cnt'>  when the bool was adaptive
@@ -402,6 +406,35 @@ patch(src / "refmvs.c", [
 }'''),
 ], 1)
 
+# per-block segment id after the mode info ('G'), the segment-id context inputs when one is read ('GC'), and
+# per-tile header extras ('HX': update_data, refidx[7], preskip, last_active_segid, short signaling, error resilient)
+patch(src / "decode.c", [
+    ('''            if (b->skip) {
+                b->seg_id = pred_seg_id;
+            } else {
+                const unsigned diff = dav1d_msac_decode_symbol_adapt8(&ts->msac,
+                                          ts->cdf.m.seg_id[seg_ctx],
+                                          DAV1D_MAX_SEGMENTS - 1);''', '''            /* openav1 trace: GC by4 bx4 seg_ctx pred have_top have_left l a al (dav1d's view of the neighbours) */
+            if (DAV1D_TRACE_ON(DAV1D_TRACE_MVS)) {
+                const uint8_t *const m = &f->cur_segmap[t->by * f->b4_stride + t->bx];
+                fprintf(dav1d_trace_fp, "GC %d %d %d %u %d %d %d %d %d\\n", t->by, t->bx, seg_ctx, pred_seg_id,
+                        have_top, have_left, have_left ? m[-1] : -1, have_top ? m[-f->b4_stride] : -1,
+                        (have_top && have_left) ? m[-f->b4_stride - 1] : -1);
+            }
+            if (b->skip) {
+                b->seg_id = pred_seg_id;
+            } else {
+                const unsigned diff = dav1d_msac_decode_symbol_adapt8(&ts->msac,
+                                          ts->cdf.m.seg_id[seg_ctx],
+                                          DAV1D_MAX_SEGMENTS - 1);'''),
+    ('''    // cdef index
+''', '''    /* openav1 trace: G by4 bx4 bs seg_id skip seg_pred (the block's final segment id) */
+    if (DAV1D_TRACE_ON(DAV1D_TRACE_MVS))
+        fprintf(dav1d_trace_fp, "G %d %d %d %d %d %d\\n", t->by, t->bx, bs, b->seg_id, b->skip, seg_pred);
+    // cdef index
+'''),
+], 1)
+
 patch(src / "decode.c", [
     (r'''    const int col_sb128_start = col_sb_start >> !f->seq_hdr->sb128;
 
@@ -421,6 +454,10 @@ patch(src / "decode.c", [
         /* openav1: frame header fields the tile syntax depends on, plus this tile's bounds (4x4 units) */
         const Dav1dFrameHeader *const h = f->frame_hdr;
         const Dav1dSequenceHeader *const sh = f->seq_hdr;
+        fprintf(dav1d_trace_fp, "HX %d %d %d %d %d %d %d %d %d %d %d %d\\n", h->segmentation.update_data,
+                h->refidx[0], h->refidx[1], h->refidx[2], h->refidx[3], h->refidx[4], h->refidx[5], h->refidx[6],
+                h->segmentation.seg_data.preskip, h->segmentation.seg_data.last_active_segid, h->frame_ref_short_signaling,
+                h->error_resilient_mode);
         fprintf(dav1d_trace_fp, "H %d %d %d %d %d %d", tile_row, tile_col,
                 col_sb_start << sb_shift, imin(col_sb_end << sb_shift, f->bw),
                 row_sb_start << sb_shift, imin(row_sb_end << sb_shift, f->bh));

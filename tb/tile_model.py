@@ -241,7 +241,7 @@ class FrameHeader:
         self.use_superres, self.SuperresDenom = nxt(), nxt()
         self.subsampling_x, self.subsampling_y = nxt(), nxt()
         self.segmentation_enabled, self.segmentation_update_map, self.segmentation_temporal_update = nxt(), nxt(), nxt()
-        self.SegIdPreSkip, self.LastActiveSegId = nxt(), nxt()
+        self.SegIdPreSkip, self.LastActiveSegId = nxt(), max(0, nxt())   # dav1d logs -1 for "no active segment"; the spec's value is 0
         self.LosslessArray = [0] * 8
         # not in the trace: fixed by the spec for intra frames (uncompressed_header: FrameIsIntra forces
         # force_integer_mv = 1; allow_high_precision_mv / use_ref_frame_mvs are only read for inter frames)

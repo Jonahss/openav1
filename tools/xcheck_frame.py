@@ -110,23 +110,32 @@ def main():
     trace, ref = args[0], args[1]
     tiles = []
     cur = None
+    want_recon = "--recon" in sys.argv                  # compare the pre-filter planes with dav1d's R events (hidden frames too)
     with open(trace) as fh:
         for line in fh:
-            if not line or line[0] in "#SUPQRC":
+            if not line or line[0] in "#SUPQC":
+                continue
+            if line[0] == "R":
+                if want_recon and cur is not None:
+                    f = line.split()
+                    cur["recon"].append(([int(x) for x in f[1:8]], [int(x) for x in f[8:]]))
                 continue
             f = line.split()
             if f[0] == "T":
-                cur = dict(hdr=None, data=bytes.fromhex(f[3]) if len(f) > 3 else b"")
+                cur = dict(hdr=None, data=bytes.fromhex(f[3]) if len(f) > 3 else b"", recon=[])
                 tiles.append(cur)
             elif f[0] == "H":
                 cur["hdr"] = [int(x) for x in f[1:]]
     # group tiles into frames
     frames = []
+    frame_recon = []                                    # the R events of each frame (dav1d writes them after all its T lines)
     for t in tiles:
         hdr = tm.FrameHeader(t["hdr"])
         if hdr.tile_row == 0 and hdr.tile_col == 0:
             frames.append([])
+            frame_recon.append([])
         frames[-1].append((hdr, t["data"]))
+        frame_recon[-1].extend(t["recon"])
     d = None
     if "--stream" in sys.argv:
         import obu_parser as op
@@ -178,13 +187,37 @@ def main():
             state.add(dec)
             if ph is not None:
                 summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
-            if "--blocks" in sys.argv:
+            if "--blocks" in sys.argv or want_recon:
                 blocks.extend(dec.blocks)
             del dec
         planes = frame["planes"]
         # the whole post-processing chain always runs (reference frames are final pictures); the compare takes the
         # stage asked for
-        by_stage = {"recon": [p[:] for p in planes] if stage == "recon" else None}
+        by_stage = {"recon": [p[:] for p in planes] if (stage == "recon" or want_recon) else None}
+        if want_recon:
+            # every transform block dav1d reconstructed (R event: plane x4 y4 w h tx txtp + pixels) against the
+            # model's pre-filter picture; the first differing ones, with the block they belong to
+            nbad = 0
+            for (plane, x4, y4, w, h, tx, txtp), pix in frame_recon[fi]:
+                x0, y0 = x4 * 4, y4 * 4
+                mp = by_stage["recon"][plane]
+                diff = [(y, x, mp[y0 + y][x0 + x], pix[y * w + x]) for y in range(h) for x in range(w)
+                        if y0 + y < len(mp) and x0 + x < len(mp[0]) and mp[y0 + y][x0 + x] != pix[y * w + x]]
+                if diff:
+                    nbad += 1
+                    if nbad <= 8:
+                        sx = hdr.subsampling_x if plane else 0
+                        sy = hdr.subsampling_y if plane else 0
+                        blk = next((b for b in blocks if (b["c"] * 4) >> sx <= x0 < ((b["c"] * 4) + tm.T.Block_Width[b["size"]]) >> sx
+                                    and (b["r"] * 4) >> sy <= y0 < ((b["r"] * 4) + tm.T.Block_Height[b["size"]]) >> sy), None)
+                        info = ""
+                        if blk is not None:
+                            info = (f"block r{blk['r']} c{blk['c']} size {blk['size']} skip {blk['skip']} inter {blk.get('inter')} ymode {blk['ymode']} "
+                                    f"ref {blk.get('ref')} mvs {blk.get('mvs')} mm {blk.get('motion_mode')} ct {blk.get('compound_type')} "
+                                    f"interp {blk.get('interp')} seg {blk['seg']}")
+                        print(f"frame {fi} plane {plane} tx block at ({x0},{y0}) {w}x{h} tx {tx}: {len(diff)} differing, first (y,x,model,dav1d) "
+                              f"{diff[:3]}; {info}")
+            print(f"frame {fi}: {nbad} of {len(frame_recon[fi])} reconstructed transform blocks differ from dav1d (pre-filter)")
         lfm.LoopFilter(hdr, state, planes).apply()
         by_stage["lf"] = planes
         deblocked = planes
