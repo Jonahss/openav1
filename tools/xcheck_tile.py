@@ -127,6 +127,23 @@ def run_tile(hdr_fields, data, events, verbose, frame=None, check_coefs=True):
     except Mismatch as m:
         b = dec.blocks[-1] if dec.blocks else None
         cur = f"MiRow={getattr(dec, 'MiRow', '?')} MiCol={getattr(dec, 'MiCol', '?')} MiSize={getattr(dec, 'MiSize', '?')}"
+        if str(m).startswith("segment_id") or str(m).startswith("seg_id_predicted"):
+            # the segmentation context: the current frame's ids around the block, the previous map, the pred contexts,
+            # and the three segment_id CDF rows the model holds (icdf form, as dav1d logs them)
+            r, c = dec.MiRow, dec.MiCol
+            def sid(rr, cc):
+                try:
+                    return dec.SegmentIds[rr][cc] if rr >= 0 and cc >= 0 else None
+                except IndexError:
+                    return None
+            prev = dec.PrevSegmentIds
+            pv = [[(prev[rr][cc] if prev is not None and 0 <= rr < len(prev) and 0 <= cc < len(prev[0]) else None)
+                   for cc in range(c - 1, c + 3)] for rr in range(r - 1, r + 3)]
+            rows = ["[" + ", ".join(str(32768 - v) for v in row[:-2]) + f"] cnt={row[-1]}" for row in dec.cdf["Segment_Id"]]
+            cur += (f"; AvailU={dec.AvailU} AvailL={dec.AvailL} prevUL={sid(r - 1, c - 1)} prevU={sid(r - 1, c)} prevL={sid(r, c - 1)} "
+                    f"skip={getattr(dec, 'skip', '?')}; PrevSegmentIds[r-1..r+2][c-1..c+2]={pv}; "
+                    f"AboveSegPred[c]={dec.AboveSegPredContext[c]} LeftSegPred[r]={dec.LeftSegPredContext[r]}; "
+                    f"Segment_Id rows: ctx0 {rows[0]} ctx1 {rows[1]} ctx2 {rows[2]}")
         raise Mismatch(f"{m} | at {cur}; last completed block {b}") from None
     extra = events.drain()
     if extra:
