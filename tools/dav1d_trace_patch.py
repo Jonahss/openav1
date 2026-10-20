@@ -56,6 +56,7 @@ enum {
     DAV1D_TRACE_COEF  = 1 << 1,  /* C: dequantized coefficient blocks */
     DAV1D_TRACE_PRED  = 1 << 2,  /* P/Q: intra prediction (edges + output) */
     DAV1D_TRACE_RECON = 1 << 3,  /* R: pre-loop-filter reconstruction */
+    DAV1D_TRACE_MVS   = 1 << 4,  /* M: the MV stack after refmvs_find (count, entries, context) */
 };
 
 extern FILE *dav1d_trace_fp;
@@ -385,6 +386,22 @@ patch(src / "ipred_prepare_tmpl.c", [
             *topleft_out = ((topleft_out[-1] + topleft_out[1]) * 5 +
                             topleft_out[0] * 6 + 8) >> 4;'''),
 ], 1)
+# the MV stack of every inter block as refmvs_find leaves it (tools/xcheck_mvstack.py compares it with the model's)
+patch(src / "refmvs.c", [
+    ('#include "src/refmvs.h"\n', '#include "src/refmvs.h"\n#include "src/trace.h"\n'),
+    ('''    *ctx = (refmv_ctx << 4) | (globalmv_ctx << 3) | newmv_ctx;
+}''', '''    *ctx = (refmv_ctx << 4) | (globalmv_ctx << 3) | newmv_ctx;
+    /* openav1 trace: M by4 bx4 bs ref0 ref1 cnt ctx then cnt entries of (y0 x0 y1 x1 weight) */
+    if (DAV1D_TRACE_ON(DAV1D_TRACE_MVS)) {
+        fprintf(dav1d_trace_fp, "M %d %d %d %d %d %d %d", by4, bx4, bs, ref.ref[0], ref.ref[1], *cnt, *ctx);
+        for (int n = 0; n < *cnt; n++)
+            fprintf(dav1d_trace_fp, " %d %d %d %d %d", mvstack[n].mv.mv[0].y, mvstack[n].mv.mv[0].x,
+                    mvstack[n].mv.mv[1].y, mvstack[n].mv.mv[1].x, mvstack[n].weight);
+        fputc('\\n', dav1d_trace_fp);
+    }
+}'''),
+], 1)
+
 patch(src / "decode.c", [
     (r'''    const int col_sb128_start = col_sb_start >> !f->seq_hdr->sb128;
 
