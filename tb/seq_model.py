@@ -126,7 +126,10 @@ class SequenceState:
         srcIdx = h.ref_frame_idx[src - LAST_FRAME]
         slot = self.slots[srcIdx]
         w8, h8 = h.MiCols >> 1, h.MiRows >> 1
-        if slot.mi_rows != h.MiRows or slot.mi_cols != h.MiCols or slot.frame_type == INTRA_ONLY_FRAME:
+        # 7.9.2: a source whose saved frame is INTRA_ONLY or a KEY frame does not project and returns 0 — which also
+        # leaves refStamp untouched, so a later LAST2 projection still happens (test7773: BWDREF / ALTREF2 were key
+        # frames; counting them exhausted refStamp and LAST2's motion vectors never reached the field)
+        if slot.mi_rows != h.MiRows or slot.mi_cols != h.MiCols or slot.frame_type in (INTRA_ONLY_FRAME, KEY_FRAME):
             return 0
         if slot.ref_frames is None:
             return 0
