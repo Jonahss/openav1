@@ -41,6 +41,9 @@ module frame_mem_sim #(
 );
     assign h_ok = 1'b1;
     localparam int N = 1 << (FBX + FBY);
+    logic [PW-1:0] mem0 [0:N-1];
+    logic [PW-1:0] mem1 [0:N-1];
+    logic [PW-1:0] mem2 [0:N-1];
     // gate-replay instrumentation (atium copy only): +fminit=zero|rand initialises the arrays (xsim starts them X;
     // the Verilator build starts them 0); X writes are reported (first 20) with $time so the source stage can be found.
     string fminit; int xwrites = 0;
@@ -50,9 +53,6 @@ module frame_mem_sim #(
         else if (fminit == "rand") for (int k = 0; k < N; k++) begin mem0[k] = $urandom; mem1[k] = $urandom; mem2[k] = $urandom; end
         $display("frame_mem %m: init=%s N=%0d", fminit, N);
     end
-    logic [PW-1:0] mem0 [0:N-1];
-    logic [PW-1:0] mem1 [0:N-1];
-    logic [PW-1:0] mem2 [0:N-1];
 
     always_ff @(posedge clk) begin
         for (int i = 0; i < NWR; i++) begin
