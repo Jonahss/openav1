@@ -200,9 +200,15 @@ async def dec_inter_vs_model(dut):
                           f"{'inter' if not ph.FrameIsIntra else 'intra'}, {sum(1 for b in blocks_all if b.get('inter'))} inter blocks)")
             # ---- the frame becomes a reference (the stage's pictures: the RTL reads the same ones)
             seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+            if debug:
+                dut._log.info(f"{tag}: stored picture {len(planes_cmp[0][0])}x{len(planes_cmp[0])} (upscaled {ph.UpscaledWidth}, frame {ph.FrameWidth}x{ph.FrameHeight}, "
+                              f"MI {th0.MiCols * 4}x{th0.MiRows * 4}, superres {ph.use_superres}) -> slots {[i for i in range(8) if (ph.refresh_frame_flags >> i) & 1]}")
+            # the reference geometry the model and the RTL agree on: at the recon stage the pictures are pre-upscale
+            # (FrameWidth wide); only the full pipeline (lr) produces UpscaledWidth-wide references
+            ref_w = ph.UpscaledWidth if TD.STAGE == "lr" else ph.FrameWidth
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
-                    store[i] = dict(planes=planes_cmp, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0)
+                    store[i] = dict(planes=planes_cmp, upscaled_width=ref_w, frame_height=ph.FrameHeight, hdr=th0)
             del decs
     assert not mem.errors, f"AXI errors: {mem.errors[:4]}"
     dut._log.info(f"OK: {stats}")
