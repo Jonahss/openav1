@@ -35,14 +35,13 @@ module frame_mem_sim #(
     input  logic [1:0]          h_plane,
     input  logic [FBX-1:0]      h_x,
     input  logic [FBY-1:0]      h_y,
-    output logic [PW-1:0]       h_rdata
+    output logic [PW-1:0]       h_rdata,
+    output logic [4*PW-1:0]     h_rdata4,        // the four samples of h_x's aligned group (x & ~3 .. +3), lane 0 lowest
+    output logic                h_ok             // always: the host port is independent here
 );
-    localparam int N = 1 << (FBX + FBY);
-    logic [PW-1:0] mem0 [0:N-1];
-    logic [PW-1:0] mem1 [0:N-1];
-    logic [PW-1:0] mem2 [0:N-1];
+    assign h_ok = 1'b1;
     // gate-replay instrumentation (atium copy only): +fminit=zero|rand initialises the arrays (xsim starts them X;
-    // Verilator starts them 0); X writes are reported (first 20) with $time so the source stage can be found.
+    // the Verilator build starts them 0); X writes are reported (first 20) with $time so the source stage can be found.
     string fminit; int xwrites = 0;
     initial begin
         if (!$value$plusargs("fminit=%s", fminit)) fminit = "none";
@@ -50,6 +49,10 @@ module frame_mem_sim #(
         else if (fminit == "rand") for (int k = 0; k < N; k++) begin mem0[k] = $urandom; mem1[k] = $urandom; mem2[k] = $urandom; end
         $display("frame_mem %m: init=%s N=%0d", fminit, N);
     end
+    localparam int N = 1 << (FBX + FBY);
+    logic [PW-1:0] mem0 [0:N-1];
+    logic [PW-1:0] mem1 [0:N-1];
+    logic [PW-1:0] mem2 [0:N-1];
 
     always_ff @(posedge clk) begin
         for (int i = 0; i < NWR; i++) begin
@@ -96,5 +99,14 @@ module frame_mem_sim #(
             2'd1: h_rdata <= mem1[{h_y, h_x}];
             default: h_rdata <= mem2[{h_y, h_x}];
         endcase
+        for (int l = 0; l < 4; l++) begin
+            logic [FBX+FBY-1:0] hg;
+            hg = {h_y, h_x[FBX-1:2], 2'(l)};
+            case (h_plane)
+                2'd0: h_rdata4[l*PW +: PW] <= mem0[hg];
+                2'd1: h_rdata4[l*PW +: PW] <= mem1[hg];
+                default: h_rdata4[l*PW +: PW] <= mem2[hg];
+            endcase
+        end
     end
 endmodule
