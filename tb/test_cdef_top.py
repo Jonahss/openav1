@@ -58,7 +58,7 @@ async def preload(dut, hdr, planes, state):
             dut.blk_c.value = c
             dut.blk_bw4.value = 1
             dut.blk_bh4.value = 1
-            dut.blk_data.value = TT.pack(TL.MI_FIELDS, dict(bsize=state.MiSizes[r][c], skip=state.Skips[r][c], seg=state.SegmentIds[r][c], delta_lf=0))
+            dut.blk_data.value = TT.pack(TL.MI_FIELDS, dict(bsize=state.MiSizes[r][c], skip=state.Skips[r][c], seg=state.SegmentIds[r][c], delta_lf=0, ref0=0, mode_type=0))
             await RisingEdge(dut.clk)
             dut.blk_we.value = 0
             await RisingEdge(dut.clk)

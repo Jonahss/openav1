@@ -2,7 +2,7 @@
 // edges) over the whole frame, then pass 1 (horizontal edges); per 4x4 edge position the edge parameters
 // (7.14.2), filter size (7.14.3) and strength (7.14.4/5) come from mi_store, then the four samples along the
 // edge are filtered one at a time (7.14.6: masks, narrow filter, 6/8/14-tap wide filters) read-modify-write
-// through the single-port frame buffer. Intra frames only (all references INTRA_FRAME, modeType 0).
+// through the single-port frame buffer. Filter levels follow 7.14.4 for intra and inter blocks (reference and mode deltas).
 // Slow-and-correct: ~25 cycles per sample position. A real design filters 4-8 samples per clock out of
 // line buffers and interleaves the passes per superblock.
 module lf_top
@@ -115,8 +115,13 @@ module lf_top
         seg_i = {i, info.seg};
         if (hdr.seg_enabled && lh.seg_lf_en[seg_i])
             lvl_seg = clip63(10'(signed'(lh.seg_lf_data[7 * seg_i +: 7])) + 10'(signed'({4'b0, lvl_seg})));
-        if (lh.delta_enabled)
-            lvl_seg = clip63(10'(signed'({4'b0, lvl_seg})) + (10'(lh.ref_delta_intra) <<< (lvl_seg >> 5)));
+        if (lh.delta_enabled) begin
+            // 7.14.4: the reference frame's delta, plus the mode delta for inter blocks, both scaled by lvlSeg >> 5
+            logic signed [9:0] dl;
+            dl = 10'(signed'(lh.ref_deltas[7 * info.ref0 +: 7]));
+            if (info.ref0 != 3'd0) dl = dl + 10'(signed'(lh.mode_deltas[7 * info.mode_type +: 7]));
+            lvl_seg = clip63(10'(signed'({4'b0, lvl_seg})) + (dl <<< (lvl_seg >> 5)));
+        end
         lv = lvl_seg;
         sh = (lh.sharpness > 3'd4) ? 2'd2 : (lh.sharpness > 3'd0) ? 2'd1 : 2'd0;
         if (lh.sharpness > 3'd0) begin

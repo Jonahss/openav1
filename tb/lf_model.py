@@ -1,7 +1,7 @@
 """Spec-literal model of the AV1 deblocking loop filter (spec 7.14), applied in place to the planes of a
 reconstructed frame (recon_model.FrameRecon holds the per-4x4 state it needs).
 
-Intra frames only for now (RefFrames are all INTRA_FRAME, modeType is 0).
+Filter levels follow 7.14.4 for intra and inter blocks (reference and mode deltas).
 """
 import sys
 from pathlib import Path

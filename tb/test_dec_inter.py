@@ -2,7 +2,7 @@
 
 The frame sequence follows tb/seq_model.py (inherited CDFs, segmentation map, motion field: loaded into the DUT's
 header / band ports as the host will program them). The reference pictures are the model's own reconstructed
-frames (STAGE deep: TS_STAGE=recon compares and references the pre-filter pictures, lr the final ones): they are
+frames (STAGE deep: TS_STAGE=recon compares and references the pre-filter pictures, upscaled when super-res so the reference geometry is the stream's, lr the final ones): they are
 written into the AXI memory model that ref_fetch reads, at one base per (slot, plane), and the slot table
 registers point the RTL at them. So a motion compensation bug cannot hide in a filter bug and vice versa.
 Env: TS_IVF=a.obu,b.obu (required), TS_STAGE (recon | lf | cdef | lr), TS_FRAMES, TD_DEBUG.
@@ -16,6 +16,7 @@ from cocotb.triggers import ClockCycles, RisingEdge, Timer
 import test_dec_top as TD
 import test_tile_syntax as TT
 import seq_model as sm
+import superres_model as srm
 import cdf_map as M
 import obu_parser as op
 from axi_mem import AxiMem
@@ -23,6 +24,17 @@ from axi_mem import AxiMem
 SLOT_BASE = 1 << 32                 # slot s, plane p at SLOT_BASE + s * SLOT_STRIDE + p * PLANE_STRIDE (40-bit addresses)
 SLOT_STRIDE = 0x0400_0000
 PLANE_STRIDE = 0x0100_0000
+
+
+def ref_planes_of(hdr, planes):
+    """The picture a frame leaves in the reference store. Below the lr stage a super-res frame's pictures are still
+    FrameWidth wide, but the stream's headers (RefUpscaledWidth, so is_scaled in the model, ref_scaled in the RTL and
+    the warped-motion syntax that depends on it) describe UpscaledWidth-wide references: upscale the stage's picture
+    (7.16) so the geometry both sides see matches the stream. (test11 frame 7: 989-wide frame, 719-wide pre-upscale
+    references under affine global motion; the RTL took the unscaled path, the model the scaled one, both 'right'.)"""
+    if TD.STAGE == "lr" or not hdr.use_superres:          # at lr finish_frame already upscaled the picture (7.16)
+        return planes
+    return srm.upscale(hdr, planes)
 
 
 def plane_geometry(hdr, planes):
@@ -136,7 +148,7 @@ async def dec_inter_vs_model(dut):
                     dec.decode_tile()
                     summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
                     del dec
-                planes = frame["planes"]
+                planes = srm.upscale(th0, frame["planes"]) if ph.use_superres else frame["planes"]   # model-only frame: pre-filter, stream geometry
                 seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
                 for i in range(8):
                     if (ph.refresh_frame_flags >> i) & 1:
@@ -203,12 +215,10 @@ async def dec_inter_vs_model(dut):
             if debug:
                 dut._log.info(f"{tag}: stored picture {len(planes_cmp[0][0])}x{len(planes_cmp[0])} (upscaled {ph.UpscaledWidth}, frame {ph.FrameWidth}x{ph.FrameHeight}, "
                               f"MI {th0.MiCols * 4}x{th0.MiRows * 4}, superres {ph.use_superres}) -> slots {[i for i in range(8) if (ph.refresh_frame_flags >> i) & 1]}")
-            # the reference geometry the model and the RTL agree on: at the recon stage the pictures are pre-upscale
-            # (FrameWidth wide); only the full pipeline (lr) produces UpscaledWidth-wide references
-            ref_w = ph.UpscaledWidth if TD.STAGE == "lr" else ph.FrameWidth
+            planes_ref = ref_planes_of(th0, planes_cmp)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
-                    store[i] = dict(planes=planes_cmp, upscaled_width=ref_w, frame_height=ph.FrameHeight, hdr=th0)
+                    store[i] = dict(planes=planes_ref, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0)
             del decs
     assert not mem.errors, f"AXI errors: {mem.errors[:4]}"
     dut._log.info(f"OK: {stats}")

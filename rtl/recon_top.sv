@@ -458,7 +458,8 @@ module recon_top
     assign mi_cd_col64 = sb_start ? SBW'(sb_c >> 4) : SBW'((b.c & sb_mask) >> 4);
     assign mi_cd_mask = hdr.sb128 ? b.cdef_units : 4'b0001;
     assign mi_cd_idx = b.cdef_idx;
-    assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf};
+    assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf, ref0: 3'(b.ref0),
+                           mode_type: (b.ymode >= 5'd13 && b.ymode != 5'd15 && b.ymode != 5'd23)};   // 7.14.4 modeType
     always_ff @(posedge clk) begin
         mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0;
         if (mc_done) mc_fin <= 1'b1;

@@ -21,7 +21,8 @@ sys.path.insert(0, str(HERE.parent / "tools"))
 import cdf_map as M                     # noqa: E402
 import cdef_model as cdm                # noqa: E402
 import lf_model as lfm                  # noqa: E402
-import lr_model as lrm                  # noqa: E402
+import lr_model as lrm
+import superres_model as srm                  # noqa: E402
 import test_cdef_top as TC              # noqa: E402
 import recon_model as rm                # noqa: E402
 import test_lf_top as TL                # noqa: E402
@@ -238,6 +239,14 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
             dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
             stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
             buf = 1
+        if STAGE == "lr" and hdr.use_superres:
+            # 7.16: both LR inputs are upscaled in place (the deblocked frame, and the CDEF frame when there is one);
+            # from here on the pictures are UpscaledWidth wide (compare_frame and the reference store follow)
+            deblocked = srm.upscale(hdr, deblocked)
+            planes = srm.upscale(hdr, planes) if buf == 1 else deblocked
+            for sb in ([0, 1] if buf == 1 else [0]):
+                dut.sr_buf.value = sb
+                stats["sr_cycles"] = stats.get("sr_cycles", 0) + await pulse_and_wait(dut, dut.sr_start, dut.sr_done, tag)
         if STAGE == "lr" and any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
             # CDEF off: CdefFrame == deblocked frame (the RTL reads fb0 for both sources via lr_from_deblocked)
             planes_cdef = planes if buf == 1 else [[row[:] for row in p] for p in planes]
@@ -512,6 +521,11 @@ async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all
         sy = hdr.subsampling_y if plane else 0
         W = (hdr.MiCols * 4) >> sx
         H = (hdr.MiRows * 4) >> sy
+        if STAGE == "lr":
+            # the output picture: UpscaledWidth x FrameHeight (finish_frame upscaled super-res frames). CDEF and loop
+            # restoration define nothing beyond the frame, so the MI-area margin columns are not compared here
+            W = (hdr.UpscaledWidth + sx) >> sx
+            H = (hdr.FrameHeight + sy) >> sy
         bad = []
         got = [[0] * W for _ in range(H)]
         for y in range(H):

@@ -105,7 +105,8 @@ package syn_pkg;
         logic [23:0] level;                    // loop_filter_level[0..3], 6 bits each at [6i +: 6]
         logic [2:0]  sharpness;
         logic        delta_enabled;            // loop_filter_delta_enabled
-        logic signed [6:0] ref_delta_intra;    // loop_filter_ref_deltas[INTRA_FRAME]
+        logic [55:0] ref_deltas;               // loop_filter_ref_deltas[0..7] (INTRA_FRAME .. ALTREF_FRAME), signed 7 bits at [7i +: 7]
+        logic [13:0] mode_deltas;              // loop_filter_mode_deltas[0..1], signed 7 bits at [7i +: 7]
         logic        delta_lf_multi;
         logic [31:0] seg_lf_en;                // FeatureEnabled[seg][SEG_LVL_ALT_LF_Y_V + i] at [8i + seg]
         logic [223:0] seg_lf_data;             // FeatureData[seg][SEG_LVL_ALT_LF_Y_V + i], signed 7 bits at [7 (8i + seg) +: 7]
@@ -125,6 +126,8 @@ package syn_pkg;
         logic        skip;
         logic [2:0]  seg;
         logic [27:0] delta_lf;                 // 4 x signed 7 bits
+        logic [2:0]  ref0;                     // RefFrame[0]: 0 INTRA_FRAME, 1 .. 7 LAST_FRAME .. ALTREF_FRAME (7.14.4 ref deltas)
+        logic        mode_type;                // 1 for the inter modes other than GLOBALMV / GLOBAL_GLOBALMV (7.14.4 mode deltas)
     } mi_lf_t;
 
     // Per loop-restoration-unit record (read_lr_unit).

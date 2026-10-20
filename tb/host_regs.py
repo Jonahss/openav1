@@ -37,7 +37,7 @@ IHDR_FIELDS = [  # syn_pkg::ihdr_t order (MSB first)
     ("seg_globalmv_en", 8), ("seg_update_map", 1), ("seg_temporal_update", 1)]
 LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
     ("frame_width", PXW), ("frame_height", PXW), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
-    ("ref_delta_intra", 7), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
+    ("ref_deltas", 56), ("mode_deltas", 14), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
 
 
 def pack(fields, vals):
@@ -143,7 +143,9 @@ def lf_vals(th):
     return dict(frame_width=th.FrameWidth, frame_height=th.FrameHeight,
                 level=sum((th.loop_filter_level[i] & 63) << (6 * i) for i in range(4)),
                 sharpness=th.loop_filter_sharpness, delta_enabled=th.loop_filter_delta_enabled,
-                ref_delta_intra=th.loop_filter_ref_deltas[0], delta_lf_multi=th.delta_lf_multi,
+                ref_deltas=sum((th.loop_filter_ref_deltas[i] & 0x7F) << (7 * i) for i in range(8)),
+                mode_deltas=sum((th.loop_filter_mode_deltas[i] & 0x7F) << (7 * i) for i in range(2)),
+                delta_lf_multi=th.delta_lf_multi,
                 seg_lf_en=sum((th.FeatureEnabled[s][1 + i] & 1) << (8 * i + s) for i in range(4) for s in range(8)),
                 seg_lf_data=sum((th.FeatureData[s][1 + i] & 0x7F) << (7 * (8 * i + s)) for i in range(4) for s in range(8)))
 
@@ -163,7 +165,7 @@ ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1
 START_TILE, START_FRAME, START_LF = 1, 2, 4
 ST_FRAME_DONE = 1 << 4
 CTRL_RST, CTRL_PIPE, CTRL_EOS = 1, 1 << 1, 1 << 8
-HDR_WORDS, RH_WORDS, LH_WORDS = 8, 7, 11     # words of each header window actually written
+HDR_WORDS, RH_WORDS, LH_WORDS = 8, 7, 13     # words of each header window actually written
 IH_WORDS = (sum(w for _, w in IHDR_FIELDS) + 31) // 32
 
 

@@ -24,7 +24,7 @@ import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 
 from host_regs import LF_FIELDS, lf_vals   # noqa: E402,F401
-MI_FIELDS = [("bsize", 5), ("skip", 1), ("seg", 3), ("delta_lf", 28)]
+MI_FIELDS = [("bsize", 5), ("skip", 1), ("seg", 3), ("delta_lf", 28), ("ref0", 3), ("mode_type", 1)]
 
 
 
@@ -50,13 +50,18 @@ async def preload(dut, hdr, planes, state):
     for r in range(hdr.MiRows):
         for c in range(hdr.MiCols):
             dlf = state.DeltaLFs[r][c] or [0, 0, 0, 0]
+            rf = getattr(state, "RefFrames", None)                 # 7.14.4: intra frames (and intrabc) are INTRA_FRAME
+            ref0 = rf[r][c][0] if rf is not None and rf[r][c] is not None and rf[r][c][0] > 0 else 0
+            ym = state.YModes[r][c] if getattr(state, "YModes", None) is not None else 0
+            mode_type = 1 if (ym >= 13 and ym not in (15, 23)) else 0
             dut.blk_we.value = 1
             dut.blk_r.value = r
             dut.blk_c.value = c
             dut.blk_bw4.value = 1
             dut.blk_bh4.value = 1
             dut.blk_data.value = TT.pack(MI_FIELDS, dict(bsize=state.MiSizes[r][c], skip=state.Skips[r][c], seg=state.SegmentIds[r][c],
-                                                        delta_lf=sum((dlf[i] & 0x7F) << (7 * i) for i in range(4))))
+                                                        delta_lf=sum((dlf[i] & 0x7F) << (7 * i) for i in range(4)),
+                                                        ref0=ref0, mode_type=mode_type))
             await RisingEdge(dut.clk)
             dut.blk_we.value = 0
             await RisingEdge(dut.clk)
