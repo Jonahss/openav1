@@ -160,7 +160,7 @@ module lf_top
             is_tx_edge  = (yp & (PXW'(tx_height(cur_tx)) - PXW'(1))) == PXW'(0);
             base_size = (tx_height(prv_tx) < tx_height(cur_tx)) ? tx_height(prv_tx) : tx_height(cur_tx);
         end
-        apply_filter = is_tx_edge && (is_blk_edge || !cur.skip || 1'b1);     // isIntra: always true for intra frames
+        apply_filter = is_tx_edge && (is_blk_edge || !cur.skip || cur.ref0 == 3'd0);   // 7.14.2: tx edges inside a skipped INTER block are not filtered
         fsize_c = (plane == 2'd0) ? ((base_size > 7'd16) ? 5'd16 : 5'(base_size)) : ((base_size > 7'd8) ? 5'd8 : 5'(base_size));
     end
 
