@@ -21,6 +21,8 @@ module recon_top
 #(
     parameter int FBX = 9,                   // frame buffer x address bits
     parameter int ITX_LANES = 4,             // 1-D transform engines (rows, then columns, at once): 4 for throughput, 2 fits the K26
+    parameter int INTER = 1,                 // 0: no inter prediction (ref_fetch / mc_filt / warp_setup left out, inter blocks never
+                                             //    dispatched): the intra-only board build (the K26 does not hold inter)
     parameter int FBY = 9,
     parameter int ML2R = 8,                  // mode map capacity: log2(MI rows), log2(MI cols)
     parameter int ML2C = 8
@@ -244,6 +246,8 @@ module recon_top
     logic [1:0]  u_i0, u_i1;
     // ref_fetch request / mc_filt run
     logic        rf_req_valid, rf_req_ready, rf_done, rf_err, rf_lst;
+    logic        blk_inter;                                  // b.is_inter, constant 0 in the INTER = 0 build
+    assign blk_inter = (INTER != 0) && b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_out_valid;
     logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
@@ -343,6 +347,7 @@ module recon_top
     endfunction
     logic        pw_we, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4; logic [47:0] pw_d4;
 
+    generate if (INTER != 0) begin : g_inter
     ref_fetch #(.PW(12)) u_rf (.clk, .rst,
         .req_valid(rf_req_valid), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
@@ -357,6 +362,14 @@ module recon_top
         .warp(mc_warp), .w_alpha(w_al[mc_l]), .w_beta(w_be[mc_l]), .w_gamma(w_ga[mc_l]), .w_delta(w_de[mc_l]), .w_sx4(mc_wsx), .w_sy4(mc_wsy),
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
         .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
+    end else begin : g_nointer
+        assign rf_req_ready = 1'b1; assign rf_done = 1'b0; assign rf_err = 1'b0;
+        assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
+        assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
+        assign pw_we = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0;
+        assign mc_busy = 1'b0; assign mc_done = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
+        assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0;
+    end endgenerate
 
     // 7.11.3.15 distance weights: {BckWeight (list 1), FwdWeight (list 0)} from the order-hint distances
     function automatic int rel_dist(input ihdr_t ih, input logic [7:0] oa, input logic [7:0] ob);
@@ -495,7 +508,7 @@ module recon_top
                     wr_j <= 1'b0; wr_i <= wr_i + 6'd1; bst <= B_WR;
                 end else if (b.intrabc) begin
                     bst <= B_IBC_INIT;
-                end else if (b.is_inter) begin
+                end else if (blk_inter) begin
                     bst <= B_MC_INIT;
                 end else begin
                     blk_ready <= 1'b1; bst <= B_IDLE;
@@ -783,6 +796,7 @@ module recon_top
     assign ws_midx = 16'({b.c, 2'b00}) + 16'({bw4, 1'b0}) - 16'd1;
     assign ws_midy = 16'({b.r, 2'b00}) + 16'({bh4, 1'b0}) - 16'd1;
     assign ws_gm = ihdr.gm_params[144 * (int'(ws_ref) - 1) +: 144];
+    generate if (INTER != 0) begin : g_ws
     warp_setup u_ws (
         .clk, .rst, .start(ws_start), .mode(ws_mode),
         .ls_a00(b.ls[0 +: 32]), .ls_a01(b.ls[32 +: 32]), .ls_a11(b.ls[64 +: 32]), .ls_bx0(b.ls[96 +: 32]),
@@ -790,6 +804,10 @@ module recon_top
         .mv_row(16'(b.mv_row)), .mv_col(16'(b.mv_col)), .mid_x(ws_midx), .mid_y(ws_midy), .gm_p(ws_gm),
         .busy(ws_busy), .done(ws_done), .valid(ws_valid), .p(ws_p),
         .alpha(ws_alpha), .beta(ws_beta), .gamma(ws_gamma), .delta(ws_delta));
+    end else begin : g_nows
+        assign ws_busy = 1'b0; assign ws_done = 1'b0; assign ws_valid = 1'b0; assign ws_p = '0;
+        assign ws_alpha = '0; assign ws_beta = '0; assign ws_gamma = '0; assign ws_delta = '0;
+    end endgenerate
 
     // OBMC read-modify-write pipeline: A = the prediction group and its mask values (the frame memory read is issued
     // from these registers), B = the blended group to write. One group per cycle.
@@ -1381,7 +1399,7 @@ module recon_top
                     n_edges <= 2 * (9'(tw_px) + 9'(th_px));
                     above_lim_r <= above_lim; left_lim_r <= left_lim;
                     if (ii_run) rs <= R_EDGE;                           // inter-intra: the intra prediction of the block
-                    else if (b.intrabc || b.is_inter) rs <= R_RESID;    // predicted whole by the block copy / motion compensation
+                    else if (b.intrabc || blk_inter) rs <= R_RESID;    // predicted whole by the block copy / motion compensation
                     else if (is_pal) rs <= R_PAL;
                     else rs <= R_EDGE;
                 end

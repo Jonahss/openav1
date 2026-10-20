@@ -10,7 +10,8 @@ module dec_top
     parameter int FBY = 9,
     parameter int ITX_LANES = 4,             // transform engines: 4 (throughput) or 2 (K26 area, +2.6% cycles)
     parameter int FRAME_URAM = 0,             // 1: fb0 is the on-chip double-pumped UltraRAM (rtl/frame_mem_uram.sv, needs clk2x /
-    parameter int FRAME_WIN = 0              // >0 with FRAME_URAM: the frame memory holds this many superblock rows (window, docs/frame-memory.md)
+    parameter int FRAME_WIN = 0,             // >0 with FRAME_URAM: the frame memory holds this many superblock rows (window, docs/frame-memory.md)
+    parameter int INTER = 1                  // 0: the intra-only build (no ref_fetch / mc_filt / warp_setup, no inter syntax): the K26 board
                                              //    phase); fb1 / fb2 are left out, so only the core build (no CDEF / LR / SR) can use it
 ) (
     input  logic              clk,
@@ -120,7 +121,7 @@ module dec_top
     // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
     // superblock row up), the filters' info and reconstruction's mode map 64 rows (the four superblock rows live
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
-    tile_syntax #(.ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? 4 : FBY - 3), .MFL2C(FBX - 3), .SPL2R(FRAME_WIN > 0 ? 5 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
+    tile_syntax #(.INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? 4 : FBY - 3), .MFL2C(FBX - 3), .SPL2R(FRAME_WIN > 0 ? 5 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
                   .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
                   .clk, .rst, .hdr, .ihdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
@@ -146,7 +147,7 @@ module dec_top
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [SBW-1:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
-    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES)) u_rc (.clk, .rst, .hdr, .rh,
+    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER)) u_rc (.clk, .rst, .hdr, .rh,
                                             .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,

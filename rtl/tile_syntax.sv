@@ -12,6 +12,7 @@ module tile_syntax
   import blk_tables_pkg::*;
   import syn_pkg::*;
 #(
+    parameter int INTER = 1,                 // passed to blk_syntax (0: the intra-only build)
     parameter int ML2R = 9,                  // log2 of the motion-info memory rows / columns (4x4 units)
     parameter int ML2C = 10,
     parameter int MFL2R = 8,                 // log2 rows / columns of the motion field band (8x8 units; dec_top sizes the board's)
@@ -192,7 +193,7 @@ module tile_syntax
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     tx_rec_t b_tx;
     always_comb begin tx_rec = b_tx; tx_rec.slot = q_slot_w; end
-    blk_syntax u_blk (.clk, .rst, .hdr, .ihdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
+    blk_syntax #(.INTER(INTER)) u_blk (.clk, .rst, .hdr, .ihdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
                       .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec(b_tx), .tx_ack, .blk_ack, .pal_hold,
                       .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u,
                       .pm_plane, .pm_x, .pm_y, .pm_idx,

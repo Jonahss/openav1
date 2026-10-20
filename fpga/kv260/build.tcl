@@ -97,8 +97,9 @@ set host [create_bd_cell -type module -reference dec_host_v host]
 set fbx [expr {[info exists ::env(KV260_FBX)] ? $::env(KV260_FBX) : 9}]
 set fby [expr {[info exists ::env(KV260_FBY)] ? $::env(KV260_FBY) : 9}]
 set win [expr {[info exists ::env(KV260_WIN)] ? $::env(KV260_WIN) : 0}]
-set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win] $host
-puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win"
+set inter [expr {[info exists ::env(KV260_INTER)] ? $::env(KV260_INTER) : 0}]   ;# the board is intra-only: inter does not fit the K26
+set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win CONFIG.INTER $inter] $host
+puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win INTER $inter"
 set pg [create_bd_cell -type module -reference phase_gen_v pg]
 
 connect_bd_net [get_bd_pins ps/pl_clk0] [get_bd_pins clkgen/clk_in1]

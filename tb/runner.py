@@ -55,6 +55,9 @@ if top in ("dec_top", "dec_host", "recon_top") and os.environ.get("ITX_LANES"):
 # FRAME_URAM=1 builds dec_top with the on-chip UltraRAM frame memory (core build only: no CDEF / LR / SR)
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_URAM"):
     params["FRAME_URAM"] = int(os.environ["FRAME_URAM"])
+# INTER=0 builds the intra-only decoder (no ref_fetch / mc_filt / warp_setup, inter frames never parsed): the K26 board
+if top in ("dec_top", "dec_host", "recon_top", "tile_syntax") and os.environ.get("INTER"):
+    params["INTER"] = int(os.environ["INTER"])
 # FIFO_LW=N: dec_host's tile-byte FIFO depth (log2 words); 16 holds a whole tile, to tell starvation effects from decoder bugs
 if top == "dec_host" and os.environ.get("FIFO_LW"):
     params["FIFO_LW"] = int(os.environ["FIFO_LW"])

@@ -10,7 +10,9 @@ module blk_syntax
   import blk_tables_pkg::*;
   import tx_tables_pkg::*;
   import syn_pkg::*;
-(
+#(
+    parameter int INTER = 1                  // 0: inter frames are never parsed (the intra-only build)
+) (
     input  logic        clk,
     input  logic        rst,
     input  hdr_t        hdr,
@@ -417,7 +419,7 @@ module blk_syntax
         else if (nb_rd) begin mvr_row = nb_row; mvr_col = nb_col; end
         else begin mvr_row = mvs_rd_row; mvr_col = mvs_rd_col; end
     end
-    assign inter_frm = ihdr.is_inter;
+    assign inter_frm = (INTER != 0) && ihdr.is_inter;
     assign inter_any = use_ibc | is_inter_b;
     assign mv_int = use_ibc | ihdr.force_integer_mv;              // intra frames read whole-sample MVs (fr = 3, hp = 1)
     assign mv_hp_en = !use_ibc && ihdr.allow_hp_mv;

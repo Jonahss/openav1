@@ -69,7 +69,8 @@ module dec_host
     parameter int ITX_LANES = 2,
     parameter int FRAME_URAM = 1,
     parameter int FRAME_WIN = 0,             // the frame memory as a window of this many superblock rows (0: whole picture)
-    parameter int FIFO_LW = 10               // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
+    parameter int FIFO_LW = 10,              // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
+    parameter int INTER = 1                  // 0: the intra-only decoder (dec_top INTER)
 ) (
     input  logic        clk,
     input  logic        clk2x,
@@ -184,7 +185,7 @@ module dec_host
     logic [FBY-1:0]    h_y_m;
     logic           row_final, flush_done;
     logic [SBW-1:0] row_final_idx;
-    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN)) u_dec (
+    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .INTER(INTER)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_data,
