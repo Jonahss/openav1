@@ -19,6 +19,6 @@ if [ "$dcp" != "-" ]; then
   { [ -f ${blk}_$tag.v ] && [ ${blk}_$tag.v -nt "$dcp" ]; } || vivado -mode batch -nojournal -nolog -source fs_$tag.tcl > fs_$tag.log 2>&1 || { echo "funcsim failed"; exit 1; }
   # Black-boxed memories (frame_mem for dec_top): compile the sim models AFTER the netlist so they override the stubs.
   models=""; for m in frame_mem.sv frame_mem_w.sv frame_mem_variants.sv; do [ -f "$m" ] && models="$models $m"; done
-  xvlog -sv -d NETLIST ${blk}_$tag.v $models replay_$blk.sv $G > g_$tag.xvlog 2>&1 && xelab -L unisims_ver -L secureip replay_$blk glbl -s gs_$tag > g_$tag.xelab 2>&1 && xsim gs_$tag -R -testplusarg vec=$vec > g_$tag.xsim 2>&1
+  xvlog -sv -d NETLIST ${blk}_$tag.v $models replay_$blk.sv $G > g_$tag.xvlog 2>&1 && xelab -L unisims_ver -L secureip replay_$blk glbl -s gs_$tag > g_$tag.xelab 2>&1 && xsim gs_$tag -R -testplusarg vec=$vec -testplusarg fminit=zero > g_$tag.xsim 2>&1
   echo "netlist: $(grep -E '^REPLAY' g_$tag.xsim || tail -n 3 g_$tag.xelab g_$tag.xvlog | tr '\n' ' ' | cut -c1-200)"
 fi
