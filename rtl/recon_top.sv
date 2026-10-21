@@ -722,8 +722,11 @@ module recon_top
                     // (((w - 1) xStep + 1023) >> 10) + 8 reference columns (rows likewise): ref_fetch's w + 7
                     logic signed [31:0] stx, sty;
                     logic [18:0] cw, ch;
-                    stx = round2s8(sc_bx) + 32'sd32 + 32'(signed'({20'b0, sc_xs})) * 32'(signed'({24'b0, mc_sc, 5'b0}));
-                    sty = round2s8(sc_by) + 32'sd32 + 32'(signed'({20'b0, sc_ys})) * 32'(signed'({24'b0, mc_sr, 5'b0}));
+                    // the strip's offset in steps: strips are 32 wide in a frame with scaled references, but 8 wide when
+                    // the unit's other list warps (unit_warp): test10310 frame 2, GLOBAL_GLOBALMV compound of a global
+                    // warp (list 0) and a 5.5x scaled reference (list 1), read 32 px too far from the second strip on
+                    stx = round2s8(sc_bx) + 32'sd32 + 32'(signed'({20'b0, sc_xs})) * 32'(signed'(32'(mc_sc) << (unit_warp ? 3 : 5)));
+                    sty = round2s8(sc_by) + 32'sd32 + 32'(signed'({20'b0, sc_ys})) * 32'(signed'(32'(mc_sr) << (unit_warp ? 3 : 5)));
                     rf_x0 <= 17'(stx >>> 10); rf_y0 <= 17'(sty >>> 10);
                     mc_xf0 <= stx[9:0]; mc_yf0 <= sty[9:0];
                     cw = 19'(sc_sw - 7'd1) * 19'(sc_xs) + 19'd1023; ch = 19'(sc_sh - 7'd1) * 19'(sc_ys) + 19'd1023;
