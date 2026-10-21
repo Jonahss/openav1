@@ -61,6 +61,7 @@ enum {
     DAV1D_TRACE_PRED  = 1 << 2,  /* P/Q: intra prediction (edges + output) */
     DAV1D_TRACE_RECON = 1 << 3,  /* R: pre-loop-filter reconstruction */
     DAV1D_TRACE_MVS   = 1 << 4,  /* M: the MV stack after refmvs_find (count, entries, context) */
+    DAV1D_TRACE_INTER = 1 << 5,  /* I: inter prediction of a block (after MC / warp / blend, before the residual) */
 };
 
 extern FILE *dav1d_trace_fp;
@@ -242,6 +243,14 @@ static void trace_recon(const int plane, const int x4, const int y4, const int w
     trace_pixels_tail(dst, stride, w, h);
 }
 
+static void trace_inter(const int plane, const int x4, const int y4, const int w, const int h,
+                        const pixel *const dst, const ptrdiff_t stride)
+{
+    if (!DAV1D_TRACE_ON(DAV1D_TRACE_INTER)) return;
+    fprintf(dav1d_trace_fp, "I %d %d %d %d %d", plane, x4, y4, w, h);
+    trace_pixels_tail(dst, stride, w, h);
+}
+
 static void trace_edge(const pixel *const edge, const int w, const int h)
 {
     for (int i = -2 * h; i <= 2 * w; i++) fprintf(dav1d_trace_fp, " %d", (int) edge[i]);
@@ -273,6 +282,9 @@ static void trace_cfl(const int plane, const int x4, const int y4, const int w, 
 '''
 
 patch(src / "recon_tmpl.c", [
+    # inter prediction of the whole block (I events), before the residual
+    ('    if (DEBUG_BLOCK_INFO && DEBUG_B_PIXELS) {\n        hex_dump(dst, f->cur.stride[0], b_dim[0] * 4, b_dim[1] * 4, "y-pred");\n',
+     '    trace_inter(0, t->bx, t->by, b_dim[0] * 4, b_dim[1] * 4, dst, f->cur.stride[0]);\n    if (has_chroma) for (int pl = 0; pl < 2; pl++)\n        trace_inter(1 + pl, t->bx >> ss_hor, t->by >> ss_ver, cbw4 * 4, cbh4 * 4,\n                    &((pixel *) f->cur.data[1 + pl])[uvdstoff], f->cur.stride[1]);\n    if (DEBUG_BLOCK_INFO && DEBUG_B_PIXELS) {\n        hex_dump(dst, f->cur.stride[0], b_dim[0] * 4, b_dim[1] * 4, "y-pred");\n'),
     ('#include "src/ipred_prepare.h"\n', '#include "src/ipred_prepare.h"\n' + helpers),
     # luma intra pred (intra blocks)
     ('''                    dsp->ipred.intra_pred[m](dst, f->cur.stride[0], edge,
