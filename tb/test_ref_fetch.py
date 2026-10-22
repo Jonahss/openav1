@@ -48,6 +48,11 @@ async def ref_fetch_regions(dut):
         w, h = rng.choice(SIZES), rng.choice(SIZES)
         x0 = rng.randint(-12, W + 4) if rng.random() < 0.6 else rng.randint(0, max(0, W - w))
         y0 = rng.randint(-12, H + 4) if rng.random() < 0.6 else rng.randint(0, max(0, H - h))
+        if os.environ.get("RF_FAR"):
+            # windows far outside the picture (Argon: test10505 frame 1 starts 35 px beyond the right edge of a
+            # scaled reference): every sample clamps to an edge column / row
+            x0 = rng.choice([rng.randint(W + 5, W + 90), rng.randint(-90, -13), x0])
+            y0 = rng.choice([rng.randint(H + 5, H + 90), rng.randint(-90, -13), y0])
         lst = rng.randint(0, 1)
         ngrp = (w + 3) >> 2
         if x0 - 3 < 0 or x0 - 3 + 4 * (ngrp + 2) > W or y0 - 3 < 0 or y0 + h + 4 > H:

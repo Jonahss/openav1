@@ -541,6 +541,21 @@ async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all
                     bad.append((y, x, v, planes[plane][y][x]))
                 await Timer(1, "ns")
         rtl_planes.append(got)
+        if dump_dir and bad:
+            # a mismatching plane: dump what exists so far (this plane and the ones before it) before the assert
+            os.makedirs(dump_dir, exist_ok=True)
+            base = tag.replace(" ", "_").replace("/", "_") + f".plane{plane}_mismatch"
+            with open(os.path.join(dump_dir, f"{base}.txt"), "w") as fh:
+                fh.write(f"{hdr.FrameWidth} {hdr.FrameHeight} {hdr.BitDepth} {hdr.subsampling_x} {hdr.subsampling_y} {plane + 1}\n")
+            import struct as _st
+            fmt = "<H" if hdr.BitDepth > 8 else "<B"
+            for name, src in (("rtl", rtl_planes), ("model", planes)):
+                with open(os.path.join(dump_dir, f"{base}.{name}.yuv"), "wb") as fh:
+                    for p in range(plane + 1):
+                        pw = (hdr.FrameWidth + (hdr.subsampling_x if p else 0)) >> (hdr.subsampling_x if p else 0)
+                        ph_ = (hdr.FrameHeight + (hdr.subsampling_y if p else 0)) >> (hdr.subsampling_y if p else 0)
+                        for y in range(ph_):
+                            fh.write(_st.pack(f"<{pw}{'H' if hdr.BitDepth > 8 else 'B'}", *src[p][y][:pw]))
         if dump_dir and plane == hdr.NumPlanes - 1:
             os.makedirs(dump_dir, exist_ok=True)
             base = tag.replace(" ", "_").replace("/", "_")

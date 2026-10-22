@@ -22,8 +22,12 @@ import obu_parser as op
 from axi_mem import AxiMem
 
 SLOT_BASE = 1 << 32                 # slot s, plane p at SLOT_BASE + s * SLOT_STRIDE + p * PLANE_STRIDE (40-bit addresses)
-SLOT_STRIDE = 0x0400_0000
-PLANE_STRIDE = 0x0100_0000
+# A plane must fit its window: the largest picture a build stores is (1 << FBX) x (1 << FBY) samples of 2 bytes, 512 MB
+# at fb14x14. With 16 MB planes (until 2026-10-22) an 8192 x 1088 10-bit luma plane (17 MB; test10505's super-res
+# reference) ran into its own chroma plane, so the RTL read chroma for luma rows 1024 and up: 18% of the frame wrong.
+PLANE_STRIDE = 0x2000_0000
+SLOT_STRIDE = 3 * PLANE_STRIDE
+assert 8 * SLOT_STRIDE + SLOT_BASE < (1 << 40)
 
 
 def ref_planes_of(hdr, planes):
@@ -52,6 +56,7 @@ def load_slot(mem, hdr, slot, planes):
     bps = 2 if hdr.BitDepth > 8 else 1
     for p, (w, h, stride) in enumerate(plane_geometry(hdr, planes)):
         base = SLOT_BASE + slot * SLOT_STRIDE + p * PLANE_STRIDE
+        assert h * stride <= PLANE_STRIDE, f"slot {slot} plane {p}: {w}x{h} ({h * stride} bytes) overruns its {PLANE_STRIDE}-byte window"
         for y in range(h):
             row = planes[p][y]
             if bps == 1:
