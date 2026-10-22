@@ -12,7 +12,10 @@
 module mv_stack
   import syn_pkg::*;
   import blk_tables_pkg::*;
-(
+#(
+    parameter int INTER = 1                  // 0: intra block copy only (single reference INTRA_FRAME, no global motion, no temporal /
+                                             // extra candidates, no contexts): the compound and inter paths compile out
+) (
     input  logic        clk,
     input  logic        rst,
     input  hdr_t        hdr,
@@ -43,6 +46,8 @@ module mv_stack
     input  logic signed [15:0] mf_row, mf_col
 );
     localparam int REF_CAT_LEVEL = 640;
+    logic comp;                               // compound block (never in the intra-only build)
+    assign comp = (INTER != 0) && is_comp;
     localparam int MV_BORDER = 128;
     localparam int INTRABC_DELAY_PIXELS = 256;
     localparam logic [1:0] TRANSLATION = 2'd1;
@@ -190,7 +195,7 @@ module mv_stack
         sp_cl = (rd_ent.ref0 == ref0) ? 2'd0 : (rd_ent.ref1 == ref0) ? 2'd1 : 2'd2;
         big = (blk_w(rd_ent.bsize) >= 8'd8) && (blk_h(rd_ent.bsize) >= 8'd8);
         use_g = rd_ent.globalmv_fam && (gmt(ref0) > TRANSLATION) && big;
-        if (!is_comp) begin
+        if (!comp) begin
             sp_ok = rd_written && rd_ent.is_inter && (sp_cl != 2'd2);
             cand_r0 = lower_prec(use_g ? g_row[0] : (sp_cl == 2'd1) ? e_mv1r : e_mv0r);
             cand_c0 = lower_prec(use_g ? g_col[0] : (sp_cl == 2'd1) ? e_mv1c : e_mv0c);
@@ -207,7 +212,7 @@ module mv_stack
         if (st == M_EX_P0 || st == M_EX_P1) begin cand_r0 = ex_r0; cand_c0 = ex_c0; cand_r1 = 18'sd0; cand_c1 = 18'sd0; end
         for (int k = 0; k < 8; k++)
             hit[k] = (4'(k) < n_found) && (st_row0[k] == cand_r0) && (st_col0[k] == cand_c0) &&
-                     (!is_comp || st == M_EX_P0 || st == M_EX_P1 || ((st_row1[k] == cand_r1) && (st_col1[k] == cand_c1)));
+                     (!comp || st == M_EX_P0 || st == M_EX_P1 || ((st_row1[k] == cand_r1) && (st_col1[k] == cand_c1)));
     end
 
     // clamp_mv_row / clamp_mv_col (border = MV_BORDER + bh * 8 / bw * 8)
@@ -294,8 +299,8 @@ module mv_stack
             M_GM_A: begin
                 logic [3:0] rf;
                 rf = g_sel ? ref1 : ref0;
-                g_typ <= (rf == 4'd0) ? 2'd0 : gmt(rf);
-                for (int j = 0; j < 6; j++) gp[j] <= (rf >= 4'd1 && rf <= 4'd7) ? gmp(rf, j) : 24'sd0;
+                g_typ <= (INTER == 0 || rf == 4'd0) ? 2'd0 : gmt(rf);                    // intra block copy: IDENTITY
+                for (int j = 0; j < 6; j++) gp[j] <= (INTER != 0 && rf >= 4'd1 && rf <= 4'd7) ? gmp(rf, j) : 24'sd0;
                 g_x <= 17'(signed'({2'b0, c, 2'b0})) + 17'(signed'({10'b0, blk_w(bs) >> 1})) - 17'sd1;   // MiCol * 4 + bw / 2 - 1
                 g_y <= 17'(signed'({2'b0, r, 2'b0})) + 17'(signed'({10'b0, blk_h(bs) >> 1})) - 17'sd1;
                 st <= M_GM_B;
@@ -317,7 +322,7 @@ module mv_stack
                 else if (ihdr.allow_hp_mv) begin mr = 18'(r2s(yc, 13)); mc = 18'(r2s(xc, 13)); end
                 else begin mr = 18'(r2s(yc, 14) <<< 1); mc = 18'(r2s(xc, 14) <<< 1); end
                 g_row[g_sel] <= lower_prec(mr); g_col[g_sel] <= lower_prec(mc);
-                if (!g_sel && is_comp) begin g_sel <= 1'b1; st <= M_GM_A; end
+                if (!g_sel && comp) begin g_sel <= 1'b1; st <= M_GM_A; end
                 else begin ph <= P_ROW1; ph_done <= P_END; st <= M_PH; end
             end
             // ---- phase setup (scan row / scan col / scan point / temporal / sorts); folds the finished scan's FoundMatch
@@ -367,7 +372,7 @@ module mv_stack
                         else st <= M_NEAR;                          // no top-right scan for big blocks
                     end
                     P_TPL: begin
-                        if (ihdr.use_ref_frame_mvs) begin
+                        if (INTER != 0 && ihdr.use_ref_frame_mvs) begin        // never in an intra frame
                             t_dr <= 6'd0; t_dc <= 7'sd0; t_ext <= 2'd0;
                             t_maxr <= (bh4 < 6'd16) ? bh4 : 6'd16; t_maxc <= (bw4 < 6'd16) ? bw4 : 6'd16;
                             t_stepr <= (bh4 >= 6'd16) ? 6'd4 : 6'd2; t_stepc <= (bw4 >= 6'd16) ? 6'd4 : 6'd2;
@@ -444,7 +449,7 @@ module mv_stack
                 else begin
                     tc_r0 <= lower_prec(18'(signed'(mf_row))); tc_c0 <= lower_prec(18'(signed'(mf_col)));
                     tc_r1 <= 18'sd0; tc_c1 <= 18'sd0;
-                    st <= is_comp ? M_TPL_WAIT1 : M_TPL_ADD;
+                    st <= comp ? M_TPL_WAIT1 : M_TPL_ADD;
                 end
             end
             M_TPL_WAIT1: st <= M_TPL_PROC1;
@@ -457,7 +462,7 @@ module mv_stack
             end
             M_TPL_ADD: begin
                 if (t_zero) zero_ctx <= big_diff(tc_r0, g_row[0]) || big_diff(tc_c0, g_col[0]) ||
-                                        (is_comp && (big_diff(tc_r1, g_row[1]) || big_diff(tc_c1, g_col[1])));
+                                        (comp && (big_diff(tc_r1, g_row[1]) || big_diff(tc_c1, g_col[1])));
                 if (|hit) begin
                     for (int k = 0; k < 8; k++) if (hit[k]) weight[k] <= weight[k] + 16'd2;
                 end else if (n_found < 4'd8) begin
@@ -507,13 +512,13 @@ module mv_stack
                     if (!ex_pass) begin
                         ex_pass <= 1'b1; ex_idx <= 6'd0;
                         ex_row <= MIS'(signed'({2'b0, r})); ex_col <= MIS'(signed'({2'b0, c})) - MIS'(1);
-                    end else st <= is_comp ? M_EX_COMB : M_FILL;
+                    end else st <= comp ? M_EX_COMB : M_FILL;
                 end else st <= M_EX_WAIT;
             end
             M_EX_WAIT: st <= M_EX_P0;
             M_EX_P0, M_EX_P1: begin
-                if (ex_ref >= 4'd1 && ex_ref <= 4'd7) begin
-                    if (!is_comp) begin
+                if (INTER != 0 && ex_ref >= 4'd1 && ex_ref <= 4'd7) begin
+                    if (!comp) begin
                         if (!(|hit)) begin
                             st_row0[n_found[2:0]] <= ex_r0; st_col0[n_found[2:0]] <= ex_c0;
                             weight[n_found[2:0]] <= 16'd2;
@@ -562,7 +567,7 @@ module mv_stack
                 st <= M_CTX;
             end
             // ---- contexts (7.10.2.14): DrlCtxStack, NewMvContext, RefMvContext
-            M_CTX: begin
+            M_CTX: if (INTER != 0) begin                        // the contexts feed the inter syntax only
                 logic [1:0] total;
                 total = 2'(found_above) + 2'(found_left);
                 for (int k = 0; k < 3; k++) begin
@@ -575,13 +580,13 @@ module mv_stack
                 else if (close_matches == 2'd1) begin nctx <= 3'd3 - 3'(num_new != 6'd0); rctx <= 3'd2 + 3'(total); end
                 else begin nctx <= 3'd5 - 3'(num_new != 6'd0); rctx <= 3'd5; end
                 st <= M_CLAMP;
-            end
+            end else st <= M_CLAMP;
             // ---- clamping: the found entries, both lists of a compound block
             M_CLAMP: begin
                 for (int k = 0; k < 8; k++) if (4'(k) < n_found) begin
                     st_row0[k] <= clamp18(st_row0[k], top_lo, top_hi);
                     st_col0[k] <= clamp18(st_col0[k], left_lo, left_hi);
-                    if (is_comp) begin
+                    if (comp) begin
                         st_row1[k] <= clamp18(st_row1[k], top_lo, top_hi);
                         st_col1[k] <= clamp18(st_col1[k], left_lo, left_hi);
                     end

@@ -135,16 +135,17 @@ module blk_syntax
         S_MVBIT, S_MVBIT_W, S_MVMAG, S_MVEND,
         S_VTX_INIT, S_VTX_NODE, S_VTX_GO, S_VTX_W, S_VTX_LEAF, S_VTX_POP, S_RES_LEAF, S_RES_PLANE_END, S_TX_UVT,
         S_LIT, S_LIT_W,
+        S_NBW, S_MVFR, S_MVFR_GO, S_MVFR_W, S_MVHP, S_MVHP_GO, S_MVHP_W,   // shared with the intra block copy path (kept out of the inter group below)
         // inter frames (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33)
         S_NBA, S_NBA_W, S_NBL, S_NBL_W, S_ISEG, S_SP_RD, S_SP_W, S_SP_END, S_SEGP_GO, S_SEGP_W,
         S_SKM, S_SKM_GO, S_SKM_W, S_ISI, S_ISI_GO, S_ISI_W, S_RF, S_RFS_GO, S_RFS_W,
         S_MODE, S_CMODE_GO, S_CMODE_W, S_NEWMV_GO, S_NEWMV_W, S_ZEROMV_GO, S_ZEROMV_W, S_REFMV_GO, S_REFMV_W,
-        S_DRL, S_DRL_IT, S_DRL_GO, S_DRL_W, S_AMV, S_AMV_NEXT, S_MVFR, S_MVFR_GO, S_MVFR_W, S_MVHP, S_MVHP_GO, S_MVHP_W,
+        S_DRL, S_DRL_IT, S_DRL_GO, S_DRL_W, S_AMV, S_AMV_NEXT,
         S_II, S_II_GO, S_II_W, S_IIM_GO, S_IIM_W, S_WII_GO, S_WII_W, S_WIDX_GO, S_WIDX_W,
         S_MM, S_OV, S_OV_W, S_OV_P, S_WS, S_WS_W, S_WS_P, S_MM2, S_OBMC_GO, S_OBMC_W, S_MMS_GO, S_MMS_W,
         S_OB_A, S_OB_A_W, S_OB_A_P, S_OB_L, S_OB_L_W, S_OB_L_P,
         S_CT, S_CGI_GO, S_CGI_W, S_CT2, S_CIDX_GO, S_CIDX_W, S_CTYPE_GO, S_CTYPE_W, S_CT3, S_WIDX2_GO, S_WIDX2_W, S_WSGN_W, S_MASK_W,
-        S_IF, S_IF_D, S_IF_GO, S_IF_W, S_IF_END, S_NBW
+        S_IF, S_IF_D, S_IF_GO, S_IF_W, S_IF_END
     } st_t;
     st_t st, lit_ret;
     // cycle counter per state (simulation profiling; read through the hierarchy by the testbench)
@@ -393,7 +394,7 @@ module blk_syntax
     // stack outputs of inter blocks (stage 1: the inter chain reads them; intra block copy uses pred_*)
     logic [3:0] mvs_n; logic signed [17:0] mvs_st0_row [4], mvs_st0_col [4], mvs_st1_row [4], mvs_st1_col [4], mvs_gmv_row [2], mvs_gmv_col [2];
     logic [2:0] mvs_new_ctx, mvs_ref_ctx; logic mvs_zero_ctx; logic [1:0] mvs_drl [3];
-    mv_stack u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs, .ref0(rf0), .ref1(rf1), .is_comp,
+    mv_stack #(.INTER(INTER)) u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs, .ref0(rf0), .ref1(rf1), .is_comp,
                     .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .n_found(mvs_n),
                     .st0_row(mvs_st0_row), .st0_col(mvs_st0_col), .st1_row(mvs_st1_row), .st1_col(mvs_st1_col), .gmv_row(mvs_gmv_row), .gmv_col(mvs_gmv_col),
                     .new_mv_ctx(mvs_new_ctx), .ref_mv_ctx(mvs_ref_ctx), .zero_mv_ctx(mvs_zero_ctx), .drl_ctx(mvs_drl),
@@ -411,8 +412,8 @@ module blk_syntax
         if (n4 > 6'd16) return 5'd16;
         return 5'(n4);
     endfunction
-    assign nb_rd = (st == S_NBA) || (st == S_NBA_W) || (st == S_NBL) || (st == S_NBL_W) || (st == S_OV_W) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_P)
-                 || (st == S_OB_A_W) || (st == S_OB_A_P) || (st == S_OB_L_W) || (st == S_OB_L_P);
+    assign nb_rd = (INTER != 0) && ((st == S_NBA) || (st == S_NBA_W) || (st == S_NBL) || (st == S_NBL_W) || (st == S_OV_W) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_P)
+                 || (st == S_OB_A_W) || (st == S_OB_A_P) || (st == S_OB_L_W) || (st == S_OB_L_P));
     always_comb begin
         if (st == S_NBA || st == S_NBA_W) begin mvr_row = br - MIW'(1); mvr_col = bc; end
         else if (st == S_NBL || st == S_NBL_W) begin mvr_row = br; mvr_col = bc - MIW'(1); end
@@ -671,7 +672,32 @@ module blk_syntax
     // ---------------------------------------------------------------- symbol requests (combinational)
     always_comb begin
         sq_go = 1'b0; sq_addr = '0; sq_n = 4'd1; sq_kind = 2'd0;
-        case (st)
+        if (INTER != 0 && int'(st) >= int'(S_NBA)) begin
+            // inter-frame states (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33): compiled out at INTER = 0
+            case (st)
+                // inter frames
+                S_SEGP_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SEGMENT_ID_PREDICTED + int'(ctx_segp)); sq_n = 4'd1; end
+                S_SKM_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SKIP_MODE + int'(ctx_skm)); sq_n = 4'd1; end
+                S_ISI_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_IS_INTER + int'(ctx_is_inter)); sq_n = 4'd1; end
+                S_RFS_GO:  begin sq_go = 1'b1; sq_addr = rfs_addr; sq_n = 4'd1; end
+                S_CMODE_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMPOUND_MODE + int'(ctx_cmode)); sq_n = 4'd7; end
+                S_NEWMV_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_NEW_MV + int'(mvs_new_ctx)); sq_n = 4'd1; end
+                S_ZEROMV_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_ZERO_MV + int'(mvs_zero_ctx)); sq_n = 4'd1; end
+                S_REFMV_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_REF_MV + int'(mvs_ref_ctx)); sq_n = 4'd1; end
+                S_DRL_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_DRL_MODE + int'(mvs_drl[drl_i])); sq_n = 4'd1; end
+                S_II_GO:   begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTER_INTRA + int'(size_group(bs)) - 1); sq_n = 4'd1; end
+                S_IIM_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTER_INTRA_MODE + int'(size_group(bs)) - 1); sq_n = 4'd3; end
+                S_WII_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_WEDGE_INTER_INTRA + int'(bs)); sq_n = 4'd1; end
+                S_WIDX_GO, S_WIDX2_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_WEDGE_INDEX + int'(bs)); sq_n = 4'd15; end
+                S_OBMC_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_USE_OBMC + int'(bs)); sq_n = 4'd1; end
+                S_MMS_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_MOTION_MODE + int'(bs)); sq_n = 4'd2; end
+                S_CGI_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMP_GROUP_IDX + int'(ctx_cgi)); sq_n = 4'd1; end
+                S_CIDX_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMPOUND_IDX + int'(ctx_cidx)); sq_n = 4'd1; end
+                S_CTYPE_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMPOUND_TYPE + int'(bs)); sq_n = 4'd1; end
+                S_IF_GO:   begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTERP_FILTER + int'(ctx_interp)); sq_n = 4'd2; end
+                default: ;
+            endcase
+        end else case (st)
             S_SEG_A, S_SEG_B_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SEGMENT_ID + int'(seg_ctx)); sq_n = 4'd7; end
             S_SKIP_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SKIP + ((avail_u && a_skip) ? 1 : 0) + ((avail_l && l_skip) ? 1 : 0)); sq_n = 4'd1; end
             S_DQ_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_DELTA_Q); sq_n = 4'd3; end
@@ -712,26 +738,6 @@ module blk_syntax
             S_MVHP_GO: begin sq_go = 1'b1; sq_n = 4'd1;
                            if (mv_cls == 4'd0) sq_addr = CDF_AW'(CDF_MV_CLASS0_HP + (use_ibc ? CDF_MV_CLASS0_HP_S0 : 0) + int'(mv_comp));
                            else sq_addr = CDF_AW'(CDF_MV_HP + (use_ibc ? CDF_MV_HP_S0 : 0) + int'(mv_comp)); end
-            // inter frames
-            S_SEGP_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SEGMENT_ID_PREDICTED + int'(ctx_segp)); sq_n = 4'd1; end
-            S_SKM_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SKIP_MODE + int'(ctx_skm)); sq_n = 4'd1; end
-            S_ISI_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_IS_INTER + int'(ctx_is_inter)); sq_n = 4'd1; end
-            S_RFS_GO:  begin sq_go = 1'b1; sq_addr = rfs_addr; sq_n = 4'd1; end
-            S_CMODE_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMPOUND_MODE + int'(ctx_cmode)); sq_n = 4'd7; end
-            S_NEWMV_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_NEW_MV + int'(mvs_new_ctx)); sq_n = 4'd1; end
-            S_ZEROMV_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_ZERO_MV + int'(mvs_zero_ctx)); sq_n = 4'd1; end
-            S_REFMV_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_REF_MV + int'(mvs_ref_ctx)); sq_n = 4'd1; end
-            S_DRL_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_DRL_MODE + int'(mvs_drl[drl_i])); sq_n = 4'd1; end
-            S_II_GO:   begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTER_INTRA + int'(size_group(bs)) - 1); sq_n = 4'd1; end
-            S_IIM_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTER_INTRA_MODE + int'(size_group(bs)) - 1); sq_n = 4'd3; end
-            S_WII_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_WEDGE_INTER_INTRA + int'(bs)); sq_n = 4'd1; end
-            S_WIDX_GO, S_WIDX2_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_WEDGE_INDEX + int'(bs)); sq_n = 4'd15; end
-            S_OBMC_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_USE_OBMC + int'(bs)); sq_n = 4'd1; end
-            S_MMS_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_MOTION_MODE + int'(bs)); sq_n = 4'd2; end
-            S_CGI_GO:  begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMP_GROUP_IDX + int'(ctx_cgi)); sq_n = 4'd1; end
-            S_CIDX_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMPOUND_IDX + int'(ctx_cidx)); sq_n = 4'd1; end
-            S_CTYPE_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_COMPOUND_TYPE + int'(bs)); sq_n = 4'd1; end
-            S_IF_GO:   begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_INTERP_FILTER + int'(ctx_interp)); sq_n = 4'd2; end
             S_TXTYPE: begin
                 sq_go = 1'b1;
                 if (inter_any) begin
@@ -799,7 +805,368 @@ module blk_syntax
                 read_deltas <= hdr.delta_q_present;
                 cdef_flags <= '0;
             end
-            case (st)
+            if (INTER != 0 && int'(st) >= int'(S_NBA)) begin
+                // inter-frame states (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33): compiled out at INTER = 0
+                case (st)
+                    // ---- inter frame: the two neighbours' motion info (contexts), then inter_frame_mode_info
+                    S_NBA: st <= S_NBA_W;
+                    S_NBA_W: begin a_ent <= mvr_ent; a_ok <= avail_u && mvr_written; st <= S_NBL; end
+                    S_NBL: st <= S_NBL_W;
+                    S_NBL_W: begin l_ent <= mvr_ent; l_ok <= avail_l && mvr_written; seg_pre <= 1'b1; st <= S_ISEG; end
+                    // inter_segment_id(preSkip = seg_pre) (5.11.8)
+                    S_ISEG: begin
+                        if (!hdr.seg_enabled) begin seg <= 3'd0; lossless <= hdr.lossless[0]; st <= seg_pre ? S_SKM : S_CDEF; end
+                        else if (!ihdr.seg_update_map) begin sp_mode <= 1'b0; st <= S_SP_RD; end
+                        else if (seg_pre && !hdr.seg_preskip) begin seg <= 3'd0; st <= S_SKM; end
+                        else if (!seg_pre && skip) begin seg_pred_sym <= 1'b0; seg_ret <= S_CDEF; st <= S_SEG_B; end
+                        else if (ihdr.seg_temporal_update) begin sp_mode <= 1'b1; st <= S_SP_RD; end
+                        else begin seg_ret <= seg_pre ? S_SKM : S_CDEF; st <= S_SEG_B; end
+                        // get_segment_id scan setup (used by the two band paths)
+                        sp_min <= 3'd7; sp_y <= 6'd0;
+                        sp_xmis <= (MIW'(bw4) < hdr.mi_cols - bc) ? bw4 : 6'(hdr.mi_cols - bc);
+                        sp_ymis <= (MIW'(bh4) < hdr.mi_rows - br) ? bh4 : 6'(hdr.mi_rows - br);
+                        sp_w0 <= bc[MIW-1:4]; sp_w <= bc[MIW-1:4];
+                        sp_w_end <= (MIW-4)'((bc + ((MIW'(bw4) < hdr.mi_cols - bc) ? MIW'(bw4) : hdr.mi_cols - bc) - MIW'(1)) >> 4);
+                    end
+                    S_SP_RD: st <= S_SP_W;
+                    S_SP_W: begin
+                        if (sp_word_min < sp_min) sp_min <= sp_word_min;
+                        if (sp_w < sp_w_end) begin sp_w <= sp_w + 1'b1; st <= S_SP_RD; end
+                        else if (sp_y + 6'd1 < sp_ymis) begin sp_y <= sp_y + 6'd1; sp_w <= sp_w0; st <= S_SP_RD; end
+                        else st <= S_SP_END;
+                    end
+                    S_SP_END: begin
+                        if (!sp_mode) begin seg <= sp_min; lossless <= hdr.lossless[sp_min]; st <= seg_pre ? S_SKM : S_CDEF; end
+                        else st <= S_SEGP_GO;
+                    end
+                    S_SEGP_GO: st <= S_SEGP_W;
+                    S_SEGP_W: if (sq_done) begin
+                        seg_pred_sym <= sq_sym[0];
+                        if (sq_sym[0]) begin seg <= sp_min; lossless <= hdr.lossless[sp_min]; st <= seg_pre ? S_SKM : S_CDEF; end
+                        else begin seg_ret <= seg_pre ? S_SKM : S_CDEF; st <= S_SEG_B; end
+                    end
+                    // read_skip_mode (5.11.10)
+                    S_SKM: begin
+                        if ((hdr.seg_enabled && (hdr.seg_skip_en[seg] || ihdr.seg_ref_en[seg] || ihdr.seg_globalmv_en[seg])) ||
+                            !ihdr.skip_mode_present || bwp < 8'd8 || bhp < 8'd8) begin skip_mode <= 1'b0; st <= S_SKIP; end
+                        else st <= S_SKM_GO;
+                    end
+                    S_SKM_GO: st <= S_SKM_W;
+                    S_SKM_W: if (sq_done) begin
+                        skip_mode <= sq_sym[0];
+                        if (sq_sym[0]) begin
+                            skip <= 1'b1;
+                            if (!hdr.seg_preskip) begin seg_pre <= 1'b0; st <= S_ISEG; end else st <= S_CDEF;
+                        end else st <= S_SKIP;
+                    end
+                    // ---- read_is_inter (5.11.20)
+                    S_ISI: begin
+                        read_deltas <= 1'b0;
+                        if (skip_mode) begin is_inter_b <= 1'b1; st <= S_RF; end
+                        else if (hdr.seg_enabled && ihdr.seg_ref_en[seg]) begin
+                            is_inter_b <= (ihdr.seg_ref_data[3 * seg +: 3] != 3'd0); st <= (ihdr.seg_ref_data[3 * seg +: 3] != 3'd0) ? S_RF : S_YMODE;
+                        end
+                        else if (hdr.seg_enabled && ihdr.seg_globalmv_en[seg]) begin is_inter_b <= 1'b1; st <= S_RF; end
+                        else st <= S_ISI_GO;
+                    end
+                    S_ISI_GO: st <= S_ISI_W;
+                    S_ISI_W: if (sq_done) begin is_inter_b <= sq_sym[0]; st <= sq_sym[0] ? S_RF : S_YMODE; end
+                    // ---- read_ref_frames (5.11.25): one symbol per step of the decision tree
+                    S_RF: begin
+                        rf1 <= R_NONE;
+                        if (skip_mode) begin rf0 <= {1'b0, ihdr.skip_mode_frame0}; rf1 <= {1'b0, ihdr.skip_mode_frame1}; is_comp <= 1'b1; st <= S_MVS; end
+                        else if (hdr.seg_enabled && ihdr.seg_ref_en[seg]) begin rf0 <= {1'b0, ihdr.seg_ref_data[3 * seg +: 3]}; st <= S_MVS; end
+                        else if (hdr.seg_enabled && (hdr.seg_skip_en[seg] || ihdr.seg_globalmv_en[seg])) begin rf0 <= R_LAST; st <= S_MVS; end
+                        else begin rf_step <= (ihdr.reference_select && bw4 >= 6'd2 && bh4 >= 6'd2) ? 4'd0 : 4'd10; st <= S_RFS_GO; end
+                    end
+                    S_RFS_GO: st <= S_RFS_W;
+                    S_RFS_W: if (sq_done) begin
+                        st <= S_RFS_GO;
+                        case (rf_step)
+                            4'd0: rf_step <= sq_sym[0] ? 4'd1 : 4'd10;                                                   // comp_mode
+                            4'd1: rf_step <= sq_sym[0] ? 4'd5 : 4'd2;                                                    // comp_ref_type (0 = UNIDIR)
+                            4'd2: if (sq_sym[0]) begin rf0 <= R_BWDREF; rf1 <= R_ALTREF; is_comp <= 1'b1; st <= S_MVS; end else rf_step <= 4'd3;
+                            4'd3: if (sq_sym[0]) rf_step <= 4'd4; else begin rf0 <= R_LAST; rf1 <= R_LAST2; is_comp <= 1'b1; st <= S_MVS; end
+                            4'd4: begin rf0 <= R_LAST; rf1 <= sq_sym[0] ? R_GOLDEN : R_LAST3; is_comp <= 1'b1; st <= S_MVS; end
+                            4'd5: rf_step <= sq_sym[0] ? 4'd7 : 4'd6;                                                    // comp_ref
+                            4'd6: begin rf0 <= sq_sym[0] ? R_LAST2 : R_LAST; rf_step <= 4'd8; end
+                            4'd7: begin rf0 <= sq_sym[0] ? R_GOLDEN : R_LAST3; rf_step <= 4'd8; end
+                            4'd8: if (sq_sym[0]) begin rf1 <= R_ALTREF; is_comp <= 1'b1; st <= S_MVS; end else rf_step <= 4'd9;    // comp_bwdref
+                            4'd9: begin rf1 <= sq_sym[0] ? R_ALTREF2 : R_BWDREF; is_comp <= 1'b1; st <= S_MVS; end
+                            4'd10: rf_step <= sq_sym[0] ? 4'd11 : 4'd12;                                                 // single_ref_p1
+                            4'd11: if (sq_sym[0]) begin rf0 <= R_ALTREF; st <= S_MVS; end else rf_step <= 4'd15;        // single_ref_p2
+                            4'd12: rf_step <= sq_sym[0] ? 4'd14 : 4'd13;                                                 // single_ref_p3
+                            4'd13: begin rf0 <= sq_sym[0] ? R_LAST2 : R_LAST; st <= S_MVS; end                           // single_ref_p4
+                            4'd14: begin rf0 <= sq_sym[0] ? R_GOLDEN : R_LAST3; st <= S_MVS; end                         // single_ref_p5
+                            default: begin rf0 <= sq_sym[0] ? R_ALTREF2 : R_BWDREF; st <= S_MVS; end                     // single_ref_p6
+                        endcase
+                    end
+                    // ---- the mode (5.11.23 after find_mv_stack)
+                    S_MODE: begin
+                        if (skip_mode) begin imode <= NEAREST_NEARESTMV; st <= S_DRL; end
+                        else if (hdr.seg_enabled && (hdr.seg_skip_en[seg] || ihdr.seg_globalmv_en[seg])) begin imode <= GLOBALMV; st <= S_DRL; end
+                        else if (is_comp) st <= S_CMODE_GO;
+                        else st <= S_NEWMV_GO;
+                    end
+                    S_CMODE_GO: st <= S_CMODE_W;
+                    S_CMODE_W: if (sq_done) begin imode <= NEAREST_NEARESTMV + 5'(sq_sym); st <= S_DRL; end
+                    S_NEWMV_GO: st <= S_NEWMV_W;
+                    S_NEWMV_W: if (sq_done) begin if (sq_sym[0] == 1'b0) begin imode <= NEWMV; st <= S_DRL; end else st <= S_ZEROMV_GO; end
+                    S_ZEROMV_GO: st <= S_ZEROMV_W;
+                    S_ZEROMV_W: if (sq_done) begin if (sq_sym[0] == 1'b0) begin imode <= GLOBALMV; st <= S_DRL; end else st <= S_REFMV_GO; end
+                    S_REFMV_GO: st <= S_REFMV_W;
+                    S_REFMV_W: if (sq_done) begin imode <= sq_sym[0] ? NEARMV : NEARESTMV; st <= S_DRL; end
+                    // ---- drl_mode
+                    S_DRL: begin
+                        ref_mv_idx <= 2'd0;
+                        if (imode == NEWMV || imode == NEW_NEWMV) begin drl_i <= 2'd0; drl_end <= 2'd2; st <= S_DRL_IT; end
+                        else if (has_nearmv(imode)) begin ref_mv_idx <= 2'd1; drl_i <= 2'd1; drl_end <= 2'd3; st <= S_DRL_IT; end
+                        else begin mv_list <= 1'b0; st <= S_AMV; end
+                    end
+                    S_DRL_IT: begin
+                        if (drl_i >= drl_end) begin mv_list <= 1'b0; st <= S_AMV; end
+                        else if (mvs_n > 4'(drl_i) + 4'd1) st <= S_DRL_GO;
+                        else drl_i <= drl_i + 2'd1;
+                    end
+                    S_DRL_GO: st <= S_DRL_W;
+                    S_DRL_W: if (sq_done) begin
+                        if (sq_sym[0] == 1'b0) begin ref_mv_idx <= drl_i; mv_list <= 1'b0; st <= S_AMV; end
+                        else begin ref_mv_idx <= drl_i + 2'd1; drl_i <= drl_i + 2'd1; st <= S_DRL_IT; end
+                    end
+                    // ---- assign_mv (5.11.26) for list mv_list: NEWMV reads a difference on the predicted MV
+                    S_AMV: begin
+                        pr_r <= amv_r; pr_c <= amv_c;
+                        if (amode == NEWMV) st <= S_MVJ;
+                        else begin
+                            if (!mv_list) begin mv_row <= amv_r; mv_col <= amv_c; end else begin mv1_row <= amv_r; mv1_col <= amv_c; end
+                            st <= S_AMV_NEXT;
+                        end
+                    end
+                    S_AMV_NEXT: begin
+                        if (is_comp && !mv_list) begin mv_list <= 1'b1; st <= S_AMV; end
+                        else st <= S_II;
+                    end
+                    // ---- read_interintra_mode (5.11.28)
+                    S_II: begin
+                        if (!skip_mode && ihdr.enable_interintra_compound && !is_comp && bs >= BLOCK_8X8 && bs <= 5'd9) st <= S_II_GO;
+                        else st <= S_MM;
+                    end
+                    S_II_GO: st <= S_II_W;
+                    S_II_W: if (sq_done) begin interintra <= sq_sym[0]; st <= sq_sym[0] ? S_IIM_GO : S_MM; end
+                    S_IIM_GO: st <= S_IIM_W;
+                    S_IIM_W: if (sq_done) begin ii_mode <= sq_sym[1:0]; rf1 <= R_INTRA; st <= S_WII_GO; end
+                    S_WII_GO: st <= S_WII_W;
+                    S_WII_W: if (sq_done) begin wedge_ii <= sq_sym[0]; st <= sq_sym[0] ? S_WIDX_GO : S_MM; end
+                    S_WIDX_GO: st <= S_WIDX_W;
+                    S_WIDX_W: if (sq_done) begin wedge_idx <= sq_sym; wedge_sign <= 1'b0; st <= S_MM; end
+                    // ---- read_motion_mode (5.11.27): overlappable neighbours, warp samples, then the symbol
+                    S_MM: begin
+                        motion_mode <= 2'd0;
+                        if (skip_mode || !ihdr.motion_mode_switchable || bwp < 8'd8 || bhp < 8'd8 ||
+                            (!ihdr.force_integer_mv && globalmv_fam && gmt2(rf0) > 2'd1) || is_comp || rf1 == R_INTRA) st <= S_CT;
+                        else begin ov_above <= avail_u; ov_x <= bc; ov_y <= br; st <= S_OV; end
+                    end
+                    S_OV: begin         // has_overlappable_candidates (7.10.3): above row at odd columns, then left column at odd rows
+                        if (ov_above) begin
+                            if (ov_x < hdr.mi_cols && ov_x < bc + MIW'(bw4)) begin nb_row <= br - MIW'(1); nb_col <= ov_x | MIW'(1); st <= S_OV_W; end
+                            else ov_above <= 1'b0;
+                        end else begin
+                            if (avail_l && ov_y < hdr.mi_rows && ov_y < br + MIW'(bh4)) begin nb_row <= ov_y | MIW'(1); nb_col <= bc - MIW'(1); st <= S_OV_W; end
+                            else st <= S_CT;                                                    // none: SIMPLE
+                        end
+                    end
+                    S_OV_W: st <= S_OV_P;
+                    S_OV_P: begin
+                        if (mvr_written && mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
+                            ws_found <= 1'b0; do_tl <= 1'b1; do_tr <= 1'b1; ws_i <= 6'd0;
+                            ws_n <= 4'd0; ws_nv <= 4'd0; for (int i = 0; i < 7; i++) begin ls_v[i] <= 32'sd0; ls_1[i] <= 32'sd0; end
+                            ws_ph <= avail_u ? 3'd0 : (avail_l ? 3'd2 : 3'd4); st <= S_WS;
+                        end
+                        else begin if (ov_above) ov_x <= ov_x + MIW'(2); else ov_y <= ov_y + MIW'(2); st <= S_OV; end
+                    end
+                    // find_warp_samples (7.10.4): NumSamples == 0 iff no scanned neighbour has RefFrame[0] alone
+                    S_WS: begin
+                        case (ws_ph)
+                            3'd0: begin nb_row <= br - MIW'(1); nb_col <= bc; st <= S_WS_W; end
+                            3'd1: if (ws_i < bw4 && MIW'(ws_i) < hdr.mi_cols - bc) begin nb_row <= br - MIW'(1); nb_col <= bc + MIW'(ws_i); st <= S_WS_W; end
+                                  else begin ws_ph <= avail_l ? 3'd2 : 3'd4; ws_i <= 6'd0; end
+                            3'd2: begin nb_row <= br; nb_col <= bc - MIW'(1); st <= S_WS_W; end
+                            3'd3: if (ws_i < bh4 && MIW'(ws_i) < hdr.mi_rows - br) begin nb_row <= br + MIW'(ws_i); nb_col <= bc - MIW'(1); st <= S_WS_W; end
+                                  else ws_ph <= 3'd4;
+                            3'd4: if (do_tl) begin nb_row <= br - MIW'(1); nb_col <= bc - MIW'(1); st <= S_WS_W; end else ws_ph <= 3'd5;
+                            3'd5: if (do_tr && bw4 <= 6'd16 && bh4 <= 6'd16) begin nb_row <= br - MIW'(1); nb_col <= bc + MIW'(bw4); st <= S_WS_W; end else st <= S_MM2;
+                            default: st <= S_MM2;
+                        endcase
+                    end
+                    S_WS_W: st <= S_WS_P;
+                    S_WS_P: begin
+                        logic [5:0] srcw, srch;
+                        logic in_tile;
+                        srcw = num4x4w(mvr_ent.bsize); srch = num4x4h(mvr_ent.bsize);
+                        // is_inside (a row / column above or left of 0 wraps to a large unsigned value and fails the end test)
+                        in_tile = (nb_row >= hdr.mi_row_start) && (nb_row < hdr.mi_row_end) && (nb_col >= hdr.mi_col_start) && (nb_col < hdr.mi_col_end);
+                        // add_sample: inside, written, RefFrames == [RefFrame[0], NONE]; at most 8 samples are scanned
+                        if (in_tile && mvr_written && mvr_ent.ref0 == rf0 && mvr_ent.ref1 == R_NONE && ws_n < 4'd8) begin
+                            // the candidate block's centre (aligned to its size) and the block's own, in 1/8 luma samples;
+                            // the threshold on the MV difference; the sample's (sx, sy, dx, dy) relative to the block
+                            logic [MIW-1:0] crow, ccol;
+                            logic signed [19:0] cmy, cmx, bmy, bmx, sy, sx, dy, dx;
+                            logic signed [15:0] dmr, dmc;
+                            logic [7:0] thr;
+                            logic [15:0] mvd, ws_bw, ws_bh;
+                            logic valid;
+                            logic signed [31:0] t [7];
+                            ws_found <= 1'b1;
+                            crow = nb_row & ~MIW'(srch - 6'd1); ccol = nb_col & ~MIW'(srcw - 6'd1);
+                            cmy = (20'(signed'({1'b0, crow})) * 20'sd4 + 20'(signed'({1'b0, srch})) * 20'sd2 - 20'sd1) * 20'sd8;
+                            cmx = (20'(signed'({1'b0, ccol})) * 20'sd4 + 20'(signed'({1'b0, srcw})) * 20'sd2 - 20'sd1) * 20'sd8;
+                            bmy = (20'(signed'({1'b0, br})) * 20'sd4 + 20'(signed'({1'b0, bh4})) * 20'sd2 - 20'sd1) * 20'sd8;
+                            bmx = (20'(signed'({1'b0, bc})) * 20'sd4 + 20'(signed'({1'b0, bw4})) * 20'sd2 - 20'sd1) * 20'sd8;
+                            sy = cmy - bmy; sx = cmx - bmx;
+                            dmr = 16'(mvr_ent.mv_row - 16'(mv_row)); dmc = 16'(mvr_ent.mv_col - 16'(mv_col));
+                            dy = sy + 20'(dmr); dx = sx + 20'(dmc);
+                            ws_bw = 16'(bw4) << 2; ws_bh = 16'(bh4) << 2;
+                            thr = (ws_bw > ws_bh) ? ((ws_bw < 16'd16) ? 8'd16 : (ws_bw > 16'd112) ? 8'd112 : 8'(ws_bw))
+                                              : ((ws_bh < 16'd16) ? 8'd16 : (ws_bh > 16'd112) ? 8'd112 : 8'(ws_bh));
+                            mvd = 16'(dmr[15] ? -dmr : dmr) + 16'(dmc[15] ? -dmc : dmc);
+                            valid = (mvd <= 16'(thr));
+                            // the sample's terms (zero when |sx - dx| or |sy - dy| >= LS_MV_MAX: warp_estimation skips it)
+                            if ((dmr < 16'sd256 && dmr > -16'sd256) && (dmc < 16'sd256 && dmc > -16'sd256)) begin
+                                t[0] = ls_product(16'(sx), 16'(sx)) + 32'sd8; t[1] = ls_product(16'(sx), 16'(sy)) + 32'sd4;
+                                t[2] = ls_product(16'(sy), 16'(sy)) + 32'sd8; t[3] = ls_product(16'(sx), 16'(dx)) + 32'sd8;
+                                t[4] = ls_product(16'(sy), 16'(dx)) + 32'sd4; t[5] = ls_product(16'(sx), 16'(dy)) + 32'sd4;
+                                t[6] = ls_product(16'(sy), 16'(dy)) + 32'sd8;
+                            end else for (int i = 0; i < 7; i++) t[i] = 32'sd0;
+                            ws_n <= ws_n + 4'd1;
+                            if (ws_n == 4'd0) for (int i = 0; i < 7; i++) ls_1[i] <= t[i];
+                            if (valid) begin ws_nv <= ws_nv + 4'd1; for (int i = 0; i < 7; i++) ls_v[i] <= ls_v[i] + t[i]; end
+                        end
+                        case (ws_ph)
+                            3'd0: begin
+                                if (bw4 <= srcw) begin
+                                    if ((bc & MIW'(srcw - 6'd1)) != MIW'(0)) do_tl <= 1'b0;
+                                    if (7'(srcw) - 7'(bc & MIW'(srcw - 6'd1)) > 7'(bw4)) do_tr <= 1'b0;
+                                    ws_ph <= avail_l ? 3'd2 : 3'd4; ws_i <= 6'd0;
+                                end else begin ws_i <= (bw4 < srcw) ? bw4 : srcw; ws_ph <= 3'd1; end
+                            end
+                            3'd1: ws_i <= ws_i + ((bw4 < srcw) ? bw4 : srcw);
+                            3'd2: begin
+                                if (bh4 <= srch) begin
+                                    if ((br & MIW'(srch - 6'd1)) != MIW'(0)) do_tl <= 1'b0;
+                                    ws_ph <= 3'd4;
+                                end else begin ws_i <= (bh4 < srch) ? bh4 : srch; ws_ph <= 3'd3; end
+                            end
+                            3'd3: ws_i <= ws_i + ((bh4 < srch) ? bh4 : srch);
+                            3'd4: ws_ph <= 3'd5;
+                            default: ws_ph <= 3'd6;
+                        endcase
+                        st <= S_WS;
+                    end
+                    S_MM2: begin
+                        if (ihdr.force_integer_mv || !ws_found || !ihdr.allow_warped_motion || ihdr.ref_scaled[3'(rf0 - 4'd1)]) st <= S_OBMC_GO;
+                        else st <= S_MMS_GO;
+                    end
+                    S_OBMC_GO: st <= S_OBMC_W;
+                    S_OBMC_W: if (sq_done) begin
+                        motion_mode <= sq_sym[0] ? 2'd1 : 2'd0;
+                        obmc <= '0; ob_x <= bc; ob_n <= 3'd0; ob_lim <= ob_limit(bw4); ob_i <= 3'd0;
+                        st <= sq_sym[0] ? S_OB_A : S_CT;
+                    end
+                    S_MMS_GO: st <= S_MMS_W;
+                    S_MMS_W: if (sq_done) begin
+                        motion_mode <= sq_sym[1:0];
+                        obmc <= '0; ob_x <= bc; ob_n <= 3'd0; ob_lim <= ob_limit(bw4); ob_i <= 3'd0;
+                        st <= (sq_sym[1:0] == 2'd1) ? S_OB_A : S_CT;
+                    end
+                    // ---- OBMC overlap neighbours (7.11.3.10, model obmc_neighbours): above row, then left column
+                    S_OB_A: begin
+                        if (avail_u && ob_n < ob_lim && ob_x < hdr.mi_cols && ob_x < bc + MIW'(bw4)) begin
+                            nb_row <= br - MIW'(1); nb_col <= ob_x | MIW'(1); st <= S_OB_A_W;
+                        end else begin
+                            ob_x <= br; ob_n <= 3'd0; ob_lim <= ob_limit(bh4); ob_i <= 3'd4; st <= S_OB_L;
+                        end
+                    end
+                    S_OB_A_W: st <= S_OB_A_P;
+                    S_OB_A_P: begin
+                        logic [4:0] step4;
+                        step4 = ob_step(num4x4w(mvr_ent.bsize));
+                        if (mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
+                            obmc[51 * int'(ob_i) +: 51] <= {mvr_ent.interp1, mvr_ent.interp0, mvr_ent.mv_col, mvr_ent.mv_row, mvr_ent.ref0, step4, 5'(ob_x - bc), 1'b1};
+                            ob_n <= ob_n + 3'd1; ob_i <= ob_i + 3'd1;
+                        end
+                        ob_x <= ob_x + MIW'(step4);
+                        st <= S_OB_A;
+                    end
+                    S_OB_L: begin
+                        if (avail_l && ob_n < ob_lim && ob_x < hdr.mi_rows && ob_x < br + MIW'(bh4)) begin
+                            nb_row <= ob_x | MIW'(1); nb_col <= bc - MIW'(1); st <= S_OB_L_W;
+                        end else st <= S_CT;
+                    end
+                    S_OB_L_W: st <= S_OB_L_P;
+                    S_OB_L_P: begin
+                        logic [4:0] step4;
+                        step4 = ob_step(num4x4h(mvr_ent.bsize));
+                        if (mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
+                            obmc[51 * int'(ob_i) +: 51] <= {mvr_ent.interp1, mvr_ent.interp0, mvr_ent.mv_col, mvr_ent.mv_row, mvr_ent.ref0, step4, 5'(ob_x - br), 1'b1};
+                            ob_n <= ob_n + 3'd1; ob_i <= ob_i + 3'd1;
+                        end
+                        ob_x <= ob_x + MIW'(step4);
+                        st <= S_OB_L;
+                    end
+                    // ---- read_compound_type (5.11.29)
+                    S_CT: begin
+                        comp_group_idx <= 1'b0; compound_idx <= 1'b1;
+                        if (skip_mode) begin compound_type <= 3'd2; st <= S_IF; end
+                        else if (is_comp) st <= ihdr.enable_masked_compound ? S_CGI_GO : S_CT2;
+                        else begin compound_type <= interintra ? (wedge_ii ? 3'd0 : 3'd3) : 3'd2; st <= S_IF; end
+                    end
+                    S_CGI_GO: st <= S_CGI_W;
+                    S_CGI_W: if (sq_done) begin comp_group_idx <= sq_sym[0]; st <= S_CT2; end
+                    S_CT2: begin
+                        if (!comp_group_idx) begin
+                            if (ihdr.enable_jnt_comp) st <= S_CIDX_GO;
+                            else begin compound_type <= 3'd2; st <= S_IF; end
+                        end else begin
+                            if (wedge_bits(bs) == 3'd0) begin compound_type <= 3'd1; st <= S_CT3; end
+                            else st <= S_CTYPE_GO;
+                        end
+                    end
+                    S_CIDX_GO: st <= S_CIDX_W;
+                    S_CIDX_W: if (sq_done) begin compound_idx <= sq_sym[0]; compound_type <= sq_sym[0] ? 3'd2 : 3'd4; st <= S_IF; end
+                    S_CTYPE_GO: st <= S_CTYPE_W;
+                    S_CTYPE_W: if (sq_done) begin compound_type <= {2'd0, sq_sym[0]}; st <= S_CT3; end
+                    S_CT3: begin
+                        if (compound_type == 3'd0) st <= S_WIDX2_GO;                                            // COMPOUND_WEDGE
+                        else begin lit_n <= 4'd1; lit_val <= '0; lit_ret <= S_MASK_W; st <= S_LIT; end          // COMPOUND_DIFFWTD
+                    end
+                    S_WIDX2_GO: st <= S_WIDX2_W;
+                    S_WIDX2_W: if (sq_done) begin wedge_idx <= sq_sym; lit_n <= 4'd1; lit_val <= '0; lit_ret <= S_WSGN_W; st <= S_LIT; end
+                    S_WSGN_W: begin wedge_sign <= lit_val[0]; st <= S_IF; end
+                    S_MASK_W: begin mask_type <= lit_val[0]; st <= S_IF; end
+                    // ---- interp_filter (5.11.23 tail)
+                    S_IF: begin
+                        if (ihdr.interp_filter == 3'd4) begin interp_d <= 1'b0; st <= S_IF_D; end
+                        else begin interp[0] <= ihdr.interp_filter[1:0]; interp[1] <= ihdr.interp_filter[1:0]; st <= S_TXD; end
+                    end
+                    S_IF_D: begin
+                        if (needs_if) st <= S_IF_GO;
+                        else begin
+                            interp[interp_d] <= 2'd0;
+                            if (ihdr.enable_dual_filter && !interp_d) interp_d <= 1'b1; else st <= S_IF_END;
+                        end
+                    end
+                    S_IF_GO: st <= S_IF_W;
+                    S_IF_W: if (sq_done) begin
+                        interp[interp_d] <= sq_sym[1:0];
+                        if (ihdr.enable_dual_filter && !interp_d) begin interp_d <= 1'b1; st <= S_IF_D; end else st <= S_IF_END;
+                    end
+                    S_IF_END: begin
+                        if (!ihdr.enable_dual_filter) interp[1] <= interp[0];
+                        st <= S_TXD;
+                    end
+                    default: st <= S_IDLE;
+                endcase
+            end else case (st)
                 S_IDLE: if (start) begin
                     br <= r; bc <= c; bs <= bsize;
                     bw4 <= num4x4w(bsize); bh4 <= num4x4h(bsize); bwp <= blk_w(bsize); bhp <= blk_h(bsize);
@@ -820,57 +1187,6 @@ module blk_syntax
                     hc <= has_chroma;
                     if (inter_frm) st <= S_NBA;
                     else st <= hdr.seg_preskip ? (hdr.seg_enabled ? S_SEG_A : S_SKIP) : S_SKIP;
-                end
-                // ---- inter frame: the two neighbours' motion info (contexts), then inter_frame_mode_info
-                S_NBA: st <= S_NBA_W;
-                S_NBA_W: begin a_ent <= mvr_ent; a_ok <= avail_u && mvr_written; st <= S_NBL; end
-                S_NBL: st <= S_NBL_W;
-                S_NBL_W: begin l_ent <= mvr_ent; l_ok <= avail_l && mvr_written; seg_pre <= 1'b1; st <= S_ISEG; end
-                // inter_segment_id(preSkip = seg_pre) (5.11.8)
-                S_ISEG: begin
-                    if (!hdr.seg_enabled) begin seg <= 3'd0; lossless <= hdr.lossless[0]; st <= seg_pre ? S_SKM : S_CDEF; end
-                    else if (!ihdr.seg_update_map) begin sp_mode <= 1'b0; st <= S_SP_RD; end
-                    else if (seg_pre && !hdr.seg_preskip) begin seg <= 3'd0; st <= S_SKM; end
-                    else if (!seg_pre && skip) begin seg_pred_sym <= 1'b0; seg_ret <= S_CDEF; st <= S_SEG_B; end
-                    else if (ihdr.seg_temporal_update) begin sp_mode <= 1'b1; st <= S_SP_RD; end
-                    else begin seg_ret <= seg_pre ? S_SKM : S_CDEF; st <= S_SEG_B; end
-                    // get_segment_id scan setup (used by the two band paths)
-                    sp_min <= 3'd7; sp_y <= 6'd0;
-                    sp_xmis <= (MIW'(bw4) < hdr.mi_cols - bc) ? bw4 : 6'(hdr.mi_cols - bc);
-                    sp_ymis <= (MIW'(bh4) < hdr.mi_rows - br) ? bh4 : 6'(hdr.mi_rows - br);
-                    sp_w0 <= bc[MIW-1:4]; sp_w <= bc[MIW-1:4];
-                    sp_w_end <= (MIW-4)'((bc + ((MIW'(bw4) < hdr.mi_cols - bc) ? MIW'(bw4) : hdr.mi_cols - bc) - MIW'(1)) >> 4);
-                end
-                S_SP_RD: st <= S_SP_W;
-                S_SP_W: begin
-                    if (sp_word_min < sp_min) sp_min <= sp_word_min;
-                    if (sp_w < sp_w_end) begin sp_w <= sp_w + 1'b1; st <= S_SP_RD; end
-                    else if (sp_y + 6'd1 < sp_ymis) begin sp_y <= sp_y + 6'd1; sp_w <= sp_w0; st <= S_SP_RD; end
-                    else st <= S_SP_END;
-                end
-                S_SP_END: begin
-                    if (!sp_mode) begin seg <= sp_min; lossless <= hdr.lossless[sp_min]; st <= seg_pre ? S_SKM : S_CDEF; end
-                    else st <= S_SEGP_GO;
-                end
-                S_SEGP_GO: st <= S_SEGP_W;
-                S_SEGP_W: if (sq_done) begin
-                    seg_pred_sym <= sq_sym[0];
-                    if (sq_sym[0]) begin seg <= sp_min; lossless <= hdr.lossless[sp_min]; st <= seg_pre ? S_SKM : S_CDEF; end
-                    else begin seg_ret <= seg_pre ? S_SKM : S_CDEF; st <= S_SEG_B; end
-                end
-                // read_skip_mode (5.11.10)
-                S_SKM: begin
-                    if ((hdr.seg_enabled && (hdr.seg_skip_en[seg] || ihdr.seg_ref_en[seg] || ihdr.seg_globalmv_en[seg])) ||
-                        !ihdr.skip_mode_present || bwp < 8'd8 || bhp < 8'd8) begin skip_mode <= 1'b0; st <= S_SKIP; end
-                    else st <= S_SKM_GO;
-                end
-                S_SKM_GO: st <= S_SKM_W;
-                S_SKM_W: if (sq_done) begin
-                    skip_mode <= sq_sym[0];
-                    if (sq_sym[0]) begin
-                        skip <= 1'b1;
-                        if (!hdr.seg_preskip) begin seg_pre <= 1'b0; st <= S_ISEG; end else st <= S_CDEF;
-                    end else st <= S_SKIP;
                 end
                 // ---- segment id before skip (SegIdPreSkip)
                 S_SEG_A: st <= S_SEG_A_W;
@@ -995,311 +1311,6 @@ module blk_syntax
                 end
                 // ---- use_intrabc (only when allow_intrabc; a set flag means an intrabc block, which is not implemented)
                 S_IBC: st <= inter_frm ? S_ISI : (hdr.allow_intrabc ? S_IBC_GO : S_YMODE);
-                // ---- read_is_inter (5.11.20)
-                S_ISI: begin
-                    read_deltas <= 1'b0;
-                    if (skip_mode) begin is_inter_b <= 1'b1; st <= S_RF; end
-                    else if (hdr.seg_enabled && ihdr.seg_ref_en[seg]) begin
-                        is_inter_b <= (ihdr.seg_ref_data[3 * seg +: 3] != 3'd0); st <= (ihdr.seg_ref_data[3 * seg +: 3] != 3'd0) ? S_RF : S_YMODE;
-                    end
-                    else if (hdr.seg_enabled && ihdr.seg_globalmv_en[seg]) begin is_inter_b <= 1'b1; st <= S_RF; end
-                    else st <= S_ISI_GO;
-                end
-                S_ISI_GO: st <= S_ISI_W;
-                S_ISI_W: if (sq_done) begin is_inter_b <= sq_sym[0]; st <= sq_sym[0] ? S_RF : S_YMODE; end
-                // ---- read_ref_frames (5.11.25): one symbol per step of the decision tree
-                S_RF: begin
-                    rf1 <= R_NONE;
-                    if (skip_mode) begin rf0 <= {1'b0, ihdr.skip_mode_frame0}; rf1 <= {1'b0, ihdr.skip_mode_frame1}; is_comp <= 1'b1; st <= S_MVS; end
-                    else if (hdr.seg_enabled && ihdr.seg_ref_en[seg]) begin rf0 <= {1'b0, ihdr.seg_ref_data[3 * seg +: 3]}; st <= S_MVS; end
-                    else if (hdr.seg_enabled && (hdr.seg_skip_en[seg] || ihdr.seg_globalmv_en[seg])) begin rf0 <= R_LAST; st <= S_MVS; end
-                    else begin rf_step <= (ihdr.reference_select && bw4 >= 6'd2 && bh4 >= 6'd2) ? 4'd0 : 4'd10; st <= S_RFS_GO; end
-                end
-                S_RFS_GO: st <= S_RFS_W;
-                S_RFS_W: if (sq_done) begin
-                    st <= S_RFS_GO;
-                    case (rf_step)
-                        4'd0: rf_step <= sq_sym[0] ? 4'd1 : 4'd10;                                                   // comp_mode
-                        4'd1: rf_step <= sq_sym[0] ? 4'd5 : 4'd2;                                                    // comp_ref_type (0 = UNIDIR)
-                        4'd2: if (sq_sym[0]) begin rf0 <= R_BWDREF; rf1 <= R_ALTREF; is_comp <= 1'b1; st <= S_MVS; end else rf_step <= 4'd3;
-                        4'd3: if (sq_sym[0]) rf_step <= 4'd4; else begin rf0 <= R_LAST; rf1 <= R_LAST2; is_comp <= 1'b1; st <= S_MVS; end
-                        4'd4: begin rf0 <= R_LAST; rf1 <= sq_sym[0] ? R_GOLDEN : R_LAST3; is_comp <= 1'b1; st <= S_MVS; end
-                        4'd5: rf_step <= sq_sym[0] ? 4'd7 : 4'd6;                                                    // comp_ref
-                        4'd6: begin rf0 <= sq_sym[0] ? R_LAST2 : R_LAST; rf_step <= 4'd8; end
-                        4'd7: begin rf0 <= sq_sym[0] ? R_GOLDEN : R_LAST3; rf_step <= 4'd8; end
-                        4'd8: if (sq_sym[0]) begin rf1 <= R_ALTREF; is_comp <= 1'b1; st <= S_MVS; end else rf_step <= 4'd9;    // comp_bwdref
-                        4'd9: begin rf1 <= sq_sym[0] ? R_ALTREF2 : R_BWDREF; is_comp <= 1'b1; st <= S_MVS; end
-                        4'd10: rf_step <= sq_sym[0] ? 4'd11 : 4'd12;                                                 // single_ref_p1
-                        4'd11: if (sq_sym[0]) begin rf0 <= R_ALTREF; st <= S_MVS; end else rf_step <= 4'd15;        // single_ref_p2
-                        4'd12: rf_step <= sq_sym[0] ? 4'd14 : 4'd13;                                                 // single_ref_p3
-                        4'd13: begin rf0 <= sq_sym[0] ? R_LAST2 : R_LAST; st <= S_MVS; end                           // single_ref_p4
-                        4'd14: begin rf0 <= sq_sym[0] ? R_GOLDEN : R_LAST3; st <= S_MVS; end                         // single_ref_p5
-                        default: begin rf0 <= sq_sym[0] ? R_ALTREF2 : R_BWDREF; st <= S_MVS; end                     // single_ref_p6
-                    endcase
-                end
-                // ---- the mode (5.11.23 after find_mv_stack)
-                S_MODE: begin
-                    if (skip_mode) begin imode <= NEAREST_NEARESTMV; st <= S_DRL; end
-                    else if (hdr.seg_enabled && (hdr.seg_skip_en[seg] || ihdr.seg_globalmv_en[seg])) begin imode <= GLOBALMV; st <= S_DRL; end
-                    else if (is_comp) st <= S_CMODE_GO;
-                    else st <= S_NEWMV_GO;
-                end
-                S_CMODE_GO: st <= S_CMODE_W;
-                S_CMODE_W: if (sq_done) begin imode <= NEAREST_NEARESTMV + 5'(sq_sym); st <= S_DRL; end
-                S_NEWMV_GO: st <= S_NEWMV_W;
-                S_NEWMV_W: if (sq_done) begin if (sq_sym[0] == 1'b0) begin imode <= NEWMV; st <= S_DRL; end else st <= S_ZEROMV_GO; end
-                S_ZEROMV_GO: st <= S_ZEROMV_W;
-                S_ZEROMV_W: if (sq_done) begin if (sq_sym[0] == 1'b0) begin imode <= GLOBALMV; st <= S_DRL; end else st <= S_REFMV_GO; end
-                S_REFMV_GO: st <= S_REFMV_W;
-                S_REFMV_W: if (sq_done) begin imode <= sq_sym[0] ? NEARMV : NEARESTMV; st <= S_DRL; end
-                // ---- drl_mode
-                S_DRL: begin
-                    ref_mv_idx <= 2'd0;
-                    if (imode == NEWMV || imode == NEW_NEWMV) begin drl_i <= 2'd0; drl_end <= 2'd2; st <= S_DRL_IT; end
-                    else if (has_nearmv(imode)) begin ref_mv_idx <= 2'd1; drl_i <= 2'd1; drl_end <= 2'd3; st <= S_DRL_IT; end
-                    else begin mv_list <= 1'b0; st <= S_AMV; end
-                end
-                S_DRL_IT: begin
-                    if (drl_i >= drl_end) begin mv_list <= 1'b0; st <= S_AMV; end
-                    else if (mvs_n > 4'(drl_i) + 4'd1) st <= S_DRL_GO;
-                    else drl_i <= drl_i + 2'd1;
-                end
-                S_DRL_GO: st <= S_DRL_W;
-                S_DRL_W: if (sq_done) begin
-                    if (sq_sym[0] == 1'b0) begin ref_mv_idx <= drl_i; mv_list <= 1'b0; st <= S_AMV; end
-                    else begin ref_mv_idx <= drl_i + 2'd1; drl_i <= drl_i + 2'd1; st <= S_DRL_IT; end
-                end
-                // ---- assign_mv (5.11.26) for list mv_list: NEWMV reads a difference on the predicted MV
-                S_AMV: begin
-                    pr_r <= amv_r; pr_c <= amv_c;
-                    if (amode == NEWMV) st <= S_MVJ;
-                    else begin
-                        if (!mv_list) begin mv_row <= amv_r; mv_col <= amv_c; end else begin mv1_row <= amv_r; mv1_col <= amv_c; end
-                        st <= S_AMV_NEXT;
-                    end
-                end
-                S_AMV_NEXT: begin
-                    if (is_comp && !mv_list) begin mv_list <= 1'b1; st <= S_AMV; end
-                    else st <= S_II;
-                end
-                // ---- read_interintra_mode (5.11.28)
-                S_II: begin
-                    if (!skip_mode && ihdr.enable_interintra_compound && !is_comp && bs >= BLOCK_8X8 && bs <= 5'd9) st <= S_II_GO;
-                    else st <= S_MM;
-                end
-                S_II_GO: st <= S_II_W;
-                S_II_W: if (sq_done) begin interintra <= sq_sym[0]; st <= sq_sym[0] ? S_IIM_GO : S_MM; end
-                S_IIM_GO: st <= S_IIM_W;
-                S_IIM_W: if (sq_done) begin ii_mode <= sq_sym[1:0]; rf1 <= R_INTRA; st <= S_WII_GO; end
-                S_WII_GO: st <= S_WII_W;
-                S_WII_W: if (sq_done) begin wedge_ii <= sq_sym[0]; st <= sq_sym[0] ? S_WIDX_GO : S_MM; end
-                S_WIDX_GO: st <= S_WIDX_W;
-                S_WIDX_W: if (sq_done) begin wedge_idx <= sq_sym; wedge_sign <= 1'b0; st <= S_MM; end
-                // ---- read_motion_mode (5.11.27): overlappable neighbours, warp samples, then the symbol
-                S_MM: begin
-                    motion_mode <= 2'd0;
-                    if (skip_mode || !ihdr.motion_mode_switchable || bwp < 8'd8 || bhp < 8'd8 ||
-                        (!ihdr.force_integer_mv && globalmv_fam && gmt2(rf0) > 2'd1) || is_comp || rf1 == R_INTRA) st <= S_CT;
-                    else begin ov_above <= avail_u; ov_x <= bc; ov_y <= br; st <= S_OV; end
-                end
-                S_OV: begin         // has_overlappable_candidates (7.10.3): above row at odd columns, then left column at odd rows
-                    if (ov_above) begin
-                        if (ov_x < hdr.mi_cols && ov_x < bc + MIW'(bw4)) begin nb_row <= br - MIW'(1); nb_col <= ov_x | MIW'(1); st <= S_OV_W; end
-                        else ov_above <= 1'b0;
-                    end else begin
-                        if (avail_l && ov_y < hdr.mi_rows && ov_y < br + MIW'(bh4)) begin nb_row <= ov_y | MIW'(1); nb_col <= bc - MIW'(1); st <= S_OV_W; end
-                        else st <= S_CT;                                                    // none: SIMPLE
-                    end
-                end
-                S_OV_W: st <= S_OV_P;
-                S_OV_P: begin
-                    if (mvr_written && mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
-                        ws_found <= 1'b0; do_tl <= 1'b1; do_tr <= 1'b1; ws_i <= 6'd0;
-                        ws_n <= 4'd0; ws_nv <= 4'd0; for (int i = 0; i < 7; i++) begin ls_v[i] <= 32'sd0; ls_1[i] <= 32'sd0; end
-                        ws_ph <= avail_u ? 3'd0 : (avail_l ? 3'd2 : 3'd4); st <= S_WS;
-                    end
-                    else begin if (ov_above) ov_x <= ov_x + MIW'(2); else ov_y <= ov_y + MIW'(2); st <= S_OV; end
-                end
-                // find_warp_samples (7.10.4): NumSamples == 0 iff no scanned neighbour has RefFrame[0] alone
-                S_WS: begin
-                    case (ws_ph)
-                        3'd0: begin nb_row <= br - MIW'(1); nb_col <= bc; st <= S_WS_W; end
-                        3'd1: if (ws_i < bw4 && MIW'(ws_i) < hdr.mi_cols - bc) begin nb_row <= br - MIW'(1); nb_col <= bc + MIW'(ws_i); st <= S_WS_W; end
-                              else begin ws_ph <= avail_l ? 3'd2 : 3'd4; ws_i <= 6'd0; end
-                        3'd2: begin nb_row <= br; nb_col <= bc - MIW'(1); st <= S_WS_W; end
-                        3'd3: if (ws_i < bh4 && MIW'(ws_i) < hdr.mi_rows - br) begin nb_row <= br + MIW'(ws_i); nb_col <= bc - MIW'(1); st <= S_WS_W; end
-                              else ws_ph <= 3'd4;
-                        3'd4: if (do_tl) begin nb_row <= br - MIW'(1); nb_col <= bc - MIW'(1); st <= S_WS_W; end else ws_ph <= 3'd5;
-                        3'd5: if (do_tr && bw4 <= 6'd16 && bh4 <= 6'd16) begin nb_row <= br - MIW'(1); nb_col <= bc + MIW'(bw4); st <= S_WS_W; end else st <= S_MM2;
-                        default: st <= S_MM2;
-                    endcase
-                end
-                S_WS_W: st <= S_WS_P;
-                S_WS_P: begin
-                    logic [5:0] srcw, srch;
-                    logic in_tile;
-                    srcw = num4x4w(mvr_ent.bsize); srch = num4x4h(mvr_ent.bsize);
-                    // is_inside (a row / column above or left of 0 wraps to a large unsigned value and fails the end test)
-                    in_tile = (nb_row >= hdr.mi_row_start) && (nb_row < hdr.mi_row_end) && (nb_col >= hdr.mi_col_start) && (nb_col < hdr.mi_col_end);
-                    // add_sample: inside, written, RefFrames == [RefFrame[0], NONE]; at most 8 samples are scanned
-                    if (in_tile && mvr_written && mvr_ent.ref0 == rf0 && mvr_ent.ref1 == R_NONE && ws_n < 4'd8) begin
-                        // the candidate block's centre (aligned to its size) and the block's own, in 1/8 luma samples;
-                        // the threshold on the MV difference; the sample's (sx, sy, dx, dy) relative to the block
-                        logic [MIW-1:0] crow, ccol;
-                        logic signed [19:0] cmy, cmx, bmy, bmx, sy, sx, dy, dx;
-                        logic signed [15:0] dmr, dmc;
-                        logic [7:0] thr;
-                        logic [15:0] mvd, ws_bw, ws_bh;
-                        logic valid;
-                        logic signed [31:0] t [7];
-                        ws_found <= 1'b1;
-                        crow = nb_row & ~MIW'(srch - 6'd1); ccol = nb_col & ~MIW'(srcw - 6'd1);
-                        cmy = (20'(signed'({1'b0, crow})) * 20'sd4 + 20'(signed'({1'b0, srch})) * 20'sd2 - 20'sd1) * 20'sd8;
-                        cmx = (20'(signed'({1'b0, ccol})) * 20'sd4 + 20'(signed'({1'b0, srcw})) * 20'sd2 - 20'sd1) * 20'sd8;
-                        bmy = (20'(signed'({1'b0, br})) * 20'sd4 + 20'(signed'({1'b0, bh4})) * 20'sd2 - 20'sd1) * 20'sd8;
-                        bmx = (20'(signed'({1'b0, bc})) * 20'sd4 + 20'(signed'({1'b0, bw4})) * 20'sd2 - 20'sd1) * 20'sd8;
-                        sy = cmy - bmy; sx = cmx - bmx;
-                        dmr = 16'(mvr_ent.mv_row - 16'(mv_row)); dmc = 16'(mvr_ent.mv_col - 16'(mv_col));
-                        dy = sy + 20'(dmr); dx = sx + 20'(dmc);
-                        ws_bw = 16'(bw4) << 2; ws_bh = 16'(bh4) << 2;
-                        thr = (ws_bw > ws_bh) ? ((ws_bw < 16'd16) ? 8'd16 : (ws_bw > 16'd112) ? 8'd112 : 8'(ws_bw))
-                                          : ((ws_bh < 16'd16) ? 8'd16 : (ws_bh > 16'd112) ? 8'd112 : 8'(ws_bh));
-                        mvd = 16'(dmr[15] ? -dmr : dmr) + 16'(dmc[15] ? -dmc : dmc);
-                        valid = (mvd <= 16'(thr));
-                        // the sample's terms (zero when |sx - dx| or |sy - dy| >= LS_MV_MAX: warp_estimation skips it)
-                        if ((dmr < 16'sd256 && dmr > -16'sd256) && (dmc < 16'sd256 && dmc > -16'sd256)) begin
-                            t[0] = ls_product(16'(sx), 16'(sx)) + 32'sd8; t[1] = ls_product(16'(sx), 16'(sy)) + 32'sd4;
-                            t[2] = ls_product(16'(sy), 16'(sy)) + 32'sd8; t[3] = ls_product(16'(sx), 16'(dx)) + 32'sd8;
-                            t[4] = ls_product(16'(sy), 16'(dx)) + 32'sd4; t[5] = ls_product(16'(sx), 16'(dy)) + 32'sd4;
-                            t[6] = ls_product(16'(sy), 16'(dy)) + 32'sd8;
-                        end else for (int i = 0; i < 7; i++) t[i] = 32'sd0;
-                        ws_n <= ws_n + 4'd1;
-                        if (ws_n == 4'd0) for (int i = 0; i < 7; i++) ls_1[i] <= t[i];
-                        if (valid) begin ws_nv <= ws_nv + 4'd1; for (int i = 0; i < 7; i++) ls_v[i] <= ls_v[i] + t[i]; end
-                    end
-                    case (ws_ph)
-                        3'd0: begin
-                            if (bw4 <= srcw) begin
-                                if ((bc & MIW'(srcw - 6'd1)) != MIW'(0)) do_tl <= 1'b0;
-                                if (7'(srcw) - 7'(bc & MIW'(srcw - 6'd1)) > 7'(bw4)) do_tr <= 1'b0;
-                                ws_ph <= avail_l ? 3'd2 : 3'd4; ws_i <= 6'd0;
-                            end else begin ws_i <= (bw4 < srcw) ? bw4 : srcw; ws_ph <= 3'd1; end
-                        end
-                        3'd1: ws_i <= ws_i + ((bw4 < srcw) ? bw4 : srcw);
-                        3'd2: begin
-                            if (bh4 <= srch) begin
-                                if ((br & MIW'(srch - 6'd1)) != MIW'(0)) do_tl <= 1'b0;
-                                ws_ph <= 3'd4;
-                            end else begin ws_i <= (bh4 < srch) ? bh4 : srch; ws_ph <= 3'd3; end
-                        end
-                        3'd3: ws_i <= ws_i + ((bh4 < srch) ? bh4 : srch);
-                        3'd4: ws_ph <= 3'd5;
-                        default: ws_ph <= 3'd6;
-                    endcase
-                    st <= S_WS;
-                end
-                S_MM2: begin
-                    if (ihdr.force_integer_mv || !ws_found || !ihdr.allow_warped_motion || ihdr.ref_scaled[3'(rf0 - 4'd1)]) st <= S_OBMC_GO;
-                    else st <= S_MMS_GO;
-                end
-                S_OBMC_GO: st <= S_OBMC_W;
-                S_OBMC_W: if (sq_done) begin
-                    motion_mode <= sq_sym[0] ? 2'd1 : 2'd0;
-                    obmc <= '0; ob_x <= bc; ob_n <= 3'd0; ob_lim <= ob_limit(bw4); ob_i <= 3'd0;
-                    st <= sq_sym[0] ? S_OB_A : S_CT;
-                end
-                S_MMS_GO: st <= S_MMS_W;
-                S_MMS_W: if (sq_done) begin
-                    motion_mode <= sq_sym[1:0];
-                    obmc <= '0; ob_x <= bc; ob_n <= 3'd0; ob_lim <= ob_limit(bw4); ob_i <= 3'd0;
-                    st <= (sq_sym[1:0] == 2'd1) ? S_OB_A : S_CT;
-                end
-                // ---- OBMC overlap neighbours (7.11.3.10, model obmc_neighbours): above row, then left column
-                S_OB_A: begin
-                    if (avail_u && ob_n < ob_lim && ob_x < hdr.mi_cols && ob_x < bc + MIW'(bw4)) begin
-                        nb_row <= br - MIW'(1); nb_col <= ob_x | MIW'(1); st <= S_OB_A_W;
-                    end else begin
-                        ob_x <= br; ob_n <= 3'd0; ob_lim <= ob_limit(bh4); ob_i <= 3'd4; st <= S_OB_L;
-                    end
-                end
-                S_OB_A_W: st <= S_OB_A_P;
-                S_OB_A_P: begin
-                    logic [4:0] step4;
-                    step4 = ob_step(num4x4w(mvr_ent.bsize));
-                    if (mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
-                        obmc[51 * int'(ob_i) +: 51] <= {mvr_ent.interp1, mvr_ent.interp0, mvr_ent.mv_col, mvr_ent.mv_row, mvr_ent.ref0, step4, 5'(ob_x - bc), 1'b1};
-                        ob_n <= ob_n + 3'd1; ob_i <= ob_i + 3'd1;
-                    end
-                    ob_x <= ob_x + MIW'(step4);
-                    st <= S_OB_A;
-                end
-                S_OB_L: begin
-                    if (avail_l && ob_n < ob_lim && ob_x < hdr.mi_rows && ob_x < br + MIW'(bh4)) begin
-                        nb_row <= ob_x | MIW'(1); nb_col <= bc - MIW'(1); st <= S_OB_L_W;
-                    end else st <= S_CT;
-                end
-                S_OB_L_W: st <= S_OB_L_P;
-                S_OB_L_P: begin
-                    logic [4:0] step4;
-                    step4 = ob_step(num4x4h(mvr_ent.bsize));
-                    if (mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
-                        obmc[51 * int'(ob_i) +: 51] <= {mvr_ent.interp1, mvr_ent.interp0, mvr_ent.mv_col, mvr_ent.mv_row, mvr_ent.ref0, step4, 5'(ob_x - br), 1'b1};
-                        ob_n <= ob_n + 3'd1; ob_i <= ob_i + 3'd1;
-                    end
-                    ob_x <= ob_x + MIW'(step4);
-                    st <= S_OB_L;
-                end
-                // ---- read_compound_type (5.11.29)
-                S_CT: begin
-                    comp_group_idx <= 1'b0; compound_idx <= 1'b1;
-                    if (skip_mode) begin compound_type <= 3'd2; st <= S_IF; end
-                    else if (is_comp) st <= ihdr.enable_masked_compound ? S_CGI_GO : S_CT2;
-                    else begin compound_type <= interintra ? (wedge_ii ? 3'd0 : 3'd3) : 3'd2; st <= S_IF; end
-                end
-                S_CGI_GO: st <= S_CGI_W;
-                S_CGI_W: if (sq_done) begin comp_group_idx <= sq_sym[0]; st <= S_CT2; end
-                S_CT2: begin
-                    if (!comp_group_idx) begin
-                        if (ihdr.enable_jnt_comp) st <= S_CIDX_GO;
-                        else begin compound_type <= 3'd2; st <= S_IF; end
-                    end else begin
-                        if (wedge_bits(bs) == 3'd0) begin compound_type <= 3'd1; st <= S_CT3; end
-                        else st <= S_CTYPE_GO;
-                    end
-                end
-                S_CIDX_GO: st <= S_CIDX_W;
-                S_CIDX_W: if (sq_done) begin compound_idx <= sq_sym[0]; compound_type <= sq_sym[0] ? 3'd2 : 3'd4; st <= S_IF; end
-                S_CTYPE_GO: st <= S_CTYPE_W;
-                S_CTYPE_W: if (sq_done) begin compound_type <= {2'd0, sq_sym[0]}; st <= S_CT3; end
-                S_CT3: begin
-                    if (compound_type == 3'd0) st <= S_WIDX2_GO;                                            // COMPOUND_WEDGE
-                    else begin lit_n <= 4'd1; lit_val <= '0; lit_ret <= S_MASK_W; st <= S_LIT; end          // COMPOUND_DIFFWTD
-                end
-                S_WIDX2_GO: st <= S_WIDX2_W;
-                S_WIDX2_W: if (sq_done) begin wedge_idx <= sq_sym; lit_n <= 4'd1; lit_val <= '0; lit_ret <= S_WSGN_W; st <= S_LIT; end
-                S_WSGN_W: begin wedge_sign <= lit_val[0]; st <= S_IF; end
-                S_MASK_W: begin mask_type <= lit_val[0]; st <= S_IF; end
-                // ---- interp_filter (5.11.23 tail)
-                S_IF: begin
-                    if (ihdr.interp_filter == 3'd4) begin interp_d <= 1'b0; st <= S_IF_D; end
-                    else begin interp[0] <= ihdr.interp_filter[1:0]; interp[1] <= ihdr.interp_filter[1:0]; st <= S_TXD; end
-                end
-                S_IF_D: begin
-                    if (needs_if) st <= S_IF_GO;
-                    else begin
-                        interp[interp_d] <= 2'd0;
-                        if (ihdr.enable_dual_filter && !interp_d) interp_d <= 1'b1; else st <= S_IF_END;
-                    end
-                end
-                S_IF_GO: st <= S_IF_W;
-                S_IF_W: if (sq_done) begin
-                    interp[interp_d] <= sq_sym[1:0];
-                    if (ihdr.enable_dual_filter && !interp_d) begin interp_d <= 1'b1; st <= S_IF_D; end else st <= S_IF_END;
-                end
-                S_IF_END: begin
-                    if (!ihdr.enable_dual_filter) interp[1] <= interp[0];
-                    st <= S_TXD;
-                end
                 S_IBC_GO: st <= S_IBC_W;
                 S_IBC_W: if (sq_done) begin
                     if (sq_sym[0]) begin use_ibc <= 1'b1; read_deltas <= 1'b0; interp[0] <= 2'd3; interp[1] <= 2'd3; st <= S_MVS; end   // intrabc: BILINEAR

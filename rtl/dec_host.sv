@@ -502,21 +502,22 @@ module dec_host
                     10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; if (w_d[31]) rb_en <= 1'b1; else def_we <= 1'b1; end
                     10'h060: dma_cfg <= strb(dma_cfg, w_d, w_s);                                              // 0x180
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
-                    10'h0C0: mf_addr_r <= strb(mf_addr_r, w_d, w_s);                                           // 0x300
-                    10'h0C1: begin mf_wd <= w_d; mf_we <= 1'b1; end                                            // 0x304
-                    10'h0C2: sp_addr_r <= strb(sp_addr_r, w_d, w_s);                                           // 0x308
-                    10'h0C3: sp_d0 <= strb(sp_d0, w_d, w_s);                                                   // 0x30C
-                    10'h0C4: begin sp_d1 <= w_d[15:0]; sp_we <= 1'b1; end                                      // 0x310
-                    10'h180: ref_slot_r <= 21'(strb({11'd0, ref_slot_r}, w_d, w_s));                              // 0x600 (no select on a function call: Vivado Synth 8-12513)
-                    10'h181: ref_cfg_r <= strb(ref_cfg_r, w_d, w_s);                                           // 0x604
+                    // 0x300 .. 0x310: the inter frame bands (motion field, previous segment ids); no-ops at INTER = 0
+                    10'h0C0: if (INTER != 0) mf_addr_r <= strb(mf_addr_r, w_d, w_s);                          // 0x300
+                    10'h0C1: if (INTER != 0) begin mf_wd <= w_d; mf_we <= 1'b1; end                           // 0x304
+                    10'h0C2: if (INTER != 0) sp_addr_r <= strb(sp_addr_r, w_d, w_s);                          // 0x308
+                    10'h0C3: if (INTER != 0) sp_d0 <= strb(sp_d0, w_d, w_s);                                  // 0x30C
+                    10'h0C4: if (INTER != 0) begin sp_d1 <= w_d[15:0]; sp_we <= 1'b1; end                     // 0x310
+                    10'h180: if (INTER != 0) ref_slot_r <= 21'(strb({11'd0, ref_slot_r}, w_d, w_s));             // 0x600 (no select on a function call: Vivado Synth 8-12513)
+                    10'h181: if (INTER != 0) ref_cfg_r <= strb(ref_cfg_r, w_d, w_s);                          // 0x604
                     default: begin
                         if (wi[9:3] == 7'h02)        def_w[wi[2:0]] <= strb(def_w[wi[2:0]], w_d, w_s);       // 0x040
                         else if (wi[9:4] == 6'h02)   hdr_w[wi[3:0]] <= strb(hdr_w[wi[3:0]], w_d, w_s);       // 0x080
                         else if (wi[9:4] == 6'h03)   rh_w[wi[3:0]]  <= strb(rh_w[wi[3:0]], w_d, w_s);        // 0x0C0
                         else if (wi[9:4] == 6'h04)   lh_w[wi[3:0]]  <= strb(lh_w[wi[3:0]], w_d, w_s);        // 0x100
                         else if (wi[9:4] == 6'h05)   ch_w[wi[3:0]]  <= strb(ch_w[wi[3:0]], w_d, w_s);        // 0x140
-                        else if (wi[9:6] == 4'h2)    ih_w[wi[5:0]]  <= strb(ih_w[wi[5:0]], w_d, w_s);        // 0x200
-                        else if (wi[9:7] == 3'b010) begin                                                       // 0x400..0x5FC: the reference slot table
+                        else if (wi[9:6] == 4'h2) begin if (INTER != 0) ih_w[wi[5:0]] <= strb(ih_w[wi[5:0]], w_d, w_s); end   // 0x200: inter header window (no-op at INTER = 0)
+                        else if (INTER != 0 && wi[9:7] == 3'b010) begin                                         // 0x400..0x5FC: the reference slot table
                             if (wi[3:2] != 2'd3) begin
                                 case (wi[1:0])
                                     2'd0: rs_base[wi[6:4]][wi[3:2]][31:0]  <= strb(rs_base[wi[6:4]][wi[3:2]][31:0], w_d, w_s);

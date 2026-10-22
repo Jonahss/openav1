@@ -185,11 +185,17 @@ module tile_syntax
                                               .w_data(mvm_data), .busy(mvm_busy), .clr(mvm_clr), .clr_row(sb_r), .clr_n(sb4),
                                               .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
     logic [2:0] mf_ref; logic [MIW-2:0] mf_y8, mf_x8; logic mf_valid; logic signed [15:0] mf_row, mf_col;
-    mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_ref(mf_wref), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
-                                                  .w_row(mf_wrow), .w_col(mf_wcol), .rd_ref(mf_ref), .rd_y8(mf_y8), .rd_x8(mf_x8),
-                                                  .rd_valid(mf_valid), .rd_row(mf_row), .rd_col(mf_col));
     logic [MIW-1:0] sp_row; logic [MIW-5:0] sp_wc; logic [47:0] sp_data;
-    seg_band #(.SPL2R(SPL2R), .SPL2W(SPL2W)) u_sp (.clk, .we(sp_we), .w_row(sp_wrow), .w_wc(sp_wwc), .w_data(sp_wdata), .rd_row(sp_row), .rd_wc(sp_wc), .rd_data(sp_data));
+    // the motion field (temporal MV candidates) and the previous segment ids serve inter frames only: the
+    // intra-only build (INTER = 0) leaves both bands out
+    generate if (INTER != 0) begin : g_bands
+        mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_ref(mf_wref), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
+                                                      .w_row(mf_wrow), .w_col(mf_wcol), .rd_ref(mf_ref), .rd_y8(mf_y8), .rd_x8(mf_x8),
+                                                      .rd_valid(mf_valid), .rd_row(mf_row), .rd_col(mf_col));
+        seg_band #(.SPL2R(SPL2R), .SPL2W(SPL2W)) u_sp (.clk, .we(sp_we), .w_row(sp_wrow), .w_wc(sp_wwc), .w_data(sp_wdata), .rd_row(sp_row), .rd_wc(sp_wc), .rd_data(sp_data));
+    end else begin : g_nobands
+        assign mf_valid = 1'b0; assign mf_row = 16'sd0; assign mf_col = 16'sd0; assign sp_data = 48'd0;
+    end endgenerate
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     tx_rec_t b_tx;
     always_comb begin tx_rec = b_tx; tx_rec.slot = q_slot_w; end
