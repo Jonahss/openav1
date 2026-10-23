@@ -26,6 +26,11 @@ add_files -norecurse $::env(U200_SOURCES)
 set_property file_type SystemVerilog [get_files -filter {NAME =~ *.sv}]
 set_property file_type Verilog [get_files -filter {NAME =~ *_v.v}]
 add_files -fileset constrs_1 -norecurse $root/fpga/u200/sys.xdc
+if {[info exists ::env(U200_PBLOCK)] && $::env(U200_PBLOCK) eq "1"} {
+    add_files -fileset constrs_1 -norecurse $root/fpga/u200/pcie_pblock.xdc
+    set_property USED_IN {implementation} [get_files $root/fpga/u200/pcie_pblock.xdc]
+    puts "placement: XDMA kept in the PCIe clock regions (pcie_pblock.xdc)"
+}
 update_compile_order -fileset sources_1
 
 # ---------------------------------------------------------------- the block design

@@ -13,7 +13,10 @@
 #                         (only meaningful with a whole-picture memory: FRAME_URAM leaves fb1 / fb2 out)
 #   U200_DDR=1            which of the card's four DDR4 banks holds the pictures (1 = the bank in the PCIe SLR)
 #   U200_BOARD_REPO=~/vivado-dl/boards   directory holding au200/<ver>/ (AMD's au200_board_files zip, unpacked)
-#   U200_STRATEGY=        an implementation strategy for a timing-tight build
+#   U200_STRATEGY=        an implementation strategy for a timing-tight build (Performance_ExtraTimingOpt closed the
+#                         decoder at 100 MHz on 2026-10-23; 80 MHz closes under the default strategy)
+#   U200_PBLOCK=0         1: keep XDMA in the PCIe clock regions (fpga/u200/pcie_pblock.xdc), for the 100 MHz builds
+#                         whose only misses were the PCIe core's 500 MHz paths into the hard block
 # Output in ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/u200-<tag>/: the Vivado project (proj/), impl_*.rpt, and
 # sys_wrapper.bit for JTAG programming (fpga/u200/program.sh) or sys_wrapper.mcs for the configuration flash.
 set -euo pipefail
@@ -45,7 +48,7 @@ export U200_SOURCES=$sources
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): the runs execute in
 # proj/u200.runs/<run>/, so proj/rtl must be the rtl directory
 mkdir -p "$out/proj"; ln -sfn "$root/rtl" "$out/proj/rtl"
-echo "u200 build $tag at $U200_MHZ MHz (FBX $U200_FBX FBY $U200_FBY WIN $U200_WIN INTER $U200_INTER CORE $U200_CORE DDR bank $U200_DDR) -> $out"
+echo "u200 build $tag at $U200_MHZ MHz (FBX $U200_FBX FBY $U200_FBY WIN $U200_WIN INTER $U200_INTER CORE $U200_CORE DDR bank $U200_DDR${U200_STRATEGY:+ strategy $U200_STRATEGY}${U200_PBLOCK:+ pblock $U200_PBLOCK}) -> $out"
 cd "$out/work"
 vivado -mode batch -nojournal -log "$out/vivado.log" -source "$here/build.tcl"
 grep -q BUILD_DONE "$out/vivado.log" || { echo "build failed, see $out/vivado.log" >&2; exit 1; }

@@ -7,8 +7,14 @@ smartconnects the rest), 198.5 BRAM; every board pin as the board file says, PCI
 findings: the MMCM VCO came out at 1600.6 MHz (DRC AVAL-46: the controller's "100 MHz" is 100.04, since DDR4-2400
 runs the 300 MHz input at 300.12), fixed by capping the VCO search at 1550; and the decoder clock missed setup by
 0.224 ns (100 endpoints, the transform engine's `l_log2h -> DSP -> itx_row` path, 19-21 levels, 72 % routing),
-hold met. Builds 2 (100 MHz, `Performance_ExtraTimingOpt`) and 3 (80 MHz) are running to pick the day-one
-bitstream. Everything below the host wrapper is the KV260 design unchanged: the same
+hold met. Build 2 (100 MHz, `Performance_ExtraTimingOpt`, VCO 1400): the decoder closes (clk +0.151 ns,
+clk2x +0.456) and the only misses are inside XDMA, 44 endpoints at -0.047 ns on the PCIe core's 500 MHz clock,
+zero logic levels, 1.9 ns of routing from the 512-bit interface registers into the PCIE40E4: placement crowding
+at the hard block, being tried with `U200_PBLOCK=1` (XDMA kept in the PCIe clock regions). Build 3 (80 MHz,
+default strategy, VCO 800): **everything met** (WNS +0.031 ns, decoder clock +1.6 ns, pulse widths clean),
+185.8k LUT, routed with no errors: **the day-one bitstream**, `~/openav1-synth/u200-u200c80-4fd1001/sys_wrapper.bit`
+on atium, the same 80 MHz decoder clock the Kria runs at. 100 MHz and up is a follow-up once the host path is
+proven on the card. Everything below the host wrapper is the KV260 design unchanged: the same
 `dec_host` register file, the same host protocol (`tb/host_regs.py`), the same driver (`tools/kv260/decode.py`)
 with one new backend. Day one on the card is: program, see the PCIe function, read the ID register, decode the
 1080p clip bit-exact through the window build at 100 MHz. The inter decoder comes after that (below).
