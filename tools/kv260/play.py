@@ -49,8 +49,13 @@ def main():
     ap.add_argument("--max-bad", type=int, default=16)
     ap.add_argument("--poll-timeout", type=float, default=30.0, help="seconds per poll")
     ap.add_argument("--dump", help="write every checked read as '<addr> <value> <expected>' to this file")
+    ap.add_argument("--xdma", type=int, metavar="N", help="Alveo U200: the register file through /dev/xdmaN_user instead of /dev/mem")
     args = ap.parse_args()
-    r = Regs(args.base)
+    if args.xdma is not None:
+        from xdma import XdmaRegs
+        r = XdmaRegs(args.xdma)
+    else:
+        r = Regs(args.base)
     ops = [ln.split() for ln in open(args.transcript) if ln.strip()]
     bad = []
     dump = open(args.dump, "w") if args.dump else None

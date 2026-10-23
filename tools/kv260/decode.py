@@ -169,11 +169,17 @@ def main():
     ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma --pipe")
     ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
     ap.add_argument("--dma-size", type=lambda x: int(x, 0), default=256 << 20)
+    ap.add_argument("--xdma", type=int, metavar="N", help="Alveo U200 host path: registers through /dev/xdmaN_user, pictures in the card's DDR4 "
+                    "through /dev/xdmaN_c2h_0 (--dma-base is then a card address, default 0x10000000); implies --dma")
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     args = ap.parse_args()
     if args.window:
         args.dma = True; args.pipe = True
+    if args.xdma is not None:
+        args.dma = True
+        if args.dma_base is None:
+            args.dma_base = 0x1000_0000
 
     d = op.Decoder()
     data = Path(args.stream).read_bytes()
@@ -196,21 +202,33 @@ def main():
         if ref_off != len(ref):
             print(f"warning: reference holds {len(ref)} bytes, the stream's shown frames need {ref_off}")
 
-    regs = Regs(args.base)
     fast = None
-    if not args.slow and not args.single and (Path(__file__).resolve().parent / "libhostregs.so").exists():
-        from hostlib import HostLib
-        fast = HostLib(args.base)
+    have_lib = not args.slow and not args.single and (Path(__file__).resolve().parent / "libhostregs.so").exists()
+    if args.xdma is not None:
+        from xdma import XdmaRegs, XdmaStage
+        regs = XdmaRegs(args.xdma)
+        if have_lib:
+            from hostlib import HostLib
+            fast = HostLib(0, dev=regs.path)
+    else:
+        regs = Regs(args.base)
+        if have_lib:
+            from hostlib import HostLib
+            fast = HostLib(args.base)
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
     stage = None
-    if args.dma and args.dma_base is not None:
+    if args.xdma is not None:
+        stage = XdmaStage(args.xdma, args.dma_base, args.dma_size)
+        print(f"DMA target: card DDR4, {stage.stage_len} bytes at 0x{stage.base:x} (/dev/xdma{args.xdma}_c2h_0)")
+    elif args.dma and args.dma_base is not None:
         stage = MemStage(args.dma_base, args.dma_size)
         print(f"DMA target: reserved memory, {stage.stage_len} bytes at 0x{stage.base:x}")
     elif args.dma:
         stage = FbStage()
         print(f"framebuffer {stage.xres}x{stage.yres} ({stage.bpp} bpp) at 0x{stage.smem_start:x}; staging {stage.stage_len} bytes at 0x{stage.base:x}")
     cfg = host.identify()
-    print(f"decoder at 0x{args.base:08x} ({'libhostregs.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']}; "
+    where = regs.path if args.xdma is not None else f"0x{args.base:08x}"
+    print(f"decoder at {where} ({'libhostregs.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']}; "
           f"{len(d.frames)} coded frames, {len(shown)} shown")
     n_bad_frames = 0
     t_all = time.monotonic()

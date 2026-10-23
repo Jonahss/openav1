@@ -33,6 +33,18 @@ int hl_open(uint64_t base) {
     return 0;
 }
 
+// the register file through another device node: the XDMA driver's user BAR (/dev/xdma0_user) on the Alveo U200,
+// mapped at offset off (the AXI-Lite address of the register file in the BAR; 0 in fpga/u200/build.tcl)
+int hl_open_dev(const char *path, uint64_t off) {
+    int fd = open(path, O_RDWR | O_SYNC);
+    if (fd < 0) return -1;
+    void *m = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)off);
+    close(fd);
+    if (m == MAP_FAILED) return -2;
+    regs = (volatile uint32_t *)m;
+    return 0;
+}
+
 void hl_wr(uint32_t a, uint32_t v) { wr(a, v); }
 uint32_t hl_rd(uint32_t a) { return rd(a); }
 
