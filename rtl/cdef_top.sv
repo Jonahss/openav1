@@ -264,23 +264,35 @@ module cdef_top
     logic [5:0] cpi;
 
     // ---------------------------------------------------------------- memory ports
+    // The write port is registered: the filter output (window registers -> direction / strengths -> out4) is 60+ logic
+    // levels, which went straight into the frame memory's write capture until 2026-10-24 (U200 inter build: -8.4 ns at
+    // 100 MHz; CDEF was a null stub on the K26). A write issued in the FSM's cycle t lands at the port in t + 1; done and
+    // busy follow one cycle later so a consumer that starts on done reads the landed data.
+    logic        dst_we_c, dst4_we_c; logic [1:0] dst_plane_c, dst4_plane_c; logic [FBX-1:0] dst_x_c, dst4_x_c; logic [FBY-1:0] dst_y_c, dst4_y_c;
+    logic [11:0] dst_wdata_c; logic [47:0] dst4_wdata_c; logic done_i, busy_q;
     always_comb begin
         src_re = 1'b0; src_plane = fplane; src_x = FBX'(wx); src_y = FBY'(wy);
-        dst_we = 1'b0; dst_plane = fplane; dst_x = FBX'(px0 + PXW'(pj)); dst_y = FBY'(py0 + PXW'(pi)); dst_wdata = 12'd0;
-        dst4_we = 1'b0; dst4_plane = fplane; dst4_x = FBX'(px0 + PXW'(cpi[2:0])); dst4_y = FBY'(py0 + PXW'(cpi[5:3])); dst4_wdata = src_rdata4;
+        dst_we_c = 1'b0; dst_plane_c = fplane; dst_x_c = FBX'(px0 + PXW'(pj)); dst_y_c = FBY'(py0 + PXW'(pi)); dst_wdata_c = 12'd0;
+        dst4_we_c = 1'b0; dst4_plane_c = fplane; dst4_x_c = FBX'(px0 + PXW'(cpi[2:0])); dst4_y_c = FBY'(py0 + PXW'(cpi[5:3])); dst4_wdata_c = src_rdata4;
         case (st)
             C_WIN: src_re = w_row_in;                    // absent columns of a present row are masked at landing
-            C_PIX: begin dst4_we = 1'b1; dst4_x = FBX'(px0 + PXW'(pj)); dst4_y = FBY'(py0 + PXW'(pi)); dst4_wdata = out4; end
+            C_PIX: begin dst4_we_c = 1'b1; dst4_x_c = FBX'(px0 + PXW'(pj)); dst4_y_c = FBY'(py0 + PXW'(pi)); dst4_wdata_c = out4; end
             C_COPY_RD: begin src_re = 1'b1; src_x = FBX'(px0 + PXW'(cpi[2:0])); src_y = FBY'(py0 + PXW'(cpi[5:3])); end
-            C_COPY_WR: dst4_we = 1'b1;
+            C_COPY_WR: dst4_we_c = 1'b1;
             default: ;
         endcase
     end
-    assign busy = (st != C_IDLE);
+    always_ff @(posedge clk) begin
+        if (rst) begin dst_we <= 1'b0; dst4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; end
+        else begin dst_we <= dst_we_c; dst4_we <= dst4_we_c; done <= done_i; busy_q <= (st != C_IDLE); end
+        dst_plane <= dst_plane_c; dst_x <= dst_x_c; dst_y <= dst_y_c; dst_wdata <= dst_wdata_c;
+        dst4_plane <= dst4_plane_c; dst4_x <= dst4_x_c; dst4_y <= dst4_y_c; dst4_wdata <= dst4_wdata_c;
+    end
+    assign busy = (st != C_IDLE) || busy_q;
 
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
-        done <= 1'b0;
+        done_i <= 1'b0;
         if (wpend)                                       // the group issued last cycle lands: lane l -> column 4 wpg - 2 + l
             for (int l = 0; l < 4; l++) begin
                 int col;
@@ -380,7 +392,7 @@ module cdef_top
                 else begin
                     c <= MIW'(0);
                     if (r + MIW'(2) <= row_last && r + MIW'(2) < hdr.mi_rows) begin r <= r + MIW'(2); st <= C_BLK; end
-                    else begin done <= 1'b1; st <= C_IDLE; end
+                    else begin done_i <= 1'b1; st <= C_IDLE; end
                 end
             end
             default: st <= C_IDLE;

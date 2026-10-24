@@ -461,6 +461,8 @@ module lr_top
     end
 
     // ---------------------------------------------------------------- memory ports
+    logic d_we_c, d4_we_c; logic [1:0] d_plane_c; logic [FBX-1:0] d_x_c; logic [FBY-1:0] d_y_c; logic [11:0] d_wdata_c; logic [3:0] d4_be_c; logic [47:0] d4_wdata_c;
+    logic done_i, busy_q;
     logic ld_pend;                                      // a load read is in flight (lands this cycle)
     logic [PXW-1:0] ld_x;                                  // its x (aligned group of 4)
     always_comb begin
@@ -469,15 +471,22 @@ module lr_top
         // the compute phases move to the next group: output states every clock, the box phase at a group's last column
         win_shift = (st == L_COPY || st == L_WIEN || st == L_BLEND) || (st == L_AB && ax[1:0] == 2'd3);
         s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule[PXW-1:0]);
-        d_we = 1'b0; d_plane = plane; d_x = FBX'(x); d_y = FBY'(y0 + PXW'(i)); d_wdata = 12'd0;
-        d4_we = 1'b0; d4_be = out_be; d4_wdata = out4;
+        d_we_c = 1'b0; d_plane_c = plane; d_x_c = FBX'(x); d_y_c = FBY'(y0 + PXW'(i)); d_wdata_c = 12'd0;
+        d4_we_c = 1'b0; d4_be_c = out_be; d4_wdata_c = out4;
         case (st)
             L_LOAD: begin s0_re = k_rule[PXW]; s1_re = !k_rule[PXW]; end
-            L_COPY, L_WIEN, L_BLEND: d4_we = 1'b1;
+            L_COPY, L_WIEN, L_BLEND: d4_we_c = 1'b1;
             default: ;
         endcase
     end
-    assign busy = (st != L_IDLE);
+    // registered write port (the Wiener / self-guided output is ~50 logic levels; it went straight into the frame memory's
+    // write capture until 2026-10-24: U200 inter build -8.2 ns at 100 MHz); done and busy follow one cycle later
+    always_ff @(posedge clk) begin
+        if (rst) begin d_we <= 1'b0; d4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; end
+        else begin d_we <= d_we_c; d4_we <= d4_we_c; done <= done_i; busy_q <= (st != L_IDLE); end
+        d_plane <= d_plane_c; d_x <= d_x_c; d_y <= d_y_c; d_wdata <= d_wdata_c; d4_be <= d4_be_c; d4_wdata <= d4_wdata_c;
+    end
+    assign busy = (st != L_IDLE) || busy_q;
 
     // ---------------------------------------------------------------- FSM
     // a compute row starts with the window prologue: wg = the group of its first column, then the state after
@@ -485,7 +494,7 @@ module lr_top
         wg <= first_col >>> 2; pro <= 2'd0; st_after <= next; st <= L_WPRO;
     endtask
     always_ff @(posedge clk) begin
-        done <= 1'b0;
+        done_i <= 1'b0;
         ld_pend <= 1'b0;                                                  // (the landing group is written by lb_we)
         if (win_shift) wg <= wg + PXS'(1);
         if (rst) begin
@@ -565,7 +574,7 @@ module lr_top
                     st <= L_BAND;
                 end else st <= L_DONE;
             end
-            L_DONE: begin done <= 1'b1; st <= L_IDLE; end
+            L_DONE: begin done_i <= 1'b1; st <= L_IDLE; end
             default: st <= L_IDLE;
         endcase
     end
