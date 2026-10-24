@@ -58,6 +58,18 @@ Three layers, each already present in some form:
    fb0 is, `FRAME_WIN`), addressed by `row mod N` with the same ports and one-cycle latency the stages have now.
    A stage works on its row while the earlier stages work on the rows after it and the later ones on the rows
    before it; the ring depth is the number of rows in flight plus one for the hold.
+
+   **Port budget** (found 2026-10-24, the first ring simulation flushed an all-zero picture): a double-pumped
+   UltraRAM ring serves two reads and two writes per cycle, and the stages never stall or arbitrate. fb0 in the
+   simulation model has five readers (recon, LF, CDEF, LR source 0, SR) and three writers (recon, LF, SR), so the
+   UltraRAM fb0 (recon + LF) is **mirrored**: `fb0m` is written by recon and LF alongside fb0 and read by CDEF and by
+   SR or, without super-res, LR source 0 (LR asks for both sources at one position when CDEF is off, so one read
+   serves source 1 too). SR writes its upscaled deblocked rows into a third ring `fb0s` (in the model it upscales
+   fb0 in place) which LR source 0 reads under super-res and the host flushes when nothing follows (`final_buf` 3).
+   Every ring is then at most 2R + 2W: fb0 {recon, LF | recon, LF}, fb0m {CDEF, SR/LR0 | recon, LF}, fb0s {LR0 |
+   SR}, fb1 {LR1, SR | CDEF, SR}, fb2 {host | LR}. The mirror costs one more fb0-sized ring (at 4K ~100 URAMs,
+   ~370 in all of the U200's 960); the line-buffer version (step C) hands lines from stage to stage and needs
+   neither mirror nor SR ring, so nothing here is kept in silicon.
 3. **Line buffers replace the rings where memory is scarce** (silicon): when the stages are pipelined per
    superblock instead of per row (§6, step C), the rows in flight shrink to the lines each stage reaches across
    the superblock boundary (1, 7, 3+8, 3+3) plus the current superblock, and the ring of N x 64 lines becomes a
@@ -75,7 +87,9 @@ LR              r-3      (stripe offset 8: needs r-2's first lines in fb0/fb1; i
 flush -> DDR    r-3 (fb2), or r-2 (fb1) when LR is off, or r-2 (fb0) when CDEF is off too
 ```
 
-Ring depths: fb0 holds rows r .. r-3 plus the hold slot = **5**; fb1 rows r-2 .. r-3 + hold = **3**; fb2 the row
+Ring depths: fb0 holds rows r .. r-3 plus the hold slot = **5** (3 + CDEF + LR; a shallower fb0 deadlocks: recon(3)
+waits for row 0, row 0 waits for CDEF(1), CDEF(1) for LF(2), LF(2) for recon(3). Found 2026-10-24 at WIN 3 with 5
+rows; the RTL now flags such a frame unsupported instead); fb1 rows r-2 .. r-3 + hold = **3**; fb2 the row
 LR writes + the one being flushed = **2**. Each superblock row is `64 x UpscaledWidth x 1.5` samples (4:2:0; sb128
 doubles it or takes two slots). On the U200 in 4-sample URAM words:
 
@@ -155,4 +169,37 @@ the census in `docs/throughput-budget.md`.
 **D. 8-sample words** when the datapaths widen: 128-bit lanes in the rings (two URAMs side by side on the
 FPGA), 128-bit `m_axi` bursts, the fetch engine's patch buffer two words wide.
 
-Step A starts 2026-10-24.
+### Step A in detail (2026-10-23 afternoon, from the RTL as read)
+
+`dec_top`'s frame sequencer (`pipe_en`) already runs every stage per superblock row with the right lags: LF(r)
+after row r+1 is decoded, CDEF(r) after LF(r+1), SR(r) after CDEF(r+1), LR(stripe s) after CDEF / SR of the rows
+the stripe touches. What is missing is only the memory and the bookkeeping around it:
+
+1. **Rings for fb1 and fb2** (`FRAME_WIN1`, `FRAME_WIN2` parameters; `frame_mem_uram` instances where `FRAME_URAM`
+   now leaves them out): fb1 has two readers (LR source 1, SR) and two writers (CDEF, SR), fb2 one writer (LR) and
+   the host port. Depths: fb0 5, fb1 3, fb2 3 superblock rows. Plus the fb0 mirror `fb0m` (depth `FRAME_WIN`) and
+   SR's output ring `fb0s` (depth `FRAME_WIN1`, hold `hold_sr`) for the port budget (§3). DONE 2026-10-24 (`RING`
+   build = `FRAME_URAM` with `FRAME_WIN1 >= 0`): seed 7 (CDEF + LR, 10-bit) and seed 8 flush bit-exact pictures.
+2. **Slot-reuse holds per buffer**, replacing today's single `flushed_cnt` rule. Row q of a buffer is free when every
+   consumer of that buffer has passed it (and, for the flushed buffer, when its flush is done):
+   - fb0: LF past q+1 (`lf_next > q+1`), CDEF past q+1 if enabled (reads q's last lines), SR past q, LR past stripe
+     q+1 if enabled (stripe q+1 reads lines 64q+53 ..), flushed if fb0 is the final buffer.
+     Reconstruction holds superblock row R until row R-5 is free (today: until flushed).
+   - fb1: LR past stripe q+1, SR past q, flushed if fb1 is final. CDEF holds row r until row r-3 is free.
+   - fb2: flushed. LR holds stripe s until row s-3 is free (stripe s writes rows s-1 and s).
+3. **Release from the last enabled stage**: LR done with stripe s makes row s-1 final (the last stripe: all);
+   else SR done with r (both sub-passes) makes r final; else CDEF done with r; else LF done with r makes r-1
+   final (today's rule). `row_final` pulses as now; `dec_host` flushes the final buffer, which `dec_top` reports
+   (`final_buf` = 2 with LR, 1 with CDEF, else 0) so the host read port follows the flush without software help.
+4. **Tests**: `test_dec_host` at `TS_WIN=1` stops skipping CDEF / LR recordings (a `TS_CORE=1` switch keeps the
+   skip for the K26 core netlist); `test_dec_inter` learns `FRAME_WIN` (pictures compared from the flushed AXI
+   image, as the dec_host window test does, and the frame's own flush as the next frames' reference when the
+   test asks: the slot table pointing at the flush target, which is what the board will do). Then the window
+   suites, the inter suites at window geometry, OOC synthesis, netlist replays of a window recording with CDEF
+   and LR on.
+5. **Builds**: `fpga/u200/build.sh` with `U200_CORE=0 U200_INTER=1` once it fits the timing; the K26 keeps the core
+   build (its rings are the same RTL with fb1 / fb2 at depth 0... which is "left out" today: keep that path).
+
+Step A started 2026-10-23 13:00 PT; rings + port budget + `test_dec_host` at `TS_STAGE=lr` 2026-10-24; the inter
+path through `dec_host` (`tb/test_dec_host_inter.py`: bands, slot table and references from the flushed pictures,
+as the board software will do) written 2026-10-24, first runs in progress.

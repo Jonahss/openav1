@@ -7,8 +7,9 @@
 //   0x000 ID        R   32'hA71D_0001
 //   0x004 CFG       R   {8'd0, FBX[7:0], FBY[7:0], ITX_LANES[3:0], 3'd0, FRAME_URAM}
 //   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 1 pipe_en, 2 lr_from_deblocked, 3 sr_buf,
-//                       [5:4] h_buf, 8 eos (no more bytes for this tile: in_eos once the FIFO drains; cleared by
-//                       a tile start), [21:16] n_tile_cols
+//                       [5:4] h_buf (the host port's frame buffer: 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
+//                       in the RING build; a row flush reads dec_top's final_buf instead), 8 eos (no more bytes for
+//                       this tile: in_eos once the FIFO drains; cleared by a tile start), [21:16] n_tile_cols
 //   0x00C START     W   one-cycle pulses: bit 0 tile_start, 1 frame_start, 2 lf_start, 3 cdef_start, 4 sr_start,
 //                       5 lr_start (a start clears its stage's sticky done bit)
 //   0x010 STATUS    R   bit 0 tile_busy, 1 tile_done_lvl, 2 unsupported, 3 frame_busy, 4 frame_done_lvl,
@@ -69,6 +70,8 @@ module dec_host
     parameter int ITX_LANES = 2,
     parameter int FRAME_URAM = 1,
     parameter int FRAME_WIN = 0,             // the frame memory as a window of this many superblock rows (0: whole picture)
+    parameter int FRAME_WIN1 = -1,           // fb1 / fb2 rings with FRAME_URAM (dec_top; -1: left out, the core build)
+    parameter int FRAME_WIN2 = -1,
     parameter int FIFO_LW = 10,              // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
     parameter int INTER = 1                  // 0: the intra-only decoder (dec_top INTER)
 ) (
@@ -185,7 +188,9 @@ module dec_host
     logic [FBY-1:0]    h_y_m;
     logic           row_final, flush_done;
     logic [SBW-1:0] row_final_idx;
-    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .INTER(INTER)) u_dec (
+    logic [1:0]     final_buf;
+    logic           flush_rd;                                // the host port belongs to a running flush (reads the final buffer)
+    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_data,
@@ -203,7 +208,7 @@ module dec_host
         .sr_start(start[4]), .sr_buf(ctrl[3]), .sr_busy, .sr_done,
         .lr_start(start[5]), .lr_from_deblocked(ctrl[2]), .lr_busy, .lr_done_o,
         .blk_done, .blk_rec, .tx_done, .tx_rec, .lr_done, .lr_rec,
-        .h_buf(ctrl[5:4]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4, .h_ok
+        .h_buf(flush_rd ? final_buf : ctrl[5:4]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4, .h_ok, .final_buf
     );
     logic [CDF_AW-1:0] def_addr_r;
     always_comb begin
@@ -304,6 +309,7 @@ module dec_host
     logic           fl_run;                                  // the run in progress is a flush (else a software picture DMA)
     logic           fl_auto;
     assign fl_auto = dma_cfg[8];
+    assign flush_rd = dma_busy && fl_run;
     logic [39:0]    rs_base [8][3];                          // reference slot table
     logic [31:0]    rs_stride [8][3];
     logic [15:0]    rs_w [8], rs_h [8];

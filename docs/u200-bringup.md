@@ -163,3 +163,15 @@ loads reference pictures where `load_slot` would.
   connected reset's polarity).
 - `fpga/kv260/dec_host_v.v` had no `INTER` parameter while `build.tcl` set `CONFIG.INTER` on it (since 4fd1001):
   fixed here; the K26 window build from main now really builds `INTER = 0`.
+
+
+## The inter build (RING memory, 2026-10-24)
+
+`U200_CORE=0 U200_INTER=1 U200_WIN=5 U200_WIN1=3 U200_WIN2=3 fpga/u200/build.sh <tag>`: the whole decoder with every
+frame buffer on UltraRAM rings (`docs/picture-memory.md`, step A: fb0 + its mirror fb0m, SR's fb0s, fb1, fb2),
+CDEF / super-res / LR under the frame sequencer, the final picture flushed row by row to DDR and the references
+read from those flushed pictures by `ref_fetch`. Host protocol per frame (tb/test_dec_host_inter.py, the
+software's reference): reset; for inter frames the bands (`seg_map_seq`, `motion_field_seq`) and the slot table
++ REF_SLOT / REF_CFG (`ref_seq`, pointing at earlier frames' flush targets); DMA planes + AUTO at a fresh flush
+target, LH, CH (CDEF on), CTRL pipe + tile columns, START frame; the tiles with the inherited CDF rows; poll
+frame_done; poll DMA flush idle. A frame's flush target becomes its reference slots' address.

@@ -139,6 +139,20 @@ def rec_vals(th):
                 qm_level=sum((th.SegQMLevel[p][s] & 0xF) << ((p * 8 + s) * 4) for p in range(3) for s in range(8)))
 
 
+CDEF_FIELDS = [("damping", 3), ("bits", 2), ("y_str", 48), ("uv_str", 48)]   # syn_pkg::cdef_hdr_t order (MSB first)
+CH_WORDS = 4
+
+
+def cdef_vals(th):
+    return dict(damping=th.cdef_damping, bits=th.cdef_bits,
+                y_str=sum((th.cdef_y_strengths[i] & 63) << (6 * i) for i in range(8)),
+                uv_str=sum((th.cdef_uv_strengths[i] & 63) << (6 * i) for i in range(8)))
+
+
+def cdef_on(hdr):
+    return bool(hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc)
+
+
 def lf_vals(th):
     return dict(frame_width=th.FrameWidth, frame_height=th.FrameHeight,
                 level=sum((th.loop_filter_level[i] & 63) << (6 * i) for i in range(4)),
@@ -160,6 +174,7 @@ DMA_CFG_AUTO = 1 << 8                      # window builds: released superblock 
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 R_IH = 0x200                                 # ihdr_t, 64 words
 R_MF_ADDR, R_MF_DATA, R_SP_ADDR, R_SP_DATA0, R_SP_DATA1 = 0x300, 0x304, 0x308, 0x30C, 0x310   # inter frame bands
+R_SLOT, R_REF_SLOT, R_REF_CFG = 0x400, 0x600, 0x604        # reference slot table (0x40 per slot, 0x10 per plane), ref_frame_idx, fmt16
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
 START_TILE, START_FRAME, START_LF = 1, 2, 4
@@ -185,6 +200,56 @@ def dma_layout(hdr, base, visible=True):
         planes.append((base + off, stride, W, H))
         off += stride * H
     return planes, off
+
+
+def motion_field_seq(mf, mi_rows, mi_cols):
+    """MotionFieldMvs[ref][y8][x8] (seq_model; None = none) as the band's register writes: every 8x8 position of the
+    frame, holes as invalid entries."""
+    seq = []
+    for ref in range(1, 8):
+        for y8 in range(mi_rows // 2 + 1):
+            for x8 in range(mi_cols // 2 + 1):
+                mv = mf[ref][y8][x8] if (mf is not None and y8 < len(mf[ref]) and x8 < len(mf[ref][y8])) else [M.tm.MV_INVALID] * 2
+                valid = mv[0] != M.tm.MV_INVALID
+                seq.append((R_MF_ADDR, (int(valid) << 31) | ((ref - 1) << 24) | (y8 << 12) | x8))
+                seq.append((R_MF_DATA, (((mv[0] & 0xFFFF) << 16) | (mv[1] & 0xFFFF)) if valid else 0))
+    return seq
+
+
+def seg_map_seq(prev, mi_rows, mi_cols):
+    """PrevSegmentIds (None = zeros) as the band's register writes, 16 ids per word."""
+    seq = []
+    for r in range(mi_rows):
+        for wc in range((mi_cols + 15) // 16):
+            w = 0
+            if prev is not None:
+                for k in range(16):
+                    c = wc * 16 + k
+                    if c < mi_cols:
+                        w |= (prev[r][c] & 7) << (3 * k)
+            seq += [(R_SP_ADDR, (r << 16) | wc), (R_SP_DATA0, w & 0xFFFFFFFF), (R_SP_DATA1, w >> 32)]
+    return seq
+
+
+def ref_seq(ph, store, fmt16):
+    """The reference slot table (0x400: per slot and plane the picture's base / stride in DDR, per slot its size and
+    the 7.11.3.3 scale factors for this frame) and REF_SLOT / REF_CFG for the inter frame ph. store[slot] =
+    dict(planes=[(base, stride) per plane], upscaled_width, frame_height), as the flush left the pictures."""
+    seq = []
+    ref_slot = 0
+    for i in range(7):
+        slot = ph.ref_frame_idx[i]
+        ref_slot |= slot << (3 * i)
+        st = store[slot]
+        for p, (base, stride) in enumerate(st["planes"]):
+            a = R_SLOT + 0x40 * slot + 0x10 * p
+            seq += [(a, base & 0xFFFFFFFF), (a + 4, base >> 32), (a + 8, stride)]
+        xsc = ((st["upscaled_width"] << 14) + ph.FrameWidth // 2) // ph.FrameWidth
+        ysc = ((st["frame_height"] << 14) + ph.FrameHeight // 2) // ph.FrameHeight
+        seq += [(R_SLOT + 0x40 * slot + 0x30, st["upscaled_width"] | (st["frame_height"] << 16)),
+                (R_SLOT + 0x40 * slot + 0x34, xsc | (ysc << 16))]
+    seq += [(R_REF_SLOT, ref_slot), (R_REF_CFG, 1 if fmt16 else 0)]
+    return seq
 
 
 def dma_regs(hdr, base, visible=True):
@@ -259,27 +324,16 @@ class HostDecoder:
     def write_motion_field(self, mf, mi_rows, mi_cols):
         """MotionFieldMvs[ref][y8][x8] (seq_model; None = none) into the band: every 8x8 position of the frame, holes as
         invalid entries."""
-        for ref in range(1, 8):
-            for y8 in range(mi_rows // 2 + 1):
-                for x8 in range(mi_cols // 2 + 1):
-                    mv = mf[ref][y8][x8] if (mf is not None and y8 < len(mf[ref]) and x8 < len(mf[ref][y8])) else [M.tm.MV_INVALID] * 2
-                    valid = mv[0] != M.tm.MV_INVALID
-                    self.wr(R_MF_ADDR, (int(valid) << 31) | ((ref - 1) << 24) | (y8 << 12) | x8)
-                    self.wr(R_MF_DATA, (((mv[0] & 0xFFFF) << 16) | (mv[1] & 0xFFFF)) if valid else 0)
+        self.write_seq(motion_field_seq(mf, mi_rows, mi_cols))
 
     def write_seg_map(self, prev, mi_rows, mi_cols):
         """PrevSegmentIds (None = zeros) into the band, 16 ids per word."""
-        for r in range(mi_rows):
-            for wc in range((mi_cols + 15) // 16):
-                w = 0
-                if prev is not None:
-                    for k in range(16):
-                        c = wc * 16 + k
-                        if c < mi_cols:
-                            w |= (prev[r][c] & 7) << (3 * k)
-                self.wr(R_SP_ADDR, (r << 16) | wc)
-                self.wr(R_SP_DATA0, w & 0xFFFFFFFF)
-                self.wr(R_SP_DATA1, w >> 32)
+        self.write_seq(seg_map_seq(prev, mi_rows, mi_cols))
+
+    def write_refs(self, ph, store, fmt16):
+        """The reference slot table and ref_frame_idx for an inter frame: store[slot] = dict(planes=[(base, stride), ...],
+        upscaled_width, frame_height) describes the picture each slot holds (where the flush put it, docs/picture-memory.md)."""
+        self.write_seq(ref_seq(ph, store, fmt16))
 
     def read_cdf_rows(self, rows=None):
         """The tile's working CDF store (the adapted rows after a tile; only between tiles): DEF_ADDR bit 31 reads a
@@ -350,13 +404,21 @@ class HostDecoder:
         self.wr(R_CTRL, 0)
 
     # -- stages
-    def run_tile(self, th, data, tag, dec=None):
-        """Headers, CDF defaults, start, the tile bytes, end of stream; returns when the tile is decoded."""
+    def run_tile(self, th, data, tag, dec=None, rows=None):
+        """Headers, CDF rows (the defaults of base_q_idx, or rows: the inherited frame CDFs of an inter stream), start,
+        the tile bytes, end of stream; returns when the tile is decoded."""
         seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th, dec, 0)), HDR_WORDS))]
         seq += [(R_RH + 4 * i, w) for i, w in enumerate(words(pack(REC_FIELDS, rec_vals(th)), RH_WORDS))]
         seq += [(R_IH + 4 * i, w) for i, w in enumerate(words(pack(IHDR_FIELDS, ihdr_vals(th)), IH_WORDS))]
         self.write_seq(seq)
-        self.write_seq(self.default_rows_seq(th.base_q_idx))
+        if rows is None:
+            self.write_seq(self.default_rows_seq(th.base_q_idx))
+        else:
+            pairs = []
+            for i, row in enumerate(rows):
+                pairs += [(R_DEF + 4 * k, w) for k, w in enumerate(words(row, 8))]
+                pairs.append((R_DEF_ADDR, i))
+            self.write_seq(pairs)
         self.wr(R_START, START_TILE)
         pos = 0
         n_words = (len(data) + 3) // 4
@@ -480,9 +542,11 @@ class HostDecoder:
             and n_tile_cols == 1 and not hdr.allow_intrabc
 
     def frame_pipe_start(self, hdr, n_tile_cols):
-        """Pipelined frame (pipe_en): the deblocking filter trails the tile decoder by superblock rows under the
-        decoder's frame sequencer, which needs the filter header and the tile-column count before the tiles."""
+        """Pipelined frame (pipe_en): the in-loop filters trail the tile decoder by superblock rows under the decoder's
+        frame sequencer, which needs the filter headers and the tile-column count before the tiles."""
         self.write_wide(R_LH, pack(LF_FIELDS, lf_vals(hdr)), LH_WORDS)
+        if cdef_on(hdr):
+            self.write_wide(R_CH, pack(CDEF_FIELDS, cdef_vals(hdr)), CH_WORDS)
         self.wr(R_CTRL, CTRL_PIPE | (n_tile_cols << 16))
         self.wr(R_START, START_FRAME)
 
@@ -543,3 +607,111 @@ class HostDecoder:
             t["read"] = time.monotonic() - t0
             self.stats["frames"] += 1
             yield fi, hdr0, planes, t
+
+    def decode_frames_inter(self, dec, dma, name="stream", pool=8, want_planes=True, model_planes=False):
+        """Inter streams on a RING build (docs/picture-memory.md step A; tb/test_dec_host_inter.py is the simulation
+        twin): every frame pipelined under the sequencer with CDEF / super-res / LR, flushed into one of `pool`
+        frame buffers carved from dma = (base, size, read(offset, n)); the references of later frames are those
+        flushed pictures (the slot table points at them). The frame sequence (inherited CDFs, segmentation map,
+        motion field) comes from the model, which decodes every frame alongside the RTL (tools/xcheck_frame.py's
+        pieces: seconds a frame; the hardware save / project engines are the throughput phase's). Yields
+        (fi, hdr, planes, model planes or None, timings); planes is the flushed picture (None with want_planes=False)."""
+        import recon_model as rm
+        import seq_model as sm
+        import lf_model as lfm
+        import cdef_model as cdm
+        import lr_model as lrm
+        import superres_model as srm
+        import xcheck_frame as xf
+        base, size, read = dma
+        stride = (size // pool) & ~0xFFF
+        seq = sm.SequenceState()
+        store = {}                                       # slot -> dict(planes (model), upscaled_width, frame_height, mem=[(base, stride)...])
+        hdr_iter = iter(dec.frame_headers)
+        for fi, tile_idx in enumerate(dec.frames):
+            tag = f"{name} frame {fi}"
+            ph = None
+            for ph in hdr_iter:
+                if ph.show_existing_frame:
+                    seq.show_existing(ph)
+                    if ph.frame_type == 0 and ph.frame_to_show_map_idx in store:
+                        for i in range(8):
+                            store[i] = store[ph.frame_to_show_map_idx]
+                    continue
+                break
+            if ph is None or ph.show_existing_frame:
+                raise HostError(f"{tag}: no parsed frame header")
+            ctx = seq.start_frame(ph)
+            hdr0 = dec.tiles[tile_idx[0]][0]
+            n_tile_cols = len({dec.tiles[ti][0].MiColStart for ti in tile_idx})
+            if not self.window_ok(hdr0, n_tile_cols):
+                raise HostError(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc)")
+            t = {}
+            t0 = time.monotonic()
+            # the flush target: a frame buffer no live reference slot holds
+            busy = {e["mem"][0][0] for e in store.values() if e.get("mem")}
+            target = next((base + k * stride for k in range(pool) if base + k * stride not in busy), None)
+            if target is None:
+                raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
+            dseq, layout, total = dma_regs(hdr0, target, True)
+            if total > stride:
+                raise HostError(f"{tag}: a {total}-byte picture does not fit a {stride}-byte frame buffer (pool {pool} in {size} bytes)")
+            self.reset()
+            if not ph.FrameIsIntra:
+                self.write_seq(seg_map_seq(ctx.prev_segment_ids, hdr0.MiRows, hdr0.MiCols))
+                self.write_seq(motion_field_seq(ctx.motion_field, hdr0.MiRows, hdr0.MiCols))
+                for i in range(7):
+                    slot = ph.ref_frame_idx[i]
+                    if slot not in store or not store[slot].get("mem"):
+                        raise HostError(f"{tag}: reference {i + 1} points at slot {slot}, which holds no decoded picture")
+                self.write_seq(ref_seq(ph, {s_: dict(planes=e["mem"], upscaled_width=e["upscaled_width"], frame_height=e["frame_height"])
+                                           for s_, e in store.items() if e.get("mem")}, hdr0.BitDepth > 8))
+            self.write_seq([(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in dseq])
+            self.frame_pipe_start(hdr0, n_tile_cols)
+            t["setup"] = time.monotonic() - t0
+            t0 = time.monotonic()
+            # the model decodes each tile first (the RTL needs the same CDF rows; the sequence state needs the tile's summary)
+            frame = {"refs": store}
+            rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None
+            summaries = []
+            state = xf.FrameState(hdr0)
+            for k, ti in enumerate(tile_idx):
+                th, data = dec.tiles[ti]
+                mdec = rm.FrameRecon(th, data, frame, ctx=ctx)
+                mdec.decode_tile()
+                state.add(mdec)
+                summaries.append(sm.TileSummary(mdec, keep_cdf=(k == ph.context_update_tile_id)))
+                t["model"] = t.get("model", 0) + time.monotonic() - t0
+                t0 = time.monotonic()
+                self.run_tile(th, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", dec=mdec, rows=rows)
+                t["tiles"] = t.get("tiles", 0) + time.monotonic() - t0
+                t0 = time.monotonic()
+                del mdec
+            self.frame_pipe_finish(tag)
+            self.flush_wait(tag)
+            t["filters"] = time.monotonic() - t0
+            t0 = time.monotonic()
+            planes = unpack_dma(hdr0, read(target - base, total), layout) if want_planes else None
+            self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
+            t["read"] = time.monotonic() - t0
+            t0 = time.monotonic()
+            # the model's final picture: the reference store (and, if asked, the comparison)
+            mp = frame["planes"]
+            lfm.LoopFilter(hdr0, state, mp).apply()
+            deblocked = mp
+            if cdef_on(hdr0):
+                mp = cdm.Cdef(hdr0, state, mp).apply()
+            if hdr0.use_superres:
+                deblocked = srm.upscale(hdr0, deblocked)
+                mp = srm.upscale(hdr0, mp) if mp is not deblocked else deblocked
+            if any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
+                mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
+            seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+            entry = dict(planes=mp, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight,
+                         mem=[(b, st) for b, st, _, _ in layout])
+            for i in range(8):
+                if (ph.refresh_frame_flags >> i) & 1:
+                    store[i] = entry
+            t["model_filters"] = time.monotonic() - t0
+            self.stats["frames"] += 1
+            yield fi, hdr0, planes, (mp if model_planes else None), t

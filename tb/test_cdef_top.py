@@ -25,13 +25,7 @@ import test_lf_top as TL                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 
-CDEF_FIELDS = [("damping", 3), ("bits", 2), ("y_str", 48), ("uv_str", 48)]
-
-
-def cdef_vals(th):
-    return dict(damping=th.cdef_damping, bits=th.cdef_bits,
-                y_str=sum((th.cdef_y_strengths[i] & 63) << (6 * i) for i in range(8)),
-                uv_str=sum((th.cdef_uv_strengths[i] & 63) << (6 * i) for i in range(8)))
+from host_regs import CDEF_FIELDS, cdef_vals   # noqa: E402,F401
 
 
 async def preload(dut, hdr, planes, state):

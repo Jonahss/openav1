@@ -64,6 +64,10 @@ if top == "dec_host" and os.environ.get("FIFO_LW"):
 # FRAME_WIN=N (with FRAME_URAM=1): the frame memory as a window of N superblock rows, rows flushed to DDR (docs/frame-memory.md)
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN"):
     params["FRAME_WIN"] = int(os.environ["FRAME_WIN"])
+# FRAME_WIN1 / FRAME_WIN2: fb1 (CDEF frame) and fb2 (LR frame) as UltraRAM rings of that many rows (docs/picture-memory.md)
+for k in ("FRAME_WIN1", "FRAME_WIN2"):
+    if top in ("dec_top", "dec_host") and os.environ.get(k):
+        params[k] = int(os.environ[k])
 # SIM_FAST=1: optimise for simulation speed (Verilator -O3, compiler -O2, N threads); default is Verilator's -Os,
 # which compiles fastest. SIM_THREADS overrides the thread count (default: all cores).
 build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves and waves_fmt == "fst" else []) \

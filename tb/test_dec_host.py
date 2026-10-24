@@ -2,7 +2,8 @@
 test_dec_top, but every header, CDF default row, tile byte, start and pixel read goes through the register map,
 exactly as software on the board does it. With TS_TRANSCRIPT=<file> the register traffic is written out
 (tb/axil.py format) for tools/kv260/play.py to replay on the KV260 against the bitstream.
-Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (recon | lf), TS_TRANSCRIPT; or TS_IVF=<a.ivf,b.ivf>
+Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (recon | lf | lr: lr = CDEF / super-res / LR under the frame
+sequencer, pipelined builds with fb1 / fb2 rings), TS_TRANSCRIPT; or TS_IVF=<a.ivf,b.ivf>
 to run real streams (intra, no CDEF / LR: the core build) against dav1d's pictures in refout/ (TS_REF_DIR).
 """
 import os
@@ -17,6 +18,10 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "tools"))
 import cdf_map as M                     # noqa: E402
 import lf_model as lfm                  # noqa: E402
+import cdef_model as cdm                # noqa: E402
+import lr_model as lrm                  # noqa: E402
+import superres_model as srm            # noqa: E402
+import test_cdef_top as TC              # noqa: E402
 import test_dec_top as TD               # noqa: E402
 import test_lf_top as TL                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
@@ -25,22 +30,50 @@ from axil import AxiLite, write_transcript   # noqa: E402
 from axi_mem import AxiMem                    # noqa: E402
 
 STAGE = os.environ.get("TS_STAGE", "recon")
-PIPE = os.environ.get("TS_PIPE", "0") == "1" and STAGE == "lf"      # the deblocking filter under the frame sequencer
+PIPE = os.environ.get("TS_PIPE", "0") == "1" and STAGE in ("lf", "lr")   # the in-loop filters under the frame sequencer
 WIN = os.environ.get("TS_WIN", "0") == "1"                           # window build: rows auto-flushed into the AXI memory
+CORE = os.environ.get("TS_CORE", "0") == "1"                         # the core build: CDEF / LR nulled, so their recordings are skipped
 
 
-async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None):
+async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None, clear=True):
+    """Pipelined frame under the frame sequencer; WIN: the flush target (base) programmed first. clear=False keeps the
+    AXI memory's contents (inter streams: earlier frames' pictures are the references)."""
     if WIN:                                                  # the planes and auto-flush before the frame
         seq, layout, total = dma_regs(hdr, base, visible=True)
         st = await ax.read(R_DMA_STATUS, record=False)
         ax.dut._log.info(f"pipe_start: DMA_STATUS 0x{st:08x} before the frame; {len(seq)} plane register writes")
         for a, v in seq:
             await ax.write(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v)
-        mem.mem.clear()
+        if clear:
+            mem.mem.clear()
     await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr)), LH_WORDS)
+    if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:        # the CDEF header: the sequencer starts CDEF itself
+        await write_wide(ax, HR.R_CH, TT.pack(HR.CDEF_FIELDS, HR.cdef_vals(hdr)), HR.CH_WORDS)
     await ax.write(R_CTRL, CTRL_PIPE | (n_tile_cols << 16))
     await ax.write(R_START, START_FRAME)
     ax.dut._log.info("pipe_start: frame started")
+
+
+def model_filters(hdr0, decs, planes):
+    """The model's in-loop filters after the tiles, as far as STAGE: deblocking in place; then (STAGE lr) CDEF, the
+    super-resolution upscale of both LR inputs, loop restoration. Returns the planes the RTL's final buffer holds."""
+    state = xf.FrameState(hdr0)
+    for _d in decs:
+        state.add(_d)
+    lfm.LoopFilter(hdr0, state, planes).apply()
+    if STAGE != "lr":
+        return planes
+    deblocked = planes
+    cdef_on = hdr0.enable_cdef and not hdr0.CodedLossless and not hdr0.allow_intrabc
+    if cdef_on:
+        planes = cdm.Cdef(hdr0, state, planes).apply()
+    if hdr0.use_superres:
+        deblocked = srm.upscale(hdr0, deblocked)
+        planes = srm.upscale(hdr0, planes) if cdef_on else deblocked
+    if any(t != 0 for t in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
+        planes_cdef = planes if cdef_on else [[row[:] for row in p] for p in planes]
+        planes = lrm.LoopRestoration(hdr0, state, deblocked, planes_cdef).apply()
+    return planes
 
 
 async def pipe_finish(ax, tag):
@@ -61,11 +94,13 @@ async def write_wide(ax, base, v, nwords):
         await ax.write(base + 4 * i, w)
 
 
-async def run_tile(ax, th, dec, data, tag, stats):
+async def run_tile(ax, th, dec, data, tag, stats, rows=None):
+    """One tile through the register map. rows: the CDF rows to load (default: the defaults for the tile's base_q_idx;
+    inter streams pass the inherited frame CDFs, tb/seq_model.py)."""
     await write_wide(ax, R_HDR, TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, 0)), HDR_WORDS)
     await write_wide(ax, R_RH, TT.pack(TD.REC_FIELDS, TD.rec_vals(th)), RH_WORDS)
     await write_wide(ax, HR.R_IH, TT.pack(HR.IHDR_FIELDS, HR.ihdr_vals(th)), HR.IH_WORDS)
-    for i, row in enumerate(M.default_rows(th.base_q_idx)):
+    for i, row in enumerate(M.default_rows(th.base_q_idx) if rows is None else rows):
         await write_wide(ax, R_DEF, row, 8)
         await ax.write(R_DEF_ADDR, i)
     await ax.write(R_START, START_TILE)
@@ -163,12 +198,15 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
             assert False, (f"{tag}: DMA wrote {mem.written()} bytes, picture is {expect_bytes}; " + "; ".join(per)
                            + f"; outside: {others}; max addr 0x{max(mem.mem):x}; DMA_STATUS 0x{st2:08x} (rows flushed {st2 >> 16 & 0xFF}), beats {beats}, bursts {mem.bursts}")
         if bad and WIN:                                          # the same samples straight from the window, after the flush
-            win = []
-            for plane, y, x, got, exp in bad[:6]:
-                await ax.write(R_HADDR, (plane << 28) | (y << 14) | x)
-                v = await ax.read(R_HDATA, record=False)
-                win.append((plane, y, x, v))
-            ax.dut._log.info(f"{tag}: window holds (plane, y, x, value): {win}")
+            for buf in range(4):                                 # every frame buffer (CTRL[5:4] selects the host port's; 3 = fb0s)
+                await ax.write(R_CTRL, buf << 4)
+                win = []
+                for plane, y, x, got, exp in bad[:6]:
+                    await ax.write(R_HADDR, (plane << 28) | (y << 14) | x)
+                    v = await ax.read(R_HDATA, record=False)
+                    win.append((plane, y, x, v))
+                ax.dut._log.info(f"{tag}: fb{buf} holds (plane, y, x, value): {win}")
+            await ax.write(R_CTRL, 0)
         assert not bad, f"{tag}: DMA image: {len(bad)} samples differ, first (plane, y, x, dma, model): {bad[:8]}"
         return
     for plane in range(hdr.NumPlanes):
@@ -248,8 +286,9 @@ async def dec_host_streams(dut):
             for fi, tile_idx in enumerate(d.frames):
                 tag = f"{Path(path).name} frame {fi}"
                 hdr0 = d.tiles[tile_idx[0]][0]
-                assert not (hdr0.enable_cdef and not hdr0.CodedLossless and not hdr0.allow_intrabc), f"{tag}: CDEF is not in the core build"
-                assert not any(t != 0 for t in hdr0.FrameRestorationType[:hdr0.NumPlanes]), f"{tag}: loop restoration is not in the core build"
+                if CORE:
+                    assert not (hdr0.enable_cdef and not hdr0.CodedLossless and not hdr0.allow_intrabc), f"{tag}: CDEF is not in the core build"
+                    assert not any(t != 0 for t in hdr0.FrameRestorationType[:hdr0.NumPlanes]), f"{tag}: loop restoration is not in the core build"
                 await ax.write(R_CTRL, CTRL_RST)
                 await ClockCycles(dut.clk, 4)
                 await ax.write(R_CTRL, 0)
@@ -292,10 +331,11 @@ async def dec_host_streams(dut):
         if WIN and not HostDecoder.window_ok(h0, len({th.MiColStart for th, _ in d.tiles})):
             dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc), skipped")
             continue
-        if WIN and ((h0.enable_cdef and not h0.CodedLossless and not h0.allow_intrabc) or any(t != 0 for t in h0.FrameRestorationType[:h0.NumPlanes])):
-            # the window build has no CDEF / loop restoration (the board build nulls them): a recording with them
-            # busy cannot be replayed on that netlist (seed 7, 2026-10-17: STATUS bits 7 / 10 / 11 differed)
-            dut._log.info(f"{tag}: CDEF / loop restoration are not in the window build, skipped")
+        if WIN and CORE and ((h0.enable_cdef and not h0.CodedLossless and not h0.allow_intrabc) or any(t != 0 for t in h0.FrameRestorationType[:h0.NumPlanes])):
+            # the core window build (TS_CORE=1: the K26 bitstream) has no CDEF / loop restoration (nulled): a recording
+            # with them busy cannot be replayed on that netlist (seed 7, 2026-10-17: STATUS bits 7 / 10 / 11 differed).
+            # With fb1 / fb2 rings (FRAME_WIN1 / FRAME_WIN2 >= 0, docs/picture-memory.md) they run and are checked.
+            dut._log.info(f"{tag}: CDEF / loop restoration are not in the core window build, skipped")
             continue
         if PIPE:
             await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)
@@ -308,14 +348,12 @@ async def dec_host_streams(dut):
             if stats.get("rb_checks", 0) < 2 and not th.disable_cdf_update:
                 await check_cdf_readback(ax, dec, f"{tag} tile {ti}", stats)
         planes = frame["planes"]
-        if STAGE == "lf":
-            state = xf.FrameState(hdr0)
-            for _d in decs:
-                state.add(_d)
-            lfm.LoopFilter(hdr0, state, planes).apply()
+        if STAGE in ("lf", "lr"):
+            planes = model_filters(hdr0, decs, planes)
             if PIPE:
                 await pipe_finish(ax, tag)
             else:
+                assert STAGE == "lf", "TS_STAGE=lr needs TS_PIPE=1 (the frame sequencer runs CDEF / SR / LR)"
                 await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
                 await ax.write(R_START, START_LF)
                 await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
