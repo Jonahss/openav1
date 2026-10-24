@@ -654,6 +654,7 @@ class HostDecoder:
             if target is None:
                 raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
             dseq, layout, total = dma_regs(hdr0, target, True)
+            self.last_target = target                    # where this frame's picture lands (tools/kv260/decode.py --show)
             if total > stride:
                 raise HostError(f"{tag}: a {total}-byte picture does not fit a {stride}-byte frame buffer (pool {pool} in {size} bytes)")
             self.reset()

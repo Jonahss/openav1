@@ -167,6 +167,9 @@ def main():
     ap.add_argument("--flip", action="store_true", help="with --show: the picture turned by 180 degrees (panel mounted upside down)")
     ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
     ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma --pipe")
+    ap.add_argument("--inter", action="store_true", help="RING build with inter: every stage under the sequencer, the model decoding alongside for the "
+                    "frame sequence, references = the flushed pictures in a pool of --pool frame buffers in the DMA region; implies --window")
+    ap.add_argument("--pool", type=int, default=8, help="with --inter: frame buffers carved from the DMA region (>= 8 reference slots + 1)")
     ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
     ap.add_argument("--dma-size", type=lambda x: int(x, 0), default=256 << 20)
     ap.add_argument("--xdma", type=int, metavar="N", help="Alveo U200 host path: registers through /dev/xdmaN_user, pictures in the card's DDR4 "
@@ -174,6 +177,8 @@ def main():
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     args = ap.parse_args()
+    if args.inter:
+        args.window = True
     if args.window:
         args.dma = True; args.pipe = True
     if args.xdma is not None:
@@ -232,13 +237,25 @@ def main():
           f"{len(d.frames)} coded frames, {len(shown)} shown")
     n_bad_frames = 0
     t_all = time.monotonic()
+    if args.inter and stage is None:
+        sys.exit("--inter needs a DMA region (--dma-base / --xdma) for the frame-buffer pool")
+
+    def frames():
+        if args.inter:
+            for fi, hdr, planes, _mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read), name=Path(args.stream).name,
+                                                                    pool=args.pool, want_planes=bool(out or ref)):
+                t["lf"] = t.get("filters", 0.0)
+                t["tiles"] = t.get("tiles", 0.0) + t.get("model", 0.0) + t.get("setup", 0.0)
+                yield fi, hdr, planes, t
+        else:
+            yield from host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
+                                          dma=(stage.base, stage.read) if stage else None, pipe=args.pipe,
+                                          want_planes=bool(out or ref) or stage is None, window=args.window)
     try:
-        for fi, hdr, planes, t in host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
-                                                     dma=(stage.base, stage.read) if stage else None, pipe=args.pipe,
-                                                     want_planes=bool(out or ref) or stage is None, window=args.window):
+        for fi, hdr, planes, t in frames():
             if stage is not None and args.show and fast is not None:
                 from host_regs import dma_layout
-                stage.show(fast, hdr, dma_layout(hdr, stage.base)[0], flip=args.flip)
+                stage.show(fast, hdr, dma_layout(hdr, host.last_target if args.inter else stage.base)[0], flip=args.flip)
             if args.frames is not None and fi >= args.frames:
                 break
             W, H = plane_size(hdr, 0)

@@ -124,7 +124,10 @@ module dec_top
     // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
     // superblock row up), the filters' info and reconstruction's mode map 64 rows (the four superblock rows live
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
-    tile_syntax #(.INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? 4 : FBY - 3), .MFL2C(FBX - 3), .SPL2R(FRAME_WIN > 0 ? 5 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
+    // the motion-field and segmentation-map bands hold the PREVIOUS frame's whole picture (the host writes them before the
+    // frame), so they are full-height whenever inter is built; the window build trims them only at INTER = 0 (unused there)
+    tile_syntax #(.INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 : FBY - 2), .ML2C(FBX - 2), .MFL2R((FRAME_WIN > 0 && INTER == 0) ? 4 : FBY - 3), .MFL2C(FBX - 3),
+                  .SPL2R((FRAME_WIN > 0 && INTER == 0) ? 5 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
                   .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
                   .clk, .rst, .hdr, .ihdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_data,
                       .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
@@ -165,7 +168,10 @@ module dec_top
 
     // per-4x4 state + deblocking filter; the filter owns the frame buffer port while it runs
     logic [MIW-1:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
-    mi_store #(.ML2R(FRAME_WIN > 0 ? 6 : FBY - 2), .ML2C(FBX - 2)) u_mi (.clk, .rst, .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(mi_blk_busy),
+    // the per-4x4 filter state (and CDEF indices, LR units) is a ring of 2^ML2R MI rows: every row the fb0 ring can hold
+    // live (FRAME_WIN superblock rows of 16: recon(r) down to LR(r-3)'s stripe) must fit, or recon overwrites the row LR
+    // is reading (2026-10-24: 64 MI rows with a 5-row ring lost row 0's LR units to row 4)
+    mi_store #(.ML2R(FRAME_WIN > 0 ? $clog2(FRAME_WIN * 16) : FBY - 2), .ML2C(FBX - 2)) u_mi (.clk, .rst, .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(mi_blk_busy),
                    .tx_we(mi_tx_we), .tx_plane(mi_tx_plane), .tx_row(mi_tx_row), .tx_col(mi_tx_col), .tx_w4(mi_tx_w4), .tx_h4(mi_tx_h4), .tx_sz(mi_tx_sz), .tx_busy(mi_tx_busy),
                    .rd_row(rd_row), .rd_col(rd_col), .rd_info, .rd2_row(cd_rd_row), .rd2_col(cd_rd_col), .rd2_info(cd_rd_info), .txr_plane, .txr_row, .txr_col, .txr_sz,
                    .cd_clr(mi_cd_clr), .cd_we(mi_cd_we), .cd_row64(mi_cd_row64), .cd_col64(mi_cd_col64), .cd_sb128(hdr.sb128), .cd_mask(mi_cd_mask), .cd_idx(mi_cd_idx),
