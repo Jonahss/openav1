@@ -10,7 +10,7 @@
 //                       [5:4] h_buf (the host port's frame buffer: 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
 //                       in the RING build; a row flush reads dec_top's final_buf instead), 8 eos (no more bytes for
 //                       this tile: in_eos once the FIFO drains; cleared by a tile start), [21:16] n_tile_cols
-//   0x00C START     W   one-cycle pulses: bit 0 tile_start, 1 frame_start, 2 lf_start, 3 cdef_start, 4 sr_start,
+//   0x00C START     W   one-cycle pulses: bit 0 tile_start (also empties the tile FIFO: push the bytes after it), 1 frame_start, 2 lf_start, 3 cdef_start, 4 sr_start,
 //                       5 lr_start (a start clears its stage's sticky done bit)
 //   0x010 STATUS    R   bit 0 tile_busy, 1 tile_done_lvl, 2 unsupported, 3 frame_busy, 4 frame_done_lvl,
 //                       5 lf_busy, 6 lf_done (sticky), 7 cdef_busy, 8 cdef_done (sticky), 9 sr_busy,
@@ -256,8 +256,11 @@ module dec_host
     assign take    = ow_valid && in_ready;
     assign ow_done = take && (ow_i == ow_n);
     assign fetch   = !f_empty && (!ow_valid || ow_done);
+    // A tile start empties the FIFO: the arithmetic decoder leaves a tile's trailing bytes unread, and the next tile of
+    // the same frame must not see them (2026-10-24: test47's third tile decoded from the second tile's tail; every
+    // earlier stream through dec_host had one tile per frame). Software pushes a tile's bytes after its START.
     always_ff @(posedge clk) begin
-        if (rst) begin wptr <= '0; rptr <= '0; ow_valid <= 1'b0; f_ovf <= 1'b0; ow_i <= 2'd0; end
+        if (rst || start[0]) begin wptr <= '0; rptr <= '0; ow_valid <= 1'b0; f_ovf <= 1'b0; ow_i <= 2'd0; end
         else begin
             if (push) begin
                 if (f_full) f_ovf <= 1'b1;

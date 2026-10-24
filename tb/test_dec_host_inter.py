@@ -47,7 +47,19 @@ def store_entry(hdr, ph, planes, layout):
                 mem=[(b, stride) for b, stride, _, _ in layout] if layout else None)
 
 
-async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, deblocked=None):
+def block_at(blocks, hdr, plane, x, y):
+    """The model block holding sample (x, y) of a plane, as xcheck_frame reports it."""
+    import av1_tables as T
+    sx = hdr.subsampling_x if plane else 0
+    sy = hdr.subsampling_y if plane else 0
+    for b in blocks:
+        if (b["c"] * 4) >> sx <= x < ((b["c"] * 4) + T.Block_Width[b["size"]]) >> sx and (b["r"] * 4) >> sy <= y < ((b["r"] * 4) + T.Block_Height[b["size"]]) >> sy:
+            return (f"block r{b['r']} c{b['c']} size {b['size']} skip {b['skip']} inter {b.get('inter')} ymode {b['ymode']} ref {b.get('ref')} "
+                    f"mvs {b.get('mvs')} mm {b.get('motion_mode')} ct {b.get('compound_type')} interp {b.get('interp')} seg {b['seg']}")
+    return "no block"
+
+
+async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, deblocked=None, blocks=None):
     """After frame_done: wait for the row flush, then the memory image against the model's final picture."""
     seq, layout, total = dma_regs(hdr, base, visible=True)
     st = await ax.poll(R_DMA_STATUS, DMA_FLUSH_BUSY, 0, 40_000_000, tag)
@@ -76,6 +88,16 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, debloc
             if plane == 0:
                 lines[y] = lines.get(y, 0) + 1
         ax.dut._log.info(f"{tag}: plane 0 lines hit (y: count), first 24: {sorted(lines.items())[:24]}")
+        if blocks:
+            seen = set()
+            for plane, y, x, got_v, exp_v in bad:
+                blk = block_at(blocks, hdr, plane, x, y)
+                if blk in seen:
+                    continue
+                seen.add(blk)
+                ax.dut._log.info(f"{tag}: plane {plane} ({x},{y}) rtl {got_v} model {exp_v} pre {pre[plane][y][x] if pre is not None else None}: {blk}")
+                if len(seen) >= 10:
+                    break
         if pre is not None:
             ax.dut._log.info(f"{tag}: model pre-filter {[pre[p_][y_][x_] if y_ < len(pre[p_]) and x_ < len(pre[p_][0]) else None for p_, y_, x_, _, _ in bad[:6]]}, "
                              f"deblocked {[deblocked[p_][y_][x_] if y_ < len(deblocked[p_]) and x_ < len(deblocked[p_][0]) else None for p_, y_, x_, _, _ in bad[:6]]}, "
@@ -205,7 +227,8 @@ async def dec_host_inter_vs_model(dut):
             layout = None
             if not model_only:
                 await TH.pipe_finish(ax, tag)
-                layout = await flush_compare(ax, mem, th0, flush_base, planes, tag, stats, pre=pre, deblocked=frame["planes"])
+                layout = await flush_compare(ax, mem, th0, flush_base, planes, tag, stats, pre=pre, deblocked=frame["planes"],
+                                             blocks=[b for dd in decs for b in dd.blocks])
                 fi_global += 1
                 stats["frames"] += 1
                 dut._log.info(f"{tag}: identical ({len(tile_idx)} tiles, {th0.UpscaledWidth}x{th0.FrameHeight} bd{th0.BitDepth}, "
@@ -215,7 +238,7 @@ async def dec_host_inter_vs_model(dut):
             # ---- the frame becomes a reference (model picture + where the flush put it)
             seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
             planes_ref = TI.ref_planes_of(th0, planes)
-            entry = store_entry(th0, ph, planes_ref, layout)
+            entry = store_entry(th0, ph, planes_ref, None if os.environ.get("TS_REFS_FROM_MODEL") == "1" else layout)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
                     store[i] = entry

@@ -439,7 +439,9 @@ module dec_top
     assign unsupported = ts_unsup || win_unsup || mc_unsup;        // mc_unsup: an inter feature beyond stage 2a
 `ifndef SYNTHESIS
     time trace_last_rc_w;                                                           // window trace (simulation only)
+    int  trace_lf_w;
     always_ff @(posedge clk) if (fb0_we[0]) trace_last_rc_w <= $time;
+    always_ff @(posedge clk) if (lf_go) trace_lf_w <= 0; else if (fb0_we[1]) trace_lf_w <= trace_lf_w + 1;
     always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin                      // window trace (simulation only)
         if (lf_pend && lf_done) $display("[win] t=%0t LF done row %0d (n_rows %0d) rel_upto->%0d", $time, lf_next, n_rows, (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next);
         if (row_final) $display("[win] t=%0t row_final %0d", $time, row_final_idx);
@@ -447,8 +449,9 @@ module dec_top
         if (frame_done) $display("[win] t=%0t frame_done rel_next %0d rel_upto %0d", $time, rel_next, rel_upto);
         if (frame_start) $display("[win] t=%0t frame_start cdef_en %0d sr_en %0d lr_en %0d final_buf %0d n_rows %0d n_stripes %0d", $time, cdef_en, sr_en, lr_en, final_buf, n_rows, n_stripes);
         if (cd_pend && cdef_done) $display("[win] t=%0t CDEF done row %0d", $time, cd_next);
-        if (lf_go) $display("[win] t=%0t LF start row %0d (tile_busy %0d rc_busy %0d row_cnt %0d/%0d/%0d, last recon fb0 write t=%0t)", $time, lf_next, tile_busy, rc_busy,
-                            row_cnt[0], row_cnt[1], row_cnt[2], trace_last_rc_w);
+        if (lf_go) $display("[win] t=%0t LF start row %0d MI rows %0d..%0d (hdr.mi_rows %0d, tile_busy %0d rc_busy %0d row_cnt %0d/%0d/%0d, last recon fb0 write t=%0t)", $time, lf_next,
+                            lf_row_first, lf_row_last, hdr.mi_rows, tile_busy, rc_busy, row_cnt[0], row_cnt[1], row_cnt[2], trace_last_rc_w);
+        if (lf_pend && lf_done) $display("[win] t=%0t LF wrote %0d words this row", $time, trace_lf_w);
         if (tile_done) $display("[win] t=%0t tile_done (rc_busy %0d, last recon fb0 write t=%0t)", $time, rc_busy, trace_last_rc_w);
         if (sb_pop) $display("[win] t=%0t sb_pop row %0d (prev %0d valid %0d)", $time, sb_pop_row, tile_row_prev, tile_row_valid);
         if (sr_pend && sr_done) $display("[win] t=%0t SR done row %0d sub %0d", $time, sr_next, sr_sub);
