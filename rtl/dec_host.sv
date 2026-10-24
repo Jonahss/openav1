@@ -190,6 +190,14 @@ module dec_host
     logic [SBW-1:0] row_final_idx;
     logic [1:0]     final_buf;
     logic           flush_rd;                                // the host port belongs to a running flush (reads the final buffer)
+    logic           dma_busy, dma_done, dma_err;
+    logic           fl_run;                                  // the run in progress is a flush (else a software picture DMA)
+    logic [39:0]    rs_base [8][3];                          // reference slot table (declared ahead of the dec_top instance below:
+    logic [31:0]    rs_stride [8][3];                        // Vivado makes an implicit 1-bit wire of a name used before its declaration)
+    logic [15:0]    rs_w [8], rs_h [8];
+    logic [15:0]    rs_xs [8], rs_ys [8];                    // 7.11.3.3 scale factors per slot (for the current frame)
+    logic [20:0]    ref_slot_r;
+    logic [31:0]    ref_cfg_r;
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
@@ -306,16 +314,9 @@ module dec_host
     logic [39:0]    fl_addr [3];                             // next row's first address per plane
     logic [15:0]    fl_y [3];                                // next row's first line per plane
     logic [7:0]     fl_rows;                                 // rows flushed since the last frame start
-    logic           fl_run;                                  // the run in progress is a flush (else a software picture DMA)
     logic           fl_auto;
     assign fl_auto = dma_cfg[8];
     assign flush_rd = dma_busy && fl_run;
-    logic [39:0]    rs_base [8][3];                          // reference slot table
-    logic [31:0]    rs_stride [8][3];
-    logic [15:0]    rs_w [8], rs_h [8];
-    logic [15:0]    rs_xs [8], rs_ys [8];                    // 7.11.3.3 scale factors per slot (for the current frame)
-    logic [20:0]    ref_slot_r;
-    logic [31:0]    ref_cfg_r;
     logic [1727:0]  ref_planes;
     logic [255:0]   ref_dims, ref_scales;
     always_comb begin
@@ -328,7 +329,6 @@ module dec_host
     logic [39:0]    dma_base [3];
     logic [31:0]    dma_stride [3];
     logic [15:0]    dma_w [3], dma_h [3];
-    logic           dma_busy, dma_done, dma_err;
     logic [31:0]    dma_beats;
     typedef enum logic [3:0] {D_IDLE, D_PLANE, D_ROW, D_BURST, D_AW, D_F0, D_F1, D_F2, D_W, D_B, D_NEXT} dstate_t;
     dstate_t        ds;

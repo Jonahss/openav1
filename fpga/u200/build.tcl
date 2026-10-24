@@ -207,6 +207,9 @@ if {[info exists ::env(U200_STRATEGY)] && $::env(U200_STRATEGY) ne ""} {
 set_property STEPS.OPT_DESIGN.TCL.PRE $root/fpga/kv260/pre_opt.tcl [get_runs impl_1]
 launch_runs synth_1 -jobs 8
 wait_on_run synth_1
+# the out-of-context module runs (dec_host is the long one) must be done before implementation links the design: with
+# the inter build, synth_1 finished first and opt_design found sys_host_0 as a black box (2026-10-24)
+foreach r [get_runs -filter {IS_SYNTHESIS && NAME != "synth_1"}] { wait_on_run $r }
 if {[get_property PROGRESS [get_runs synth_1]] ne "100%"} { puts "SYNTH_FAILED"; exit 1 }
 launch_runs impl_1 -to_step write_bitstream -jobs 8
 wait_on_run impl_1

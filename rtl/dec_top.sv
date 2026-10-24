@@ -372,6 +372,7 @@ module dec_top
     logic [SBW-1:0]  tile_row_prev; logic tile_row_valid;
     logic        sb_pop; logic [SBW-1:0] sb_pop_row;
     assign sb_shift = hdr.sb128 ? 5'd5 : 5'd4;
+    logic           hold_rc, hold_cd, hold_lr, hold_sr;      // slot-reuse holds (assigned below)
     // A superblock event held back from the reconstruction stage by the window (hold_rc, below) still marks the end
     // of the previous row once reconstruction has finished its last block: the hold waits for a flush that waits
     // for the filter that waits for this row count (2026-10-14: a deadlock at the first held row otherwise). The
@@ -390,7 +391,6 @@ module dec_top
     // row s - FRAME_WIN2 is free.
     logic [SBW-1:0] rel_upto, rel_next, flushed_cnt;
     logic [SBW-1:0] fb0_free, fb1_free, fb2_free, fbs_free;
-    logic           hold_rc, hold_cd, hold_lr, hold_sr;
     // the final picture: LrFrame, else CdefFrame, else (RING build, super-res) SR's upscaled rows in fb0s, else fb0
     assign final_buf = lr_en ? 2'd2 : cdef_en ? 2'd1 : (RING && sr_en) ? 2'd3 : 2'd0;
     function automatic logic [SBW-1:0] minr(input logic [SBW-1:0] a, input logic [SBW-1:0] b); return (a < b) ? a : b; endfunction
@@ -438,6 +438,8 @@ module dec_top
     end
     assign unsupported = ts_unsup || win_unsup || mc_unsup;        // mc_unsup: an inter feature beyond stage 2a
 `ifndef SYNTHESIS
+    time trace_last_rc_w;                                                           // window trace (simulation only)
+    always_ff @(posedge clk) if (fb0_we[0]) trace_last_rc_w <= $time;
     always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin                      // window trace (simulation only)
         if (lf_pend && lf_done) $display("[win] t=%0t LF done row %0d (n_rows %0d) rel_upto->%0d", $time, lf_next, n_rows, (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next);
         if (row_final) $display("[win] t=%0t row_final %0d", $time, row_final_idx);
@@ -445,6 +447,10 @@ module dec_top
         if (frame_done) $display("[win] t=%0t frame_done rel_next %0d rel_upto %0d", $time, rel_next, rel_upto);
         if (frame_start) $display("[win] t=%0t frame_start cdef_en %0d sr_en %0d lr_en %0d final_buf %0d n_rows %0d n_stripes %0d", $time, cdef_en, sr_en, lr_en, final_buf, n_rows, n_stripes);
         if (cd_pend && cdef_done) $display("[win] t=%0t CDEF done row %0d", $time, cd_next);
+        if (lf_go) $display("[win] t=%0t LF start row %0d (tile_busy %0d rc_busy %0d row_cnt %0d/%0d/%0d, last recon fb0 write t=%0t)", $time, lf_next, tile_busy, rc_busy,
+                            row_cnt[0], row_cnt[1], row_cnt[2], trace_last_rc_w);
+        if (tile_done) $display("[win] t=%0t tile_done (rc_busy %0d, last recon fb0 write t=%0t)", $time, rc_busy, trace_last_rc_w);
+        if (sb_pop) $display("[win] t=%0t sb_pop row %0d (prev %0d valid %0d)", $time, sb_pop_row, tile_row_prev, tile_row_valid);
         if (sr_pend && sr_done) $display("[win] t=%0t SR done row %0d sub %0d", $time, sr_next, sr_sub);
         if (lr_pend && lr_done_o) $display("[win] t=%0t LR done stripe %0d (n_stripes %0d)", $time, lr_next, n_stripes);
         if (hold_rc && !rc_busy && ev_pop) $display("[win] t=%0t hold row %0d (fb0 free %0d, flushed %0d)", $time, sb_pop_row, fb0_free, flushed_cnt);
