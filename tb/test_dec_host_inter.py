@@ -47,7 +47,7 @@ def store_entry(hdr, ph, planes, layout):
                 mem=[(b, stride) for b, stride, _, _ in layout] if layout else None)
 
 
-async def flush_compare(ax, mem, hdr, base, planes, tag, stats):
+async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, deblocked=None):
     """After frame_done: wait for the row flush, then the memory image against the model's final picture."""
     seq, layout, total = dma_regs(hdr, base, visible=True)
     st = await ax.poll(R_DMA_STATUS, DMA_FLUSH_BUSY, 0, 40_000_000, tag)
@@ -76,6 +76,10 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats):
             if plane == 0:
                 lines[y] = lines.get(y, 0) + 1
         ax.dut._log.info(f"{tag}: plane 0 lines hit (y: count), first 24: {sorted(lines.items())[:24]}")
+        if pre is not None:
+            ax.dut._log.info(f"{tag}: model pre-filter {[pre[p_][y_][x_] if y_ < len(pre[p_]) and x_ < len(pre[p_][0]) else None for p_, y_, x_, _, _ in bad[:6]]}, "
+                             f"deblocked {[deblocked[p_][y_][x_] if y_ < len(deblocked[p_]) and x_ < len(deblocked[p_][0]) else None for p_, y_, x_, _, _ in bad[:6]]}, "
+                             f"final {[e for _, _, _, _, e in bad[:6]]}")
         for buf in range(4):                                 # 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
             await ax.write(R_CTRL, buf << 4)
             got_b = []
@@ -149,6 +153,9 @@ async def dec_host_inter_vs_model(dut):
             th0 = d.tiles[tile_idx[0]][0]
             n_tile_cols = len({d.tiles[ti][0].MiColStart for ti in tile_idx})
             tag = f"{name} frame {fi}"
+            dut._log.info(f"{tag}: {th0.FrameWidth}x{th0.FrameHeight} (upscaled {th0.UpscaledWidth}) bd{th0.BitDepth} {'intra' if ph.FrameIsIntra else 'inter'}, "
+                          f"refs {list(ph.ref_frame_idx) if not ph.FrameIsIntra else []}, refresh 0x{ph.refresh_frame_flags:02x}, cdef {HR.cdef_on(th0)} sr {th0.use_superres} "
+                          f"lr {[t for t in th0.FrameRestorationType[:th0.NumPlanes]]}")
             model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols)
             if model_only and not frames_sel:
                 dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc): model only")
@@ -192,12 +199,13 @@ async def dec_host_inter_vs_model(dut):
                 summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
                 if not model_only:
                     await TH.run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats, rows=rows)
-            # ---- the in-loop filters: the sequencer runs them, the model follows
+            # ---- the in-loop filters: the sequencer runs them, the model follows (LF in place: frame["planes"] = deblocked)
+            pre = [[row[:] for row in p_] for p_ in frame["planes"]] if not model_only else None
             planes = TH.model_filters(th0, decs, frame["planes"])
             layout = None
             if not model_only:
                 await TH.pipe_finish(ax, tag)
-                layout = await flush_compare(ax, mem, th0, flush_base, planes, tag, stats)
+                layout = await flush_compare(ax, mem, th0, flush_base, planes, tag, stats, pre=pre, deblocked=frame["planes"])
                 fi_global += 1
                 stats["frames"] += 1
                 dut._log.info(f"{tag}: identical ({len(tile_idx)} tiles, {th0.UpscaledWidth}x{th0.FrameHeight} bd{th0.BitDepth}, "

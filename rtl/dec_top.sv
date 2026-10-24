@@ -538,7 +538,7 @@ module dec_top
             if (lr_pend && lr_done_o) begin lr_pend <= 1'b0; lr_next <= lr_next + SBW'(1); end
             // frame done: every enabled stage past its last unit
             if (rows_seen && !tile_busy && (lf_next >= n_rows) && (!cdef_en || cd_next >= n_rows) && (!sr_en || sr_next >= n_rows) && (!lr_en || lr_next >= n_stripes)
-                && !lf_pend && !cd_pend && !sr_pend && !lr_pend && (FRAME_WIN == 0 || rel_next == rel_upto)) begin
+                && !lf_pend && !cd_pend && !sr_pend && !lr_pend && rel_next == rel_upto) begin           // every row released (the flush queue sees them all)
                 seq_active <= 1'b0; frame_busy <= 1'b0; frame_done <= 1'b1; frame_done_lvl <= 1'b1;
             end
         end
