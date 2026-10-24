@@ -175,10 +175,19 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0, rows=N
                                       f"rtl y/uv {rtl_fty}/{rtl_ftuv} model {m_fty}/{m_ftuv}")
         if int(dut.unsupported.value):
             raise AssertionError(f"{tag}: RTL flagged unsupported syntax")
-        if idle > 300_000:
+        if idle > int(os.environ.get("TD_IDLE_LIMIT", "2000000")):   # a 128x128 compound scaled 4:4:4 block predicts for ~500k cycles (test20017 frame 35)
             state = (f"ts st={int(dut.u_ts.st.value)} blk st={int(dut.u_ts.u_blk.st.value)} rc rs={int(dut.u_rc.rs.value)} "
                      f"bst={int(dut.u_rc.bst.value)} blk_ready={int(dut.u_rc.blk_ready.value)} tx_done={int(dut.tx_done.value)} "
                      f"ip_busy={int(dut.u_rc.u_ip.busy.value)} itx_busy={int(dut.u_rc.u_itx.busy.value)} cfl_busy={int(dut.u_rc.u_cfl.busy.value)}")
+            if hasattr(dut.u_rc, "g_inter"):
+                state += (f" mc st={int(dut.u_rc.g_inter.u_mc.st.value)} busy={int(dut.u_rc.g_inter.u_mc.busy.value)} pg={int(dut.u_rc.g_inter.u_mc.pg.value)} "
+                          f"rf st={int(dut.u_rc.g_inter.u_rf.st.value)} mc_start={int(dut.u_rc.mc_start.value)} mc_mode={int(dut.u_rc.mc_mode.value)} "
+                          f"mc_sw={int(dut.u_rc.mc_sw.value)} mc_sh={int(dut.u_rc.mc_sh.value)} rf_w={int(dut.u_rc.rf_w.value)} rf_h={int(dut.u_rc.rf_h.value)} "
+                          f"rf_x0={int(dut.u_rc.rf_x0.value.signed_integer)} rf_y0={int(dut.u_rc.rf_y0.value.signed_integer)} rf_lastx={int(dut.u_rc.rf_lastx.value)} rf_lasty={int(dut.u_rc.rf_lasty.value)} "
+                          f"axi arvalid={int(dut.m_axi_arvalid.value)} araddr=0x{int(dut.m_axi_araddr.value):x} arlen={int(dut.m_axi_arlen.value)} rvalid={int(dut.m_axi_rvalid.value)} rready={int(dut.m_axi_rready.value)}")
+                rf = dut.u_rc.g_inter.u_rf
+                state += (f" | rf r={int(rf.r.value)} q_nrow={int(rf.q_nrow.value)} q_h={int(rf.q_h.value)} q_nw={int(rf.q_nw.value)} nsamp={int(rf.nsamp.value)} cx_lo={int(rf.cx_lo.value)} cx_hi={int(rf.cx_hi.value)} "
+                          f"beats_left={int(rf.beats_left.value)} len={int(rf.len.value)} wptr={int(rf.wptr.value)} cur_addr=0x{int(rf.cur_addr.value):x} src_y={int(rf.src_y.value)} q_stride={int(rf.q_stride.value)} q_base=0x{int(rf.q_base.value):x} q_x0={int(rf.q_x0.value.signed_integer)} q_y0={int(rf.q_y0.value.signed_integer)} read_bursts={getattr(mem, 'read_bursts', '?') if 'mem' in dir() else '?'}")
             raise AssertionError(f"{tag}: hang after {blocks} blocks / {txb} tx blocks (model {len(dec.recon_events) + len(dec.pred_events)} events); {state}")
         if int(dut.tile_done.value):
             break
