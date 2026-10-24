@@ -65,6 +65,25 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats):
     if bad:
         st2 = await ax.read(R_DMA_STATUS, record=False)
         ax.dut._log.info(f"{tag}: DMA_STATUS 0x{st2:08x} (rows flushed {st2 >> 16 & 0xFF}), {len(bad)} samples differ")
+        # where: per (plane, superblock row, line within the row) counts, and what every frame buffer holds at the first ones
+        hist = {}
+        for plane, y, x, _, _ in bad:
+            k = (plane, (y << (hdr.subsampling_y if plane else 0)) >> 6)
+            hist[k] = hist.get(k, 0) + 1
+        ax.dut._log.info(f"{tag}: differing samples per (plane, superblock row): {sorted(hist.items())}")
+        lines = {}
+        for plane, y, x, _, _ in bad:
+            if plane == 0:
+                lines[y] = lines.get(y, 0) + 1
+        ax.dut._log.info(f"{tag}: plane 0 lines hit (y: count), first 24: {sorted(lines.items())[:24]}")
+        for buf in range(4):                                 # 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
+            await ax.write(R_CTRL, buf << 4)
+            got_b = []
+            for plane, y, x, _, _ in bad[:6]:
+                await ax.write(HR.R_HADDR, (plane << 28) | (y << 14) | x)
+                got_b.append(await ax.read(HR.R_HDATA, record=False))
+            ax.dut._log.info(f"{tag}: fb{buf} holds {got_b} at {[(p_, y_, x_) for p_, y_, x_, _, _ in bad[:6]]}")
+        await ax.write(R_CTRL, 0)
     assert not bad, f"{tag}: flushed picture: {len(bad)} samples differ, first (plane, y, x, rtl, model): {bad[:8]}"
     return layout
 
