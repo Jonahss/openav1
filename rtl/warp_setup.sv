@@ -72,66 +72,86 @@ module warp_setup
     endfunction
 
     // ---------------------------------------------------------------- state
-    typedef enum logic [4:0] {W_IDLE, W_DET, W_DIV, W_N2, W_N3, W_N4, W_N5, W_M2, W_M3, W_M4, W_M5,
-                              W_Q2, W_Q3, W_Q4, W_Q5, W_SH0, W_SG, W_SD1, W_SD2, W_FIN} st_t;
+    typedef enum logic [4:0] {W_IDLE, W_DET, W_DIV, W_DIVR, W_N2, W_N3, W_N4, W_N5, W_M2, W_M3, W_M4, W_M5,
+                              W_Q2, W_Q3, W_Q4, W_Q5, W_V, W_SH0, W_SG, W_SD1, W_SD2, W_FIN} st_t;
     st_t st;
-    logic signed [63:0] m_a, m_b, prod;                   // the shared multiplier: operands registered, product combinational
-    assign prod = m_a * m_b;
+    // The shared multiplier: 64 x 32 (every second operand is a 32-bit sum, divFactor, a parameter or a LUT factor; the
+    // low 64 bits of the product are what the 64 x 64 version kept), its product REGISTERED: a state that consumes it
+    // spends one wait cycle (pw) first. Until 2026-10-24 the 64 x 64 product, Round2Signed and the clamp sat in one cycle
+    // (55 logic levels, -5.1 ns at 100 MHz in the U200 inter build); warp setup runs once per warped block, so the
+    // extra cycles are free.
+    logic signed [63:0] m_a, prod;
+    logic signed [31:0] m_b;
+    logic               pw;
+    always_ff @(posedge clk) prod <= 64'(m_a * m_b);
     logic signed [63:0] num2, num3, num4, num5;           // local numerators
     logic signed [63:0] det;
     logic [5:0]  dsh;                                     // divShift
     logic signed [31:0] dfac;                             // divFactor (after the left shift of the local case)
     logic signed [23:0] q [0:5];                          // the parameters being built
     logic signed [15:0] a0, b0, g0, d0;
+    logic signed [40:0] t_xa, t_xb, t_ya, t_yb;           // the block centre's products for p0 / p1 (16 x 25 bits)
     logic lvalid;
     assign busy = st != W_IDLE;
 
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        if (rst) st <= W_IDLE;
-        else case (st)
+        if (rst) begin st <= W_IDLE; pw <= 1'b0; end
+        else if (!pw && (st == W_DET || st == W_DIV || st == W_N2 || st == W_N3 || st == W_N4 || st == W_N5 || st == W_M2 || st == W_M3
+                         || st == W_M4 || st == W_M5 || st == W_Q2 || st == W_Q3 || st == W_Q4 || st == W_Q5 || st == W_SG || st == W_SD1 || st == W_SD2))
+            pw <= 1'b1;                                   // the product of the operands set last cycle lands at the end of this one
+        else begin
+          pw <= 1'b0;
+          case (st)
             W_IDLE: if (start) begin
                 lvalid <= 1'b1;
                 if (mode) begin
                     for (int i = 0; i < 6; i++) q[i] <= 24'(signed'(gm_p[24 * i +: 24]));
                     st <= W_SH0;
-                end else begin m_a <= 64'(ls_a00); m_b <= 64'(ls_a11); st <= W_DET; end
+                end else begin m_a <= 64'(ls_a00); m_b <= ls_a11; st <= W_DET; end
             end
-            W_DET: begin det <= prod; m_a <= 64'(ls_a01); m_b <= 64'(ls_a01); st <= W_DIV; end
-            W_DIV: begin
-                logic signed [63:0] d;
+            // determinant = a00 a11 - a01 a01, then the divisor
+            W_DET: begin det <= prod; m_a <= 64'(ls_a01); m_b <= ls_a01; st <= W_DIV; end
+            W_DIV: begin det <= det - prod; st <= W_DIVR; end
+            W_DIVR: begin
                 logic [21:0] rd;
                 logic [5:0] sh;
-                d = det - prod;
-                det <= d;
-                rd = resolve_div(d);
+                rd = resolve_div(det);
                 sh = rd[21:16];
-                if (d == 64'sd0) lvalid <= 1'b0;
+                if (det == 64'sd0) lvalid <= 1'b0;
                 // divShift -= WARPEDMODEL_PREC_BITS; a negative shift becomes a left shift of the factor
                 if (sh >= 6'd16) begin dsh <= sh - 6'd16; dfac <= 32'(signed'(rd[15:0])); end
                 else begin dsh <= 6'd0; dfac <= 32'(signed'(rd[15:0])) <<< (6'd16 - sh); end
-                m_a <= 64'(ls_a11); m_b <= 64'(ls_bx0); st <= W_N2;
+                m_a <= 64'(ls_a11); m_b <= ls_bx0; st <= W_N2;
             end
             // numerators: each the difference of two products
-            W_N2: begin num2 <= prod; m_a <= 64'(ls_a01); m_b <= 64'(ls_bx1); st <= W_N3; end
-            W_N3: begin num2 <= num2 - prod; m_a <= 64'(ls_a00); m_b <= 64'(ls_bx1); st <= W_N4; end
-            W_N4: begin num3 <= prod; m_a <= 64'(ls_a01); m_b <= 64'(ls_bx0); st <= W_N5; end
-            W_N5: begin num3 <= num3 - prod; m_a <= 64'(ls_a11); m_b <= 64'(ls_by0); st <= W_M2; end
-            W_M2: begin num4 <= prod; m_a <= 64'(ls_a01); m_b <= 64'(ls_by1); st <= W_M3; end
-            W_M3: begin num4 <= num4 - prod; m_a <= 64'(ls_a00); m_b <= 64'(ls_by1); st <= W_M4; end
-            W_M4: begin num5 <= prod; m_a <= 64'(ls_a01); m_b <= 64'(ls_by0); st <= W_M5; end
-            W_M5: begin num5 <= num5 - prod; m_a <= num2; m_b <= 64'(dfac); st <= W_Q2; end
+            W_N2: begin num2 <= prod; m_a <= 64'(ls_a01); m_b <= ls_bx1; st <= W_N3; end
+            W_N3: begin num2 <= num2 - prod; m_a <= 64'(ls_a00); m_b <= ls_bx1; st <= W_N4; end
+            W_N4: begin num3 <= prod; m_a <= 64'(ls_a01); m_b <= ls_bx0; st <= W_N5; end
+            W_N5: begin num3 <= num3 - prod; m_a <= 64'(ls_a11); m_b <= ls_by0; st <= W_M2; end
+            W_M2: begin num4 <= prod; m_a <= 64'(ls_a01); m_b <= ls_by1; st <= W_M3; end
+            W_M3: begin num4 <= num4 - prod; m_a <= 64'(ls_a00); m_b <= ls_by1; st <= W_M4; end
+            W_M4: begin num5 <= prod; m_a <= 64'(ls_a01); m_b <= ls_by0; st <= W_M5; end
+            W_M5: begin num5 <= num5 - prod; m_a <= num2; m_b <= dfac; st <= W_Q2; end
             // the four parameters: numerator * divFactor, rounded by divShift, clamped (diag / nondiag)
-            W_Q2: begin q[2] <= clip24(r2s(prod, dsh), 24'sd57345, 24'sd73727); m_a <= num3; m_b <= 64'(dfac); st <= W_Q3; end
-            W_Q3: begin q[3] <= clip24(r2s(prod, dsh), -24'sd8191, 24'sd8191); m_a <= num4; m_b <= 64'(dfac); st <= W_Q4; end
-            W_Q4: begin q[4] <= clip24(r2s(prod, dsh), -24'sd8191, 24'sd8191); m_a <= num5; m_b <= 64'(dfac); st <= W_Q5; end
+            W_Q2: begin q[2] <= clip24(r2s(prod, dsh), 24'sd57345, 24'sd73727); m_a <= num3; m_b <= dfac; st <= W_Q3; end
+            W_Q3: begin q[3] <= clip24(r2s(prod, dsh), -24'sd8191, 24'sd8191); m_a <= num4; m_b <= dfac; st <= W_Q4; end
+            W_Q4: begin q[4] <= clip24(r2s(prod, dsh), -24'sd8191, 24'sd8191); m_a <= num5; m_b <= dfac; st <= W_Q5; end
             W_Q5: begin
-                logic signed [63:0] p5, vx, vy;
-                p5 = 64'(clip24(r2s(prod, dsh), 24'sd57345, 24'sd73727));
-                q[5] <= 24'(p5);
-                // p0 / p1 from Mv[0] and the block centre
-                vx = (64'(mv_col) <<< 13) - (64'(signed'({1'b0, mid_x})) * (64'(q[2]) - 64'sd65536) + 64'(signed'({1'b0, mid_y})) * 64'(q[3]));
-                vy = (64'(mv_row) <<< 13) - (64'(signed'({1'b0, mid_x})) * 64'(q[4]) + 64'(signed'({1'b0, mid_y})) * (p5 - 64'sd65536));
+                logic signed [23:0] p5;
+                p5 = clip24(r2s(prod, dsh), 24'sd57345, 24'sd73727);
+                q[5] <= p5;
+                // p0 / p1 from Mv[0] and the block centre: the four products this cycle, the sums and clamps the next
+                t_xa <= 41'(signed'({1'b0, mid_x})) * 41'(signed'(25'(q[2]) - 25'sd65536));
+                t_xb <= 41'(signed'({1'b0, mid_y})) * 41'(q[3]);
+                t_ya <= 41'(signed'({1'b0, mid_x})) * 41'(q[4]);
+                t_yb <= 41'(signed'({1'b0, mid_y})) * 41'(signed'(25'(p5) - 25'sd65536));
+                st <= W_V;
+            end
+            W_V: begin
+                logic signed [63:0] vx, vy;
+                vx = (64'(mv_col) <<< 13) - (64'(t_xa) + 64'(t_xb));
+                vy = (64'(mv_row) <<< 13) - (64'(t_ya) + 64'(t_yb));
                 q[0] <= clip24(vx, -24'sd8388608, 24'sd8388607);
                 q[1] <= clip24(vy, -24'sd8388608, 24'sd8388607);
                 st <= W_SH0;
@@ -143,10 +163,10 @@ module warp_setup
                 b0 <= clip16(64'(q[3]));
                 rd = resolve_div(64'(q[2]));
                 dsh <= rd[21:16]; dfac <= 32'(signed'(rd[15:0]));
-                m_a <= 64'(q[4]) <<< 16; m_b <= 64'(signed'(rd[15:0])); st <= W_SG;
+                m_a <= 64'(q[4]) <<< 16; m_b <= 32'(signed'(rd[15:0])); st <= W_SG;
             end
-            W_SG: begin g0 <= clip16(r2s(prod, dsh)); m_a <= 64'(q[3]); m_b <= 64'(q[4]); st <= W_SD1; end
-            W_SD1: begin m_a <= prod; m_b <= 64'(dfac); st <= W_SD2; end
+            W_SG: begin g0 <= clip16(r2s(prod, dsh)); m_a <= 64'(q[3]); m_b <= 32'(q[4]); st <= W_SD1; end
+            W_SD1: begin m_a <= prod; m_b <= dfac; st <= W_SD2; end
             W_SD2: begin d0 <= clip16(64'(q[5]) - r2s(prod, dsh) - 64'sd65536); st <= W_FIN; end
             W_FIN: begin
                 logic signed [17:0] al, be, ga, de;
@@ -161,6 +181,7 @@ module warp_setup
                 done <= 1'b1; st <= W_IDLE;
             end
             default: st <= W_IDLE;
-        endcase
+          endcase
+        end
     end
 endmodule
