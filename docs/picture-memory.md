@@ -202,4 +202,11 @@ the stripe touches. What is missing is only the memory and the bookkeeping aroun
 
 Step A started 2026-10-23 13:00 PT; rings + port budget + `test_dec_host` at `TS_STAGE=lr` 2026-10-24; the inter
 path through `dec_host` (`tb/test_dec_host_inter.py`: bands, slot table and references from the flushed pictures,
-as the board software will do) written 2026-10-24, first runs in progress.
+as the board software will do) written 2026-10-24. Found on the way, all fixed the same day: the per-4x4 filter
+state (`mi_store`) was a 4-row ring (`ML2R` now from `FRAME_WIN`); a fb0 ring shallower than 3 + CDEF + LR rows
+deadlocks (flagged unsupported now); `dec_host`'s tile FIFO kept a tile's unread tail for the next tile of the
+frame (START.tile empties it; every earlier stream had one tile per frame); the motion-field / segmentation bands
+were trimmed to 2 rows in the window build (full-height whenever inter is built). Verified bit-exact against the
+model through the RING build: generated seeds with CDEF + LR at 96 and 320 lines, inter2a, inter_obmc, and the
+Argon streams test47 (multi-tile rows, super-res), test6641, test648, test8854 (super-res + CDEF + LR).
+`dec_host` synthesizes at 1080p geometry to 207.5k LUT / 255 URAM / 820 DSP on the U200.
