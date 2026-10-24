@@ -326,6 +326,19 @@ module blk_syntax
         cur_qidx_seg = hdr.seg_enabled ? hdr.seg_qidx[8*seg +: 8] : hdr.base_q_idx;
         intra_dir = use_fi ? filter_intra_mode_to_intra_dir(fi_mode) : ymode;
     end
+    // The tx-type CDF row address, a cycle ahead: p_txsz is set at least one state before S_TXTYPE (S_RES_TX sits
+    // between) and intra_dir / inter_any are block-level, so the set selection, Tx_Size_Sqr and the row arithmetic come
+    // from registers here instead of being computed in the request cycle (25 logic levels into cdf_store's forwarding
+    // compare, -4.8 ns at 100 MHz in the U200 inter build, 2026-10-24).
+    logic [CDF_AW-1:0] txt_addr_q; logic [3:0] txt_n_q;
+    always_ff @(posedge clk) begin
+        if (inter_any) begin
+            if (cur_set_i == 2'd1) begin txt_addr_q <= CDF_AW'(CDF_INTER_TX_TYPE_SET1 + int'(tx_sqr(p_txsz))); txt_n_q <= 4'd15; end
+            else if (cur_set_i == 2'd2) begin txt_addr_q <= CDF_AW'(CDF_INTER_TX_TYPE_SET2); txt_n_q <= 4'd11; end
+            else begin txt_addr_q <= CDF_AW'(CDF_INTER_TX_TYPE_SET3 + int'(tx_sqr(p_txsz))); txt_n_q <= 4'd1; end
+        end else if (cur_set == 2'd1) begin txt_addr_q <= CDF_AW'(CDF_INTRA_TX_TYPE_SET1 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET1_S0 + int'(intra_dir)); txt_n_q <= 4'd6; end
+        else begin txt_addr_q <= CDF_AW'(CDF_INTRA_TX_TYPE_SET2 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET2_S0 + int'(intra_dir)); txt_n_q <= 4'd4; end
+    end
 
     // uv tx size for chroma (get_tx_size)
     function automatic logic [4:0] uv_tx(input logic [4:0] b, input logic sx, input logic sy);
@@ -738,15 +751,7 @@ module blk_syntax
             S_MVHP_GO: begin sq_go = 1'b1; sq_n = 4'd1;
                            if (mv_cls == 4'd0) sq_addr = CDF_AW'(CDF_MV_CLASS0_HP + (use_ibc ? CDF_MV_CLASS0_HP_S0 : 0) + int'(mv_comp));
                            else sq_addr = CDF_AW'(CDF_MV_HP + (use_ibc ? CDF_MV_HP_S0 : 0) + int'(mv_comp)); end
-            S_TXTYPE: begin
-                sq_go = 1'b1;
-                if (inter_any) begin
-                    if (cur_set_i == 2'd1) begin sq_addr = CDF_AW'(CDF_INTER_TX_TYPE_SET1 + int'(tx_sqr(p_txsz))); sq_n = 4'd15; end
-                    else if (cur_set_i == 2'd2) begin sq_addr = CDF_AW'(CDF_INTER_TX_TYPE_SET2); sq_n = 4'd11; end
-                    else begin sq_addr = CDF_AW'(CDF_INTER_TX_TYPE_SET3 + int'(tx_sqr(p_txsz))); sq_n = 4'd1; end
-                end else if (cur_set == 2'd1) begin sq_addr = CDF_AW'(CDF_INTRA_TX_TYPE_SET1 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET1_S0 + int'(intra_dir)); sq_n = 4'd6; end
-                else begin sq_addr = CDF_AW'(CDF_INTRA_TX_TYPE_SET2 + int'(tx_sqr(p_txsz)) * CDF_INTRA_TX_TYPE_SET2_S0 + int'(intra_dir)); sq_n = 4'd4; end
-            end
+            S_TXTYPE: begin sq_go = 1'b1; sq_addr = txt_addr_q; sq_n = txt_n_q; end   // computed a cycle ahead (above)
             S_LIT:   if (lit_n != 4'd0) begin sq_go = 1'b1; sq_kind = 2'd2; end
             S_PAL_W, S_PTOK_W: begin sq_go = pq_go; sq_addr = pq_addr; sq_n = pq_n; sq_kind = pq_kind; end
             default: ;

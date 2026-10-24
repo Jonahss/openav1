@@ -143,17 +143,24 @@ module mi_store
     function automatic logic [ML2R+ML2C-9:0] uidx(input logic [SBW-1:0] r64, input logic [SBW-1:0] c64);
         uidx = {(ML2R - 4)'(r64), (ML2C - 4)'(c64)};
     endfunction
+    // The write is pipelined: cycle 1 registers the request (the four unit addresses, which lanes write, the value), cycle 2
+    // decodes and writes. The header's sb128 fan-out, the +1 adders and the 4-lane x 2^(ML2R+ML2C-8) enable decode in one
+    // cycle were 35 logic levels (-4.5 ns at 100 MHz, U200 inter build 2026-10-24). CDEF reads a unit a superblock row
+    // after the block that set it, so the extra cycle is invisible to the reader.
+    logic              cdq_v, cdq_clr;
+    logic [3:0]        cdq_lane;                                 // lanes (i*2+j) that write
+    logic [3:0]        cdq_val;
+    logic [ML2R+ML2C-9:0] cdq_u [4];
     always_ff @(posedge clk) begin
-        if (cd_clr || cd_we) begin
-            for (int i = 0; i < 2; i++)
-                for (int j = 0; j < 2; j++)
-                    if ((i == 0 && j == 0) || cd_sb128) begin
-                        logic [ML2R+ML2C-9:0] u;
-                        u = uidx(cd_row64 + SBW'(i), cd_col64 + SBW'(j));
-                        if (cd_clr) cdef_arr[u] <= 4'd0;
-                        else if (!cd_sb128 || cd_mask[i * 2 + j]) cdef_arr[u] <= {1'b1, cd_idx};
-                    end
-        end
+        cdq_v <= cd_clr || cd_we; cdq_clr <= cd_clr; cdq_val <= {1'b1, cd_idx};
+        for (int i = 0; i < 2; i++)
+            for (int j = 0; j < 2; j++) begin
+                cdq_u[i * 2 + j] <= uidx(cd_row64 + SBW'(i), cd_col64 + SBW'(j));
+                cdq_lane[i * 2 + j] <= ((i == 0 && j == 0) || cd_sb128) && (cd_clr || !cd_sb128 || cd_mask[i * 2 + j]);
+            end
+        if (cdq_v)
+            for (int l = 0; l < 4; l++)
+                if (cdq_lane[l]) cdef_arr[cdq_u[l]] <= cdq_clr ? 4'd0 : cdq_val;
         cdr_val <= cdef_arr[uidx(cdr_row64, cdr_col64)];
     end
 
