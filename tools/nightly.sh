@@ -54,8 +54,8 @@ if [ -d "$ARGON" ]; then
   # inter frames through the WHOLE pipeline (deblocking with the inter ref / mode deltas and the skipped-inter edge rule,
   # CDEF, super-resolution, loop restoration): the corpus runs stop at recon, which hid both lf_top gaps until 2026-10-20
   run dec_inter_lr       FBX=12 FBY=12 TS_STAGE=lr TS_IVF="$ARGON/test47.obu,$ARGON/test6491.obu,$ARGON/test11.obu" python tb/runner.py dec_top test_dec_inter
-  # the same Argon streams through dec_host's RING build (super-res in test11: fb0s + final_buf 3)
-  run dec_host_inter_argon FBX=12 FBY=12 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_IVF="$ARGON/test47.obu,$ARGON/test11.obu" python tb/runner.py dec_host test_dec_host_inter
+  # Argon inter streams through dec_host's RING build: test47 multi-tile rows + super-res, test6641 / test8854 super-res + CDEF + LR (test11 is sb128: model only there)
+  run dec_host_inter_argon FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_IVF="$ARGON/test47.obu,$ARGON/test6641.obu,$ARGON/test8854.obu" python tb/runner.py dec_host test_dec_host_inter
 fi
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
 GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')

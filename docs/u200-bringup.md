@@ -131,27 +131,29 @@ host-side step once the register path is proven; it is not needed to decode.
 
 ## After the intra build: the inter decoder on the card
 
-The inter decoder as verified (`FRAME_URAM = 0`) has the simulation frame memory (`rtl/frame_mem.sv`: multi-port
-BRAM model, black-boxed in synthesis, 1024 x 512) and reads references from DDR through `ref_fetch`. For the
-card it needs a real frame memory for the picture being decoded plus the CDEF / LR buffers. Two routes, to be
-decided with numbers rather than taste:
+Decided and built 2026-10-24 (docs/picture-memory.md, step A): every frame buffer is an UltraRAM **ring of superblock
+rows** (fb0 + its mirror fb0m for the filter stages, SR's fb0s, fb1, fb2: `FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3`),
+the final picture is flushed row by row to DDR and the references are read back from those flushed pictures by
+`ref_fetch`. The whole-picture-in-URAM and DDR-line-buffer routes that stood here are superseded: the rings are the
+throughput-grade memory (the line-buffer version is step C, for silicon). Synthesis at 1080p geometry
+(FBX = FBY = 11): 207.5k LUT, 255 URAM, 204 BRAM, 820 DSP for `dec_host` alone. The register map and host software
+gained the inter protocol (`tb/host_regs.py`: `seg_map_seq`, `motion_field_seq`, `ref_seq`,
+`HostDecoder.decode_frames_inter`; `tools/kv260/decode.py --inter`), which `tb/test_dec_host_inter.py` verified
+against the model on the generated inter streams and the Argon streams test47 (multi-tile rows, super-res), test6641,
+test648 and test8854 (super-res + CDEF + LR).
 
-- **Whole picture in UltraRAM, three buffers.** `frame_mem_uram` holds `(W/4) x lines x 1.5` 72-bit words
-  (4:2:0), 4,096 words per URAM288. At FBX = FBY = 11 as written (lines = 2048, a power of two) that is 384 URAM
-  per buffer, 1,152 for fb0 / fb1 / fb2: does not fit the 960. With the line count a parameter (1088 for 1080p
-  instead of `1 << FBY`; the y coordinate keeps its 11 bits) it is 204 per buffer, 612 for three, and fits with
-  room; 4K (3840 x 2176) would be 816 for one buffer. Three SLRs to cross (URAM is spread across the die; a buffer
-  that straddles SLRs needs the two-cycle crossings to hold), 128-pixel superblocks and 4:4:4 as the window has
-  them. Fast to try: `FRAME_URAM = 1`, `FRAME_WIN = 0`, the lines parameter, plus the fb1 / fb2 wiring the window
-  build left out.
-- **Line buffers in BRAM over DDR** (the "DDR version" of `docs/frame-memory.md`): each stage port gets a few rows
-  of its plane in BRAM with a DMA engine per port running ahead by superblock row; the coherence between recon /
-  LF / CDEF / LR is the sequencer's superblock-row ordering, which already exists for the window. The real design
-  (any picture size, any format), more RTL and a new gate-level replay of the memory.
+Inter day one on the card, after the intra checklist above:
 
-Either way the register map and the host software above do not change: the decoder's `m_axi` already reaches
-the bank, the slot table (0x400) and `REF_SLOT` are what `tb/test_dec_inter.py` programs, and `XdmaStage.write`
-loads reference pictures where `load_slot` would.
+1. `U200_CORE=0 U200_INTER=1 U200_WIN=5 U200_WIN1=3 U200_WIN2=3 U200_MHZ=100 U200_STRATEGY=Performance_ExtraTimingOpt
+   U200_PBLOCK=1 fpga/u200/build.sh <tag>` (the inter build; the 100 MHz closure of the intra build is the hope, not
+   a given: ~290k LUT with XDMA and the MIG).
+2. `python3 tools/kv260/decode.py --xdma 0 --inter streams/inter/inter2a_8bit.ivf --ref refout/inter2a_8bit.yuv`: the
+   model decodes alongside (seconds a frame: the sequence state comes from it, as in simulation), the pictures land
+   in a pool of 8 frame buffers in the card's DDR (`--pool`), each frame's buffer becomes its reference slots'
+   address. Then test47 and the Argon super-res streams, then `--show` for the panel... the U200 has no panel: the
+   pictures come back over c2h for the comparison, the display stays the Kria's.
+3. Real-time inter needs the hardware side of the frame state (motion-field projection, CDF and segmentation
+   save / load engines) instead of the host writing the bands: the throughput phase's work, sized by the census.
 
 ## Lessons so far (flow only; the card is not here)
 
