@@ -32,7 +32,7 @@ IHDR_FIELDS = [  # syn_pkg::ihdr_t order (MSB first)
     ("is_inter", 1), ("reference_select", 1), ("skip_mode_present", 1), ("skip_mode_frame0", 3), ("skip_mode_frame1", 3),
     ("allow_hp_mv", 1), ("force_integer_mv", 1), ("interp_filter", 3), ("motion_mode_switchable", 1), ("allow_warped_motion", 1),
     ("use_ref_frame_mvs", 1), ("enable_dual_filter", 1), ("enable_interintra_compound", 1), ("enable_masked_compound", 1),
-    ("enable_jnt_comp", 1), ("enable_order_hint", 1), ("order_hint_bits", 3), ("order_hint", 8), ("order_hints", 56),
+    ("enable_jnt_comp", 1), ("enable_order_hint", 1), ("order_hint_bits", 4), ("order_hint", 8), ("order_hints", 56),
     ("ref_sign_bias", 7), ("ref_scaled", 7), ("gm_type", 14), ("gm_params", 1008), ("seg_ref_en", 8), ("seg_ref_data", 24),
     ("seg_globalmv_en", 8), ("seg_update_map", 1), ("seg_temporal_update", 1)]
 LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
@@ -43,7 +43,11 @@ LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
 def pack(fields, vals):
     v = 0
     for name, w in fields:
-        x = vals[name] & ((1 << w) - 1)
+        x = vals[name]
+        # a value outside the field is a layout bug, not something to truncate quietly (OrderHintBits 8 in a 3-bit field
+        # reached the RTL as 0 and broke every relative-distance computation in the reconstruction; test13842 frame 11)
+        assert -(1 << (w - 1)) <= x < (1 << w), f"pack: {name} = {x} does not fit {w} bits"
+        x &= (1 << w) - 1
         v = (v << w) | x
     return v
 

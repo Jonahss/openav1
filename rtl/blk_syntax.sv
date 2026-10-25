@@ -471,7 +471,7 @@ module blk_syntax
         logic [7:0] diff, m;
         logic signed [8:0] rd;
         diff = a - b;
-        m = 8'd1 << (ihdr.order_hint_bits - 3'd1);
+        m = 8'd1 << (ihdr.order_hint_bits - 4'd1);
         rd = 9'(signed'({1'b0, diff & (m - 8'd1)})) - 9'(signed'({1'b0, diff & m}));
         if (!ihdr.enable_order_hint) rd = 9'sd0;
         rel_dist_abs = 8'((rd < 0) ? -rd : rd);

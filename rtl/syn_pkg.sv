@@ -70,7 +70,7 @@ package syn_pkg;
         logic        enable_masked_compound;
         logic        enable_jnt_comp;
         logic        enable_order_hint;
-        logic [2:0]  order_hint_bits;          // OrderHintBits
+        logic [3:0]  order_hint_bits;          // OrderHintBits (1 .. 8: a 3-bit field held 8 as 0; test13842 frame 11)
         logic [7:0]  order_hint;               // OrderHint of this frame
         logic [55:0] order_hints;              // OrderHints[LAST_FRAME + i] at [8i +: 8]
         logic [6:0]  ref_sign_bias;            // RefFrameSignBias[LAST_FRAME + i] at bit i
