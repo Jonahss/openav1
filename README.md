@@ -4,9 +4,13 @@
 verified against the reference decoders at every stage, and brought up on a low-cost FPGA (AMD Kria KV260)
 before anyone talks about silicon. Year one targets **intra-only 1080p** (key frames / still pictures /
 AVIF): the arithmetic decoder, the whole tile syntax, prediction, transforms, reconstruction and the
-in-loop filters. Inter prediction is in progress: the inter block syntax (references, MV prediction with the
-full candidate stack, compound and motion modes) decodes Argon inter frames in RTL symbol-exactly against the Python
-model (branch `inter`); motion compensation and the reference buffers in DDR are the next stage.
+in-loop filters. **Inter prediction is in RTL too** (since 2026-10-19): the inter block syntax, the full MV
+candidate stack, motion compensation with scaled references, warped and global motion, OBMC, wedge and
+difference-weighted compounds and inter-intra, with the references read from DDR over AXI. 300 of the 329
+Argon profile-0 inter conformance streams that fit the simulation budget decode bit-exact through the whole
+pipeline (motion compensation, deblocking, CDEF, super-resolution, loop restoration); profiles 1 and 2 (4:4:4,
+4:2:2, 12-bit) are being run now. The full decoder (~150 k LUTs) no longer fits the KV260, so it is moving to an
+Alveo U200 while the Kria keeps the intra decoder.
 
 Why: hardware AV1 decoders exist inside phones and TVs, but there is no open one you can read, simulate,
 change and put on your own board. This project is that. It is also an experiment in how far one careful
@@ -19,7 +23,32 @@ existing decoder's source; dav1d and libaom are used only as judges.
 
 ## Progress (latest first)
 
-- **2026-10-19** Inter frame syntax in RTL (stage 1 of inter prediction): `blk_syntax` decodes inter blocks (references, the
+- **2026-10-25** Two small bugs with long shadows, found with new trace hooks (`TD_MVTRACE` / `MV_TRACE` compare the RTL's and the
+  model's MV candidate stacks block by block): the motion-field loaders (testbench and board driver) wrote one row and one column
+  past the field, which wraps onto row 0 when a frame exactly fills the build's band and erased the top row's temporal MV
+  candidates; and `order_hint_bits` was a 3-bit field, so OrderHintBits = 8 reached the reconstruction as 0 and swapped the
+  compound distance weights. The register packer now refuses values that do not fit. Gate round 5 (netlist replays of the
+  inter decoder, 155 k + 244 k cycles, 0 mismatches) and the 50 MHz U200 inter build run at the fixed commit.
+- **2026-10-24 — picture memory step A; the inter decoder on the U200.** The deblocked / CDEF / restored pictures live in
+  UltraRAM superblock-row rings (`docs/picture-memory.md`); inter frames decode through `dec_host` the way the board runs them
+  (registers, sequencer, DMA flush, references = the flushed pictures). A multi-tile bug in the host interface (the tile byte
+  FIFO kept the previous tile's tail) was found this way. First pipelining pass for 100 MHz (CDEF / LR write ports, tx-type CDF
+  address, MI store, `warp_setup` multiplier); the 50 MHz inter build on the Alveo U200 closes timing (292 k LUT, 271 URAM,
+  831 DSP); 100 MHz needs 2-3 internal stages in the CDEF and loop-restoration datapaths (throughput phase).
+- **2026-10-23 — Alveo U200 host path.** XDMA + DDR4 block design around `dec_host`, host driver `--xdma` backend
+  (`docs/u200-bringup.md`); the intra decoder closes at 100 MHz on the U200 (80 MHz with everything met). Throughput budget
+  from the Argon census: 3.69 cycles / pixel today with the stages back to back (`docs/throughput-budget.md`); 1080p60 at
+  200 MHz needs 1.6 c/px per stage, 4K60 is a further 4x.
+- **2026-10-20/22 — inter through the whole pipeline.** Loop filter reference / mode deltas for inter blocks (7.14.4) and the
+  skipped-inter edge rule (7.14.2) were the two gaps the first lr-stage Argon batch found; 300 / 329 recon-exact Argon inter
+  streams are bit-exact through deblocking, CDEF, super-resolution and loop restoration (the 29 largest are the simulation
+  budget). `INTER=0` compiles the inter paths out for the K26 (109.9 k LUT window build).
+- **2026-10-19 — motion compensation (stage 2 of inter prediction), all of it.** `ref_fetch` (AXI read master, edge-replicated
+  patches), `mc_filt` (4-lane separable 8-tap filter, AVERAGE / DISTANCE blends, 17-bit compound lanes), scaled references
+  (7.11.3.3), OBMC, wedge and difference-weighted masks, inter-intra, local and global warp (`warp_setup`, 7.11.3.5/6),
+  sub-8x8 chroma motion lists, the reference slot table and DDR reference pictures in `dec_host`. Every block fuzzed and
+  netlist-replayed; Argon inter streams decode bit-exact against the model at the reconstruction stage. Merged to `main`.
+- **2026-10-19 (morning)** Inter frame syntax in RTL (stage 1 of inter prediction): `blk_syntax` decodes inter blocks (references, the
   full MV candidate stack with global / temporal / compound candidates, DRL, MV differences, inter-intra, motion modes with the
   overlappable and warp-sample scans, compound types, switchable filters), with the inherited CDFs, segmentation map and
   motion field in host-written band memories. Argon profile-0 inter streams are record- and symbol-exact against the Python
@@ -40,8 +69,9 @@ existing decoder's source; dav1d and libaom are used only as judges.
   before a merge (simulation green is not enough; two synthesis bugs were caught this way).
 - **Nightly** on the batch host: tile syntax, whole-frame decodes on generated streams, the real corpus (44 frames)
   and an Argon conformance subset (25 frames) through the RTL, all compared with dav1d / Argon checksums.
-- **Next:** packed and DMA picture read-back, the frame memory in DDR for full-size pictures, the three filters on
-  the board, 100 MHz, then inter prediction.
+- **Next:** the inter decoder running on the Alveo U200 (50 MHz image first), profiles 1 and 2 through the RTL, then the
+  throughput phase: pipelined filter datapaths for 100 MHz, 4+ pixels per clock, the picture memory in DDR (steps B-D of
+  `docs/picture-memory.md`) towards 4K60.
 
 ## Method
 
@@ -65,7 +95,7 @@ existing decoder's source; dav1d and libaom are used only as judges.
 The two questions "did I read the spec right?" and "did I build the hardware right?" are always answered
 separately.
 
-## Status (2026-09-27)
+## Status (2026-10-25)
 
 | Stage | Python model | RTL | Verified |
 |---|---|---|---|
@@ -84,10 +114,13 @@ separately.
 | CDEF (7.15) | `tb/cdef_model.py` | `rtl/cdef_top.sv` | 4 real frames, 172 k filtered pixels == model; model == dav1d |
 | Loop restoration (7.17): Wiener + self-guided | `tb/lr_model.py` | `rtl/lr_top.sv` | 2 real frames, 32 k filtered pixels == model; model == dav1d |
 | Intra block copy (5.11.7 / 7.10.2 / 7.11.3 with the current frame as reference) | `tb/tile_model.py`, `tb/recon_model.py` | `rtl/mv_stack.sv`, `rtl/mv_mem.sv`, `rtl/blk_syntax.sv`, `rtl/recon_top.sv` | model == dav1d on 4 Argon intrabc streams (test4592/8304/5297/5366: 1.04 M symbols, 22 k coefficient blocks, 21 pictures); RTL syntax == model on test4592 + test8304 (10 k blocks); full RTL picture == dav1d on test4592 |
+| Inter block syntax (5.11.7-5.11.33): references, MV prediction (7.10.2: spatial, temporal, global, compound candidates, DRL), MV differences, motion modes, compound types, inter-intra, switchable filters | `tb/tile_model.py`, `tb/seq_model.py` (CDF / segmentation / motion-field inheritance, 7.9 projection) | `rtl/blk_syntax.sv`, `rtl/mv_stack.sv`, `rtl/mv_mem.sv`, `rtl/mf_band.sv`, `rtl/seg_band.sv` | model == dav1d on 758 / 766 Argon inter streams (header parser 779 / 779); RTL record- and symbol-exact on 260+ Argon inter streams + 3 netlist replays |
+| Motion compensation (7.11.3): reference fetch with edge replication, 8-tap separable filters, scaled references, AVERAGE / DISTANCE / wedge / DIFFWTD compounds, OBMC, inter-intra, local + global warp | `tb/recon_model.py` | `rtl/ref_fetch.sv`, `rtl/mc_filt.sv`, `rtl/warp_setup.sv`, `rtl/recon_top.sv` | block fuzz (hundreds of units each) + netlist replays; whole-frame: 300 / 329 recon-exact Argon profile-0 inter streams bit-exact through all filters at `TS_STAGE=lr`; profiles 1 + 2: 584 streams run, 5 flagged -> 2 bugs fixed 2026-10-25, 3 watchdog false alarms |
+| Host interface: register file, frame sequencer, DMA flush of finished rows, reference slot table, AXI read master | `tb/host_regs.py` (the board driver) | `rtl/dec_host.sv`, `rtl/rec_fifo.sv`, `rtl/frame_mem*.sv` | inter frames through `dec_host` with the flushed pictures as references (Argon test47 / 6641 / 648 / 8854, multi-tile rows, super-res + CDEF + LR); gate-level replays of the whole decoder every round |
 | Super-resolution (7.16) | `tb/superres_model.py` | `rtl/sr_top.sv` (in-place row upscaler) | model == dav1d on 4 Argon upscaling frames; full RTL picture == dav1d on test60 (60->67), test5644 (255->447), test7463 (1260->2048 with CDEF + self-guided restoration) |
 | Film grain synthesis (7.18.3) | not planned for the core: conformance references are grain-free (Argon md5_no_film_grain) | — | — |
 
-`rtl/dec_top.sv` is the integrated intra decoder: tile bytes + parsed headers in; the in-loop filters
+`rtl/dec_top.sv` is the integrated decoder (intra and inter): tile bytes + parsed headers in; the in-loop filters
 (deblocking, CDEF, super-resolution, loop restoration) either run over the finished frame on request
 (host-driven mode) or, with `pipe_en`, trail the tile decoder by superblock rows under a frame sequencer so
 that a frame takes as long as its slowest stage rather than the sum (`TS_PIPE=1` in the testbench). The output
@@ -140,18 +173,20 @@ Synthesis estimates (generic cells, no target library):
 
 ## Hardware plan
 
-First board: AMD Kria KV260 (Zynq UltraScale+ K26: ~117 k LUTs, 144 BRAMs, quad Cortex-A53 running Linux).
-Header parsing and stream feeding run on the ARM cores; the fabric holds the tile decoder; the picture goes
-out over HDMI/DisplayPort. Vivado (x86 only) builds the bitstream; the board is driven over Ethernet.
+First board: AMD Kria KV260 (Zynq UltraScale+ K26: ~117 k LUTs, 144 BRAMs, quad Cortex-A53 running Linux):
+the intra decoder, header parsing and stream feeding on the ARM cores, the picture on the board's display
+(`docs/kv260-bringup.md`). Second board: Alveo U200 (XCU200, ~1.2 M LUTs, 64 GB DDR4, PCIe) for the full inter decoder,
+driven from the P620 host over XDMA (`docs/u200-bringup.md`). Vivado (x86 only) builds the bitstreams.
 Every block is parameterised so throughput trades against area (butterfly slots, pixels per clock).
 
 ## Roadmap
 
 1. ~~Finish the intra pipeline in RTL: reconstruction end to end, then deblocking, CDEF and loop restoration.~~ Done.
-2. Argon conformance: run the intra-only subset through the RTL simulation. Running nightly (profile0 core subset).
-3. Throughput: measure, then pipeline (2 clk/symbol target for the syntax decoder, 4+ px/clk reconstruction). In progress: area first, 78 MHz routed.
-4. KV260 bring-up: software header parser and driver on the ARM side, first pictures on a screen. Pictures decode on the board (2026-10-14); the screen is next.
-5. Inter prediction.
+2. ~~Argon conformance: the intra-only subset through the RTL simulation.~~ Nightly; the inter subset (profile 0) is 300 / 329 bit-exact through every stage, profiles 1 and 2 running.
+3. ~~KV260 bring-up.~~ Intra decoder at 80 MHz, pictures on the board's display (2026-10-14/17).
+4. ~~Inter prediction.~~ In RTL and verified in simulation (2026-10-19 .. 25); on the U200 next (the full decoder is 1.3x the K26).
+5. Throughput: the filter datapaths pipelined for 100 MHz, then 4+ pixels per clock and the picture memory in DDR (`docs/picture-memory.md`, `docs/throughput-budget.md`): 1080p60 at 200 MHz, 4K60 after.
+6. A first piece of silicon: the arithmetic decoder (`rtl/msac.sv`) as a Tiny Tapeout submission once its FPGA twin with the same pin interface exists.
 
 Deferred items and the reasoning behind them: [docs/FUTURE.md](docs/FUTURE.md).
 
