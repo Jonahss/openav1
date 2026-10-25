@@ -171,11 +171,12 @@ module cdef_top
     // Pipelined (2026-10-25, for 100 MHz on the U200: the one-cycle function was 60+ logic levels, -6.4 ns):
     //   stage A  the group's neighbourhood (window rows pi .. pi+4, columns pj .. pj+8) and the block's filter parameters,
     //            registered in the FSM's C_PIX cycle (the window may be reloaded for the next plane right after);
-    //   stage B  the 12 taps of each lane selected by direction (8-way muxes), their differences to the centre, min / max;
-    //   stage C  constrain() of each difference (the damping adjustment per threshold is a block constant from stage A)
-    //            times its tap weight: 12 signed terms per lane;
-    //   stage D  the sum, rounding and clamp straight into the registered write port (dst4_*).
-    // A write issued in C_PIX at cycle t lands at the port in t + 4; done / busy follow (dsr).
+    //   stage B  the 12 taps of each lane selected by direction (8-way muxes);
+    //   stage C  constrain() of each tap's difference to the centre (the damping adjustment per threshold is a block
+    //            constant from stage A) times its tap weight: 12 signed terms per lane; the min / max over the taps;
+    //   stage D  three partial sums of four terms;
+    //   stage E  the sum, rounding and clamp straight into the registered write port (dst4_*).
+    // A write issued in C_PIX at cycle t lands at the port in t + 5; done / busy follow (dsr).
     logic [11:0] pri_str, sec_str;
     logic [4:0]  damping;
     logic [2:0]  dr;
@@ -246,20 +247,17 @@ module cdef_top
     function automatic int tap_k(input int ti); tap_k = (ti / 2) % 2; endfunction
     function automatic int tap_sg(input int ti); tap_sg = ti % 2; endfunction
 
-    // ---- stage B: the taps selected by direction, their differences to the centre sample, the min / max over the present taps
+    // ---- stage B: the 12 taps of each lane selected by direction (8-way muxes), with their presence
     logic        vB;
-    logic signed [12:0] dB [0:3][0:11];
+    logic [11:0] tB  [0:3][0:11];
     logic        okB [0:3][0:11];
-    logic [11:0] ctrB [0:3], mnB [0:3], mxB [0:3];
+    logic [11:0] ctrB [0:3];
     logic [11:0] priB, secB; logic [4:0] adjpB, adjsB; logic prioddB;
     logic [FBX-1:0] xB; logic [FBY-1:0] yB; logic [1:0] plB;
-    logic signed [12:0] dB_c [0:3][0:11];
+    logic [11:0] tB_c  [0:3][0:11];
     logic        okB_c [0:3][0:11];
-    logic [11:0] mnB_c [0:3], mxB_c [0:3];
     always_comb
-        for (int l = 0; l < 4; l++) begin
-            logic [11:0] ctr, mn, mx;
-            ctr = nbA[2][l + 2]; mn = ctr; mx = ctr;
+        for (int l = 0; l < 4; l++)
             for (int ti = 0; ti < 12; ti++) begin
                 logic [11:0] t; logic ok;
                 t = '0; ok = 1'b0;
@@ -273,34 +271,34 @@ module cdef_top
                     3'd6: begin t = tap_at(6, tap_kind(ti), tap_k(ti), tap_sg(ti), l); ok = tap_ok(6, tap_kind(ti), tap_k(ti), tap_sg(ti), l); end
                     default: begin t = tap_at(7, tap_kind(ti), tap_k(ti), tap_sg(ti), l); ok = tap_ok(7, tap_kind(ti), tap_k(ti), tap_sg(ti), l); end
                 endcase
-                dB_c[l][ti]  = 13'(signed'({1'b0, t})) - 13'(signed'({1'b0, ctr}));
-                okB_c[l][ti] = ok;
-                if (ok && t > mx) mx = t;
-                if (ok && t < mn) mn = t;
+                tB_c[l][ti] = t; okB_c[l][ti] = ok;
             end
-            mnB_c[l] = mn; mxB_c[l] = mx;
-        end
     always_ff @(posedge clk) begin
         vB <= vA && !rst;
         for (int l = 0; l < 4; l++) begin
-            ctrB[l] <= nbA[2][l + 2]; mnB[l] <= mnB_c[l]; mxB[l] <= mxB_c[l];
-            for (int ti = 0; ti < 12; ti++) begin dB[l][ti] <= dB_c[l][ti]; okB[l][ti] <= okB_c[l][ti]; end
+            ctrB[l] <= nbA[2][l + 2];
+            for (int ti = 0; ti < 12; ti++) begin tB[l][ti] <= tB_c[l][ti]; okB[l][ti] <= okB_c[l][ti]; end
         end
         priB <= priA; secB <= secA; adjpB <= adjpA; adjsB <= adjsA; prioddB <= prioddA;
         xB <= xA; yB <= yA; plB <= plA;
     end
 
-    // ---- stage C: constrain() of every present tap times its weight (Cdef_Pri_Taps / Cdef_Sec_Taps: 1 .. 4)
+    // ---- stage C: constrain() of every present tap's difference to the centre, times its weight (Cdef_Pri_Taps /
+    // Cdef_Sec_Taps: 1 .. 4); the min / max over the present taps and the centre
     logic        vC;
     logic signed [15:0] termC [0:3][0:11];
     logic [11:0] ctrC [0:3], mnC [0:3], mxC [0:3];
     logic [FBX-1:0] xC; logic [FBY-1:0] yC; logic [1:0] plC;
     logic signed [15:0] termC_c [0:3][0:11];
+    logic [11:0] mnC_c [0:3], mxC_c [0:3];
     always_comb
-        for (int l = 0; l < 4; l++)
+        for (int l = 0; l < 4; l++) begin
+            logic [11:0] mn, mx;
+            mn = ctrB[l]; mx = ctrB[l];
             for (int ti = 0; ti < 12; ti++) begin
-                logic signed [12:0] cv; logic [2:0] w;
-                cv = okB[l][ti] ? ((tap_kind(ti) == 0) ? constrain_s(dB[l][ti], priB, adjpB) : constrain_s(dB[l][ti], secB, adjsB)) : 13'sd0;
+                logic signed [12:0] d, cv; logic [2:0] w;
+                d = 13'(signed'({1'b0, tB[l][ti]})) - 13'(signed'({1'b0, ctrB[l]}));
+                cv = okB[l][ti] ? ((tap_kind(ti) == 0) ? constrain_s(d, priB, adjpB) : constrain_s(d, secB, adjsB)) : 13'sd0;
                 w = (tap_kind(ti) == 0) ? pri_tap(prioddB, 1'(tap_k(ti))) : sec_tap(prioddB, 1'(tap_k(ti)));
                 case (w)
                     3'd1: termC_c[l][ti] = 16'(cv);
@@ -308,39 +306,57 @@ module cdef_top
                     3'd3: termC_c[l][ti] = (16'(cv) <<< 1) + 16'(cv);
                     default: termC_c[l][ti] = 16'(cv) <<< 2;
                 endcase
+                if (okB[l][ti] && tB[l][ti] > mx) mx = tB[l][ti];
+                if (okB[l][ti] && tB[l][ti] < mn) mn = tB[l][ti];
             end
+            mnC_c[l] = mn; mxC_c[l] = mx;
+        end
     always_ff @(posedge clk) begin
         vC <= vB && !rst;
         for (int l = 0; l < 4; l++) begin
-            ctrC[l] <= ctrB[l]; mnC[l] <= mnB[l]; mxC[l] <= mxB[l];
+            ctrC[l] <= ctrB[l]; mnC[l] <= mnC_c[l]; mxC[l] <= mxC_c[l];
             for (int ti = 0; ti < 12; ti++) termC[l][ti] <= termC_c[l][ti];
         end
         xC <= xB; yC <= yB; plC <= plB;
     end
 
-    // ---- stage D: the sum, rounding and the clamp to the taps' range (into the port register below)
+    // ---- stage D: three partial sums of four terms each per lane
+    logic        vD;
+    logic signed [17:0] partD [0:3][0:2];
+    logic [11:0] ctrD [0:3], mnD [0:3], mxD [0:3];
+    logic [FBX-1:0] xD; logic [FBY-1:0] yD; logic [1:0] plD;
+    always_ff @(posedge clk) begin
+        vD <= vC && !rst;
+        for (int l = 0; l < 4; l++) begin
+            for (int g = 0; g < 3; g++)
+                partD[l][g] <= 18'(termC[l][4 * g]) + 18'(termC[l][4 * g + 1]) + 18'(termC[l][4 * g + 2]) + 18'(termC[l][4 * g + 3]);
+            ctrD[l] <= ctrC[l]; mnD[l] <= mnC[l]; mxD[l] <= mxC[l];
+        end
+        xD <= xC; yD <= yC; plD <= plC;
+    end
+
+    // ---- stage E: the sum, rounding and the clamp to the taps' range (into the port register below)
     function automatic logic [11:0] cdef_out(input int l);
         logic signed [17:0] total;
         logic signed [18:0] v;
-        total = 18'sd0;
-        for (int ti = 0; ti < 12; ti++) total = total + 18'(termC[l][ti]);
-        v = 19'(signed'({7'b0, ctrC[l]})) + ((19'sd8 + 19'(total) - (total < 0 ? 19'sd1 : 19'sd0)) >>> 4);
-        if (v < 19'(signed'({7'b0, mnC[l]}))) cdef_out = mnC[l];
-        else if (v > 19'(signed'({7'b0, mxC[l]}))) cdef_out = mxC[l];
+        total = partD[l][0] + partD[l][1] + partD[l][2];
+        v = 19'(signed'({7'b0, ctrD[l]})) + ((19'sd8 + 19'(total) - (total < 0 ? 19'sd1 : 19'sd0)) >>> 4);
+        if (v < 19'(signed'({7'b0, mnD[l]}))) cdef_out = mnD[l];
+        else if (v > 19'(signed'({7'b0, mxD[l]}))) cdef_out = mxD[l];
         else cdef_out = 12'(v);
     endfunction
-    logic [47:0] out4;                                 // samples (pi, pj .. pj+3) of the group in stage C
+    logic [47:0] out4;                                 // samples (pi, pj .. pj+3) of the group in stage D
     always_comb for (int l = 0; l < 4; l++) out4[l * 12 +: 12] = cdef_out(l);
     // copy path
     logic [5:0] cpi;
 
     // ---------------------------------------------------------------- memory ports
-    // The write port is registered. A filtered group issued in C_PIX at cycle t reaches the port at t + 4 (stages A, B, C,
+    // The write port is registered. A filtered group issued in C_PIX at cycle t reaches the port at t + 5 (stages A .. D,
     // then this register); the copy path (unfiltered blocks) writes from C_COPY_WR directly. The two never overlap: a block
-    // is either filtered or copied, and the pipeline has drained (3 cycles) long before the next block's first copy write
+    // is either filtered or copied, and the pipeline has drained (4 cycles) long before the next block's first copy write
     // (C_NEXT, C_BLK, the cdef index and skip reads: 7 cycles). done and busy wait for the last write to land.
     logic        dst_we_c, dst4_we_c; logic [1:0] dst_plane_c, dst4_plane_c; logic [FBX-1:0] dst_x_c, dst4_x_c; logic [FBY-1:0] dst_y_c, dst4_y_c;
-    logic [11:0] dst_wdata_c; logic [47:0] dst4_wdata_c; logic done_i, busy_q; logic [2:0] dsr;
+    logic [11:0] dst_wdata_c; logic [47:0] dst4_wdata_c; logic done_i, busy_q; logic [3:0] dsr;
     always_comb begin
         src_re = 1'b0; src_plane = fplane; src_x = FBX'(wx); src_y = FBY'(wy);
         dst_we_c = 1'b0; dst_plane_c = fplane; dst_x_c = FBX'(px0 + PXW'(pj)); dst_y_c = FBY'(py0 + PXW'(pi)); dst_wdata_c = 12'd0;
@@ -351,20 +367,20 @@ module cdef_top
             C_COPY_WR: dst4_we_c = 1'b1;
             default: ;
         endcase
-        if (vC) begin dst4_we_c = 1'b1; dst4_plane_c = plC; dst4_x_c = xC; dst4_y_c = yC; dst4_wdata_c = out4; end
+        if (vD) begin dst4_we_c = 1'b1; dst4_plane_c = plD; dst4_x_c = xD; dst4_y_c = yD; dst4_wdata_c = out4; end
     end
     always_ff @(posedge clk) begin
-        if (rst) begin dst_we <= 1'b0; dst4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; dsr <= 3'd0; end
+        if (rst) begin dst_we <= 1'b0; dst4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; dsr <= 4'd0; end
         else begin
             dst_we <= dst_we_c; dst4_we <= dst4_we_c;
-            dsr <= {dsr[1:0], done_i};                   // done_i is set in C_NEXT, one cycle after the last C_PIX: the last
-            done <= dsr[2];                              // write lands 3 cycles after that; done follows it
-            busy_q <= (st != C_IDLE) || vA || vB || vC;
+            dsr <= {dsr[2:0], done_i};                   // done_i is set in C_NEXT, one cycle after the last C_PIX: the last
+            done <= dsr[3];                              // write lands 4 cycles after that; done follows it
+            busy_q <= (st != C_IDLE) || vA || vB || vC || vD;
         end
         dst_plane <= dst_plane_c; dst_x <= dst_x_c; dst_y <= dst_y_c; dst_wdata <= dst_wdata_c;
         dst4_plane <= dst4_plane_c; dst4_x <= dst4_x_c; dst4_y <= dst4_y_c; dst4_wdata <= dst4_wdata_c;
     end
-    assign busy = (st != C_IDLE) || vA || vB || vC || busy_q || (dsr != 3'd0) || done;
+    assign busy = (st != C_IDLE) || vA || vB || vC || vD || busy_q || (dsr != 4'd0) || done;
 
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin

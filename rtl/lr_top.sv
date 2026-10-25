@@ -238,15 +238,6 @@ module lr_top
         w_offset = 21'sd1 <<< (bd + 4'd7 - round0 - 4'd1);
         w_limit = (21'sd1 <<< (bd + 4'd8 - round0)) - 21'sd1;
     end
-    // Wiener horizontal filter of window row i + r for lane (column x + lane) (7.17.4), rounded and clamped: pipeline stage P1
-    function automatic logic signed [20:0] wien_h(input logic [1:0] lane, input int r);
-        logic signed [30:0] hmac, v;
-        hmac = 31'sd0;
-        for (int t = 0; t < 7; t++)
-            hmac = hmac + 31'(hf[t]) * 31'(signed'({19'b0, win[int'(i) + r][int'(lane) + t + 1]}));
-        v = (hmac + (31'sd1 <<< (round0 - 4'd1))) >>> round0;
-        wien_h = (v < -31'(w_offset)) ? -w_offset : (v > 31'(w_limit) - 31'(w_offset)) ? 21'(w_limit - w_offset) : 21'(v);
-    endfunction
     // the vertical rounding and clamp of a lane's vertical MAC: stage P3
     function automatic logic [11:0] wien_v(input logic signed [30:0] vmac);
         logic signed [30:0] v;
@@ -411,14 +402,16 @@ module lr_top
         end
     end
     // ---------------------------------------------------------------- output pipeline (2026-10-25, for 100 MHz on the U200)
-    // The three output kinds share a three-stage pipeline from the windows to the registered write port (the one-cycle
-    // Wiener / self-guided output was ~50 logic levels, -6.6 ns):
-    //   P1 (the FSM's issue cycle, from the windows, which shift right after): the Wiener horizontal filters of the 7 rows
-    //      (rounded, clamped); the self-guided 3x3 weighted sums fa / fb of both passes; the copy samples; the unit's
-    //      coefficients and the group's address and byte enables;
-    //   P2: the Wiener vertical MAC; the self-guided F = (fa * pix + fb) rounded;
+    // The three output kinds share a four-stage pipeline from the windows to the registered write port (the one-cycle
+    // Wiener / self-guided output was ~50 logic levels, -6.6 ns; a seven-deep DSP cascade is ~9 ns by itself):
+    //   S1 (the FSM's issue cycle, from the windows, which shift right after): the Wiener horizontal MACs of the 7 rows
+    //      as two partial sums (taps 0-3, 4-6); the self-guided 3x3 weighted sums fa / fb of both passes; the copy
+    //      samples; the unit's coefficients and the group's address and byte enables;
+    //   S2: the horizontal results rounded and clamped;
+    //   S3: the Wiener vertical MAC as two partial sums (rows 0-3, 4-6); the self-guided F = (fa * pix + fb) rounded;
+    //   S4: the vertical sum;
     //   P3 (combinational into the port register): the Wiener rounding and clamp; the self-guided blend and clamp.
-    // A group issued at cycle t reaches the port at t + 3 (t + 1 before); done and busy wait for the last write.
+    // A group issued at cycle t reaches the port at t + 5 (t + 1 before); done and busy wait for the last write.
     typedef enum logic [1:0] {K_COPY, K_WIEN, K_SGR} okind_t;
     function automatic logic [11:0] src_at(input logic [1:0] lane);   // source sample of output (i, x + lane): window row i + 3
         return win[int'(i) + 3][4 + int'(lane)];
@@ -443,31 +436,54 @@ module lr_top
         v = 41'(fa) * 41'(pix) + 41'(fb);
         f_of = 24'((v + (41'd1 << (4'd8 + shift - 4'd4 - 4'd1))) >> (4'd8 + shift - 4'd4));
     endfunction
-    // P1 registers
+    // S1 (the issue cycle): Wiener horizontal partial MACs (taps 0-3 and 4-6 of each of the 7 rows: two DSP cascades
+    // instead of one of seven), self-guided sums, copy samples, coefficients, address
     logic v1; okind_t kind1; logic [PXW-1:0] x1; logic [2:0] i1; logic [3:0] be1; logic [1:0] plane1; logic [FBY-1:0] y1;
     logic [11:0] pix1 [0:3];
-    logic signed [20:0] hv1 [0:3][0:6];
+    logic signed [30:0] hpa1 [0:3][0:6], hpb1 [0:3][0:6];
     logic signed [9:0]  vf1 [0:6];
     logic [15:0] fa1 [0:1][0:3]; logic [28:0] fb1 [0:1][0:3];
     logic signed [8:0] w0_1, w1_1; logic p0en1, p1en1;
-    // P2 registers
+    // S2: the horizontal results rounded and clamped (hv)
     logic v2; okind_t kind2; logic [PXW-1:0] x2; logic [2:0] i2; logic [3:0] be2; logic [1:0] plane2; logic [FBY-1:0] y2;
     logic [11:0] pix2 [0:3];
-    logic signed [30:0] vmac2 [0:3];
-    logic [23:0] f2 [0:1][0:3];
+    logic signed [20:0] hv2 [0:3][0:6];
+    logic signed [9:0]  vf2 [0:6];
+    logic [15:0] fa2 [0:1][0:3]; logic [28:0] fb2 [0:1][0:3];
     logic signed [8:0] w0_2, w1_2; logic p0en2, p1en2;
+    // S3: Wiener vertical partial MACs (rows 0-3, 4-6); self-guided F
+    logic v3; okind_t kind3; logic [PXW-1:0] x3; logic [3:0] be3; logic [1:0] plane3; logic [FBY-1:0] y3;
+    logic [11:0] pix3 [0:3];
+    logic signed [30:0] vpa3 [0:3], vpb3 [0:3];
+    logic [23:0] f3 [0:1][0:3];
+    logic signed [8:0] w0_3, w1_3; logic p0en3, p1en3;
+    // S4: the vertical MAC
+    logic v4; okind_t kind4; logic [PXW-1:0] x4; logic [3:0] be4; logic [1:0] plane4; logic [FBY-1:0] y4;
+    logic [11:0] pix4 [0:3];
+    logic signed [30:0] vmac4 [0:3];
+    logic [23:0] f4 [0:1][0:3];
+    logic signed [8:0] w0_4, w1_4; logic p0en4, p1en4;
     logic out_issue;
     assign out_issue = (st == L_COPY || st == L_WIEN || st == L_BLEND);
     logic [3:0] out_be;                                    // lanes past the segment end are not written
     always_comb for (int l = 0; l < 4; l++) out_be[l] = (x + PXW'(l) <= seg_x1);
+    function automatic logic signed [30:0] wien_hp(input logic [1:0] lane, input int r, input int t0, input int t1);
+        wien_hp = 31'sd0;
+        for (int t = t0; t < t1; t++) wien_hp = wien_hp + 31'(hf[t]) * 31'(signed'({19'b0, win[int'(i) + r][int'(lane) + t + 1]}));
+    endfunction
+    function automatic logic signed [20:0] wien_hv(input logic signed [30:0] hmac);
+        logic signed [30:0] v;
+        v = (hmac + (31'sd1 <<< (round0 - 4'd1))) >>> round0;
+        wien_hv = (v < -31'(w_offset)) ? -w_offset : (v > 31'(w_limit) - 31'(w_offset)) ? 21'(w_limit - w_offset) : 21'(v);
+    endfunction
     always_ff @(posedge clk) begin
-        // P1
+        // S1
         v1 <= out_issue && !rst;
         kind1 <= (st == L_COPY) ? K_COPY : (st == L_WIEN) ? K_WIEN : K_SGR;
         x1 <= x; i1 <= i; be1 <= out_be; plane1 <= plane; y1 <= FBY'(y0 + PXW'(i));   // the band's y0 moves on at L_BAND_NEXT
         for (int l = 0; l < 4; l++) begin
             pix1[l] <= src_at(2'(l));
-            for (int r = 0; r < 7; r++) hv1[l][r] <= wien_h(2'(l), r);
+            for (int r = 0; r < 7; r++) begin hpa1[l][r] <= wien_hp(2'(l), r, 0, 4); hpb1[l][r] <= wien_hp(2'(l), r, 4, 7); end
             for (int pp = 0; pp < 2; pp++) begin
                 logic [44:0] fs;
                 fs = f_sums(1'(pp), i, 2'(l));
@@ -477,39 +493,59 @@ module lr_top
         for (int r = 0; r < 7; r++) vf1[r] <= vf[r];
         w0_1 <= 9'(signed'(rec.xqd[7:0])); w1_1 <= 9'(signed'(rec.xqd[15:8]));
         p0en1 <= (sp[15:14] != 2'd0); p1en1 <= (sp[6:5] != 2'd0);
-        // P2
+        // S2
         v2 <= v1 && !rst;
         kind2 <= kind1; x2 <= x1; i2 <= i1; be2 <= be1; plane2 <= plane1; y2 <= y1;
         for (int l = 0; l < 4; l++) begin
-            logic signed [30:0] vmac;
-            vmac = 31'sd0;
-            for (int r = 0; r < 7; r++) vmac = vmac + 31'(vf1[r]) * 31'(hv1[l][r]);
-            vmac2[l] <= vmac;
             pix2[l] <= pix1[l];
-            for (int pp = 0; pp < 2; pp++) f2[pp][l] <= f_of(1'(pp), i1, fa1[pp][l], fb1[pp][l], pix1[l]);
+            for (int r = 0; r < 7; r++) hv2[l][r] <= wien_hv(hpa1[l][r] + hpb1[l][r]);
+            for (int pp = 0; pp < 2; pp++) begin fa2[pp][l] <= fa1[pp][l]; fb2[pp][l] <= fb1[pp][l]; end
         end
+        for (int r = 0; r < 7; r++) vf2[r] <= vf1[r];
         w0_2 <= w0_1; w1_2 <= w1_1; p0en2 <= p0en1; p1en2 <= p1en1;
+        // S3
+        v3 <= v2 && !rst;
+        kind3 <= kind2; x3 <= x2; be3 <= be2; plane3 <= plane2; y3 <= y2;
+        for (int l = 0; l < 4; l++) begin
+            logic signed [30:0] pa, pb;
+            pa = 31'sd0; pb = 31'sd0;
+            for (int r = 0; r < 4; r++) pa = pa + 31'(vf2[r]) * 31'(hv2[l][r]);
+            for (int r = 4; r < 7; r++) pb = pb + 31'(vf2[r]) * 31'(hv2[l][r]);
+            vpa3[l] <= pa; vpb3[l] <= pb;
+            pix3[l] <= pix2[l];
+            for (int pp = 0; pp < 2; pp++) f3[pp][l] <= f_of(1'(pp), i2, fa2[pp][l], fb2[pp][l], pix2[l]);
+        end
+        w0_3 <= w0_2; w1_3 <= w1_2; p0en3 <= p0en2; p1en3 <= p1en2;
+        // S4
+        v4 <= v3 && !rst;
+        kind4 <= kind3; x4 <= x3; be4 <= be3; plane4 <= plane3; y4 <= y3;
+        for (int l = 0; l < 4; l++) begin
+            vmac4[l] <= vpa3[l] + vpb3[l];
+            pix4[l] <= pix3[l];
+            for (int pp = 0; pp < 2; pp++) f4[pp][l] <= f3[pp][l];
+        end
+        w0_4 <= w0_3; w1_4 <= w1_3; p0en4 <= p0en3; p1en4 <= p1en3;
     end
-    // P3: the self-guided blend of a lane (7.17.3)
+    // P3 (combinational into the port register): the self-guided blend of a lane (7.17.3), the Wiener rounding and clamp
     function automatic logic [11:0] sgr_blend(input int l);
         logic signed [9:0] w2; logic signed [35:0] v, sv; logic [16:0] u;
-        w2 = 10'sd128 - 10'(w0_2) - 10'(w1_2);
-        u = 17'(pix2[l]) << 4;
-        v = 36'(w1_2) * 36'(signed'({19'b0, u}));
-        v = v + 36'(w0_2) * (p0en2 ? 36'(signed'({12'b0, f2[0][l]})) : 36'(signed'({19'b0, u})));
-        v = v + 36'(w2) * (p1en2 ? 36'(signed'({12'b0, f2[1][l]})) : 36'(signed'({19'b0, u})));
+        w2 = 10'sd128 - 10'(w0_4) - 10'(w1_4);
+        u = 17'(pix4[l]) << 4;
+        v = 36'(w1_4) * 36'(signed'({19'b0, u}));
+        v = v + 36'(w0_4) * (p0en4 ? 36'(signed'({12'b0, f4[0][l]})) : 36'(signed'({19'b0, u})));
+        v = v + 36'(w2) * (p1en4 ? 36'(signed'({12'b0, f4[1][l]})) : 36'(signed'({19'b0, u})));
         sv = (v + 36'sd1024) >>> 11;
         sgr_blend = (sv < 0) ? 12'd0 : (sv > 36'(signed'({24'b0, 12'((13'd1 << bd) - 13'd1)}))) ? 12'((13'd1 << bd) - 13'd1) : 12'(sv);
     endfunction
-    // the 4 output samples x2 .. x2+3 of row i2 (the group in P2)
+    // the 4 output samples x4 .. x4+3 of the group in S4
     logic [47:0] out4;
     always_comb
         for (int l = 0; l < 4; l++)
-            out4[l * 12 +: 12] = (kind2 == K_COPY) ? pix2[l] : (kind2 == K_WIEN) ? wien_v(vmac2[l]) : sgr_blend(l);
+            out4[l * 12 +: 12] = (kind4 == K_COPY) ? pix4[l] : (kind4 == K_WIEN) ? wien_v(vmac4[l]) : sgr_blend(l);
 
     // ---------------------------------------------------------------- memory ports
     logic d_we_c, d4_we_c; logic [1:0] d_plane_c; logic [FBX-1:0] d_x_c; logic [FBY-1:0] d_y_c; logic [11:0] d_wdata_c; logic [3:0] d4_be_c; logic [47:0] d4_wdata_c;
-    logic done_i, busy_q; logic [1:0] dsr;
+    logic done_i, busy_q; logic [3:0] dsr;
     logic ld_pend;                                      // a load read is in flight (lands this cycle)
     logic [PXW-1:0] ld_x;                                  // its x (aligned group of 4)
     always_comb begin
@@ -518,8 +554,8 @@ module lr_top
         // the compute phases move to the next group: output states every clock, the box phase at a group's last column
         win_shift = out_issue || (st == L_AB && ax[1:0] == 2'd3);
         s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule[PXW-1:0]);
-        d_we_c = 1'b0; d_plane_c = plane2; d_x_c = FBX'(x2); d_y_c = y2; d_wdata_c = 12'd0;
-        d4_we_c = v2; d4_be_c = be2; d4_wdata_c = out4;                 // the group leaving P2 is written (P3 is combinational)
+        d_we_c = 1'b0; d_plane_c = plane4; d_x_c = FBX'(x4); d_y_c = y4; d_wdata_c = 12'd0;
+        d4_we_c = v4; d4_be_c = be4; d4_wdata_c = out4;                 // the group leaving S4 is written (P3 is combinational)
         case (st)
             L_LOAD: begin s0_re = k_rule[PXW]; s1_re = !k_rule[PXW]; end
             default: ;
@@ -527,15 +563,15 @@ module lr_top
     end
     // registered write port; done and busy follow the last write
     always_ff @(posedge clk) begin
-        if (rst) begin d_we <= 1'b0; d4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; dsr <= 2'd0; end
+        if (rst) begin d_we <= 1'b0; d4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; dsr <= 4'd0; end
         else begin
             d_we <= d_we_c; d4_we <= d4_we_c;
-            dsr <= {dsr[0], done_i}; done <= dsr[1];
-            busy_q <= (st != L_IDLE) || v1 || v2;
+            dsr <= {dsr[2:0], done_i}; done <= dsr[3];
+            busy_q <= (st != L_IDLE) || v1 || v2 || v3 || v4;
         end
         d_plane <= d_plane_c; d_x <= d_x_c; d_y <= d_y_c; d_wdata <= d_wdata_c; d4_be <= d4_be_c; d4_wdata <= d4_wdata_c;
     end
-    assign busy = (st != L_IDLE) || v1 || v2 || busy_q || (dsr != 2'd0) || done;
+    assign busy = (st != L_IDLE) || v1 || v2 || v3 || v4 || busy_q || (dsr != 4'd0) || done;
 
     // ---------------------------------------------------------------- FSM
     // a compute row starts with the window prologue: wg = the group of its first column, then the state after
