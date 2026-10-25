@@ -88,11 +88,21 @@ async def mc_trace(dut, rc):
 
 
 
+async def ar_trace(dut):
+    """TD_ARTRACE: every AXI read address handshake of the decoder (address, beats), to compare the reference reads of two harnesses."""
+    while True:
+        await RisingEdge(dut.clk)
+        if int(dut.m_axi_arvalid.value) and int(dut.m_axi_arready.value):
+            dut._log.info(f"AR 0x{int(dut.m_axi_araddr.value):x} len {int(dut.m_axi_arlen.value) + 1}")
+
+
 @cocotb.test()
 async def dec_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
     if os.environ.get("TD_MCTRACE"):
         cocotb.start_soon(mc_trace(dut, dut.u_rc))
+    if os.environ.get("TD_ARTRACE"):
+        cocotb.start_soon(ar_trace(dut))
     if os.environ.get("TD_MVTRACE"):
         async def mv_trace():
             # every find_mv_stack result of the syntax block: position, refs, NumMvFound, RefStackMv[0..1], GlobalMvs
