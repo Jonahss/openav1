@@ -11,6 +11,7 @@ with dav1d's S/U events. Not modelled: inter frames, intrabc, superres-dependent
 modelled but untested.
 """
 import copy
+import os
 import sys
 from pathlib import Path
 
@@ -895,6 +896,7 @@ class TileDecoder:
         self.read_ref_frames()
         isCompound = int(self.RefFrame[1] > INTRA_FRAME)
         self.find_mv_stack(isCompound)
+        self._mv_trace(isCompound)
         if self.skip_mode:
             self.YMode = NEAREST_NEARESTMV
         elif self.seg_feature_active(SEG_LVL_SKIP) or self.seg_feature_active(SEG_LVL_GLOBALMV):
@@ -1826,6 +1828,12 @@ class TileDecoder:
         if y in (NEAR_NEARMV, NEW_NEARMV):
             return NEARMV
         return GLOBALMV
+
+    def _mv_trace(self, isCompound):
+        if os.environ.get("MV_TRACE"):
+            print(f"MODEL MVS blk r{self.MiRow} c{self.MiCol} bs{self.MiSize} ref {self.RefFrame[0]}/{self.RefFrame[1]} n_found {self.NumMvFound} "
+                  f"st0 {tuple(self.RefStackMv[0][0])} {tuple(self.RefStackMv[1][0])} st1 {tuple(self.RefStackMv[0][1])} gmv {tuple(self.GlobalMvs[0])} "
+                  f"ctx new {self.NewMvContext} ref {self.RefMvContext} zero {self.ZeroMvContext}")
 
     def assign_mv(self, isCompound):
         h = self.h

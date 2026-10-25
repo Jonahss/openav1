@@ -488,8 +488,8 @@ async def load_frame_state(dut, h, ctx):
     mf = ctx.motion_field
     if not h.FrameIsIntra:
         for ref in range(1, 8):
-            for y8 in range(rows // 2 + 1):
-                for x8 in range(cols // 2 + 1):
+            for y8 in range(rows >> 1):             # the field is (MiRows >> 1) x (MiCols >> 1); one more row or column
+                for x8 in range(cols >> 1):         # aliases onto row / column 0 of an exactly-sized band (test1861 frame 7)
                     mv = mf[ref][y8][x8] if (mf is not None and y8 < len(mf[ref]) and x8 < len(mf[ref][y8])) else [tm.MV_INVALID, tm.MV_INVALID]
                     valid = mv[0] != tm.MV_INVALID
                     dut.mf_we.value = 1

@@ -85,8 +85,29 @@ async def dec_inter_vs_model(dut):
                                   f"{int(rc.mc_uw.value)}x{int(rc.mc_uh.value)} strips {int(rc.mc_nsc.value)}x{int(rc.mc_nsr.value)} "
                                   f"blk r{bb['r']} c{bb['c']} bs{bb['bsize']} mm{bb['motion_mode']} "
                                   f"ob {int(rc.ob_active.value)}/{int(rc.ob_pass.value)}/{int(rc.ob_k.value)} comp {int(rc.mc_comp.value)} "
-                                  f"cmv {int(rc.mc_cmv.value)} uw_warp {int(rc.unit_warp.value)}")
+                                  f"cmv {int(rc.mc_cmv.value)} uw_warp {int(rc.unit_warp.value)} "
+                                  f"blkmv ({TT.to_signed(bb['mv_row'], 18)},{TT.to_signed(bb['mv_col'], 18)}) ref {bb['ref0']}/{bb['ref1']} "
+                                  f"umv0 ({int(rc.u_mv0r.value.signed_integer)},{int(rc.u_mv0c.value.signed_integer)}) umv1 ({int(rc.u_mv1r.value.signed_integer)},{int(rc.u_mv1c.value.signed_integer)}) "
+                                  f"uref {int(rc.u_ref0.value)}/{int(rc.u_ref1.value)} wt {int(rc.mc_wt0.value)},{int(rc.mc_wt1.value)}")
         cocotb.start_soon(mc_trace())
+    if os.environ.get("TD_MVTRACE"):
+        async def mv_trace():
+            # every find_mv_stack result of the syntax block: position, refs, NumMvFound, RefStackMv[0..1], GlobalMvs
+            blk = dut.u_ts.u_blk; mvs = blk.u_mvs
+            def arr(name, i):
+                try:
+                    return int(getattr(mvs, name)[i].value.signed_integer)
+                except Exception:
+                    return None
+            while True:
+                await RisingEdge(dut.clk)
+                if int(mvs.done.value):
+                    dut._log.info(f"MVS blk r{int(blk.br.value)} c{int(blk.bc.value)} bs{int(blk.bs.value)} ref {int(blk.rf0.value)}/{int(blk.rf1.value)} "
+                                  f"n_found {int(mvs.n_found.value)} st0 ({arr('st0_row', 0)},{arr('st0_col', 0)}) ({arr('st0_row', 1)},{arr('st0_col', 1)}) "
+                                  f"st1 ({arr('st1_row', 0)},{arr('st1_col', 0)}) gmv ({arr('gmv_row', 0)},{arr('gmv_col', 0)}) "
+                                  f"pred ({int(mvs.pred_row.value.signed_integer)},{int(mvs.pred_col.value.signed_integer)}) "
+                                  f"ctx new {int(mvs.new_mv_ctx.value)} ref {int(mvs.ref_mv_ctx.value)} zero {int(mvs.zero_mv_ctx.value)}")
+        cocotb.start_soon(mv_trace())
     if os.environ.get("TD_TXTRACE"):
         async def tx_trace():
             # every transform-block record the syntax layer hands the reconstruction (at the tx_done / tx_ack handshake):

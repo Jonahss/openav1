@@ -182,8 +182,8 @@ async def mv_stack_vs_model(dut):
         dut.ihdr.value = ihdr_words(h)
         # the motion field: random vectors with holes
         for ref in range(1, 8):
-            for y8 in range(h.MiRows // 2 + 1):
-                for x8 in range(h.MiCols // 2 + 1):
+            for y8 in range(h.MiRows >> 1):
+                for x8 in range(h.MiCols >> 1):
                     valid = rnd.random() < 0.7
                     mv = [rand_mv(rnd, h), rand_mv(rnd, h)] if valid else [tm.MV_INVALID, tm.MV_INVALID]
                     m.MotionFieldMvs[ref][y8][x8] = mv

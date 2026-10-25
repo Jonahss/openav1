@@ -207,8 +207,8 @@ def motion_field_seq(mf, mi_rows, mi_cols):
     frame, holes as invalid entries."""
     seq = []
     for ref in range(1, 8):
-        for y8 in range(mi_rows // 2 + 1):
-            for x8 in range(mi_cols // 2 + 1):
+        for y8 in range(mi_rows >> 1):             # (MiRows >> 1) x (MiCols >> 1) entries: one more row / column aliases onto 0
+            for x8 in range(mi_cols >> 1):
                 mv = mf[ref][y8][x8] if (mf is not None and y8 < len(mf[ref]) and x8 < len(mf[ref][y8])) else [M.tm.MV_INVALID] * 2
                 valid = mv[0] != M.tm.MV_INVALID
                 seq.append((R_MF_ADDR, (int(valid) << 31) | ((ref - 1) << 24) | (y8 << 12) | x8))
