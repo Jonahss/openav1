@@ -251,6 +251,7 @@ module cdef_top
     logic        vB;
     logic [11:0] tB  [0:3][0:11];
     logic        okB [0:3][0:11];
+    logic [11:0] tmaxB [0:3][0:11], tminB [0:3][0:11];   // the tap for the max / min trees: an absent tap does not count
     logic [11:0] ctrB [0:3];
     logic [11:0] priB, secB; logic [4:0] adjpB, adjsB; logic prioddB;
     logic [FBX-1:0] xB; logic [FBY-1:0] yB; logic [1:0] plB;
@@ -277,7 +278,11 @@ module cdef_top
         vB <= vA && !rst;
         for (int l = 0; l < 4; l++) begin
             ctrB[l] <= nbA[2][l + 2];
-            for (int ti = 0; ti < 12; ti++) begin tB[l][ti] <= tB_c[l][ti]; okB[l][ti] <= okB_c[l][ti]; end
+            for (int ti = 0; ti < 12; ti++) begin
+                tB[l][ti] <= tB_c[l][ti]; okB[l][ti] <= okB_c[l][ti];
+                tmaxB[l][ti] <= okB_c[l][ti] ? tB_c[l][ti] : 12'd0;
+                tminB[l][ti] <= okB_c[l][ti] ? tB_c[l][ti] : 12'hFFF;
+            end
         end
         priB <= priA; secB <= secA; adjpB <= adjpA; adjsB <= adjsA; prioddB <= prioddA;
         xB <= xA; yB <= yA; plB <= plA;
@@ -291,10 +296,25 @@ module cdef_top
     logic [FBX-1:0] xC; logic [FBY-1:0] yC; logic [1:0] plC;
     logic signed [15:0] termC_c [0:3][0:11];
     logic [11:0] mnC_c [0:3], mxC_c [0:3];
+    // max / min of the 12 taps and the centre as balanced trees (a sequential if-chain synthesised 12 deep: -4.6 ns)
+    function automatic logic [11:0] max13(input logic [11:0] v [0:11], input logic [11:0] ctr);
+        logic [11:0] l1 [0:5]; logic [11:0] l2 [0:2]; logic [11:0] a, b;
+        for (int k = 0; k < 6; k++) l1[k] = (v[2 * k] > v[2 * k + 1]) ? v[2 * k] : v[2 * k + 1];
+        for (int k = 0; k < 3; k++) l2[k] = (l1[2 * k] > l1[2 * k + 1]) ? l1[2 * k] : l1[2 * k + 1];
+        a = (l2[0] > l2[1]) ? l2[0] : l2[1];
+        b = (l2[2] > ctr) ? l2[2] : ctr;
+        max13 = (a > b) ? a : b;
+    endfunction
+    function automatic logic [11:0] min13(input logic [11:0] v [0:11], input logic [11:0] ctr);
+        logic [11:0] l1 [0:5]; logic [11:0] l2 [0:2]; logic [11:0] a, b;
+        for (int k = 0; k < 6; k++) l1[k] = (v[2 * k] < v[2 * k + 1]) ? v[2 * k] : v[2 * k + 1];
+        for (int k = 0; k < 3; k++) l2[k] = (l1[2 * k] < l1[2 * k + 1]) ? l1[2 * k] : l1[2 * k + 1];
+        a = (l2[0] < l2[1]) ? l2[0] : l2[1];
+        b = (l2[2] < ctr) ? l2[2] : ctr;
+        min13 = (a < b) ? a : b;
+    endfunction
     always_comb
         for (int l = 0; l < 4; l++) begin
-            logic [11:0] mn, mx;
-            mn = ctrB[l]; mx = ctrB[l];
             for (int ti = 0; ti < 12; ti++) begin
                 logic signed [12:0] d, cv; logic [2:0] w;
                 d = 13'(signed'({1'b0, tB[l][ti]})) - 13'(signed'({1'b0, ctrB[l]}));
@@ -306,10 +326,8 @@ module cdef_top
                     3'd3: termC_c[l][ti] = (16'(cv) <<< 1) + 16'(cv);
                     default: termC_c[l][ti] = 16'(cv) <<< 2;
                 endcase
-                if (okB[l][ti] && tB[l][ti] > mx) mx = tB[l][ti];
-                if (okB[l][ti] && tB[l][ti] < mn) mn = tB[l][ti];
             end
-            mnC_c[l] = mn; mxC_c[l] = mx;
+            mxC_c[l] = max13(tmaxB[l], ctrB[l]); mnC_c[l] = min13(tminB[l], ctrB[l]);
         end
     always_ff @(posedge clk) begin
         vC <= vB && !rst;
