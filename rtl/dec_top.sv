@@ -430,9 +430,9 @@ module dec_top
         if (rst || frame_start) win_unsup <= 1'b0;
         else if ((FRAME_WIN > 0) && tile_busy && (hdr.sb128 || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en
                                                   || n_tile_cols != 6'd1)) win_unsup <= 1'b1;
-        else if ((FRAME_URAM != 0) && tile_busy && ((FRAME_WIN1 < 0 && cdef_en) || (FRAME_WIN2 < 0 && lr_en) || (FRAME_WIN1 < 0 && sr_en && cdef_en)))
-            win_unsup <= 1'b1;                                   // a stage whose buffer this build leaves out
-        else if (RING && (FRAME_WIN > 0) && tile_busy && (32'(FRAME_WIN) < 3 + 32'(cdef_en) + 32'(lr_en)))
+        // (a core build asked for CDEF / LR is the host software's business: HostDecoder.check_core_build; an RTL flag here
+        // broke the core build's lf-stage suites on 2026-10-24, whose frames carry CDEF headers the host never starts)
+        else if (RING && (FRAME_WIN > 0) && tile_busy && pipe_en && (32'(FRAME_WIN) < 3 + 32'(cdef_en) + 32'(lr_en)))
             win_unsup <= 1'b1;                                   // the fb0 ring is too shallow for the stages in flight: recon(r), LF(r-1),
                                                                  // CDEF(r-2), LR(r-3) and the hold slot would deadlock (2026-10-24, WIN 3 + CDEF + LR)
     end
