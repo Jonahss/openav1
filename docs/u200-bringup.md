@@ -177,3 +177,13 @@ software's reference): reset; for inter frames the bands (`seg_map_seq`, `motion
 + REF_SLOT / REF_CFG (`ref_seq`, pointing at earlier frames' flush targets); DMA planes + AUTO at a fresh flush
 target, LH, CH (CDEF on), CTRL pipe + tile columns, START frame; the tiles with the inherited CDF rows; poll
 frame_done; poll DMA flush idle. A frame's flush target becomes its reference slots' address.
+
+**Build record (2026-10-25).** The inter RING build at 100 MHz does not close (ring100-559b4c5: WNS -6.6 ns, 27.6k failing
+endpoints: the CDEF and loop-restoration datapaths need 2-3 internal pipeline stages, the inverse transform sits at the
+edge, the full-height motion-field band read and `ref_fetch`'s address arithmetic follow; throughput-phase work). At
+50 MHz it closes: `ring50-9882622` (U200_MHZ=50, U200_FBX=U200_FBY=11, WIN 5/3/3, PCIe pblock) WNS +0.043 ns, 0 failing
+of 608,633 endpoints, hold +0.010; 292,835 LUT (24.8 %), 793.5 BRAM, 271 URAM, 820 DSP; gate round 5 at the same
+commit replays the dec_host netlist bit-exact on the seed-7 ring recording (155,688 cycles) and test47 frames 0-1
+(244,329 cycles). **Use this image, not an earlier one:** 9882622 widened `ihdr_t.order_hint_bits` to 4 bits, which
+moved the inter header register layout (window 0x200); the driver (`tb/host_regs.py`, IHDR_FIELDS) and the bitstream
+must come from the same side of that commit. `~/openav1-synth/u200-ring50-9882622/sys_wrapper.bit` on atium.
