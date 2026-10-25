@@ -118,6 +118,8 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, debloc
 async def dec_host_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    if os.environ.get("TD_MCTRACE"):
+        cocotb.start_soon(TI.mc_trace(dut, dut.u_dec.u_rc))      # the same MC launch trace as test_dec_inter
     if hasattr(dut, "clk2x"):
         cocotb.start_soon(Clock(dut.clk2x, 5, unit="ns").start())
 
