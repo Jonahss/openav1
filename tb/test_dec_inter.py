@@ -177,7 +177,7 @@ async def dec_inter_vs_model(dut):
         name = Path(path).name
         seq = sm.SequenceState()
         store = {}                              # slot -> dict(planes, upscaled_width, frame_height, hdr)
-        loaded = {}                             # slot -> id(planes) written into the AXI memory
+        loaded = {}                             # slot -> gen (decoded-frame index) of the picture written into the AXI memory at the slot's address
         hdr_iter = iter(d.frame_headers)
         for fi, tile_idx in enumerate(d.frames):
             ph = None
@@ -206,7 +206,7 @@ async def dec_inter_vs_model(dut):
                 seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
                 for i in range(8):
                     if (ph.refresh_frame_flags >> i) & 1:
-                        store[i] = dict(planes=planes, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0)
+                        store[i] = dict(planes=planes, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0, gen=fi)
                 continue
             tag = f"{name} frame {fi}"
             # ---- the frame-level state into the DUT: inter header, bands, and the references
@@ -222,9 +222,9 @@ async def dec_inter_vs_model(dut):
                     ref_slot |= slot << (3 * i)
                     assert slot in store, f"{tag}: reference {i + 1} points at empty slot {slot}"
                     st = store[slot]
-                    if loaded.get(slot) != id(st["planes"]):
+                    if loaded.get(slot) != st["gen"]:       # not id(planes): CPython reuses ids of freed lists
                         load_slot(mem, st["hdr"], slot, st["planes"])
-                        loaded[slot] = id(st["planes"])
+                        loaded[slot] = st["gen"]
                         stats["ref_loads"] += 1
                     for p, (w, h, stride) in enumerate(plane_geometry(st["hdr"], st["planes"])):
                         base = SLOT_BASE + slot * SLOT_STRIDE + p * PLANE_STRIDE
@@ -272,7 +272,7 @@ async def dec_inter_vs_model(dut):
             planes_ref = ref_planes_of(th0, planes_cmp)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
-                    store[i] = dict(planes=planes_ref, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0)
+                    store[i] = dict(planes=planes_ref, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=th0, gen=fi)
             del decs
     assert not mem.errors, f"AXI errors: {mem.errors[:4]}"
     dut._log.info(f"OK: {stats}")

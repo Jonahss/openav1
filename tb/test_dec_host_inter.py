@@ -41,9 +41,13 @@ async def write_seq(ax, seq):
         await ax.write(a, v)
 
 
-def store_entry(hdr, ph, planes, layout):
-    """What a slot holds: the model's picture (for the frames the model decodes alone) and where the RTL finds it."""
-    return dict(planes=planes, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=hdr,
+def store_entry(hdr, ph, planes, layout, gen):
+    """What a slot holds: the model's picture (for the frames the model decodes alone) and where the RTL finds it.
+    mem = the flushed picture's (base, stride) per plane, or None for a picture the RTL never produced: that one is
+    loaded at the referencing SLOT's own address (slot_mem below), never cached here, because one entry sits in every
+    slot the frame refreshed (test10316_84 frame 12: the key frame's entry, cached at slot 0's address, kept pointing
+    there after the next model-only frame was loaded into slot 0). gen = the decoded-frame index that made the entry."""
+    return dict(planes=planes, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, hdr=hdr, gen=gen,
                 mem=[(b, stride) for b, stride, _, _ in layout] if layout else None)
 
 
@@ -162,7 +166,7 @@ async def dec_host_inter_vs_model(dut):
         name = Path(path).name
         seq = sm.SequenceState()
         store = {}                                           # slot -> store_entry
-        loaded = {}                                          # slot -> id(planes) written at the slot's own address
+        slot_mem = {}                                        # slot -> (gen, [(base, stride) per plane]) of the model picture loaded at the slot's own address
         hdr_iter = iter(d.frame_headers)
         for fi, tile_idx in enumerate(d.frames):
             ph = None
@@ -198,20 +202,23 @@ async def dec_host_inter_vs_model(dut):
                     # the bands and the slot table before the frame; references the RTL never flushed go in at a slot address
                     await write_seq(ax, HR.seg_map_seq(ctx.prev_segment_ids, th0.MiRows, th0.MiCols))
                     await write_seq(ax, HR.motion_field_seq(ctx.motion_field, th0.MiRows, th0.MiCols))
+                    ref_store = {}
                     for i in range(7):
                         slot = ph.ref_frame_idx[i]
                         assert slot in store, f"{tag}: reference {i + 1} points at empty slot {slot}"
                         st = store[slot]
                         if st["mem"] is None:
-                            if loaded.get(slot) != id(st["planes"]):
+                            # a picture the RTL never flushed: in the AXI memory at this slot's own address (once per entry per slot)
+                            if slot_mem.get(slot, (None,))[0] != st["gen"]:
                                 TI.load_slot(mem, st["hdr"], slot, st["planes"])
-                                loaded[slot] = id(st["planes"])
+                                slot_mem[slot] = (st["gen"], [(TI.SLOT_BASE + slot * TI.SLOT_STRIDE + p * TI.PLANE_STRIDE, stride)
+                                                              for p, (w, h, stride) in enumerate(TI.plane_geometry(st["hdr"], st["planes"]))])
                                 stats["ref_loads"] += 1
-                            st["mem"] = [(TI.SLOT_BASE + slot * TI.SLOT_STRIDE + p * TI.PLANE_STRIDE, stride)
-                                         for p, (w, h, stride) in enumerate(TI.plane_geometry(st["hdr"], st["planes"]))]
-                            st["mem_at_slot"] = True
-                    await write_seq(ax, HR.ref_seq(ph, {s: dict(planes=e["mem"], upscaled_width=e["upscaled_width"], frame_height=e["frame_height"])
-                                                        for s, e in store.items() if e.get("mem")}, fmt16))
+                            planes_at = slot_mem[slot][1]
+                        else:
+                            planes_at = st["mem"]
+                        ref_store[slot] = dict(planes=planes_at, upscaled_width=st["upscaled_width"], frame_height=st["frame_height"])
+                    await write_seq(ax, HR.ref_seq(ph, ref_store, fmt16))
                     stats["inter_frames"] += 1
                 elif ctx.prev_segment_ids is not None or True:
                     pass                                     # intra frames read neither band
@@ -242,7 +249,7 @@ async def dec_host_inter_vs_model(dut):
             # ---- the frame becomes a reference (model picture + where the flush put it)
             seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
             planes_ref = TI.ref_planes_of(th0, planes)
-            entry = store_entry(th0, ph, planes_ref, None if os.environ.get("TS_REFS_FROM_MODEL") == "1" else layout)
+            entry = store_entry(th0, ph, planes_ref, None if os.environ.get("TS_REFS_FROM_MODEL") == "1" else layout, fi)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
                     store[i] = entry
