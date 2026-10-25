@@ -584,6 +584,8 @@ async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all
                     if bx <= x < bx + bw and by <= y < by + bh:
                         dut._log.info(f"  ({y},{x}) block r={blk['r']} c={blk['c']} size={blk['size']} skip={blk['skip']} ymode={blk['ymode']} uvmode={blk['uvmode']} "
                                       f"pal={blk['pal']} cfl={blk['cfl']} fi={blk['fi']} tx={blk['tx']} seg={blk['seg']} qidx={blk.get('qidx')}")
+                        if os.environ.get("TD_DEBUG"):
+                            dut._log.info(f"     block record {blk}")
                         if blk["pal"][plane > 0]:
                             cm = blk["cmap_y"] if plane == 0 else blk["cmap_uv"]
                             cols = blk["col_y"] if plane == 0 else (blk["col_u"] if plane == 1 else blk["col_v"])

@@ -87,6 +87,21 @@ async def dec_inter_vs_model(dut):
                                   f"ob {int(rc.ob_active.value)}/{int(rc.ob_pass.value)}/{int(rc.ob_k.value)} comp {int(rc.mc_comp.value)} "
                                   f"cmv {int(rc.mc_cmv.value)} uw_warp {int(rc.unit_warp.value)}")
         cocotb.start_soon(mc_trace())
+    if os.environ.get("TD_TXTRACE"):
+        async def tx_trace():
+            # every transform-block record the syntax layer hands the reconstruction (at the tx_done / tx_ack handshake):
+            # plane, position, size, type, eob. TD_TXTRACE=<plane>[,<ymax>] narrows it to a plane (and rows below ymax).
+            sel = os.environ["TD_TXTRACE"].split(",")
+            pl_sel = int(sel[0]) if sel[0] not in ("", "all") else None
+            ymax = int(sel[1]) if len(sel) > 1 else None
+            while True:
+                await RisingEdge(dut.clk)
+                if int(dut.tx_done.value) and int(dut.tx_ack.value):
+                    t = TT.unpack(TT.TX_FIELDS, int(dut.tx_rec.value))
+                    if (pl_sel is None or t["plane"] == pl_sel) and (ymax is None or t["y"] < ymax):
+                        dut._log.info(f"TX pl{t['plane']} at ({t['x']},{t['y']}) txsz {t['txsz']} txtype {t['txtype']} eob {t['eob']} "
+                                      f"skip {t['skip']} lossless {t['lossless']} slot {t['slot']}")
+        cocotb.start_soon(tx_trace())
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     if hasattr(dut, "clk2x"):
         cocotb.start_soon(Clock(dut.clk2x, 5, unit="ns").start())
