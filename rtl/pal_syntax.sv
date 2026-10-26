@@ -233,15 +233,20 @@ module pal_syntax
         else v_wrapped = 12'(v_val);
     end
 
-    // token context (combinational from the diagonal buffers)
-    logic [26:0] cc;
-    logic [6:0]  dr;
+    // token context: computed a step ahead into cc_r (2026-10-26) where the next column is decided (T_DIAG for a
+    // diagonal's first column, T_PIX_W for the next one); d1 / d2 only change at a diagonal's end, before T_DIAG
+    // recomputes. From the diagonal buffers through the hash into the CDF address it was 26 levels, -0.73 ns on the
+    // K26 at 100 MHz.
+    logic [26:0] cc_r;
+    logic [6:0]  dr;                                        // row of the current column on this diagonal (the map write)
     logic [2:0]  pix_val;
-    always_comb begin
-        dr = 7'(di) - dj;
-        cc = color_ctx(dj != 7'd0, dr != 7'd0, (dj != 7'd0) ? d1[6'(dj - 7'd1)] : 3'd0, (dj != 7'd0) ? d2[6'(dj - 7'd1)] : 3'd0, d1[dj[5:0]]);
-        pix_val = cc[3 * sq_sym[2:0] +: 3];
-    end
+    assign dr = 7'(di) - dj;
+    function automatic logic [26:0] cc_of(input logic [6:0] djx);
+        logic [6:0] drx;
+        drx = 7'(di) - djx;
+        return color_ctx(djx != 7'd0, drx != 7'd0, (djx != 7'd0) ? d1[6'(djx - 7'd1)] : 3'd0, (djx != 7'd0) ? d2[6'(djx - 7'd1)] : 3'd0, d1[djx[5:0]]);
+    endfunction
+    always_comb pix_val = cc_r[3 * sq_sym[2:0] +: 3];
     // read_ns(n) parameters
     logic [3:0] ns_w_c;
     always_comb ns_w_c = (n >= 4'd8) ? 4'd4 : (n >= 4'd4) ? 4'd3 : 4'd2;   // FloorLog2(n) + 1
@@ -260,7 +265,7 @@ module pal_syntax
                 sq_go = 1'b1; sq_n = 4'd6;
                 sq_addr = pl ? CDF_AW'(CDF_PALETTE_UV_SIZE + int'(bsize_ctx(bs))) : CDF_AW'(CDF_PALETTE_Y_SIZE + int'(bsize_ctx(bs)));
             end
-            T_PIX: begin sq_go = 1'b1; sq_addr = color_cdf(pl, n, cc[26:24]); sq_n = n - 4'd1; end
+            T_PIX: begin sq_go = 1'b1; sq_addr = color_cdf(pl, n, cc_r[26:24]); sq_n = n - 4'd1; end
             P_LIT: if (lit_n != 4'd0) begin sq_go = 1'b1; sq_kind = 2'd2; end
             default: ;
         endcase
@@ -444,6 +449,7 @@ module pal_syntax
                     if (di > 8'(tw) + 8'(th) - 8'd2) st <= T_NEXT_PLANE;
                     else begin
                         dj <= (di < 8'(tw) - 8'd1) ? 7'(di) : tw - 7'd1;
+                        cc_r <= cc_of((di < 8'(tw) - 8'd1) ? 7'(di) : tw - 7'd1);
                         djmin <= (di + 8'd1 > 8'(th)) ? 7'(di + 8'd1 - 8'(th)) : 7'd0;
                         st <= T_PIX;
                     end
@@ -457,7 +463,7 @@ module pal_syntax
                             d1[k] <= (7'(k) == dj) ? pix_val : dcur[k];
                         end
                         di <= di + 8'd1; st <= T_DIAG;
-                    end else begin dj <= dj - 7'd1; st <= T_PIX; end
+                    end else begin dj <= dj - 7'd1; cc_r <= cc_of(dj - 7'd1); st <= T_PIX; end
                 end
                 T_NEXT_PLANE: begin
                     if (!pl && pal_uv != 4'd0) begin pl <= 1'b1; st <= T_START; end

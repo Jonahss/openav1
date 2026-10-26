@@ -1003,6 +1003,30 @@ module recon_top
     logic [6:0]  tw_px, th_px;                             // transform width / height in pixels
     logic [2:0]  l2w, l2h;
     logic [5:0]  tw_c, th_c;                               // coefficient dims: min(32, w/h)
+    logic [2:0]  tw_cl2;                                   // log2(tw_c): the coefficient row stride is a power of two
+    // the quantizer-matrix level base as a table (qm_lvl 0..14 x 6688): written as a product it was a multiplier in
+    // front of the ROM address; with the row stride as a shift the scan ROM -> address -> qm ROM path drops its DSP
+    // (18 levels, -0.32 ns on the K26 at 100 MHz)
+    function automatic logic [16:0] qm_lvl_base(input logic [3:0] lvl);
+        case (lvl)
+            4'd0: return 17'd0;
+            4'd1: return 17'(1 * QM_LEVEL_STRIDE);
+            4'd2: return 17'(2 * QM_LEVEL_STRIDE);
+            4'd3: return 17'(3 * QM_LEVEL_STRIDE);
+            4'd4: return 17'(4 * QM_LEVEL_STRIDE);
+            4'd5: return 17'(5 * QM_LEVEL_STRIDE);
+            4'd6: return 17'(6 * QM_LEVEL_STRIDE);
+            4'd7: return 17'(7 * QM_LEVEL_STRIDE);
+            4'd8: return 17'(8 * QM_LEVEL_STRIDE);
+            4'd9: return 17'(9 * QM_LEVEL_STRIDE);
+            4'd10: return 17'(10 * QM_LEVEL_STRIDE);
+            4'd11: return 17'(11 * QM_LEVEL_STRIDE);
+            4'd12: return 17'(12 * QM_LEVEL_STRIDE);
+            4'd13: return 17'(13 * QM_LEVEL_STRIDE);
+            4'd14: return 17'(14 * QM_LEVEL_STRIDE);
+            default: return 17'(15 * QM_LEVEL_STRIDE);
+        endcase
+    endfunction
     logic [4:0]  step_x, step_y;                           // in 4x4 units
     logic [MIW-1:0] mi_row, mi_col;                           // luma MI position of the tx block
     logic [5:0]  sb_row_p, sb_col_p;                       // (row & sbMask) >> sub, plane units
@@ -1051,6 +1075,7 @@ module recon_top
         tw_px = tx_width(t.txsz); th_px = tx_height(t.txsz);
         l2w = tx_w_log2(t.txsz); l2h = tx_h_log2(t.txsz);
         tw_c = (tw_px > 7'd32) ? 6'd32 : 6'(tw_px);
+        tw_cl2 = (tw_c == 6'd4) ? 3'd2 : (tw_c == 6'd8) ? 3'd3 : (tw_c == 6'd16) ? 3'd4 : 3'd5;
         th_c = (th_px > 7'd32) ? 6'd32 : 6'(th_px);
         step_x = 5'(tw_px >> 2); step_y = 5'(th_px >> 2);
         mi_row = MIW'((t.y << sub_y) >> 2); mi_col = MIW'((t.x << sub_x) >> 2);
@@ -1340,8 +1365,8 @@ module recon_top
         cl_lwe = 1'b0; cl_dwe = 1'b0; cl_laddr = 10'd0; cl_ldata = fb_rdata; cl_daddr = 10'd0; cl_ddata = fb_rdata;
         res_addr = 12'({pci[5:0], pcj[5:0]});                 // residual of the position read last cycle
         pm_plane = (t.plane != 2'd0); pm_x = 6'(t.x - base_x + PXW'(cj)); pm_y = 6'(t.y - base_y + PXW'(ci));
-        q_addr = 10'(sc_ci) * 10'(tw_c) + 10'(sc_cj);    // registered read in coef_rd: data lands the next cycle
-        qm_addr = 17'(int'(qm_lvl) * QM_LEVEL_STRIDE + ((t.plane != 2'd0) ? QM_PLANE_STRIDE : 0)) + 17'(qm_offset(t.txsz)) + 17'(sc_ci) * 17'(tw_c) + 17'(sc_cj);
+        q_addr = (10'(sc_ci) << tw_cl2) + 10'(sc_cj);    // registered read in coef_rd: data lands the next cycle
+        qm_addr = qm_lvl_base(qm_lvl) + ((t.plane != 2'd0) ? 17'(QM_PLANE_STRIDE) : 17'd0) + 17'(qm_offset(t.txsz)) + (17'(sc_ci) << tw_cl2) + 17'(sc_cj);
         itx_clr = (rs == R_RESID);
         case (rs)
             R_PAL, R_PAL_LAST: begin
