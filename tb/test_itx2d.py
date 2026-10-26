@@ -123,6 +123,7 @@ async def fuzz_vs_model(dut):
             for i in range(h):
                 for j in range(w):
                     dut.res_addr.value = i * 64 + j
+                    await RisingEdge(dut.clk)                 # the port answers the cycle after the address
                     await Timer(1, "ns")
                     got[i][j] = to_signed(int(dut.res_data.value))
             if got != exp:

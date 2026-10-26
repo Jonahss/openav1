@@ -2,14 +2,21 @@
 // level per clock on 32 fixed pair units; wiring per (program, level) generated from tb/itx_model.py.
 // Programs: 0 DCT4 x16, 1 DCT8 x8, 2 DCT16 x4, 3 DCT32 x2, 4 DCT64 x1, 5 ADST8 x8, 6 ADST16 x4
 // Fan-in: unit input a <= 13, b <= 14, write-back per lane <= 13.
+//
+// Control is registered one level ahead (2026-10-26): the (program, level) decode — which lane each unit input
+// reads, the rotation constants, the mode and flip, and which unit output each lane takes back — is computed for
+// the NEXT level while the current one executes and lands in the cw_* registers, so the datapath of a level is
+// register -> source mux -> pair unit -> write-back mux -> register with no decode in it (the decode from the
+// wrapper's size / class registers through the wiring case was 19-20 logic levels, -0.5 ns at 100 MHz routed).
+// While idle the control word tracks level 0 of prog, so prog and r must be stable in the cycle before start.
 module itx_lvl #(
     parameter int TW = 20
 ) (
     input  logic             clk,
     input  logic             rst,
     input  logic             start,      // pulse while idle; in_vec valid in this cycle (level 0 reads it)
-    input  logic [2:0]       prog,
-    input  logic [4:0]       r,          // Hadamard clamp range (bits)
+    input  logic [2:0]       prog,       // stable in the cycle before start
+    input  logic [4:0]       r,          // Hadamard clamp range (bits), stable in the cycle before start
     input  logic [64*TW-1:0] in_vec,
     output logic             busy,
     output logic             done,       // one-cycle pulse; out_vec valid from this cycle on
@@ -17,19 +24,14 @@ module itx_lvl #(
 );
     localparam int NU = 32;
     logic [TW-1:0] rv [64];   // the register vector
-    logic [2:0]    p_l;        // latched program
-    logic [3:0]    lvl_l;      // next level to execute while busy
+    logic [2:0]    p_l;        // program: tracks prog while idle, held while busy
+    logic [3:0]    lvl_l;      // level executing this cycle (0 while idle)
     logic [4:0]    r_l;
-    logic [2:0]    p;          // program / level executing this cycle (level 0 in the start cycle)
-    logic [3:0]    lvl;
-    logic [4:0]    rr;
-    logic          step;
-    assign p    = busy ? p_l : prog;
-    assign lvl  = busy ? lvl_l : 4'd0;
-    assign rr   = busy ? r_l : r;
+    logic          step;       // a level executes this cycle
+    logic          last;       // ... and it is the program's last
     assign step = busy | start;
     logic [3:0] nlvl;
-    always_comb case (p)
+    always_comb case (p_l)
         3'd0: nlvl = 4'd2;
         3'd1: nlvl = 4'd4;
         3'd2: nlvl = 4'd6;
@@ -39,2321 +41,2699 @@ module itx_lvl #(
         3'd6: nlvl = 4'd7;
         default: nlvl = 4'd1;
     endcase
+    assign last = (lvl_l + 4'd1 == nlvl);
+
+    // the (program, level) executing next cycle: the next level of this program, or level 0 of prog
+    logic [2:0] p_n;
+    logic [3:0] lvl_n;
+    assign p_n   = (step && !last) ? p_l : prog;
+    assign lvl_n = (step && !last) ? lvl_l + 4'd1 : 4'd0;
+
+    // control word: decoded for (p_n, lvl_n), registered, used by the datapath in the next cycle
+    logic [3:0]         sa_n [NU], sb_n [NU], sa_r [NU], sb_r [NU];   // source candidate per unit input (0 none)
+    logic signed [12:0] uc_n [NU], us_n [NU], uc_r [NU], us_r [NU];
+    logic [1:0]         um_n [NU], um_r [NU];
+    logic               uf_n [NU], uf_r [NU];
+    logic [3:0]         wb_n [64], wb_r [64];                        // write-back candidate per lane (0 hold)
+    logic               l0_n, l0_r;                                  // level 0: sources are in_vec
+    assign l0_n = (lvl_n == 4'd0);
+    always_comb begin
+        for (int u = 0; u < NU; u++) begin sa_n[u] = '0; sb_n[u] = '0; uc_n[u] = '0; us_n[u] = '0; um_n[u] = 2'd0; uf_n[u] = 1'b0; end
+        for (int k = 0; k < 64; k++) wb_n[k] = '0;
+        case ({p_n, lvl_n})
+            {3'd0, 4'd0}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd1; um_n[0] = 2'd1; uf_n[0] = 1'b1; uc_n[0] = 13'sd2896; us_n[0] = 13'sd2896; wb_n[0] = 4'd1; wb_n[1] = 4'd1;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd1; um_n[1] = 2'd1; uf_n[1] = 1'b0; uc_n[1] = 13'sd1567; us_n[1] = 13'sd3784; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd1; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd2896; us_n[2] = 13'sd2896; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd1; um_n[3] = 2'd1; uf_n[3] = 1'b0; uc_n[3] = 13'sd1567; us_n[3] = 13'sd3784; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd1; um_n[4] = 2'd1; uf_n[4] = 1'b1; uc_n[4] = 13'sd2896; us_n[4] = 13'sd2896; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd1; um_n[5] = 2'd1; uf_n[5] = 1'b0; uc_n[5] = 13'sd1567; us_n[5] = 13'sd3784; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd1; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd2896; us_n[6] = 13'sd2896; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd1; um_n[7] = 2'd1; uf_n[7] = 1'b0; uc_n[7] = 13'sd1567; us_n[7] = 13'sd3784; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd1; um_n[8] = 2'd1; uf_n[8] = 1'b1; uc_n[8] = 13'sd2896; us_n[8] = 13'sd2896; wb_n[16] = 4'd1; wb_n[17] = 4'd1;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd1; um_n[9] = 2'd1; uf_n[9] = 1'b0; uc_n[9] = 13'sd1567; us_n[9] = 13'sd3784; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd1; um_n[10] = 2'd1; uf_n[10] = 1'b1; uc_n[10] = 13'sd2896; us_n[10] = 13'sd2896; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd1; um_n[11] = 2'd1; uf_n[11] = 1'b0; uc_n[11] = 13'sd1567; us_n[11] = 13'sd3784; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd1; um_n[12] = 2'd1; uf_n[12] = 1'b1; uc_n[12] = 13'sd2896; us_n[12] = 13'sd2896; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd1; um_n[13] = 2'd1; uf_n[13] = 1'b0; uc_n[13] = 13'sd1567; us_n[13] = 13'sd3784; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd1; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd2896; us_n[14] = 13'sd2896; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd1; um_n[15] = 2'd1; uf_n[15] = 1'b0; uc_n[15] = 13'sd1567; us_n[15] = 13'sd3784; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd1; um_n[16] = 2'd1; uf_n[16] = 1'b1; uc_n[16] = 13'sd2896; us_n[16] = 13'sd2896; wb_n[32] = 4'd1; wb_n[33] = 4'd1;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd1; um_n[17] = 2'd1; uf_n[17] = 1'b0; uc_n[17] = 13'sd1567; us_n[17] = 13'sd3784; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd1; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd2896; us_n[18] = 13'sd2896; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd1; um_n[19] = 2'd1; uf_n[19] = 1'b0; uc_n[19] = 13'sd1567; us_n[19] = 13'sd3784; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd1; um_n[20] = 2'd1; uf_n[20] = 1'b1; uc_n[20] = 13'sd2896; us_n[20] = 13'sd2896; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd1; um_n[21] = 2'd1; uf_n[21] = 1'b0; uc_n[21] = 13'sd1567; us_n[21] = 13'sd3784; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd1; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd2896; us_n[22] = 13'sd2896; wb_n[44] = 4'd1; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd1; um_n[23] = 2'd1; uf_n[23] = 1'b0; uc_n[23] = 13'sd1567; us_n[23] = 13'sd3784; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd1; um_n[24] = 2'd1; uf_n[24] = 1'b1; uc_n[24] = 13'sd2896; us_n[24] = 13'sd2896; wb_n[48] = 4'd1; wb_n[49] = 4'd1;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd1; um_n[25] = 2'd1; uf_n[25] = 1'b0; uc_n[25] = 13'sd1567; us_n[25] = 13'sd3784; wb_n[50] = 4'd1; wb_n[51] = 4'd1;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd1; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd2896; us_n[26] = 13'sd2896; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd1; sb_n[27] = 4'd1; um_n[27] = 2'd1; uf_n[27] = 1'b0; uc_n[27] = 13'sd1567; us_n[27] = 13'sd3784; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd1; um_n[28] = 2'd1; uf_n[28] = 1'b1; uc_n[28] = 13'sd2896; us_n[28] = 13'sd2896; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd1; um_n[29] = 2'd1; uf_n[29] = 1'b0; uc_n[29] = 13'sd1567; us_n[29] = 13'sd3784; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd1; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd2896; us_n[30] = 13'sd2896; wb_n[60] = 4'd1; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd1; um_n[31] = 2'd1; uf_n[31] = 1'b0; uc_n[31] = 13'sd1567; us_n[31] = 13'sd3784; wb_n[62] = 4'd1; wb_n[63] = 4'd1;
+            end
+            {3'd0, 4'd1}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd2; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[3] = 4'd2;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd2; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[2] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd2; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[7] = 4'd2;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd2; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[6] = 4'd2;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd2; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[11] = 4'd2;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd2; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[10] = 4'd2;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd2; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[15] = 4'd2;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd2; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[13] = 4'd2; wb_n[14] = 4'd2;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd2; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[19] = 4'd2;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd2; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[18] = 4'd2;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd2; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[23] = 4'd2;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd2; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[21] = 4'd2; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd2; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[27] = 4'd2;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd2; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[25] = 4'd2; wb_n[26] = 4'd2;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd2; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[28] = 4'd1; wb_n[31] = 4'd2;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd2; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[29] = 4'd2; wb_n[30] = 4'd2;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd2; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[35] = 4'd2;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd2; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[34] = 4'd2;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd2; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[39] = 4'd2;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd2; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[37] = 4'd2; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd2; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[43] = 4'd2;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd2; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[42] = 4'd2;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd2; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[47] = 4'd2;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd2; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[45] = 4'd2; wb_n[46] = 4'd2;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd2; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[51] = 4'd2;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd2; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[50] = 4'd2;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd2; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[52] = 4'd1; wb_n[55] = 4'd2;
+                sa_n[27] = 4'd1; sb_n[27] = 4'd2; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[53] = 4'd2; wb_n[54] = 4'd2;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd2; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[59] = 4'd2;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd2; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[57] = 4'd2; wb_n[58] = 4'd2;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd2; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[60] = 4'd1; wb_n[63] = 4'd2;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd2; um_n[31] = 2'd2; uf_n[31] = 1'b0; wb_n[61] = 4'd2; wb_n[62] = 4'd2;
+            end
+            {3'd1, 4'd0}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd3; um_n[0] = 2'd1; uf_n[0] = 1'b1; uc_n[0] = 13'sd2896; us_n[0] = 13'sd2896; wb_n[0] = 4'd1; wb_n[1] = 4'd1;
+                sa_n[1] = 4'd2; sb_n[1] = 4'd3; um_n[1] = 2'd1; uf_n[1] = 1'b0; uc_n[1] = 13'sd1567; us_n[1] = 13'sd3784; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd2; sb_n[2] = 4'd2; um_n[2] = 2'd1; uf_n[2] = 1'b0; uc_n[2] = 13'sd799; us_n[2] = 13'sd4017; wb_n[4] = 4'd1; wb_n[7] = 4'd2;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd3; um_n[3] = 2'd1; uf_n[3] = 1'b0; uc_n[3] = 13'sd3406; us_n[3] = 13'sd2276; wb_n[5] = 4'd2; wb_n[6] = 4'd2;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd3; um_n[4] = 2'd1; uf_n[4] = 1'b1; uc_n[4] = 13'sd2896; us_n[4] = 13'sd2896; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd3; um_n[5] = 2'd1; uf_n[5] = 1'b0; uc_n[5] = 13'sd1567; us_n[5] = 13'sd3784; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd2; sb_n[6] = 4'd2; um_n[6] = 2'd1; uf_n[6] = 1'b0; uc_n[6] = 13'sd799; us_n[6] = 13'sd4017; wb_n[12] = 4'd1; wb_n[15] = 4'd2;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd3; um_n[7] = 2'd1; uf_n[7] = 1'b0; uc_n[7] = 13'sd3406; us_n[7] = 13'sd2276; wb_n[13] = 4'd2; wb_n[14] = 4'd2;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd3; um_n[8] = 2'd1; uf_n[8] = 1'b1; uc_n[8] = 13'sd2896; us_n[8] = 13'sd2896; wb_n[16] = 4'd1; wb_n[17] = 4'd1;
+                sa_n[9] = 4'd2; sb_n[9] = 4'd3; um_n[9] = 2'd1; uf_n[9] = 1'b0; uc_n[9] = 13'sd1567; us_n[9] = 13'sd3784; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd2; sb_n[10] = 4'd2; um_n[10] = 2'd1; uf_n[10] = 1'b0; uc_n[10] = 13'sd799; us_n[10] = 13'sd4017; wb_n[20] = 4'd1; wb_n[23] = 4'd2;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd3; um_n[11] = 2'd1; uf_n[11] = 1'b0; uc_n[11] = 13'sd3406; us_n[11] = 13'sd2276; wb_n[21] = 4'd2; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd3; um_n[12] = 2'd1; uf_n[12] = 1'b1; uc_n[12] = 13'sd2896; us_n[12] = 13'sd2896; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd3; um_n[13] = 2'd1; uf_n[13] = 1'b0; uc_n[13] = 13'sd1567; us_n[13] = 13'sd3784; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd2; sb_n[14] = 4'd2; um_n[14] = 2'd1; uf_n[14] = 1'b0; uc_n[14] = 13'sd799; us_n[14] = 13'sd4017; wb_n[28] = 4'd1; wb_n[31] = 4'd2;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd3; um_n[15] = 2'd1; uf_n[15] = 1'b0; uc_n[15] = 13'sd3406; us_n[15] = 13'sd2276; wb_n[29] = 4'd2; wb_n[30] = 4'd2;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd3; um_n[16] = 2'd1; uf_n[16] = 1'b1; uc_n[16] = 13'sd2896; us_n[16] = 13'sd2896; wb_n[32] = 4'd1; wb_n[33] = 4'd1;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd3; um_n[17] = 2'd1; uf_n[17] = 1'b0; uc_n[17] = 13'sd1567; us_n[17] = 13'sd3784; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd2; sb_n[18] = 4'd2; um_n[18] = 2'd1; uf_n[18] = 1'b0; uc_n[18] = 13'sd799; us_n[18] = 13'sd4017; wb_n[36] = 4'd1; wb_n[39] = 4'd2;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd3; um_n[19] = 2'd1; uf_n[19] = 1'b0; uc_n[19] = 13'sd3406; us_n[19] = 13'sd2276; wb_n[37] = 4'd2; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd3; um_n[20] = 2'd1; uf_n[20] = 1'b1; uc_n[20] = 13'sd2896; us_n[20] = 13'sd2896; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[21] = 4'd2; sb_n[21] = 4'd3; um_n[21] = 2'd1; uf_n[21] = 1'b0; uc_n[21] = 13'sd1567; us_n[21] = 13'sd3784; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd2; sb_n[22] = 4'd2; um_n[22] = 2'd1; uf_n[22] = 1'b0; uc_n[22] = 13'sd799; us_n[22] = 13'sd4017; wb_n[44] = 4'd1; wb_n[47] = 4'd2;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd3; um_n[23] = 2'd1; uf_n[23] = 1'b0; uc_n[23] = 13'sd3406; us_n[23] = 13'sd2276; wb_n[45] = 4'd2; wb_n[46] = 4'd2;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd3; um_n[24] = 2'd1; uf_n[24] = 1'b1; uc_n[24] = 13'sd2896; us_n[24] = 13'sd2896; wb_n[48] = 4'd1; wb_n[49] = 4'd1;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd3; um_n[25] = 2'd1; uf_n[25] = 1'b0; uc_n[25] = 13'sd1567; us_n[25] = 13'sd3784; wb_n[50] = 4'd1; wb_n[51] = 4'd1;
+                sa_n[26] = 4'd2; sb_n[26] = 4'd2; um_n[26] = 2'd1; uf_n[26] = 1'b0; uc_n[26] = 13'sd799; us_n[26] = 13'sd4017; wb_n[52] = 4'd1; wb_n[55] = 4'd2;
+                sa_n[27] = 4'd1; sb_n[27] = 4'd3; um_n[27] = 2'd1; uf_n[27] = 1'b0; uc_n[27] = 13'sd3406; us_n[27] = 13'sd2276; wb_n[53] = 4'd2; wb_n[54] = 4'd2;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd3; um_n[28] = 2'd1; uf_n[28] = 1'b1; uc_n[28] = 13'sd2896; us_n[28] = 13'sd2896; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd3; um_n[29] = 2'd1; uf_n[29] = 1'b0; uc_n[29] = 13'sd1567; us_n[29] = 13'sd3784; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd2; sb_n[30] = 4'd2; um_n[30] = 2'd1; uf_n[30] = 1'b0; uc_n[30] = 13'sd799; us_n[30] = 13'sd4017; wb_n[60] = 4'd1; wb_n[63] = 4'd2;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd3; um_n[31] = 2'd1; uf_n[31] = 1'b0; uc_n[31] = 13'sd3406; us_n[31] = 13'sd2276; wb_n[61] = 4'd2; wb_n[62] = 4'd2;
+            end
+            {3'd1, 4'd1}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd2; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[3] = 4'd2;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd2; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[2] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd1; um_n[3] = 2'd2; uf_n[3] = 1'b1; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd2; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[11] = 4'd2;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd2; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[10] = 4'd2;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd2; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[19] = 4'd2;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd2; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[18] = 4'd2;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd1; um_n[11] = 2'd2; uf_n[11] = 1'b1; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd2; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[27] = 4'd2;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd2; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[25] = 4'd2; wb_n[26] = 4'd2;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd2; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd2; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[35] = 4'd2;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd2; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[34] = 4'd2;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd1; um_n[19] = 2'd2; uf_n[19] = 1'b1; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd2; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[43] = 4'd2;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd2; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[42] = 4'd2;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd2; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd2; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[51] = 4'd2;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd2; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[50] = 4'd2;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd2; sb_n[27] = 4'd1; um_n[27] = 2'd2; uf_n[27] = 1'b1; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd2; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[59] = 4'd2;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd2; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[57] = 4'd2; wb_n[58] = 4'd2;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[60] = 4'd1; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd2; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[62] = 4'd1; wb_n[63] = 4'd1;
+            end
+            {3'd1, 4'd2}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd4; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[7] = 4'd3;
+                sa_n[1] = 4'd3; sb_n[1] = 4'd4; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[3] = 4'd3; wb_n[4] = 4'd2;
+                sa_n[2] = 4'd3; sb_n[2] = 4'd3; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd2896; us_n[2] = 13'sd2896; wb_n[6] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd4; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[15] = 4'd3;
+                sa_n[5] = 4'd3; sb_n[5] = 4'd4; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[11] = 4'd3; wb_n[12] = 4'd2;
+                sa_n[6] = 4'd3; sb_n[6] = 4'd3; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd2896; us_n[6] = 13'sd2896; wb_n[14] = 4'd3; wb_n[13] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd4; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[23] = 4'd3;
+                sa_n[9] = 4'd3; sb_n[9] = 4'd4; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[19] = 4'd3; wb_n[20] = 4'd2;
+                sa_n[10] = 4'd3; sb_n[10] = 4'd3; um_n[10] = 2'd1; uf_n[10] = 1'b1; uc_n[10] = 13'sd2896; us_n[10] = 13'sd2896; wb_n[22] = 4'd3; wb_n[21] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd4; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[31] = 4'd3;
+                sa_n[13] = 4'd3; sb_n[13] = 4'd4; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[27] = 4'd3; wb_n[28] = 4'd2;
+                sa_n[14] = 4'd3; sb_n[14] = 4'd3; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd2896; us_n[14] = 13'sd2896; wb_n[30] = 4'd3; wb_n[29] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd4; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[39] = 4'd3;
+                sa_n[17] = 4'd3; sb_n[17] = 4'd4; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[35] = 4'd3; wb_n[36] = 4'd2;
+                sa_n[18] = 4'd3; sb_n[18] = 4'd3; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd2896; us_n[18] = 13'sd2896; wb_n[38] = 4'd3; wb_n[37] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd4; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[47] = 4'd3;
+                sa_n[21] = 4'd3; sb_n[21] = 4'd4; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[43] = 4'd3; wb_n[44] = 4'd2;
+                sa_n[22] = 4'd3; sb_n[22] = 4'd3; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd2896; us_n[22] = 13'sd2896; wb_n[46] = 4'd3; wb_n[45] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd4; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[55] = 4'd3;
+                sa_n[25] = 4'd3; sb_n[25] = 4'd4; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[51] = 4'd3; wb_n[52] = 4'd2;
+                sa_n[26] = 4'd3; sb_n[26] = 4'd3; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd2896; us_n[26] = 13'sd2896; wb_n[54] = 4'd3; wb_n[53] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd4; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[63] = 4'd3;
+                sa_n[29] = 4'd3; sb_n[29] = 4'd4; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[59] = 4'd3; wb_n[60] = 4'd2;
+                sa_n[30] = 4'd3; sb_n[30] = 4'd3; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd2896; us_n[30] = 13'sd2896; wb_n[62] = 4'd3; wb_n[61] = 4'd1;
+            end
+            {3'd1, 4'd3}: begin
+                sa_n[1] = 4'd1; sb_n[1] = 4'd3; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[6] = 4'd4;
+                sa_n[2] = 4'd4; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[2] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd3; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[14] = 4'd4;
+                sa_n[6] = 4'd4; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[10] = 4'd3; wb_n[13] = 4'd1;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd3; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[22] = 4'd4;
+                sa_n[10] = 4'd4; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[18] = 4'd3; wb_n[21] = 4'd1;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd3; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[25] = 4'd2; wb_n[30] = 4'd4;
+                sa_n[14] = 4'd4; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[26] = 4'd3; wb_n[29] = 4'd1;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd3; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[38] = 4'd4;
+                sa_n[18] = 4'd4; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[34] = 4'd3; wb_n[37] = 4'd1;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd3; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[46] = 4'd4;
+                sa_n[22] = 4'd4; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[42] = 4'd3; wb_n[45] = 4'd1;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd3; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[54] = 4'd4;
+                sa_n[26] = 4'd4; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[50] = 4'd3; wb_n[53] = 4'd1;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd3; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[57] = 4'd2; wb_n[62] = 4'd4;
+                sa_n[30] = 4'd4; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[58] = 4'd3; wb_n[61] = 4'd1;
+            end
+            {3'd2, 4'd0}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd5; um_n[0] = 2'd1; uf_n[0] = 1'b1; uc_n[0] = 13'sd2896; us_n[0] = 13'sd2896; wb_n[0] = 4'd1; wb_n[1] = 4'd1;
+                sa_n[1] = 4'd4; sb_n[1] = 4'd5; um_n[1] = 2'd1; uf_n[1] = 1'b0; uc_n[1] = 13'sd1567; us_n[1] = 13'sd3784; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd4; sb_n[2] = 4'd4; um_n[2] = 2'd1; uf_n[2] = 1'b0; uc_n[2] = 13'sd799; us_n[2] = 13'sd4017; wb_n[4] = 4'd1; wb_n[7] = 4'd2;
+                sa_n[3] = 4'd3; sb_n[3] = 4'd2; um_n[3] = 2'd1; uf_n[3] = 1'b0; uc_n[3] = 13'sd3406; us_n[3] = 13'sd2276; wb_n[5] = 4'd2; wb_n[6] = 4'd2;
+                sa_n[4] = 4'd2; sb_n[4] = 4'd4; um_n[4] = 2'd1; uf_n[4] = 1'b0; uc_n[4] = 13'sd401; us_n[4] = 13'sd4076; wb_n[8] = 4'd1; wb_n[15] = 4'd3;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd5; um_n[5] = 2'd1; uf_n[5] = 1'b0; uc_n[5] = 13'sd3166; us_n[5] = 13'sd2598; wb_n[9] = 4'd2; wb_n[14] = 4'd4;
+                sa_n[6] = 4'd5; sb_n[6] = 4'd4; um_n[6] = 2'd1; uf_n[6] = 1'b0; uc_n[6] = 13'sd1931; us_n[6] = 13'sd3612; wb_n[10] = 4'd3; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd4; um_n[7] = 2'd1; uf_n[7] = 1'b0; uc_n[7] = 13'sd3920; us_n[7] = 13'sd1189; wb_n[11] = 4'd4; wb_n[12] = 4'd3;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd5; um_n[8] = 2'd1; uf_n[8] = 1'b1; uc_n[8] = 13'sd2896; us_n[8] = 13'sd2896; wb_n[16] = 4'd1; wb_n[17] = 4'd1;
+                sa_n[9] = 4'd4; sb_n[9] = 4'd5; um_n[9] = 2'd1; uf_n[9] = 1'b0; uc_n[9] = 13'sd1567; us_n[9] = 13'sd3784; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd4; sb_n[10] = 4'd4; um_n[10] = 2'd1; uf_n[10] = 1'b0; uc_n[10] = 13'sd799; us_n[10] = 13'sd4017; wb_n[20] = 4'd1; wb_n[23] = 4'd2;
+                sa_n[11] = 4'd3; sb_n[11] = 4'd2; um_n[11] = 2'd1; uf_n[11] = 1'b0; uc_n[11] = 13'sd3406; us_n[11] = 13'sd2276; wb_n[21] = 4'd2; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd2; sb_n[12] = 4'd4; um_n[12] = 2'd1; uf_n[12] = 1'b0; uc_n[12] = 13'sd401; us_n[12] = 13'sd4076; wb_n[24] = 4'd1; wb_n[31] = 4'd3;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd5; um_n[13] = 2'd1; uf_n[13] = 1'b0; uc_n[13] = 13'sd3166; us_n[13] = 13'sd2598; wb_n[25] = 4'd2; wb_n[30] = 4'd4;
+                sa_n[14] = 4'd5; sb_n[14] = 4'd4; um_n[14] = 2'd1; uf_n[14] = 1'b0; uc_n[14] = 13'sd1931; us_n[14] = 13'sd3612; wb_n[26] = 4'd3; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd4; um_n[15] = 2'd1; uf_n[15] = 1'b0; uc_n[15] = 13'sd3920; us_n[15] = 13'sd1189; wb_n[27] = 4'd4; wb_n[28] = 4'd3;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd5; um_n[16] = 2'd1; uf_n[16] = 1'b1; uc_n[16] = 13'sd2896; us_n[16] = 13'sd2896; wb_n[32] = 4'd1; wb_n[33] = 4'd1;
+                sa_n[17] = 4'd4; sb_n[17] = 4'd5; um_n[17] = 2'd1; uf_n[17] = 1'b0; uc_n[17] = 13'sd1567; us_n[17] = 13'sd3784; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd4; sb_n[18] = 4'd4; um_n[18] = 2'd1; uf_n[18] = 1'b0; uc_n[18] = 13'sd799; us_n[18] = 13'sd4017; wb_n[36] = 4'd1; wb_n[39] = 4'd2;
+                sa_n[19] = 4'd3; sb_n[19] = 4'd2; um_n[19] = 2'd1; uf_n[19] = 1'b0; uc_n[19] = 13'sd3406; us_n[19] = 13'sd2276; wb_n[37] = 4'd2; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd2; sb_n[20] = 4'd4; um_n[20] = 2'd1; uf_n[20] = 1'b0; uc_n[20] = 13'sd401; us_n[20] = 13'sd4076; wb_n[40] = 4'd1; wb_n[47] = 4'd3;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd5; um_n[21] = 2'd1; uf_n[21] = 1'b0; uc_n[21] = 13'sd3166; us_n[21] = 13'sd2598; wb_n[41] = 4'd2; wb_n[46] = 4'd4;
+                sa_n[22] = 4'd5; sb_n[22] = 4'd4; um_n[22] = 2'd1; uf_n[22] = 1'b0; uc_n[22] = 13'sd1931; us_n[22] = 13'sd3612; wb_n[42] = 4'd3; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd4; um_n[23] = 2'd1; uf_n[23] = 1'b0; uc_n[23] = 13'sd3920; us_n[23] = 13'sd1189; wb_n[43] = 4'd4; wb_n[44] = 4'd3;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd5; um_n[24] = 2'd1; uf_n[24] = 1'b1; uc_n[24] = 13'sd2896; us_n[24] = 13'sd2896; wb_n[48] = 4'd1; wb_n[49] = 4'd1;
+                sa_n[25] = 4'd4; sb_n[25] = 4'd5; um_n[25] = 2'd1; uf_n[25] = 1'b0; uc_n[25] = 13'sd1567; us_n[25] = 13'sd3784; wb_n[50] = 4'd1; wb_n[51] = 4'd1;
+                sa_n[26] = 4'd4; sb_n[26] = 4'd4; um_n[26] = 2'd1; uf_n[26] = 1'b0; uc_n[26] = 13'sd799; us_n[26] = 13'sd4017; wb_n[52] = 4'd1; wb_n[55] = 4'd2;
+                sa_n[27] = 4'd3; sb_n[27] = 4'd2; um_n[27] = 2'd1; uf_n[27] = 1'b0; uc_n[27] = 13'sd3406; us_n[27] = 13'sd2276; wb_n[53] = 4'd2; wb_n[54] = 4'd2;
+                sa_n[28] = 4'd2; sb_n[28] = 4'd4; um_n[28] = 2'd1; uf_n[28] = 1'b0; uc_n[28] = 13'sd401; us_n[28] = 13'sd4076; wb_n[56] = 4'd1; wb_n[63] = 4'd3;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd5; um_n[29] = 2'd1; uf_n[29] = 1'b0; uc_n[29] = 13'sd3166; us_n[29] = 13'sd2598; wb_n[57] = 4'd2; wb_n[62] = 4'd4;
+                sa_n[30] = 4'd5; sb_n[30] = 4'd4; um_n[30] = 2'd1; uf_n[30] = 1'b0; uc_n[30] = 13'sd1931; us_n[30] = 13'sd3612; wb_n[58] = 4'd3; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd4; um_n[31] = 2'd1; uf_n[31] = 1'b0; uc_n[31] = 13'sd3920; us_n[31] = 13'sd1189; wb_n[59] = 4'd4; wb_n[60] = 4'd3;
+            end
+            {3'd2, 4'd1}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd2; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[3] = 4'd2;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd2; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[2] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd1; um_n[3] = 2'd2; uf_n[3] = 1'b1; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd5; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd1; um_n[5] = 2'd2; uf_n[5] = 1'b1; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd2; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[19] = 4'd2;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd2; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[18] = 4'd2;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd1; um_n[11] = 2'd2; uf_n[11] = 1'b1; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd5; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd1; um_n[13] = 2'd2; uf_n[13] = 1'b1; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd2; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd2; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[35] = 4'd2;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd2; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[34] = 4'd2;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd1; um_n[19] = 2'd2; uf_n[19] = 1'b1; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd5; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[21] = 4'd2; sb_n[21] = 4'd1; um_n[21] = 2'd2; uf_n[21] = 1'b1; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd2; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd2; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[51] = 4'd2;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd2; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[50] = 4'd2;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd2; sb_n[27] = 4'd1; um_n[27] = 2'd2; uf_n[27] = 1'b1; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd5; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd1; um_n[29] = 2'd2; uf_n[29] = 1'b1; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[60] = 4'd1; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd2; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[62] = 4'd1; wb_n[63] = 4'd1;
+            end
+            {3'd2, 4'd2}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd4; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[7] = 4'd3;
+                sa_n[1] = 4'd3; sb_n[1] = 4'd4; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[3] = 4'd3; wb_n[4] = 4'd2;
+                sa_n[2] = 4'd3; sb_n[2] = 4'd3; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd2896; us_n[2] = 13'sd2896; wb_n[6] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd2; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[11] = 4'd2;
+                sa_n[6] = 4'd3; sb_n[6] = 4'd5; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd1567; us_n[6] = 13'sd3784; wb_n[14] = 4'd3; wb_n[9] = 4'd3;
+                sa_n[5] = 4'd4; sb_n[5] = 4'd2; um_n[5] = 2'd1; uf_n[5] = 1'b1; uc_n[5] = -13'sd3784; us_n[5] = 13'sd1567; wb_n[13] = 4'd3; wb_n[10] = 4'd2;
+                sa_n[7] = 4'd3; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[12] = 4'd4; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd4; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[23] = 4'd3;
+                sa_n[9] = 4'd3; sb_n[9] = 4'd4; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[19] = 4'd3; wb_n[20] = 4'd2;
+                sa_n[10] = 4'd3; sb_n[10] = 4'd3; um_n[10] = 2'd1; uf_n[10] = 1'b1; uc_n[10] = 13'sd2896; us_n[10] = 13'sd2896; wb_n[22] = 4'd3; wb_n[21] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd2; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[27] = 4'd2;
+                sa_n[14] = 4'd3; sb_n[14] = 4'd5; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd1567; us_n[14] = 13'sd3784; wb_n[30] = 4'd3; wb_n[25] = 4'd3;
+                sa_n[13] = 4'd4; sb_n[13] = 4'd2; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = -13'sd3784; us_n[13] = 13'sd1567; wb_n[29] = 4'd3; wb_n[26] = 4'd2;
+                sa_n[15] = 4'd3; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[28] = 4'd4; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd4; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[39] = 4'd3;
+                sa_n[17] = 4'd3; sb_n[17] = 4'd4; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[35] = 4'd3; wb_n[36] = 4'd2;
+                sa_n[18] = 4'd3; sb_n[18] = 4'd3; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd2896; us_n[18] = 13'sd2896; wb_n[38] = 4'd3; wb_n[37] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd2; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[43] = 4'd2;
+                sa_n[22] = 4'd3; sb_n[22] = 4'd5; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd1567; us_n[22] = 13'sd3784; wb_n[46] = 4'd3; wb_n[41] = 4'd3;
+                sa_n[21] = 4'd4; sb_n[21] = 4'd2; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = -13'sd3784; us_n[21] = 13'sd1567; wb_n[45] = 4'd3; wb_n[42] = 4'd2;
+                sa_n[23] = 4'd3; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[44] = 4'd4; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd4; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[55] = 4'd3;
+                sa_n[25] = 4'd3; sb_n[25] = 4'd4; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[51] = 4'd3; wb_n[52] = 4'd2;
+                sa_n[26] = 4'd3; sb_n[26] = 4'd3; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd2896; us_n[26] = 13'sd2896; wb_n[54] = 4'd3; wb_n[53] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd2; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[59] = 4'd2;
+                sa_n[30] = 4'd3; sb_n[30] = 4'd5; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd1567; us_n[30] = 13'sd3784; wb_n[62] = 4'd3; wb_n[57] = 4'd3;
+                sa_n[29] = 4'd4; sb_n[29] = 4'd2; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = -13'sd3784; us_n[29] = 13'sd1567; wb_n[61] = 4'd3; wb_n[58] = 4'd2;
+                sa_n[31] = 4'd3; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[60] = 4'd4; wb_n[63] = 4'd1;
+            end
+            {3'd2, 4'd3}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd6; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[15] = 4'd4;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd3; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[6] = 4'd4;
+                sa_n[2] = 4'd4; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[2] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd4; sb_n[3] = 4'd4; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[7] = 4'd4; wb_n[8] = 4'd2;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd2; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[10] = 4'd2;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd4; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd2896; us_n[6] = 13'sd2896; wb_n[12] = 4'd1; wb_n[11] = 4'd5;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd2; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[13] = 4'd2; wb_n[14] = 4'd2;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd6; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[31] = 4'd4;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd3; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[22] = 4'd4;
+                sa_n[10] = 4'd4; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[18] = 4'd3; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd4; sb_n[11] = 4'd4; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[23] = 4'd4; wb_n[24] = 4'd2;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd2; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[25] = 4'd2; wb_n[26] = 4'd2;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd4; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd2896; us_n[14] = 13'sd2896; wb_n[28] = 4'd1; wb_n[27] = 4'd5;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd2; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[29] = 4'd2; wb_n[30] = 4'd2;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd6; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[47] = 4'd4;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd3; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[38] = 4'd4;
+                sa_n[18] = 4'd4; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[34] = 4'd3; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd4; sb_n[19] = 4'd4; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[39] = 4'd4; wb_n[40] = 4'd2;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd2; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[42] = 4'd2;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd4; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd2896; us_n[22] = 13'sd2896; wb_n[44] = 4'd1; wb_n[43] = 4'd5;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd2; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[45] = 4'd2; wb_n[46] = 4'd2;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd6; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[63] = 4'd4;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd3; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[54] = 4'd4;
+                sa_n[26] = 4'd4; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[50] = 4'd3; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd4; sb_n[27] = 4'd4; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[55] = 4'd4; wb_n[56] = 4'd2;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd2; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[57] = 4'd2; wb_n[58] = 4'd2;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd4; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd2896; us_n[30] = 13'sd2896; wb_n[60] = 4'd1; wb_n[59] = 4'd5;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd2; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[61] = 4'd2; wb_n[62] = 4'd2;
+            end
+            {3'd2, 4'd4}: begin
+                sa_n[1] = 4'd1; sb_n[1] = 4'd6; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[14] = 4'd5;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd4; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[12] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd5; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[11] = 4'd6;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd5; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[6] = 4'd1; wb_n[9] = 4'd4;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd5; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd2896; us_n[7] = 13'sd2896; wb_n[13] = 4'd2; wb_n[10] = 4'd4;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd6; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[30] = 4'd5;
+                sa_n[13] = 4'd5; sb_n[13] = 4'd4; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[19] = 4'd4; wb_n[28] = 4'd2;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd5; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[27] = 4'd6;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd5; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[22] = 4'd1; wb_n[25] = 4'd4;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd5; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd2896; us_n[15] = 13'sd2896; wb_n[29] = 4'd2; wb_n[26] = 4'd4;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd6; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[46] = 4'd5;
+                sa_n[21] = 4'd5; sb_n[21] = 4'd4; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[35] = 4'd4; wb_n[44] = 4'd2;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd5; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[43] = 4'd6;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd5; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[38] = 4'd1; wb_n[41] = 4'd4;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd5; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd2896; us_n[23] = 13'sd2896; wb_n[45] = 4'd2; wb_n[42] = 4'd4;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd6; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[62] = 4'd5;
+                sa_n[29] = 4'd5; sb_n[29] = 4'd4; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[51] = 4'd4; wb_n[60] = 4'd2;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd5; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[52] = 4'd1; wb_n[59] = 4'd6;
+                sa_n[27] = 4'd2; sb_n[27] = 4'd5; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[54] = 4'd1; wb_n[57] = 4'd4;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd5; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd2896; us_n[31] = 13'sd2896; wb_n[61] = 4'd2; wb_n[58] = 4'd4;
+            end
+            {3'd2, 4'd5}: begin
+                sa_n[1] = 4'd2; sb_n[1] = 4'd7; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[13] = 4'd4;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd6; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[10] = 4'd5;
+                sa_n[9] = 4'd2; sb_n[9] = 4'd7; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[18] = 4'd1; wb_n[29] = 4'd4;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd6; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[21] = 4'd2; wb_n[26] = 4'd5;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd7; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[34] = 4'd1; wb_n[45] = 4'd4;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd6; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[37] = 4'd2; wb_n[42] = 4'd5;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd7; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[50] = 4'd1; wb_n[61] = 4'd4;
+                sa_n[27] = 4'd1; sb_n[27] = 4'd6; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[53] = 4'd2; wb_n[58] = 4'd5;
+            end
+            {3'd3, 4'd0}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd7; um_n[0] = 2'd1; uf_n[0] = 1'b1; uc_n[0] = 13'sd2896; us_n[0] = 13'sd2896; wb_n[0] = 4'd1; wb_n[1] = 4'd1;
+                sa_n[1] = 4'd5; sb_n[1] = 4'd8; um_n[1] = 2'd1; uf_n[1] = 1'b0; uc_n[1] = 13'sd1567; us_n[1] = 13'sd3784; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd6; um_n[2] = 2'd1; uf_n[2] = 1'b0; uc_n[2] = 13'sd799; us_n[2] = 13'sd4017; wb_n[4] = 4'd1; wb_n[7] = 4'd2;
+                sa_n[3] = 4'd5; sb_n[3] = 4'd7; um_n[3] = 2'd1; uf_n[3] = 1'b0; uc_n[3] = 13'sd3406; us_n[3] = 13'sd2276; wb_n[5] = 4'd2; wb_n[6] = 4'd2;
+                sa_n[4] = 4'd3; sb_n[4] = 4'd6; um_n[4] = 2'd1; uf_n[4] = 1'b0; uc_n[4] = 13'sd401; us_n[4] = 13'sd4076; wb_n[8] = 4'd1; wb_n[15] = 4'd3;
+                sa_n[5] = 4'd6; sb_n[5] = 4'd3; um_n[5] = 2'd1; uf_n[5] = 1'b0; uc_n[5] = 13'sd3166; us_n[5] = 13'sd2598; wb_n[9] = 4'd2; wb_n[14] = 4'd4;
+                sa_n[6] = 4'd4; sb_n[6] = 4'd6; um_n[6] = 2'd1; uf_n[6] = 1'b0; uc_n[6] = 13'sd1931; us_n[6] = 13'sd3612; wb_n[10] = 4'd3; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd4; sb_n[7] = 4'd6; um_n[7] = 2'd1; uf_n[7] = 1'b0; uc_n[7] = 13'sd3920; us_n[7] = 13'sd1189; wb_n[11] = 4'd4; wb_n[12] = 4'd3;
+                sa_n[8] = 4'd2; sb_n[8] = 4'd6; um_n[8] = 2'd1; uf_n[8] = 1'b0; uc_n[8] = 13'sd201; us_n[8] = 13'sd4091; wb_n[16] = 4'd1; wb_n[31] = 4'd4;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd8; um_n[9] = 2'd1; uf_n[9] = 1'b0; uc_n[9] = 13'sd3035; us_n[9] = 13'sd2751; wb_n[17] = 4'd2; wb_n[30] = 4'd5;
+                sa_n[10] = 4'd5; sb_n[10] = 4'd2; um_n[10] = 2'd1; uf_n[10] = 1'b0; uc_n[10] = 13'sd1751; us_n[10] = 13'sd3703; wb_n[18] = 4'd3; wb_n[29] = 4'd5;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd6; um_n[13] = 2'd1; uf_n[13] = 1'b0; uc_n[13] = 13'sd3857; us_n[13] = 13'sd1380; wb_n[19] = 4'd4; wb_n[28] = 4'd2;
+                sa_n[12] = 4'd3; sb_n[12] = 4'd2; um_n[12] = 2'd1; uf_n[12] = 1'b0; uc_n[12] = 13'sd995; us_n[12] = 13'sd3973; wb_n[20] = 4'd3; wb_n[27] = 4'd2;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd7; um_n[11] = 2'd1; uf_n[11] = 1'b0; uc_n[11] = 13'sd3513; us_n[11] = 13'sd2106; wb_n[21] = 4'd2; wb_n[26] = 4'd5;
+                sa_n[14] = 4'd6; sb_n[14] = 4'd6; um_n[14] = 2'd1; uf_n[14] = 1'b0; uc_n[14] = 13'sd2440; us_n[14] = 13'sd3290; wb_n[22] = 4'd5; wb_n[25] = 4'd3;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd6; um_n[15] = 2'd1; uf_n[15] = 1'b0; uc_n[15] = 13'sd4052; us_n[15] = 13'sd601; wb_n[23] = 4'd5; wb_n[24] = 4'd3;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd7; um_n[16] = 2'd1; uf_n[16] = 1'b1; uc_n[16] = 13'sd2896; us_n[16] = 13'sd2896; wb_n[32] = 4'd1; wb_n[33] = 4'd1;
+                sa_n[17] = 4'd5; sb_n[17] = 4'd8; um_n[17] = 2'd1; uf_n[17] = 1'b0; uc_n[17] = 13'sd1567; us_n[17] = 13'sd3784; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd6; um_n[18] = 2'd1; uf_n[18] = 1'b0; uc_n[18] = 13'sd799; us_n[18] = 13'sd4017; wb_n[36] = 4'd1; wb_n[39] = 4'd2;
+                sa_n[19] = 4'd5; sb_n[19] = 4'd7; um_n[19] = 2'd1; uf_n[19] = 1'b0; uc_n[19] = 13'sd3406; us_n[19] = 13'sd2276; wb_n[37] = 4'd2; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd3; sb_n[20] = 4'd6; um_n[20] = 2'd1; uf_n[20] = 1'b0; uc_n[20] = 13'sd401; us_n[20] = 13'sd4076; wb_n[40] = 4'd1; wb_n[47] = 4'd3;
+                sa_n[21] = 4'd6; sb_n[21] = 4'd3; um_n[21] = 2'd1; uf_n[21] = 1'b0; uc_n[21] = 13'sd3166; us_n[21] = 13'sd2598; wb_n[41] = 4'd2; wb_n[46] = 4'd4;
+                sa_n[22] = 4'd4; sb_n[22] = 4'd6; um_n[22] = 2'd1; uf_n[22] = 1'b0; uc_n[22] = 13'sd1931; us_n[22] = 13'sd3612; wb_n[42] = 4'd3; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd4; sb_n[23] = 4'd6; um_n[23] = 2'd1; uf_n[23] = 1'b0; uc_n[23] = 13'sd3920; us_n[23] = 13'sd1189; wb_n[43] = 4'd4; wb_n[44] = 4'd3;
+                sa_n[24] = 4'd2; sb_n[24] = 4'd6; um_n[24] = 2'd1; uf_n[24] = 1'b0; uc_n[24] = 13'sd201; us_n[24] = 13'sd4091; wb_n[48] = 4'd1; wb_n[63] = 4'd4;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd8; um_n[25] = 2'd1; uf_n[25] = 1'b0; uc_n[25] = 13'sd3035; us_n[25] = 13'sd2751; wb_n[49] = 4'd2; wb_n[62] = 4'd5;
+                sa_n[26] = 4'd5; sb_n[26] = 4'd2; um_n[26] = 2'd1; uf_n[26] = 1'b0; uc_n[26] = 13'sd1751; us_n[26] = 13'sd3703; wb_n[50] = 4'd3; wb_n[61] = 4'd5;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd6; um_n[29] = 2'd1; uf_n[29] = 1'b0; uc_n[29] = 13'sd3857; us_n[29] = 13'sd1380; wb_n[51] = 4'd4; wb_n[60] = 4'd2;
+                sa_n[28] = 4'd3; sb_n[28] = 4'd2; um_n[28] = 2'd1; uf_n[28] = 1'b0; uc_n[28] = 13'sd995; us_n[28] = 13'sd3973; wb_n[52] = 4'd3; wb_n[59] = 4'd2;
+                sa_n[27] = 4'd1; sb_n[27] = 4'd7; um_n[27] = 2'd1; uf_n[27] = 1'b0; uc_n[27] = 13'sd3513; us_n[27] = 13'sd2106; wb_n[53] = 4'd2; wb_n[58] = 4'd5;
+                sa_n[30] = 4'd6; sb_n[30] = 4'd6; um_n[30] = 2'd1; uf_n[30] = 1'b0; uc_n[30] = 13'sd2440; us_n[30] = 13'sd3290; wb_n[54] = 4'd5; wb_n[57] = 4'd3;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd6; um_n[31] = 2'd1; uf_n[31] = 1'b0; uc_n[31] = 13'sd4052; us_n[31] = 13'sd601; wb_n[55] = 4'd5; wb_n[56] = 4'd3;
+            end
+            {3'd3, 4'd1}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd2; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[3] = 4'd2;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd2; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[2] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd1; um_n[3] = 2'd2; uf_n[3] = 1'b1; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd5; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd1; um_n[5] = 2'd2; uf_n[5] = 1'b1; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd7; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[17] = 4'd1;
+                sa_n[9] = 4'd2; sb_n[9] = 4'd1; um_n[9] = 2'd2; uf_n[9] = 1'b1; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd1; um_n[11] = 2'd2; uf_n[11] = 1'b1; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd5; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd1; um_n[13] = 2'd2; uf_n[13] = 1'b1; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd2; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd2; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[35] = 4'd2;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd2; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[34] = 4'd2;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd1; um_n[19] = 2'd2; uf_n[19] = 1'b1; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd5; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[21] = 4'd2; sb_n[21] = 4'd1; um_n[21] = 2'd2; uf_n[21] = 1'b1; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd2; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd7; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[49] = 4'd1;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd1; um_n[25] = 2'd2; uf_n[25] = 1'b1; wb_n[50] = 4'd1; wb_n[51] = 4'd1;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd2; sb_n[27] = 4'd1; um_n[27] = 2'd2; uf_n[27] = 1'b1; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd5; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd1; um_n[29] = 2'd2; uf_n[29] = 1'b1; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[60] = 4'd1; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd2; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[62] = 4'd1; wb_n[63] = 4'd1;
+            end
+            {3'd3, 4'd2}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd4; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[7] = 4'd3;
+                sa_n[1] = 4'd3; sb_n[1] = 4'd4; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[3] = 4'd3; wb_n[4] = 4'd2;
+                sa_n[2] = 4'd3; sb_n[2] = 4'd3; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd2896; us_n[2] = 13'sd2896; wb_n[6] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd2; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[11] = 4'd2;
+                sa_n[6] = 4'd3; sb_n[6] = 4'd5; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd1567; us_n[6] = 13'sd3784; wb_n[14] = 4'd3; wb_n[9] = 4'd3;
+                sa_n[5] = 4'd4; sb_n[5] = 4'd2; um_n[5] = 2'd1; uf_n[5] = 1'b1; uc_n[5] = -13'sd3784; us_n[5] = 13'sd1567; wb_n[13] = 4'd3; wb_n[10] = 4'd2;
+                sa_n[7] = 4'd3; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[12] = 4'd4; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd2; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[19] = 4'd2;
+                sa_n[14] = 4'd3; sb_n[14] = 4'd7; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd799; us_n[14] = 13'sd4017; wb_n[30] = 4'd3; wb_n[17] = 4'd3;
+                sa_n[9] = 4'd5; sb_n[9] = 4'd2; um_n[9] = 2'd1; uf_n[9] = 1'b1; uc_n[9] = -13'sd4017; us_n[9] = 13'sd799; wb_n[29] = 4'd6; wb_n[18] = 4'd2;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd2; um_n[10] = 2'd2; uf_n[10] = 1'b1; wb_n[20] = 4'd1; wb_n[23] = 4'd2;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd7; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd3406; us_n[13] = 13'sd2276; wb_n[26] = 4'd1; wb_n[21] = 4'd3;
+                sa_n[11] = 4'd5; sb_n[11] = 4'd2; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = -13'sd2276; us_n[11] = 13'sd3406; wb_n[25] = 4'd5; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd2; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[27] = 4'd2;
+                sa_n[15] = 4'd3; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[28] = 4'd4; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd4; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[39] = 4'd3;
+                sa_n[17] = 4'd3; sb_n[17] = 4'd4; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[35] = 4'd3; wb_n[36] = 4'd2;
+                sa_n[18] = 4'd3; sb_n[18] = 4'd3; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd2896; us_n[18] = 13'sd2896; wb_n[38] = 4'd3; wb_n[37] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd2; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[43] = 4'd2;
+                sa_n[22] = 4'd3; sb_n[22] = 4'd5; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd1567; us_n[22] = 13'sd3784; wb_n[46] = 4'd3; wb_n[41] = 4'd3;
+                sa_n[21] = 4'd4; sb_n[21] = 4'd2; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = -13'sd3784; us_n[21] = 13'sd1567; wb_n[45] = 4'd3; wb_n[42] = 4'd2;
+                sa_n[23] = 4'd3; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[44] = 4'd4; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd2; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[51] = 4'd2;
+                sa_n[30] = 4'd3; sb_n[30] = 4'd7; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd799; us_n[30] = 13'sd4017; wb_n[62] = 4'd3; wb_n[49] = 4'd3;
+                sa_n[25] = 4'd5; sb_n[25] = 4'd2; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = -13'sd4017; us_n[25] = 13'sd799; wb_n[61] = 4'd6; wb_n[50] = 4'd2;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd2; um_n[26] = 2'd2; uf_n[26] = 1'b1; wb_n[52] = 4'd1; wb_n[55] = 4'd2;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd7; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd3406; us_n[29] = 13'sd2276; wb_n[58] = 4'd1; wb_n[53] = 4'd3;
+                sa_n[27] = 4'd5; sb_n[27] = 4'd2; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = -13'sd2276; us_n[27] = 13'sd3406; wb_n[57] = 4'd5; wb_n[54] = 4'd2;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd2; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[59] = 4'd2;
+                sa_n[31] = 4'd3; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[60] = 4'd4; wb_n[63] = 4'd1;
+            end
+            {3'd3, 4'd3}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd6; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[15] = 4'd4;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd3; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[6] = 4'd4;
+                sa_n[2] = 4'd4; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[2] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd4; sb_n[3] = 4'd4; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[7] = 4'd4; wb_n[8] = 4'd2;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd2; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[10] = 4'd2;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd4; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd2896; us_n[6] = 13'sd2896; wb_n[12] = 4'd1; wb_n[11] = 4'd5;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd2; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[13] = 4'd2; wb_n[14] = 4'd2;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd4; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[23] = 4'd3;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd2; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[18] = 4'd2;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd6; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd1567; us_n[14] = 13'sd3784; wb_n[28] = 4'd1; wb_n[19] = 4'd5;
+                sa_n[13] = 4'd3; sb_n[13] = 4'd8; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = -13'sd3784; us_n[13] = 13'sd1567; wb_n[27] = 4'd3; wb_n[20] = 4'd4;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd2; um_n[11] = 2'd2; uf_n[11] = 1'b1; wb_n[21] = 4'd2; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd4; um_n[12] = 2'd2; uf_n[12] = 1'b1; wb_n[24] = 4'd1; wb_n[31] = 4'd3;
+                sa_n[15] = 4'd4; sb_n[15] = 4'd5; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[25] = 4'd6; wb_n[26] = 4'd4;
+                sa_n[4] = 4'd4; sb_n[4] = 4'd6; um_n[4] = 2'd2; uf_n[4] = 1'b1; wb_n[29] = 4'd7; wb_n[30] = 4'd6;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd6; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[47] = 4'd4;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd3; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[38] = 4'd4;
+                sa_n[18] = 4'd4; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[34] = 4'd3; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd4; sb_n[19] = 4'd4; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[39] = 4'd4; wb_n[40] = 4'd2;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd2; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[42] = 4'd2;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd4; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd2896; us_n[22] = 13'sd2896; wb_n[44] = 4'd1; wb_n[43] = 4'd5;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd2; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[45] = 4'd2; wb_n[46] = 4'd2;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd4; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[55] = 4'd3;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd2; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[50] = 4'd2;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd6; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd1567; us_n[30] = 13'sd3784; wb_n[60] = 4'd1; wb_n[51] = 4'd5;
+                sa_n[29] = 4'd3; sb_n[29] = 4'd8; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = -13'sd3784; us_n[29] = 13'sd1567; wb_n[59] = 4'd3; wb_n[52] = 4'd4;
+                sa_n[27] = 4'd1; sb_n[27] = 4'd2; um_n[27] = 2'd2; uf_n[27] = 1'b1; wb_n[53] = 4'd2; wb_n[54] = 4'd2;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd4; um_n[28] = 2'd2; uf_n[28] = 1'b1; wb_n[56] = 4'd1; wb_n[63] = 4'd3;
+                sa_n[31] = 4'd4; sb_n[31] = 4'd5; um_n[31] = 2'd2; uf_n[31] = 1'b0; wb_n[57] = 4'd6; wb_n[58] = 4'd4;
+                sa_n[20] = 4'd4; sb_n[20] = 4'd6; um_n[20] = 2'd2; uf_n[20] = 1'b1; wb_n[61] = 4'd7; wb_n[62] = 4'd6;
+            end
+            {3'd3, 4'd4}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd8; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[31] = 4'd5;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd6; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[14] = 4'd5;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd4; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[12] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd5; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[11] = 4'd6;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd5; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[6] = 4'd1; wb_n[9] = 4'd4;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd5; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd2896; us_n[7] = 13'sd2896; wb_n[13] = 4'd2; wb_n[10] = 4'd4;
+                sa_n[8] = 4'd3; sb_n[8] = 4'd8; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[15] = 4'd5; wb_n[16] = 4'd2;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd3; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[22] = 4'd4;
+                sa_n[13] = 4'd4; sb_n[13] = 4'd9; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd1567; us_n[13] = 13'sd3784; wb_n[29] = 4'd3; wb_n[18] = 4'd4;
+                sa_n[10] = 4'd6; sb_n[10] = 4'd6; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[19] = 4'd6; wb_n[20] = 4'd5;
+                sa_n[14] = 4'd4; sb_n[14] = 4'd8; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = -13'sd3784; us_n[14] = 13'sd1567; wb_n[26] = 4'd3; wb_n[21] = 4'd4;
+                sa_n[11] = 4'd6; sb_n[11] = 4'd1; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = 13'sd2896; us_n[11] = 13'sd2896; wb_n[24] = 4'd4; wb_n[23] = 4'd1;
+                sa_n[15] = 4'd4; sb_n[15] = 4'd2; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[25] = 4'd6; wb_n[30] = 4'd2;
+                sa_n[12] = 4'd4; sb_n[12] = 4'd3; um_n[12] = 2'd2; uf_n[12] = 1'b1; wb_n[27] = 4'd7; wb_n[28] = 4'd5;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd8; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[63] = 4'd5;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd6; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[46] = 4'd5;
+                sa_n[21] = 4'd5; sb_n[21] = 4'd4; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[35] = 4'd4; wb_n[44] = 4'd2;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd5; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[43] = 4'd6;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd5; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[38] = 4'd1; wb_n[41] = 4'd4;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd5; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd2896; us_n[23] = 13'sd2896; wb_n[45] = 4'd2; wb_n[42] = 4'd4;
+                sa_n[24] = 4'd3; sb_n[24] = 4'd8; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[47] = 4'd5; wb_n[48] = 4'd2;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd3; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[54] = 4'd4;
+                sa_n[29] = 4'd4; sb_n[29] = 4'd9; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd1567; us_n[29] = 13'sd3784; wb_n[61] = 4'd3; wb_n[50] = 4'd4;
+                sa_n[26] = 4'd6; sb_n[26] = 4'd6; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[51] = 4'd6; wb_n[52] = 4'd5;
+                sa_n[30] = 4'd4; sb_n[30] = 4'd8; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = -13'sd3784; us_n[30] = 13'sd1567; wb_n[58] = 4'd3; wb_n[53] = 4'd4;
+                sa_n[27] = 4'd6; sb_n[27] = 4'd1; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd2896; us_n[27] = 13'sd2896; wb_n[56] = 4'd4; wb_n[55] = 4'd1;
+                sa_n[31] = 4'd4; sb_n[31] = 4'd2; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[57] = 4'd6; wb_n[62] = 4'd2;
+                sa_n[28] = 4'd4; sb_n[28] = 4'd3; um_n[28] = 2'd2; uf_n[28] = 1'b1; wb_n[59] = 4'd7; wb_n[60] = 4'd5;
+            end
+            {3'd3, 4'd5}: begin
+                sa_n[4] = 4'd2; sb_n[4] = 4'd6; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[1] = 4'd3; wb_n[30] = 4'd6;
+                sa_n[1] = 4'd2; sb_n[1] = 4'd7; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[13] = 4'd4;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd6; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[28] = 4'd6;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd6; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[10] = 4'd5;
+                sa_n[11] = 4'd7; sb_n[11] = 4'd4; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[7] = 4'd5; wb_n[24] = 4'd2;
+                sa_n[8] = 4'd4; sb_n[8] = 4'd4; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[8] = 4'd3; wb_n[23] = 4'd3;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd7; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[19] = 4'd7;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd7; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[14] = 4'd1; wb_n[17] = 4'd4;
+                sa_n[10] = 4'd4; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[18] = 4'd3; wb_n[21] = 4'd1;
+                sa_n[13] = 4'd3; sb_n[13] = 4'd8; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd2896; us_n[13] = 13'sd2896; wb_n[27] = 4'd3; wb_n[20] = 4'd4;
+                sa_n[15] = 4'd4; sb_n[15] = 4'd7; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd2896; us_n[15] = 13'sd2896; wb_n[25] = 4'd6; wb_n[22] = 4'd6;
+                sa_n[14] = 4'd4; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b1; wb_n[26] = 4'd3; wb_n[29] = 4'd1;
+                sa_n[20] = 4'd2; sb_n[20] = 4'd6; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[33] = 4'd3; wb_n[62] = 4'd6;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd7; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[34] = 4'd1; wb_n[45] = 4'd4;
+                sa_n[21] = 4'd5; sb_n[21] = 4'd6; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[35] = 4'd4; wb_n[60] = 4'd6;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd6; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[37] = 4'd2; wb_n[42] = 4'd5;
+                sa_n[27] = 4'd7; sb_n[27] = 4'd4; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[39] = 4'd5; wb_n[56] = 4'd2;
+                sa_n[24] = 4'd4; sb_n[24] = 4'd4; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[40] = 4'd3; wb_n[55] = 4'd3;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd7; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[51] = 4'd7;
+                sa_n[23] = 4'd2; sb_n[23] = 4'd7; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[46] = 4'd1; wb_n[49] = 4'd4;
+                sa_n[26] = 4'd4; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[50] = 4'd3; wb_n[53] = 4'd1;
+                sa_n[29] = 4'd3; sb_n[29] = 4'd8; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd2896; us_n[29] = 13'sd2896; wb_n[59] = 4'd3; wb_n[52] = 4'd4;
+                sa_n[31] = 4'd4; sb_n[31] = 4'd7; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd2896; us_n[31] = 13'sd2896; wb_n[57] = 4'd6; wb_n[54] = 4'd6;
+                sa_n[30] = 4'd4; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b1; wb_n[58] = 4'd3; wb_n[61] = 4'd1;
+            end
+            {3'd3, 4'd6}: begin
+                sa_n[1] = 4'd2; sb_n[1] = 4'd9; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[29] = 4'd8;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd7; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[27] = 4'd8;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd8; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[6] = 4'd1; wb_n[25] = 4'd7;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd7; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[22] = 4'd7;
+                sa_n[9] = 4'd6; sb_n[9] = 4'd4; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[11] = 4'd7; wb_n[20] = 4'd2;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd8; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[13] = 4'd2; wb_n[18] = 4'd5;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd7; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd2896; us_n[13] = 13'sd2896; wb_n[26] = 4'd1; wb_n[21] = 4'd3;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd9; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[34] = 4'd1; wb_n[61] = 4'd8;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd7; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[59] = 4'd8;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd8; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[38] = 4'd1; wb_n[57] = 4'd7;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd7; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[54] = 4'd7;
+                sa_n[25] = 4'd6; sb_n[25] = 4'd4; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[43] = 4'd7; wb_n[52] = 4'd2;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd8; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[45] = 4'd2; wb_n[50] = 4'd5;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd7; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd2896; us_n[29] = 13'sd2896; wb_n[58] = 4'd1; wb_n[53] = 4'd3;
+            end
+            {3'd3, 4'd7}: begin
+                sa_n[3] = 4'd1; sb_n[3] = 4'd9; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[26] = 4'd6;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd8; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[10] = 4'd1; wb_n[21] = 4'd5;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd9; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[37] = 4'd2; wb_n[58] = 4'd6;
+                sa_n[21] = 4'd2; sb_n[21] = 4'd8; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[42] = 4'd1; wb_n[53] = 4'd5;
+            end
+            {3'd4, 4'd0}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd9; um_n[0] = 2'd1; uf_n[0] = 1'b1; uc_n[0] = 13'sd2896; us_n[0] = 13'sd2896; wb_n[0] = 4'd1; wb_n[1] = 4'd1;
+                sa_n[1] = 4'd6; sb_n[1] = 4'd10; um_n[1] = 2'd1; uf_n[1] = 1'b0; uc_n[1] = 13'sd1567; us_n[1] = 13'sd3784; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd5; sb_n[2] = 4'd8; um_n[2] = 2'd1; uf_n[2] = 1'b0; uc_n[2] = 13'sd799; us_n[2] = 13'sd4017; wb_n[4] = 4'd1; wb_n[7] = 4'd2;
+                sa_n[3] = 4'd6; sb_n[3] = 4'd10; um_n[3] = 2'd1; uf_n[3] = 1'b0; uc_n[3] = 13'sd3406; us_n[3] = 13'sd2276; wb_n[5] = 4'd2; wb_n[6] = 4'd2;
+                sa_n[4] = 4'd5; sb_n[4] = 4'd7; um_n[4] = 2'd1; uf_n[4] = 1'b0; uc_n[4] = 13'sd401; us_n[4] = 13'sd4076; wb_n[8] = 4'd1; wb_n[15] = 4'd3;
+                sa_n[5] = 4'd7; sb_n[5] = 4'd6; um_n[5] = 2'd1; uf_n[5] = 1'b0; uc_n[5] = 13'sd3166; us_n[5] = 13'sd2598; wb_n[9] = 4'd2; wb_n[14] = 4'd4;
+                sa_n[6] = 4'd6; sb_n[6] = 4'd8; um_n[6] = 2'd1; uf_n[6] = 1'b0; uc_n[6] = 13'sd1931; us_n[6] = 13'sd3612; wb_n[10] = 4'd3; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd5; sb_n[7] = 4'd9; um_n[7] = 2'd1; uf_n[7] = 1'b0; uc_n[7] = 13'sd3920; us_n[7] = 13'sd1189; wb_n[11] = 4'd4; wb_n[12] = 4'd3;
+                sa_n[8] = 4'd5; sb_n[8] = 4'd9; um_n[8] = 2'd1; uf_n[8] = 1'b0; uc_n[8] = 13'sd201; us_n[8] = 13'sd4091; wb_n[16] = 4'd1; wb_n[31] = 4'd4;
+                sa_n[9] = 4'd7; sb_n[9] = 4'd6; um_n[9] = 2'd1; uf_n[9] = 1'b0; uc_n[9] = 13'sd3035; us_n[9] = 13'sd2751; wb_n[17] = 4'd2; wb_n[30] = 4'd5;
+                sa_n[10] = 4'd4; sb_n[10] = 4'd7; um_n[10] = 2'd1; uf_n[10] = 1'b0; uc_n[10] = 13'sd1751; us_n[10] = 13'sd3703; wb_n[18] = 4'd3; wb_n[29] = 4'd5;
+                sa_n[13] = 4'd6; sb_n[13] = 4'd10; um_n[13] = 2'd1; uf_n[13] = 1'b0; uc_n[13] = 13'sd3857; us_n[13] = 13'sd1380; wb_n[19] = 4'd4; wb_n[28] = 4'd2;
+                sa_n[12] = 4'd5; sb_n[12] = 4'd6; um_n[12] = 2'd1; uf_n[12] = 1'b0; uc_n[12] = 13'sd995; us_n[12] = 13'sd3973; wb_n[20] = 4'd3; wb_n[27] = 4'd2;
+                sa_n[11] = 4'd8; sb_n[11] = 4'd2; um_n[11] = 2'd1; uf_n[11] = 1'b0; uc_n[11] = 13'sd3513; us_n[11] = 13'sd2106; wb_n[21] = 4'd2; wb_n[26] = 4'd5;
+                sa_n[14] = 4'd4; sb_n[14] = 4'd9; um_n[14] = 2'd1; uf_n[14] = 1'b0; uc_n[14] = 13'sd2440; us_n[14] = 13'sd3290; wb_n[22] = 4'd5; wb_n[25] = 4'd3;
+                sa_n[15] = 4'd5; sb_n[15] = 4'd8; um_n[15] = 2'd1; uf_n[15] = 1'b0; uc_n[15] = 13'sd4052; us_n[15] = 13'sd601; wb_n[23] = 4'd5; wb_n[24] = 4'd3;
+                sa_n[16] = 4'd2; sb_n[16] = 4'd8; um_n[16] = 2'd1; uf_n[16] = 1'b0; uc_n[16] = 13'sd101; us_n[16] = 13'sd4095; wb_n[32] = 4'd1; wb_n[63] = 4'd5;
+                sa_n[20] = 4'd2; sb_n[20] = 4'd7; um_n[20] = 2'd1; uf_n[20] = 1'b0; uc_n[20] = 13'sd2967; us_n[20] = 13'sd2824; wb_n[33] = 4'd3; wb_n[62] = 4'd6;
+                sa_n[17] = 4'd6; sb_n[17] = 4'd10; um_n[17] = 2'd1; uf_n[17] = 1'b0; uc_n[17] = 13'sd1660; us_n[17] = 13'sd3745; wb_n[34] = 4'd1; wb_n[61] = 4'd8;
+                sa_n[21] = 4'd7; sb_n[21] = 4'd9; um_n[21] = 2'd1; uf_n[21] = 1'b0; uc_n[21] = 13'sd3822; us_n[21] = 13'sd1474; wb_n[35] = 4'd4; wb_n[60] = 4'd6;
+                sa_n[18] = 4'd5; sb_n[18] = 4'd8; um_n[18] = 2'd1; uf_n[18] = 1'b0; uc_n[18] = 13'sd897; us_n[18] = 13'sd3996; wb_n[36] = 4'd1; wb_n[59] = 4'd8;
+                sa_n[19] = 4'd6; sb_n[19] = 4'd10; um_n[19] = 2'd1; uf_n[19] = 1'b0; uc_n[19] = 13'sd3461; us_n[19] = 13'sd2191; wb_n[37] = 4'd2; wb_n[58] = 4'd6;
+                sa_n[27] = 4'd8; sb_n[27] = 4'd8; um_n[27] = 2'd1; uf_n[27] = 1'b0; uc_n[27] = 13'sd2359; us_n[27] = 13'sd3349; wb_n[38] = 4'd5; wb_n[57] = 4'd4;
+                sa_n[31] = 4'd4; sb_n[31] = 4'd8; um_n[31] = 2'd1; uf_n[31] = 1'b0; uc_n[31] = 13'sd4036; us_n[31] = 13'sd700; wb_n[39] = 4'd6; wb_n[56] = 4'd3;
+                sa_n[24] = 4'd5; sb_n[24] = 4'd9; um_n[24] = 2'd1; uf_n[24] = 1'b0; uc_n[24] = 13'sd501; us_n[24] = 13'sd4065; wb_n[40] = 4'd3; wb_n[55] = 4'd3;
+                sa_n[22] = 4'd5; sb_n[22] = 4'd8; um_n[22] = 2'd1; uf_n[22] = 1'b0; uc_n[22] = 13'sd3229; us_n[22] = 13'sd2520; wb_n[41] = 4'd5; wb_n[54] = 4'd8;
+                sa_n[23] = 4'd5; sb_n[23] = 4'd3; um_n[23] = 2'd1; uf_n[23] = 1'b0; uc_n[23] = 13'sd2019; us_n[23] = 13'sd3564; wb_n[42] = 4'd6; wb_n[53] = 4'd6;
+                sa_n[25] = 4'd7; sb_n[25] = 4'd9; um_n[25] = 2'd1; uf_n[25] = 1'b0; uc_n[25] = 13'sd3948; us_n[25] = 13'sd1092; wb_n[43] = 4'd7; wb_n[52] = 4'd2;
+                sa_n[30] = 4'd7; sb_n[30] = 4'd6; um_n[30] = 2'd1; uf_n[30] = 1'b0; uc_n[30] = 13'sd1285; us_n[30] = 13'sd3889; wb_n[44] = 4'd5; wb_n[51] = 4'd5;
+                sa_n[29] = 4'd6; sb_n[29] = 4'd10; um_n[29] = 2'd1; uf_n[29] = 1'b0; uc_n[29] = 13'sd3659; us_n[29] = 13'sd1842; wb_n[45] = 4'd5; wb_n[50] = 4'd4;
+                sa_n[26] = 4'd7; sb_n[26] = 4'd7; um_n[26] = 2'd1; uf_n[26] = 1'b0; uc_n[26] = 13'sd2675; us_n[26] = 13'sd3102; wb_n[46] = 4'd6; wb_n[49] = 4'd5;
+                sa_n[28] = 4'd5; sb_n[28] = 4'd6; um_n[28] = 2'd1; uf_n[28] = 1'b0; uc_n[28] = 13'sd4085; us_n[28] = 13'sd301; wb_n[47] = 4'd6; wb_n[48] = 4'd3;
+            end
+            {3'd4, 4'd1}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd2; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[3] = 4'd2;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd2; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[2] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd1; um_n[3] = 2'd2; uf_n[3] = 1'b1; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd5; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd1; um_n[5] = 2'd2; uf_n[5] = 1'b1; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd7; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[17] = 4'd1;
+                sa_n[9] = 4'd2; sb_n[9] = 4'd1; um_n[9] = 2'd2; uf_n[9] = 1'b1; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd1; um_n[11] = 2'd2; uf_n[11] = 1'b1; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd5; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd1; um_n[13] = 2'd2; uf_n[13] = 1'b1; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd2; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd9; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[33] = 4'd1;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd1; um_n[17] = 2'd2; uf_n[17] = 1'b1; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd1; um_n[19] = 2'd2; uf_n[19] = 1'b1; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd5; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[21] = 4'd2; sb_n[21] = 4'd1; um_n[21] = 2'd2; uf_n[21] = 1'b1; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd2; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd7; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[49] = 4'd1;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd1; um_n[25] = 2'd2; uf_n[25] = 1'b1; wb_n[50] = 4'd1; wb_n[51] = 4'd1;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd2; sb_n[27] = 4'd1; um_n[27] = 2'd2; uf_n[27] = 1'b1; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd5; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd1; um_n[29] = 2'd2; uf_n[29] = 1'b1; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[60] = 4'd1; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd2; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[62] = 4'd1; wb_n[63] = 4'd1;
+            end
+            {3'd4, 4'd2}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd4; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[7] = 4'd3;
+                sa_n[1] = 4'd3; sb_n[1] = 4'd4; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[3] = 4'd3; wb_n[4] = 4'd2;
+                sa_n[2] = 4'd3; sb_n[2] = 4'd3; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd2896; us_n[2] = 13'sd2896; wb_n[6] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd2; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[11] = 4'd2;
+                sa_n[6] = 4'd3; sb_n[6] = 4'd5; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd1567; us_n[6] = 13'sd3784; wb_n[14] = 4'd3; wb_n[9] = 4'd3;
+                sa_n[5] = 4'd4; sb_n[5] = 4'd2; um_n[5] = 2'd1; uf_n[5] = 1'b1; uc_n[5] = -13'sd3784; us_n[5] = 13'sd1567; wb_n[13] = 4'd3; wb_n[10] = 4'd2;
+                sa_n[7] = 4'd3; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[12] = 4'd4; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd2; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[19] = 4'd2;
+                sa_n[14] = 4'd3; sb_n[14] = 4'd7; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd799; us_n[14] = 13'sd4017; wb_n[30] = 4'd3; wb_n[17] = 4'd3;
+                sa_n[9] = 4'd5; sb_n[9] = 4'd2; um_n[9] = 2'd1; uf_n[9] = 1'b1; uc_n[9] = -13'sd4017; us_n[9] = 13'sd799; wb_n[29] = 4'd6; wb_n[18] = 4'd2;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd2; um_n[10] = 2'd2; uf_n[10] = 1'b1; wb_n[20] = 4'd1; wb_n[23] = 4'd2;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd7; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd3406; us_n[13] = 13'sd2276; wb_n[26] = 4'd1; wb_n[21] = 4'd3;
+                sa_n[11] = 4'd5; sb_n[11] = 4'd2; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = -13'sd2276; us_n[11] = 13'sd3406; wb_n[25] = 4'd5; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd2; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[27] = 4'd2;
+                sa_n[15] = 4'd3; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[28] = 4'd4; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd2; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[35] = 4'd2;
+                sa_n[30] = 4'd3; sb_n[30] = 4'd9; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd401; us_n[30] = 13'sd4076; wb_n[62] = 4'd3; wb_n[33] = 4'd4;
+                sa_n[17] = 4'd7; sb_n[17] = 4'd2; um_n[17] = 2'd1; uf_n[17] = 1'b1; uc_n[17] = -13'sd4076; us_n[17] = 13'sd401; wb_n[61] = 4'd9; wb_n[34] = 4'd2;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd2; um_n[18] = 2'd2; uf_n[18] = 1'b1; wb_n[36] = 4'd1; wb_n[39] = 4'd2;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd11; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd3166; us_n[29] = 13'sd2598; wb_n[58] = 4'd1; wb_n[37] = 4'd3;
+                sa_n[19] = 4'd7; sb_n[19] = 4'd2; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = -13'sd2598; us_n[19] = 13'sd3166; wb_n[57] = 4'd8; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd2; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[43] = 4'd2;
+                sa_n[22] = 4'd6; sb_n[22] = 4'd5; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd1931; us_n[22] = 13'sd3612; wb_n[54] = 4'd9; wb_n[41] = 4'd3;
+                sa_n[21] = 4'd8; sb_n[21] = 4'd2; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = -13'sd3612; us_n[21] = 13'sd1931; wb_n[53] = 4'd7; wb_n[42] = 4'd2;
+                sa_n[23] = 4'd3; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[44] = 4'd4; wb_n[47] = 4'd1;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd10; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = 13'sd3920; us_n[25] = 13'sd1189; wb_n[50] = 4'd1; wb_n[45] = 4'd6;
+                sa_n[26] = 4'd2; sb_n[26] = 4'd8; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = -13'sd1189; us_n[26] = 13'sd3920; wb_n[49] = 4'd6; wb_n[46] = 4'd7;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd2; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[51] = 4'd2;
+                sa_n[27] = 4'd9; sb_n[27] = 4'd1; um_n[27] = 2'd2; uf_n[27] = 1'b1; wb_n[52] = 4'd6; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd2; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[59] = 4'd2;
+                sa_n[31] = 4'd3; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[60] = 4'd4; wb_n[63] = 4'd1;
+            end
+            {3'd4, 4'd3}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd6; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[15] = 4'd4;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd3; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[6] = 4'd4;
+                sa_n[2] = 4'd4; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[2] = 4'd3; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd4; sb_n[3] = 4'd4; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[7] = 4'd4; wb_n[8] = 4'd2;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd2; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[10] = 4'd2;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd4; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd2896; us_n[6] = 13'sd2896; wb_n[12] = 4'd1; wb_n[11] = 4'd5;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd2; um_n[7] = 2'd2; uf_n[7] = 1'b1; wb_n[13] = 4'd2; wb_n[14] = 4'd2;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd4; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[23] = 4'd3;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd2; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[18] = 4'd2;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd6; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd1567; us_n[14] = 13'sd3784; wb_n[28] = 4'd1; wb_n[19] = 4'd5;
+                sa_n[13] = 4'd3; sb_n[13] = 4'd8; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = -13'sd3784; us_n[13] = 13'sd1567; wb_n[27] = 4'd3; wb_n[20] = 4'd4;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd2; um_n[11] = 2'd2; uf_n[11] = 1'b1; wb_n[21] = 4'd2; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd4; um_n[12] = 2'd2; uf_n[12] = 1'b1; wb_n[24] = 4'd1; wb_n[31] = 4'd3;
+                sa_n[15] = 4'd4; sb_n[15] = 4'd5; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[25] = 4'd6; wb_n[26] = 4'd4;
+                sa_n[4] = 4'd4; sb_n[4] = 4'd6; um_n[4] = 2'd2; uf_n[4] = 1'b1; wb_n[29] = 4'd7; wb_n[30] = 4'd6;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd4; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[39] = 4'd3;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd2; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[34] = 4'd2;
+                sa_n[31] = 4'd3; sb_n[31] = 4'd6; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd799; us_n[31] = 13'sd4017; wb_n[60] = 4'd4; wb_n[35] = 4'd5;
+                sa_n[28] = 4'd4; sb_n[28] = 4'd7; um_n[28] = 2'd1; uf_n[28] = 1'b1; uc_n[28] = -13'sd4017; us_n[28] = 13'sd799; wb_n[59] = 4'd7; wb_n[36] = 4'd3;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd2; um_n[19] = 2'd2; uf_n[19] = 1'b1; wb_n[37] = 4'd2; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd4; um_n[20] = 2'd2; uf_n[20] = 1'b1; wb_n[40] = 4'd1; wb_n[47] = 4'd3;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd2; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[42] = 4'd2;
+                sa_n[27] = 4'd9; sb_n[27] = 4'd7; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd3406; us_n[27] = 13'sd2276; wb_n[52] = 4'd6; wb_n[43] = 4'd8;
+                sa_n[25] = 4'd3; sb_n[25] = 4'd11; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = -13'sd2276; us_n[25] = 13'sd3406; wb_n[51] = 4'd3; wb_n[44] = 4'd6;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd2; um_n[23] = 2'd2; uf_n[23] = 1'b1; wb_n[45] = 4'd2; wb_n[46] = 4'd2;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd4; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[55] = 4'd3;
+                sa_n[26] = 4'd2; sb_n[26] = 4'd9; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[49] = 4'd6; wb_n[50] = 4'd6;
+                sa_n[22] = 4'd7; sb_n[22] = 4'd6; um_n[22] = 2'd2; uf_n[22] = 1'b1; wb_n[53] = 4'd8; wb_n[54] = 4'd8;
+                sa_n[30] = 4'd8; sb_n[30] = 4'd2; um_n[30] = 2'd2; uf_n[30] = 1'b1; wb_n[56] = 4'd5; wb_n[63] = 4'd2;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd2; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[57] = 4'd2; wb_n[58] = 4'd2;
+                sa_n[10] = 4'd7; sb_n[10] = 4'd8; um_n[10] = 2'd2; uf_n[10] = 1'b1; wb_n[61] = 4'd10; wb_n[62] = 4'd7;
+            end
+            {3'd4, 4'd4}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd8; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[31] = 4'd5;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd6; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[14] = 4'd5;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd4; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[12] = 4'd2;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd5; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[11] = 4'd6;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd5; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[6] = 4'd1; wb_n[9] = 4'd4;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd5; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd2896; us_n[7] = 13'sd2896; wb_n[13] = 4'd2; wb_n[10] = 4'd4;
+                sa_n[8] = 4'd3; sb_n[8] = 4'd8; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[15] = 4'd5; wb_n[16] = 4'd2;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd3; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[22] = 4'd4;
+                sa_n[13] = 4'd4; sb_n[13] = 4'd9; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd1567; us_n[13] = 13'sd3784; wb_n[29] = 4'd3; wb_n[18] = 4'd4;
+                sa_n[10] = 4'd6; sb_n[10] = 4'd6; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[19] = 4'd6; wb_n[20] = 4'd5;
+                sa_n[14] = 4'd4; sb_n[14] = 4'd8; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = -13'sd3784; us_n[14] = 13'sd1567; wb_n[26] = 4'd3; wb_n[21] = 4'd4;
+                sa_n[11] = 4'd6; sb_n[11] = 4'd1; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = 13'sd2896; us_n[11] = 13'sd2896; wb_n[24] = 4'd4; wb_n[23] = 4'd1;
+                sa_n[15] = 4'd4; sb_n[15] = 4'd2; um_n[15] = 2'd2; uf_n[15] = 1'b1; wb_n[25] = 4'd6; wb_n[30] = 4'd2;
+                sa_n[12] = 4'd4; sb_n[12] = 4'd3; um_n[12] = 2'd2; uf_n[12] = 1'b1; wb_n[27] = 4'd7; wb_n[28] = 4'd5;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd6; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[47] = 4'd4;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd3; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[38] = 4'd4;
+                sa_n[20] = 4'd4; sb_n[20] = 4'd8; um_n[20] = 2'd1; uf_n[20] = 1'b1; uc_n[20] = 13'sd799; us_n[20] = 13'sd4017; wb_n[61] = 4'd7; wb_n[34] = 4'd4;
+                sa_n[21] = 4'd5; sb_n[21] = 4'd10; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[35] = 4'd4; wb_n[36] = 4'd4;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd11; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = -13'sd4017; us_n[29] = 13'sd799; wb_n[58] = 4'd1; wb_n[37] = 4'd3;
+                sa_n[27] = 4'd6; sb_n[27] = 4'd8; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd1567; us_n[27] = 13'sd3784; wb_n[56] = 4'd4; wb_n[39] = 4'd7;
+                sa_n[19] = 4'd8; sb_n[19] = 4'd4; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = -13'sd3784; us_n[19] = 13'sd1567; wb_n[55] = 4'd6; wb_n[40] = 4'd2;
+                sa_n[22] = 4'd2; sb_n[22] = 4'd1; um_n[22] = 2'd2; uf_n[22] = 1'b1; wb_n[41] = 4'd5; wb_n[46] = 4'd8;
+                sa_n[23] = 4'd6; sb_n[23] = 4'd5; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd3406; us_n[23] = 13'sd2276; wb_n[53] = 4'd9; wb_n[42] = 4'd4;
+                sa_n[25] = 4'd6; sb_n[25] = 4'd11; um_n[25] = 2'd2; uf_n[25] = 1'b1; wb_n[43] = 4'd7; wb_n[44] = 4'd6;
+                sa_n[26] = 4'd4; sb_n[26] = 4'd10; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = -13'sd2276; us_n[26] = 13'sd3406; wb_n[50] = 4'd3; wb_n[45] = 4'd7;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd6; um_n[24] = 2'd2; uf_n[24] = 1'b1; wb_n[48] = 4'd1; wb_n[63] = 4'd4;
+                sa_n[31] = 4'd5; sb_n[31] = 4'd7; um_n[31] = 2'd2; uf_n[31] = 1'b0; wb_n[49] = 4'd7; wb_n[54] = 4'd6;
+                sa_n[28] = 4'd6; sb_n[28] = 4'd8; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[51] = 4'd8; wb_n[52] = 4'd7;
+                sa_n[30] = 4'd2; sb_n[30] = 4'd1; um_n[30] = 2'd2; uf_n[30] = 1'b1; wb_n[57] = 4'd9; wb_n[62] = 4'd8;
+                sa_n[4] = 4'd6; sb_n[4] = 4'd7; um_n[4] = 2'd2; uf_n[4] = 1'b1; wb_n[59] = 4'd9; wb_n[60] = 4'd7;
+            end
+            {3'd4, 4'd5}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd10; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[63] = 4'd6;
+                sa_n[4] = 4'd2; sb_n[4] = 4'd6; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[1] = 4'd3; wb_n[30] = 4'd6;
+                sa_n[1] = 4'd2; sb_n[1] = 4'd7; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[13] = 4'd4;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd6; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[28] = 4'd6;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd6; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[10] = 4'd5;
+                sa_n[11] = 4'd7; sb_n[11] = 4'd4; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[7] = 4'd5; wb_n[24] = 4'd2;
+                sa_n[8] = 4'd4; sb_n[8] = 4'd4; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[8] = 4'd3; wb_n[23] = 4'd3;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd7; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[19] = 4'd7;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd7; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[14] = 4'd1; wb_n[17] = 4'd4;
+                sa_n[10] = 4'd4; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[18] = 4'd3; wb_n[21] = 4'd1;
+                sa_n[13] = 4'd3; sb_n[13] = 4'd8; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd2896; us_n[13] = 13'sd2896; wb_n[27] = 4'd3; wb_n[20] = 4'd4;
+                sa_n[15] = 4'd4; sb_n[15] = 4'd7; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd2896; us_n[15] = 13'sd2896; wb_n[25] = 4'd6; wb_n[22] = 4'd6;
+                sa_n[14] = 4'd4; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b1; wb_n[26] = 4'd3; wb_n[29] = 4'd1;
+                sa_n[16] = 4'd3; sb_n[16] = 4'd10; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[31] = 4'd6; wb_n[32] = 4'd2;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd6; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[46] = 4'd5;
+                sa_n[18] = 4'd4; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[34] = 4'd3; wb_n[37] = 4'd1;
+                sa_n[21] = 4'd5; sb_n[21] = 4'd4; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[35] = 4'd4; wb_n[44] = 4'd2;
+                sa_n[28] = 4'd4; sb_n[28] = 4'd7; um_n[28] = 2'd1; uf_n[28] = 1'b1; uc_n[28] = 13'sd1567; us_n[28] = 13'sd3784; wb_n[59] = 4'd7; wb_n[36] = 4'd3;
+                sa_n[19] = 4'd7; sb_n[19] = 4'd2; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = 13'sd1567; us_n[19] = 13'sd3784; wb_n[57] = 4'd8; wb_n[38] = 4'd2;
+                sa_n[27] = 4'd7; sb_n[27] = 4'd9; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[39] = 4'd5; wb_n[40] = 4'd4;
+                sa_n[22] = 4'd6; sb_n[22] = 4'd5; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = -13'sd3784; us_n[22] = 13'sd1567; wb_n[54] = 4'd9; wb_n[41] = 4'd3;
+                sa_n[25] = 4'd8; sb_n[25] = 4'd10; um_n[25] = 2'd2; uf_n[25] = 1'b1; wb_n[42] = 4'd7; wb_n[45] = 4'd6;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd11; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = -13'sd3784; us_n[26] = 13'sd1567; wb_n[52] = 4'd1; wb_n[43] = 4'd9;
+                sa_n[23] = 4'd7; sb_n[23] = 4'd1; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd2896; us_n[23] = 13'sd2896; wb_n[48] = 4'd4; wb_n[47] = 4'd1;
+                sa_n[31] = 4'd5; sb_n[31] = 4'd2; um_n[31] = 2'd2; uf_n[31] = 1'b1; wb_n[49] = 4'd7; wb_n[62] = 4'd2;
+                sa_n[29] = 4'd7; sb_n[29] = 4'd7; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[50] = 4'd7; wb_n[53] = 4'd3;
+                sa_n[30] = 4'd9; sb_n[30] = 4'd10; um_n[30] = 2'd2; uf_n[30] = 1'b1; wb_n[51] = 4'd9; wb_n[60] = 4'd8;
+                sa_n[2] = 4'd6; sb_n[2] = 4'd8; um_n[2] = 2'd2; uf_n[2] = 1'b1; wb_n[55] = 4'd7; wb_n[56] = 4'd6;
+                sa_n[9] = 4'd8; sb_n[9] = 4'd9; um_n[9] = 2'd2; uf_n[9] = 1'b1; wb_n[58] = 4'd7; wb_n[61] = 4'd11;
+            end
+            {3'd4, 4'd6}: begin
+                sa_n[1] = 4'd1; sb_n[1] = 4'd11; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[62] = 4'd9;
+                sa_n[2] = 4'd4; sb_n[2] = 4'd9; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[2] = 4'd3; wb_n[29] = 4'd9;
+                sa_n[4] = 4'd7; sb_n[4] = 4'd7; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[3] = 4'd5; wb_n[60] = 4'd7;
+                sa_n[10] = 4'd8; sb_n[10] = 4'd5; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[4] = 4'd3; wb_n[27] = 4'd6;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd8; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[6] = 4'd1; wb_n[25] = 4'd7;
+                sa_n[11] = 4'd7; sb_n[11] = 4'd8; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[7] = 4'd5; wb_n[56] = 4'd7;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd7; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[22] = 4'd7;
+                sa_n[9] = 4'd6; sb_n[9] = 4'd4; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[11] = 4'd7; wb_n[20] = 4'd2;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd8; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[13] = 4'd2; wb_n[18] = 4'd5;
+                sa_n[8] = 4'd3; sb_n[8] = 4'd10; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[15] = 4'd5; wb_n[48] = 4'd5;
+                sa_n[16] = 4'd4; sb_n[16] = 4'd6; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[16] = 4'd3; wb_n[47] = 4'd4;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd7; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd2896; us_n[13] = 13'sd2896; wb_n[26] = 4'd1; wb_n[21] = 4'd3;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd7; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[39] = 4'd8;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd10; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[28] = 4'd1; wb_n[35] = 4'd6;
+                sa_n[15] = 4'd2; sb_n[15] = 4'd9; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[30] = 4'd1; wb_n[33] = 4'd5;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd7; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[34] = 4'd1; wb_n[45] = 4'd4;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd5; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[43] = 4'd6;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd11; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd1567; us_n[29] = 13'sd3784; wb_n[58] = 4'd1; wb_n[37] = 4'd3;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd5; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[38] = 4'd1; wb_n[41] = 4'd4;
+                sa_n[27] = 4'd4; sb_n[27] = 4'd9; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd2896; us_n[27] = 13'sd2896; wb_n[55] = 4'd4; wb_n[40] = 4'd4;
+                sa_n[21] = 4'd8; sb_n[21] = 4'd2; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = -13'sd3784; us_n[21] = 13'sd1567; wb_n[53] = 4'd7; wb_n[42] = 4'd2;
+                sa_n[25] = 4'd3; sb_n[25] = 4'd11; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = 13'sd2896; us_n[25] = 13'sd2896; wb_n[51] = 4'd3; wb_n[44] = 4'd6;
+                sa_n[26] = 4'd2; sb_n[26] = 4'd8; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd2896; us_n[26] = 13'sd2896; wb_n[49] = 4'd6; wb_n[46] = 4'd7;
+                sa_n[30] = 4'd10; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b1; wb_n[50] = 4'd8; wb_n[61] = 4'd1;
+                sa_n[28] = 4'd7; sb_n[28] = 4'd2; um_n[28] = 2'd2; uf_n[28] = 1'b1; wb_n[52] = 4'd3; wb_n[59] = 4'd2;
+                sa_n[22] = 4'd6; sb_n[22] = 4'd9; um_n[22] = 2'd2; uf_n[22] = 1'b1; wb_n[54] = 4'd9; wb_n[57] = 4'd10;
+            end
+            {3'd4, 4'd7}: begin
+                sa_n[1] = 4'd2; sb_n[1] = 4'd12; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[61] = 4'd12;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd10; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[59] = 4'd10;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd9; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[26] = 4'd6;
+                sa_n[19] = 4'd9; sb_n[19] = 4'd8; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[6] = 4'd5; wb_n[57] = 4'd7;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd8; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[55] = 4'd8;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd8; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[10] = 4'd1; wb_n[21] = 4'd5;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd9; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[12] = 4'd1; wb_n[51] = 4'd10;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd10; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[14] = 4'd1; wb_n[49] = 4'd8;
+                sa_n[17] = 4'd6; sb_n[17] = 4'd6; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[17] = 4'd5; wb_n[46] = 4'd5;
+                sa_n[9] = 4'd3; sb_n[9] = 4'd10; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[19] = 4'd3; wb_n[44] = 4'd7;
+                sa_n[11] = 4'd4; sb_n[11] = 4'd9; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[23] = 4'd4; wb_n[40] = 4'd5;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd11; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[25] = 4'd2; wb_n[38] = 4'd6;
+                sa_n[21] = 4'd9; sb_n[21] = 4'd10; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[27] = 4'd9; wb_n[36] = 4'd4;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd10; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[29] = 4'd2; wb_n[34] = 4'd5;
+                sa_n[23] = 4'd8; sb_n[23] = 4'd5; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[37] = 4'd4; wb_n[42] = 4'd4;
+                sa_n[22] = 4'd6; sb_n[22] = 4'd5; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd2896; us_n[22] = 13'sd2896; wb_n[54] = 4'd9; wb_n[41] = 4'd3;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd11; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd2896; us_n[26] = 13'sd2896; wb_n[52] = 4'd1; wb_n[43] = 4'd9;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd10; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = 13'sd2896; us_n[25] = 13'sd2896; wb_n[50] = 4'd1; wb_n[45] = 4'd6;
+                sa_n[27] = 4'd1; sb_n[27] = 4'd6; um_n[27] = 2'd2; uf_n[27] = 1'b1; wb_n[53] = 4'd2; wb_n[58] = 4'd5;
+            end
+            {3'd4, 4'd8}: begin
+                sa_n[3] = 4'd1; sb_n[3] = 4'd11; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[58] = 4'd8;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd9; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[54] = 4'd10;
+                sa_n[9] = 4'd6; sb_n[9] = 4'd11; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[11] = 4'd7; wb_n[52] = 4'd8;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd11; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[13] = 4'd2; wb_n[50] = 4'd9;
+                sa_n[10] = 4'd4; sb_n[10] = 4'd9; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[18] = 4'd3; wb_n[45] = 4'd8;
+                sa_n[18] = 4'd6; sb_n[18] = 4'd5; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[20] = 4'd6; wb_n[43] = 4'd6;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd10; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[22] = 4'd1; wb_n[41] = 4'd6;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd12; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[26] = 4'd1; wb_n[37] = 4'd5;
+                sa_n[21] = 4'd8; sb_n[21] = 4'd2; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = 13'sd2896; us_n[21] = 13'sd2896; wb_n[53] = 4'd7; wb_n[42] = 4'd2;
+            end
+            {3'd4, 4'd9}: begin
+                sa_n[5] = 4'd2; sb_n[5] = 4'd10; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[10] = 4'd1; wb_n[53] = 4'd10;
+                sa_n[23] = 4'd5; sb_n[23] = 4'd5; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[21] = 4'd6; wb_n[42] = 4'd4;
+            end
+            {3'd5, 4'd0}: begin
+                sa_n[0] = 4'd2; sb_n[0] = 4'd11; um_n[0] = 2'd1; uf_n[0] = 1'b1; uc_n[0] = 13'sd401; us_n[0] = 13'sd4076; wb_n[0] = 4'd1; wb_n[1] = 4'd1;
+                sa_n[1] = 4'd7; sb_n[1] = 4'd2; um_n[1] = 2'd1; uf_n[1] = 1'b1; uc_n[1] = 13'sd1931; us_n[1] = 13'sd3612; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd7; sb_n[2] = 4'd11; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd3166; us_n[2] = 13'sd2598; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd7; sb_n[3] = 4'd2; um_n[3] = 2'd1; uf_n[3] = 1'b1; uc_n[3] = 13'sd3920; us_n[3] = 13'sd1189; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd8; sb_n[4] = 4'd9; um_n[4] = 2'd1; uf_n[4] = 1'b1; uc_n[4] = 13'sd401; us_n[4] = 13'sd4076; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[5] = 4'd4; sb_n[5] = 4'd2; um_n[5] = 2'd1; uf_n[5] = 1'b1; uc_n[5] = 13'sd1931; us_n[5] = 13'sd3612; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd7; sb_n[6] = 4'd10; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd3166; us_n[6] = 13'sd2598; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd6; sb_n[7] = 4'd2; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd3920; us_n[7] = 13'sd1189; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd6; sb_n[8] = 4'd8; um_n[8] = 2'd1; uf_n[8] = 1'b1; uc_n[8] = 13'sd401; us_n[8] = 13'sd4076; wb_n[16] = 4'd1; wb_n[17] = 4'd1;
+                sa_n[9] = 4'd9; sb_n[9] = 4'd2; um_n[9] = 2'd1; uf_n[9] = 1'b1; uc_n[9] = 13'sd1931; us_n[9] = 13'sd3612; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd6; sb_n[10] = 4'd6; um_n[10] = 2'd1; uf_n[10] = 1'b1; uc_n[10] = 13'sd3166; us_n[10] = 13'sd2598; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd9; sb_n[11] = 4'd2; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = 13'sd3920; us_n[11] = 13'sd1189; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd6; sb_n[12] = 4'd8; um_n[12] = 2'd1; uf_n[12] = 1'b1; uc_n[12] = 13'sd401; us_n[12] = 13'sd4076; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[13] = 4'd4; sb_n[13] = 4'd2; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd1931; us_n[13] = 13'sd3612; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd7; sb_n[14] = 4'd11; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd3166; us_n[14] = 13'sd2598; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd4; sb_n[15] = 4'd2; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd3920; us_n[15] = 13'sd1189; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd5; sb_n[16] = 4'd10; um_n[16] = 2'd1; uf_n[16] = 1'b1; uc_n[16] = 13'sd401; us_n[16] = 13'sd4076; wb_n[32] = 4'd1; wb_n[33] = 4'd1;
+                sa_n[17] = 4'd8; sb_n[17] = 4'd2; um_n[17] = 2'd1; uf_n[17] = 1'b1; uc_n[17] = 13'sd1931; us_n[17] = 13'sd3612; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd7; sb_n[18] = 4'd9; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd3166; us_n[18] = 13'sd2598; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd10; sb_n[19] = 4'd2; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = 13'sd3920; us_n[19] = 13'sd1189; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd5; sb_n[20] = 4'd9; um_n[20] = 2'd1; uf_n[20] = 1'b1; uc_n[20] = 13'sd401; us_n[20] = 13'sd4076; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[21] = 4'd4; sb_n[21] = 4'd2; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = 13'sd1931; us_n[21] = 13'sd3612; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[25] = 4'd6; sb_n[25] = 4'd11; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = 13'sd3166; us_n[25] = 13'sd2598; wb_n[44] = 4'd8; wb_n[45] = 4'd6;
+                sa_n[22] = 4'd2; sb_n[22] = 4'd1; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd3920; us_n[22] = 13'sd1189; wb_n[46] = 4'd3; wb_n[47] = 4'd2;
+                sa_n[24] = 4'd6; sb_n[24] = 4'd8; um_n[24] = 2'd1; uf_n[24] = 1'b1; uc_n[24] = 13'sd401; us_n[24] = 13'sd4076; wb_n[48] = 4'd1; wb_n[49] = 4'd1;
+                sa_n[30] = 4'd5; sb_n[30] = 4'd11; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd1931; us_n[30] = 13'sd3612; wb_n[50] = 4'd8; wb_n[51] = 4'd5;
+                sa_n[26] = 4'd6; sb_n[26] = 4'd6; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd3166; us_n[26] = 13'sd2598; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd10; sb_n[27] = 4'd2; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd3920; us_n[27] = 13'sd1189; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd8; sb_n[28] = 4'd9; um_n[28] = 2'd1; uf_n[28] = 1'b1; uc_n[28] = 13'sd401; us_n[28] = 13'sd4076; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[29] = 4'd4; sb_n[29] = 4'd2; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd1931; us_n[29] = 13'sd3612; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[31] = 4'd6; sb_n[31] = 4'd9; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd3166; us_n[31] = 13'sd2598; wb_n[60] = 4'd4; wb_n[61] = 4'd13;
+                sa_n[23] = 4'd9; sb_n[23] = 4'd9; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd3920; us_n[23] = 13'sd1189; wb_n[62] = 4'd10; wb_n[63] = 4'd7;
+            end
+            {3'd5, 4'd1}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd3; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[4] = 4'd4;
+                sa_n[2] = 4'd2; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[1] = 4'd4; wb_n[5] = 4'd1;
+                sa_n[1] = 4'd2; sb_n[1] = 4'd3; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[6] = 4'd4;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd5; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[7] = 4'd6;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd3; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[12] = 4'd5;
+                sa_n[6] = 4'd2; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[9] = 4'd5; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd7; sb_n[7] = 4'd2; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[10] = 4'd6; wb_n[14] = 4'd2;
+                sa_n[9] = 4'd6; sb_n[9] = 4'd8; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[11] = 4'd7; wb_n[15] = 4'd6;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd3; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[20] = 4'd7;
+                sa_n[10] = 4'd2; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[17] = 4'd6; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd10; sb_n[11] = 4'd2; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[18] = 4'd6; wb_n[22] = 4'd2;
+                sa_n[13] = 4'd5; sb_n[13] = 4'd5; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[19] = 4'd4; wb_n[23] = 4'd6;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd3; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[28] = 4'd5;
+                sa_n[14] = 4'd2; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[25] = 4'd8; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd6; sb_n[15] = 4'd2; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[26] = 4'd7; wb_n[30] = 4'd2;
+                sa_n[21] = 4'd9; sb_n[21] = 4'd11; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[27] = 4'd9; wb_n[31] = 4'd7;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd3; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[36] = 4'd5;
+                sa_n[18] = 4'd2; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[33] = 4'd6; wb_n[37] = 4'd1;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd3; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[34] = 4'd1; wb_n[38] = 4'd4;
+                sa_n[19] = 4'd11; sb_n[19] = 4'd1; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[35] = 4'd7; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd3; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[44] = 4'd9;
+                sa_n[22] = 4'd2; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[41] = 4'd5; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd10; sb_n[23] = 4'd2; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[42] = 4'd6; wb_n[46] = 4'd2;
+                sa_n[25] = 4'd6; sb_n[25] = 4'd8; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[43] = 4'd7; wb_n[47] = 4'd7;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd3; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[52] = 4'd9;
+                sa_n[26] = 4'd2; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[49] = 4'd6; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd11; sb_n[27] = 4'd2; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[50] = 4'd10; wb_n[54] = 4'd2;
+                sa_n[29] = 4'd5; sb_n[29] = 4'd5; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[51] = 4'd4; wb_n[55] = 4'd9;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd3; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[60] = 4'd5;
+                sa_n[30] = 4'd2; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[57] = 4'd9; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd7; sb_n[31] = 4'd2; um_n[31] = 2'd2; uf_n[31] = 1'b0; wb_n[58] = 4'd9; wb_n[62] = 4'd2;
+                sa_n[3] = 4'd8; sb_n[3] = 4'd12; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[59] = 4'd11; wb_n[63] = 4'd8;
+            end
+            {3'd5, 4'd2}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd1; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[2] = 4'd4;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd1; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd3; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd1567; us_n[2] = 13'sd3784; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd4; sb_n[3] = 4'd2; um_n[3] = 2'd1; uf_n[3] = 1'b1; uc_n[3] = 13'sd3784; us_n[3] = 13'sd1567; wb_n[7] = 4'd4; wb_n[6] = 4'd2;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd1; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[10] = 4'd7;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd1; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd3; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd1567; us_n[6] = 13'sd3784; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd8; sb_n[7] = 4'd2; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd3784; us_n[7] = 13'sd1567; wb_n[15] = 4'd7; wb_n[14] = 4'd2;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd1; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[18] = 4'd7;
+                sa_n[9] = 4'd1; sb_n[9] = 4'd1; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[17] = 4'd2; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd3; um_n[10] = 2'd1; uf_n[10] = 1'b1; uc_n[10] = 13'sd1567; us_n[10] = 13'sd3784; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd4; sb_n[11] = 4'd2; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = 13'sd3784; us_n[11] = 13'sd1567; wb_n[23] = 4'd4; wb_n[22] = 4'd2;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd1; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[26] = 4'd8;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd1; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[25] = 4'd2; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd3; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd1567; us_n[14] = 13'sd3784; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd7; sb_n[15] = 4'd2; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd3784; us_n[15] = 13'sd1567; wb_n[31] = 4'd8; wb_n[30] = 4'd2;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd1; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[34] = 4'd6;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd1; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd3; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd1567; us_n[18] = 13'sd3784; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd4; sb_n[19] = 4'd2; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = 13'sd3784; us_n[19] = 13'sd1567; wb_n[39] = 4'd4; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd1; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[42] = 4'd8;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd1; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd3; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd1567; us_n[22] = 13'sd3784; wb_n[44] = 4'd1; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd11; sb_n[23] = 4'd2; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd3784; us_n[23] = 13'sd1567; wb_n[47] = 4'd8; wb_n[46] = 4'd2;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd1; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[50] = 4'd11;
+                sa_n[25] = 4'd1; sb_n[25] = 4'd1; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[49] = 4'd2; wb_n[51] = 4'd1;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd3; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd1567; us_n[26] = 13'sd3784; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd4; sb_n[27] = 4'd2; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd3784; us_n[27] = 13'sd1567; wb_n[55] = 4'd4; wb_n[54] = 4'd2;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd1; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[58] = 4'd10;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd1; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[57] = 4'd2; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd3; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd1567; us_n[30] = 13'sd3784; wb_n[60] = 4'd1; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd8; sb_n[31] = 4'd2; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd3784; us_n[31] = 13'sd1567; wb_n[63] = 4'd9; wb_n[62] = 4'd2;
+            end
+            {3'd5, 4'd3}: begin
+                sa_n[1] = 4'd2; sb_n[1] = 4'd1; um_n[1] = 2'd1; uf_n[1] = 1'b1; uc_n[1] = 13'sd2896; us_n[1] = 13'sd2896; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd1; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[6] = 4'd6;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd1; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[7] = 4'd1;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd1; um_n[5] = 2'd1; uf_n[5] = 1'b1; uc_n[5] = 13'sd2896; us_n[5] = 13'sd2896; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[7] = 4'd3; sb_n[7] = 4'd2; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[12] = 4'd4; wb_n[14] = 4'd2;
+                sa_n[6] = 4'd8; sb_n[6] = 4'd2; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[13] = 4'd5; wb_n[15] = 4'd2;
+                sa_n[9] = 4'd2; sb_n[9] = 4'd1; um_n[9] = 2'd1; uf_n[9] = 1'b1; uc_n[9] = 13'sd2896; us_n[9] = 13'sd2896; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd1; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[22] = 4'd8;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd1; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[21] = 4'd2; wb_n[23] = 4'd1;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd1; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd2896; us_n[13] = 13'sd2896; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[15] = 4'd3; sb_n[15] = 4'd2; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[28] = 4'd4; wb_n[30] = 4'd2;
+                sa_n[14] = 4'd8; sb_n[14] = 4'd2; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[29] = 4'd10; wb_n[31] = 4'd2;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd1; um_n[17] = 2'd1; uf_n[17] = 1'b1; uc_n[17] = 13'sd2896; us_n[17] = 13'sd2896; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd1; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[38] = 4'd7;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd1; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[37] = 4'd2; wb_n[39] = 4'd1;
+                sa_n[21] = 4'd2; sb_n[21] = 4'd1; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = 13'sd2896; us_n[21] = 13'sd2896; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd1; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[46] = 4'd8;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[45] = 4'd2; wb_n[47] = 4'd1;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd1; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = 13'sd2896; us_n[25] = 13'sd2896; wb_n[50] = 4'd1; wb_n[51] = 4'd1;
+                sa_n[27] = 4'd9; sb_n[27] = 4'd2; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[52] = 4'd6; wb_n[54] = 4'd2;
+                sa_n[26] = 4'd8; sb_n[26] = 4'd2; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[53] = 4'd11; wb_n[55] = 4'd2;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd1; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd2896; us_n[29] = 13'sd2896; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd1; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[60] = 4'd1; wb_n[62] = 4'd8;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b0; wb_n[61] = 4'd2; wb_n[63] = 4'd1;
+            end
+            {3'd5, 4'd4}: begin
+                sa_n[3] = 4'd2; sb_n[3] = 4'd1; um_n[3] = 2'd1; uf_n[3] = 1'b1; uc_n[3] = 13'sd2896; us_n[3] = 13'sd2896; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[7] = 4'd2; sb_n[7] = 4'd1; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd2896; us_n[7] = 13'sd2896; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd1; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = 13'sd2896; us_n[11] = 13'sd2896; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[15] = 4'd2; sb_n[15] = 4'd1; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd2896; us_n[15] = 13'sd2896; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd1; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = 13'sd2896; us_n[19] = 13'sd2896; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[23] = 4'd2; sb_n[23] = 4'd1; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd2896; us_n[23] = 13'sd2896; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[27] = 4'd2; sb_n[27] = 4'd1; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd2896; us_n[27] = 13'sd2896; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[31] = 4'd2; sb_n[31] = 4'd1; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd2896; us_n[31] = 13'sd2896; wb_n[62] = 4'd1; wb_n[63] = 4'd1;
+            end
+            {3'd6, 4'd0}: begin
+                sa_n[0] = 4'd3; sb_n[0] = 4'd11; um_n[0] = 2'd1; uf_n[0] = 1'b1; uc_n[0] = 13'sd201; us_n[0] = 13'sd4091; wb_n[0] = 4'd1; wb_n[1] = 4'd1;
+                sa_n[1] = 4'd8; sb_n[1] = 4'd2; um_n[1] = 2'd1; uf_n[1] = 1'b1; uc_n[1] = 13'sd995; us_n[1] = 13'sd3973; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd8; sb_n[2] = 4'd11; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd1751; us_n[2] = 13'sd3703; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd9; sb_n[3] = 4'd2; um_n[3] = 2'd1; uf_n[3] = 1'b1; uc_n[3] = 13'sd2440; us_n[3] = 13'sd3290; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd9; sb_n[4] = 4'd9; um_n[4] = 2'd1; uf_n[4] = 1'b1; uc_n[4] = 13'sd3035; us_n[4] = 13'sd2751; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[5] = 4'd8; sb_n[5] = 4'd2; um_n[5] = 2'd1; uf_n[5] = 1'b1; uc_n[5] = 13'sd3513; us_n[5] = 13'sd2106; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd9; sb_n[6] = 4'd10; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd3857; us_n[6] = 13'sd1380; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd9; sb_n[7] = 4'd2; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd4052; us_n[7] = 13'sd601; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd7; sb_n[8] = 4'd8; um_n[8] = 2'd1; uf_n[8] = 1'b1; uc_n[8] = 13'sd201; us_n[8] = 13'sd4091; wb_n[16] = 4'd1; wb_n[17] = 4'd1;
+                sa_n[9] = 4'd5; sb_n[9] = 4'd2; um_n[9] = 2'd1; uf_n[9] = 1'b1; uc_n[9] = 13'sd995; us_n[9] = 13'sd3973; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd9; sb_n[10] = 4'd6; um_n[10] = 2'd1; uf_n[10] = 1'b1; uc_n[10] = 13'sd1751; us_n[10] = 13'sd3703; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd5; sb_n[11] = 4'd2; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = 13'sd2440; us_n[11] = 13'sd3290; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd7; sb_n[12] = 4'd8; um_n[12] = 2'd1; uf_n[12] = 1'b1; uc_n[12] = 13'sd3035; us_n[12] = 13'sd2751; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[13] = 4'd7; sb_n[13] = 4'd2; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd3513; us_n[13] = 13'sd2106; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd9; sb_n[14] = 4'd11; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd3857; us_n[14] = 13'sd1380; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd8; sb_n[15] = 4'd2; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd4052; us_n[15] = 13'sd601; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd6; sb_n[16] = 4'd10; um_n[16] = 2'd1; uf_n[16] = 1'b1; uc_n[16] = 13'sd201; us_n[16] = 13'sd4091; wb_n[32] = 4'd1; wb_n[33] = 4'd1;
+                sa_n[17] = 4'd9; sb_n[17] = 4'd2; um_n[17] = 2'd1; uf_n[17] = 1'b1; uc_n[17] = 13'sd995; us_n[17] = 13'sd3973; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd8; sb_n[18] = 4'd9; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd1751; us_n[18] = 13'sd3703; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd6; sb_n[19] = 4'd2; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = 13'sd2440; us_n[19] = 13'sd3290; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd6; sb_n[20] = 4'd9; um_n[20] = 2'd1; uf_n[20] = 1'b1; uc_n[20] = 13'sd3035; us_n[20] = 13'sd2751; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[21] = 4'd10; sb_n[21] = 4'd2; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = 13'sd3513; us_n[21] = 13'sd2106; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[25] = 4'd9; sb_n[25] = 4'd11; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = 13'sd3857; us_n[25] = 13'sd1380; wb_n[44] = 4'd8; wb_n[45] = 4'd6;
+                sa_n[23] = 4'd12; sb_n[23] = 4'd2; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd4052; us_n[23] = 13'sd601; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd7; sb_n[24] = 4'd8; um_n[24] = 2'd1; uf_n[24] = 1'b1; uc_n[24] = 13'sd201; us_n[24] = 13'sd4091; wb_n[48] = 4'd1; wb_n[49] = 4'd1;
+                sa_n[29] = 4'd4; sb_n[29] = 4'd9; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd995; us_n[29] = 13'sd3973; wb_n[50] = 4'd7; wb_n[51] = 4'd11;
+                sa_n[26] = 4'd9; sb_n[26] = 4'd6; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd1751; us_n[26] = 13'sd3703; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd5; sb_n[27] = 4'd2; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd2440; us_n[27] = 13'sd3290; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[28] = 4'd9; sb_n[28] = 4'd9; um_n[28] = 2'd1; uf_n[28] = 1'b1; uc_n[28] = 13'sd3035; us_n[28] = 13'sd2751; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[30] = 4'd5; sb_n[30] = 4'd12; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd3513; us_n[30] = 13'sd2106; wb_n[58] = 4'd3; wb_n[59] = 4'd5;
+                sa_n[31] = 4'd9; sb_n[31] = 4'd9; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd3857; us_n[31] = 13'sd1380; wb_n[60] = 4'd4; wb_n[61] = 4'd13;
+                sa_n[22] = 4'd8; sb_n[22] = 4'd10; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd4052; us_n[22] = 13'sd601; wb_n[62] = 4'd11; wb_n[63] = 4'd10;
+            end
+            {3'd6, 4'd1}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd5; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[8] = 4'd4;
+                sa_n[4] = 4'd2; sb_n[4] = 4'd5; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[1] = 4'd3; wb_n[9] = 4'd1;
+                sa_n[1] = 4'd2; sb_n[1] = 4'd13; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[10] = 4'd8;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd1; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[11] = 4'd1;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd12; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[12] = 4'd6;
+                sa_n[6] = 4'd5; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[5] = 4'd3; wb_n[13] = 4'd1;
+                sa_n[3] = 4'd2; sb_n[3] = 4'd13; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[6] = 4'd1; wb_n[14] = 4'd6;
+                sa_n[7] = 4'd10; sb_n[7] = 4'd1; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[7] = 4'd7; wb_n[15] = 4'd1;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd5; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[24] = 4'd5;
+                sa_n[11] = 4'd9; sb_n[11] = 4'd5; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[17] = 4'd7; wb_n[25] = 4'd4;
+                sa_n[9] = 4'd2; sb_n[9] = 4'd12; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[18] = 4'd1; wb_n[26] = 4'd9;
+                sa_n[10] = 4'd6; sb_n[10] = 4'd5; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[19] = 4'd6; wb_n[27] = 4'd6;
+                sa_n[12] = 4'd8; sb_n[12] = 4'd3; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[20] = 4'd3; wb_n[28] = 4'd5;
+                sa_n[14] = 4'd5; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[21] = 4'd7; wb_n[29] = 4'd1;
+                sa_n[13] = 4'd8; sb_n[13] = 4'd3; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[22] = 4'd9; wb_n[30] = 4'd4;
+                sa_n[15] = 4'd9; sb_n[15] = 4'd1; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[23] = 4'd5; wb_n[31] = 4'd1;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd5; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[40] = 4'd6;
+                sa_n[20] = 4'd2; sb_n[20] = 4'd5; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[33] = 4'd3; wb_n[41] = 4'd1;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd11; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[34] = 4'd1; wb_n[42] = 4'd9;
+                sa_n[21] = 4'd5; sb_n[21] = 4'd1; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[35] = 4'd4; wb_n[43] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd10; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[44] = 4'd10;
+                sa_n[22] = 4'd5; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[37] = 4'd6; wb_n[45] = 4'd1;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd11; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[38] = 4'd1; wb_n[46] = 4'd9;
+                sa_n[23] = 4'd13; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[39] = 4'd9; wb_n[47] = 4'd1;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd5; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[56] = 4'd8;
+                sa_n[27] = 4'd10; sb_n[27] = 4'd5; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[49] = 4'd9; wb_n[57] = 4'd4;
+                sa_n[29] = 4'd7; sb_n[29] = 4'd2; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[50] = 4'd7; wb_n[58] = 4'd2;
+                sa_n[26] = 4'd6; sb_n[26] = 4'd5; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[51] = 4'd6; wb_n[59] = 4'd6;
+                sa_n[28] = 4'd7; sb_n[28] = 4'd3; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[52] = 4'd3; wb_n[60] = 4'd5;
+                sa_n[30] = 4'd5; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[53] = 4'd12; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd10; sb_n[31] = 4'd2; um_n[31] = 2'd2; uf_n[31] = 1'b0; wb_n[54] = 4'd11; wb_n[62] = 4'd2;
+                sa_n[25] = 4'd10; sb_n[25] = 4'd12; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[55] = 4'd10; wb_n[63] = 4'd11;
+            end
+            {3'd6, 4'd2}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd3; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[4] = 4'd4;
+                sa_n[2] = 4'd2; sb_n[2] = 4'd3; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[1] = 4'd4; wb_n[5] = 4'd1;
+                sa_n[1] = 4'd2; sb_n[1] = 4'd3; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[2] = 4'd1; wb_n[6] = 4'd4;
+                sa_n[5] = 4'd5; sb_n[5] = 4'd5; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[3] = 4'd4; wb_n[7] = 4'd6;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd5; um_n[4] = 2'd1; uf_n[4] = 1'b1; uc_n[4] = 13'sd799; us_n[4] = 13'sd4017; wb_n[8] = 4'd1; wb_n[9] = 4'd1;
+                sa_n[6] = 4'd4; sb_n[6] = 4'd4; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd3406; us_n[6] = 13'sd2276; wb_n[10] = 4'd3; wb_n[11] = 4'd5;
+                sa_n[7] = 4'd1; sb_n[7] = 4'd9; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd4017; us_n[7] = 13'sd799; wb_n[13] = 4'd2; wb_n[12] = 4'd3;
+                sa_n[8] = 4'd3; sb_n[8] = 4'd11; um_n[8] = 2'd1; uf_n[8] = 1'b1; uc_n[8] = 13'sd2276; us_n[8] = 13'sd3406; wb_n[15] = 4'd5; wb_n[14] = 4'd7;
+                sa_n[9] = 4'd10; sb_n[9] = 4'd4; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[16] = 4'd4; wb_n[20] = 4'd2;
+                sa_n[10] = 4'd2; sb_n[10] = 4'd3; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[17] = 4'd6; wb_n[21] = 4'd1;
+                sa_n[11] = 4'd10; sb_n[11] = 4'd2; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[18] = 4'd6; wb_n[22] = 4'd2;
+                sa_n[13] = 4'd5; sb_n[13] = 4'd5; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[19] = 4'd4; wb_n[23] = 4'd6;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd5; um_n[12] = 2'd1; uf_n[12] = 1'b1; uc_n[12] = 13'sd799; us_n[12] = 13'sd4017; wb_n[24] = 4'd1; wb_n[25] = 4'd1;
+                sa_n[14] = 4'd4; sb_n[14] = 4'd4; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd3406; us_n[14] = 13'sd2276; wb_n[26] = 4'd3; wb_n[27] = 4'd5;
+                sa_n[15] = 4'd1; sb_n[15] = 4'd11; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd4017; us_n[15] = 13'sd799; wb_n[29] = 4'd2; wb_n[28] = 4'd3;
+                sa_n[16] = 4'd3; sb_n[16] = 4'd11; um_n[16] = 2'd1; uf_n[16] = 1'b1; uc_n[16] = 13'sd2276; us_n[16] = 13'sd3406; wb_n[31] = 4'd6; wb_n[30] = 4'd7;
+                sa_n[17] = 4'd10; sb_n[17] = 4'd4; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[32] = 4'd3; wb_n[36] = 4'd2;
+                sa_n[18] = 4'd2; sb_n[18] = 4'd3; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[33] = 4'd6; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd12; sb_n[19] = 4'd2; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[34] = 4'd7; wb_n[38] = 4'd2;
+                sa_n[21] = 4'd5; sb_n[21] = 4'd5; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[35] = 4'd4; wb_n[39] = 4'd10;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd5; um_n[20] = 2'd1; uf_n[20] = 1'b1; uc_n[20] = 13'sd799; us_n[20] = 13'sd4017; wb_n[40] = 4'd1; wb_n[41] = 4'd1;
+                sa_n[22] = 4'd4; sb_n[22] = 4'd4; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd3406; us_n[22] = 13'sd2276; wb_n[42] = 4'd3; wb_n[43] = 4'd5;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd10; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd4017; us_n[23] = 13'sd799; wb_n[45] = 4'd2; wb_n[44] = 4'd3;
+                sa_n[24] = 4'd3; sb_n[24] = 4'd10; um_n[24] = 2'd1; uf_n[24] = 1'b1; uc_n[24] = 13'sd2276; us_n[24] = 13'sd3406; wb_n[47] = 4'd5; wb_n[46] = 4'd10;
+                sa_n[25] = 4'd11; sb_n[25] = 4'd4; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[48] = 4'd6; wb_n[52] = 4'd2;
+                sa_n[26] = 4'd2; sb_n[26] = 4'd3; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[49] = 4'd6; wb_n[53] = 4'd1;
+                sa_n[27] = 4'd11; sb_n[27] = 4'd2; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[50] = 4'd10; wb_n[54] = 4'd2;
+                sa_n[29] = 4'd5; sb_n[29] = 4'd5; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[51] = 4'd4; wb_n[55] = 4'd9;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd5; um_n[28] = 2'd1; uf_n[28] = 1'b1; uc_n[28] = 13'sd799; us_n[28] = 13'sd4017; wb_n[56] = 4'd1; wb_n[57] = 4'd1;
+                sa_n[30] = 4'd4; sb_n[30] = 4'd4; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd3406; us_n[30] = 13'sd2276; wb_n[58] = 4'd3; wb_n[59] = 4'd5;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd9; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd4017; us_n[31] = 13'sd799; wb_n[61] = 4'd2; wb_n[60] = 4'd3;
+                sa_n[3] = 4'd10; sb_n[3] = 4'd14; um_n[3] = 2'd1; uf_n[3] = 1'b1; uc_n[3] = 13'sd2276; us_n[3] = 13'sd3406; wb_n[63] = 4'd12; wb_n[62] = 4'd12;
+            end
+            {3'd6, 4'd3}: begin
+                sa_n[0] = 4'd1; sb_n[0] = 4'd1; um_n[0] = 2'd2; uf_n[0] = 1'b0; wb_n[0] = 4'd1; wb_n[2] = 4'd4;
+                sa_n[1] = 4'd1; sb_n[1] = 4'd1; um_n[1] = 2'd2; uf_n[1] = 1'b0; wb_n[1] = 4'd2; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd3; um_n[2] = 2'd1; uf_n[2] = 1'b1; uc_n[2] = 13'sd1567; us_n[2] = 13'sd3784; wb_n[4] = 4'd1; wb_n[5] = 4'd1;
+                sa_n[3] = 4'd4; sb_n[3] = 4'd2; um_n[3] = 2'd1; uf_n[3] = 1'b1; uc_n[3] = 13'sd3784; us_n[3] = 13'sd1567; wb_n[7] = 4'd4; wb_n[6] = 4'd2;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd3; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[12] = 4'd5;
+                sa_n[6] = 4'd2; sb_n[6] = 4'd3; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[9] = 4'd5; wb_n[13] = 4'd1;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd3; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[10] = 4'd1; wb_n[14] = 4'd4;
+                sa_n[9] = 4'd6; sb_n[9] = 4'd8; um_n[9] = 2'd2; uf_n[9] = 1'b0; wb_n[11] = 4'd7; wb_n[15] = 4'd6;
+                sa_n[8] = 4'd1; sb_n[8] = 4'd1; um_n[8] = 2'd2; uf_n[8] = 1'b0; wb_n[16] = 4'd1; wb_n[18] = 4'd7;
+                sa_n[11] = 4'd9; sb_n[11] = 4'd3; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[17] = 4'd7; wb_n[19] = 4'd8;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd3; um_n[10] = 2'd1; uf_n[10] = 1'b1; uc_n[10] = 13'sd1567; us_n[10] = 13'sd3784; wb_n[20] = 4'd1; wb_n[21] = 4'd1;
+                sa_n[15] = 4'd9; sb_n[15] = 4'd7; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd3784; us_n[15] = 13'sd1567; wb_n[23] = 4'd5; wb_n[22] = 4'd6;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd3; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[28] = 4'd5;
+                sa_n[14] = 4'd2; sb_n[14] = 4'd3; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[25] = 4'd8; wb_n[29] = 4'd1;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd3; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[26] = 4'd1; wb_n[30] = 4'd4;
+                sa_n[21] = 4'd9; sb_n[21] = 4'd11; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[27] = 4'd9; wb_n[31] = 4'd7;
+                sa_n[16] = 4'd1; sb_n[16] = 4'd1; um_n[16] = 2'd2; uf_n[16] = 1'b0; wb_n[32] = 4'd1; wb_n[34] = 4'd6;
+                sa_n[17] = 4'd1; sb_n[17] = 4'd1; um_n[17] = 2'd2; uf_n[17] = 1'b0; wb_n[33] = 4'd2; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd3; um_n[18] = 2'd1; uf_n[18] = 1'b1; uc_n[18] = 13'sd1567; us_n[18] = 13'sd3784; wb_n[36] = 4'd1; wb_n[37] = 4'd1;
+                sa_n[19] = 4'd4; sb_n[19] = 4'd2; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = 13'sd3784; us_n[19] = 13'sd1567; wb_n[39] = 4'd4; wb_n[38] = 4'd2;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd3; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[44] = 4'd9;
+                sa_n[22] = 4'd2; sb_n[22] = 4'd3; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[41] = 4'd5; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd10; sb_n[23] = 4'd2; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[42] = 4'd6; wb_n[46] = 4'd2;
+                sa_n[25] = 4'd6; sb_n[25] = 4'd8; um_n[25] = 2'd2; uf_n[25] = 1'b0; wb_n[43] = 4'd7; wb_n[47] = 4'd7;
+                sa_n[24] = 4'd1; sb_n[24] = 4'd1; um_n[24] = 2'd2; uf_n[24] = 1'b0; wb_n[48] = 4'd1; wb_n[50] = 4'd11;
+                sa_n[27] = 4'd10; sb_n[27] = 4'd3; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[49] = 4'd9; wb_n[51] = 4'd12;
+                sa_n[26] = 4'd1; sb_n[26] = 4'd3; um_n[26] = 2'd1; uf_n[26] = 1'b1; uc_n[26] = 13'sd1567; us_n[26] = 13'sd3784; wb_n[52] = 4'd1; wb_n[53] = 4'd1;
+                sa_n[31] = 4'd11; sb_n[31] = 4'd7; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd3784; us_n[31] = 13'sd1567; wb_n[55] = 4'd5; wb_n[54] = 4'd6;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd3; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[60] = 4'd5;
+                sa_n[30] = 4'd2; sb_n[30] = 4'd3; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[57] = 4'd9; wb_n[61] = 4'd1;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd3; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[58] = 4'd1; wb_n[62] = 4'd4;
+                sa_n[7] = 4'd11; sb_n[7] = 4'd12; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[59] = 4'd12; wb_n[63] = 4'd13;
+            end
+            {3'd6, 4'd4}: begin
+                sa_n[1] = 4'd2; sb_n[1] = 4'd1; um_n[1] = 2'd1; uf_n[1] = 1'b1; uc_n[1] = 13'sd2896; us_n[1] = 13'sd2896; wb_n[2] = 4'd1; wb_n[3] = 4'd1;
+                sa_n[2] = 4'd1; sb_n[2] = 4'd1; um_n[2] = 2'd2; uf_n[2] = 1'b0; wb_n[4] = 4'd1; wb_n[6] = 4'd6;
+                sa_n[3] = 4'd1; sb_n[3] = 4'd1; um_n[3] = 2'd2; uf_n[3] = 1'b0; wb_n[5] = 4'd2; wb_n[7] = 4'd1;
+                sa_n[4] = 4'd1; sb_n[4] = 4'd1; um_n[4] = 2'd2; uf_n[4] = 1'b0; wb_n[8] = 4'd1; wb_n[10] = 4'd7;
+                sa_n[5] = 4'd1; sb_n[5] = 4'd1; um_n[5] = 2'd2; uf_n[5] = 1'b0; wb_n[9] = 4'd2; wb_n[11] = 4'd1;
+                sa_n[6] = 4'd1; sb_n[6] = 4'd3; um_n[6] = 2'd1; uf_n[6] = 1'b1; uc_n[6] = 13'sd1567; us_n[6] = 13'sd3784; wb_n[12] = 4'd1; wb_n[13] = 4'd1;
+                sa_n[7] = 4'd8; sb_n[7] = 4'd2; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd3784; us_n[7] = 13'sd1567; wb_n[15] = 4'd7; wb_n[14] = 4'd2;
+                sa_n[9] = 4'd2; sb_n[9] = 4'd1; um_n[9] = 2'd1; uf_n[9] = 1'b1; uc_n[9] = 13'sd2896; us_n[9] = 13'sd2896; wb_n[18] = 4'd1; wb_n[19] = 4'd1;
+                sa_n[10] = 4'd1; sb_n[10] = 4'd1; um_n[10] = 2'd2; uf_n[10] = 1'b0; wb_n[20] = 4'd1; wb_n[22] = 4'd8;
+                sa_n[11] = 4'd1; sb_n[11] = 4'd1; um_n[11] = 2'd2; uf_n[11] = 1'b0; wb_n[21] = 4'd2; wb_n[23] = 4'd1;
+                sa_n[12] = 4'd1; sb_n[12] = 4'd1; um_n[12] = 2'd2; uf_n[12] = 1'b0; wb_n[24] = 4'd1; wb_n[26] = 4'd8;
+                sa_n[13] = 4'd1; sb_n[13] = 4'd1; um_n[13] = 2'd2; uf_n[13] = 1'b0; wb_n[25] = 4'd2; wb_n[27] = 4'd1;
+                sa_n[14] = 4'd1; sb_n[14] = 4'd3; um_n[14] = 2'd1; uf_n[14] = 1'b1; uc_n[14] = 13'sd1567; us_n[14] = 13'sd3784; wb_n[28] = 4'd1; wb_n[29] = 4'd1;
+                sa_n[15] = 4'd7; sb_n[15] = 4'd2; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd3784; us_n[15] = 13'sd1567; wb_n[31] = 4'd8; wb_n[30] = 4'd2;
+                sa_n[17] = 4'd2; sb_n[17] = 4'd1; um_n[17] = 2'd1; uf_n[17] = 1'b1; uc_n[17] = 13'sd2896; us_n[17] = 13'sd2896; wb_n[34] = 4'd1; wb_n[35] = 4'd1;
+                sa_n[18] = 4'd1; sb_n[18] = 4'd1; um_n[18] = 2'd2; uf_n[18] = 1'b0; wb_n[36] = 4'd1; wb_n[38] = 4'd7;
+                sa_n[19] = 4'd1; sb_n[19] = 4'd1; um_n[19] = 2'd2; uf_n[19] = 1'b0; wb_n[37] = 4'd2; wb_n[39] = 4'd1;
+                sa_n[20] = 4'd1; sb_n[20] = 4'd1; um_n[20] = 2'd2; uf_n[20] = 1'b0; wb_n[40] = 4'd1; wb_n[42] = 4'd8;
+                sa_n[21] = 4'd1; sb_n[21] = 4'd1; um_n[21] = 2'd2; uf_n[21] = 1'b0; wb_n[41] = 4'd2; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd3; um_n[22] = 2'd1; uf_n[22] = 1'b1; uc_n[22] = 13'sd1567; us_n[22] = 13'sd3784; wb_n[44] = 4'd1; wb_n[45] = 4'd1;
+                sa_n[23] = 4'd11; sb_n[23] = 4'd2; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd3784; us_n[23] = 13'sd1567; wb_n[47] = 4'd8; wb_n[46] = 4'd2;
+                sa_n[25] = 4'd2; sb_n[25] = 4'd1; um_n[25] = 2'd1; uf_n[25] = 1'b1; uc_n[25] = 13'sd2896; us_n[25] = 13'sd2896; wb_n[50] = 4'd1; wb_n[51] = 4'd1;
+                sa_n[27] = 4'd9; sb_n[27] = 4'd2; um_n[27] = 2'd2; uf_n[27] = 1'b0; wb_n[52] = 4'd6; wb_n[54] = 4'd2;
+                sa_n[26] = 4'd8; sb_n[26] = 4'd2; um_n[26] = 2'd2; uf_n[26] = 1'b0; wb_n[53] = 4'd11; wb_n[55] = 4'd2;
+                sa_n[28] = 4'd1; sb_n[28] = 4'd1; um_n[28] = 2'd2; uf_n[28] = 1'b0; wb_n[56] = 4'd1; wb_n[58] = 4'd10;
+                sa_n[29] = 4'd1; sb_n[29] = 4'd1; um_n[29] = 2'd2; uf_n[29] = 1'b0; wb_n[57] = 4'd2; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd3; um_n[30] = 2'd1; uf_n[30] = 1'b1; uc_n[30] = 13'sd1567; us_n[30] = 13'sd3784; wb_n[60] = 4'd1; wb_n[61] = 4'd1;
+                sa_n[31] = 4'd8; sb_n[31] = 4'd2; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd3784; us_n[31] = 13'sd1567; wb_n[63] = 4'd9; wb_n[62] = 4'd2;
+            end
+            {3'd6, 4'd5}: begin
+                sa_n[3] = 4'd2; sb_n[3] = 4'd1; um_n[3] = 2'd1; uf_n[3] = 1'b1; uc_n[3] = 13'sd2896; us_n[3] = 13'sd2896; wb_n[6] = 4'd1; wb_n[7] = 4'd1;
+                sa_n[5] = 4'd2; sb_n[5] = 4'd1; um_n[5] = 2'd1; uf_n[5] = 1'b1; uc_n[5] = 13'sd2896; us_n[5] = 13'sd2896; wb_n[10] = 4'd1; wb_n[11] = 4'd1;
+                sa_n[7] = 4'd3; sb_n[7] = 4'd2; um_n[7] = 2'd2; uf_n[7] = 1'b0; wb_n[12] = 4'd4; wb_n[14] = 4'd2;
+                sa_n[6] = 4'd8; sb_n[6] = 4'd2; um_n[6] = 2'd2; uf_n[6] = 1'b0; wb_n[13] = 4'd5; wb_n[15] = 4'd2;
+                sa_n[11] = 4'd2; sb_n[11] = 4'd1; um_n[11] = 2'd1; uf_n[11] = 1'b1; uc_n[11] = 13'sd2896; us_n[11] = 13'sd2896; wb_n[22] = 4'd1; wb_n[23] = 4'd1;
+                sa_n[13] = 4'd2; sb_n[13] = 4'd1; um_n[13] = 2'd1; uf_n[13] = 1'b1; uc_n[13] = 13'sd2896; us_n[13] = 13'sd2896; wb_n[26] = 4'd1; wb_n[27] = 4'd1;
+                sa_n[15] = 4'd3; sb_n[15] = 4'd2; um_n[15] = 2'd2; uf_n[15] = 1'b0; wb_n[28] = 4'd4; wb_n[30] = 4'd2;
+                sa_n[14] = 4'd8; sb_n[14] = 4'd2; um_n[14] = 2'd2; uf_n[14] = 1'b0; wb_n[29] = 4'd10; wb_n[31] = 4'd2;
+                sa_n[19] = 4'd2; sb_n[19] = 4'd1; um_n[19] = 2'd1; uf_n[19] = 1'b1; uc_n[19] = 13'sd2896; us_n[19] = 13'sd2896; wb_n[38] = 4'd1; wb_n[39] = 4'd1;
+                sa_n[21] = 4'd2; sb_n[21] = 4'd1; um_n[21] = 2'd1; uf_n[21] = 1'b1; uc_n[21] = 13'sd2896; us_n[21] = 13'sd2896; wb_n[42] = 4'd1; wb_n[43] = 4'd1;
+                sa_n[22] = 4'd1; sb_n[22] = 4'd1; um_n[22] = 2'd2; uf_n[22] = 1'b0; wb_n[44] = 4'd1; wb_n[46] = 4'd8;
+                sa_n[23] = 4'd1; sb_n[23] = 4'd1; um_n[23] = 2'd2; uf_n[23] = 1'b0; wb_n[45] = 4'd2; wb_n[47] = 4'd1;
+                sa_n[27] = 4'd2; sb_n[27] = 4'd1; um_n[27] = 2'd1; uf_n[27] = 1'b1; uc_n[27] = 13'sd2896; us_n[27] = 13'sd2896; wb_n[54] = 4'd1; wb_n[55] = 4'd1;
+                sa_n[29] = 4'd2; sb_n[29] = 4'd1; um_n[29] = 2'd1; uf_n[29] = 1'b1; uc_n[29] = 13'sd2896; us_n[29] = 13'sd2896; wb_n[58] = 4'd1; wb_n[59] = 4'd1;
+                sa_n[30] = 4'd1; sb_n[30] = 4'd1; um_n[30] = 2'd2; uf_n[30] = 1'b0; wb_n[60] = 4'd1; wb_n[62] = 4'd8;
+                sa_n[31] = 4'd1; sb_n[31] = 4'd1; um_n[31] = 2'd2; uf_n[31] = 1'b0; wb_n[61] = 4'd2; wb_n[63] = 4'd1;
+            end
+            {3'd6, 4'd6}: begin
+                sa_n[7] = 4'd2; sb_n[7] = 4'd1; um_n[7] = 2'd1; uf_n[7] = 1'b1; uc_n[7] = 13'sd2896; us_n[7] = 13'sd2896; wb_n[14] = 4'd1; wb_n[15] = 4'd1;
+                sa_n[15] = 4'd2; sb_n[15] = 4'd1; um_n[15] = 2'd1; uf_n[15] = 1'b1; uc_n[15] = 13'sd2896; us_n[15] = 13'sd2896; wb_n[30] = 4'd1; wb_n[31] = 4'd1;
+                sa_n[23] = 4'd2; sb_n[23] = 4'd1; um_n[23] = 2'd1; uf_n[23] = 1'b1; uc_n[23] = 13'sd2896; us_n[23] = 13'sd2896; wb_n[46] = 4'd1; wb_n[47] = 4'd1;
+                sa_n[31] = 4'd2; sb_n[31] = 4'd1; um_n[31] = 2'd1; uf_n[31] = 1'b1; uc_n[31] = 13'sd2896; us_n[31] = 13'sd2896; wb_n[62] = 4'd1; wb_n[63] = 4'd1;
+            end
+            default: ;
+        endcase
+    end
+    always_ff @(posedge clk) begin
+        sa_r <= sa_n; sb_r <= sb_n; uc_r <= uc_n; us_r <= us_n; um_r <= um_n; uf_r <= uf_n; wb_r <= wb_n; l0_r <= l0_n;
+    end
 
     // level source: in_vec at level 0, the register vector after
     logic [TW-1:0] sel [64];
-    always_comb for (int k = 0; k < 64; k++) sel[k] = (lvl == 4'd0) ? in_vec[k*TW +: TW] : rv[k];
+    always_comb for (int k = 0; k < 64; k++) sel[k] = l0_r ? in_vec[k*TW +: TW] : rv[k];
 
-    // unit inputs and constants per (program, level): fixed wiring
+    // unit inputs: each unit's fixed candidate lanes, chosen by the registered code
     logic [TW-1:0]        ia [NU], ib [NU], oa [NU], ob [NU];
-    logic signed [12:0]   uc [NU], us [NU];
-    logic [1:0]           um [NU];
-    logic                 uf [NU];
     always_comb begin
-        for (int u = 0; u < NU; u++) begin ia[u] = '0; ib[u] = '0; uc[u] = '0; us[u] = '0; um[u] = 2'd0; uf[u] = 1'b0; end
-        case ({p, lvl})
-            {3'd0, 4'd0}: begin
-                ia[0] = sel[0]; ib[0] = sel[2]; um[0] = 2'd1; uf[0] = 1'b1; uc[0] = 13'sd2896; us[0] = 13'sd2896;
-                ia[1] = sel[1]; ib[1] = sel[3]; um[1] = 2'd1; uf[1] = 1'b0; uc[1] = 13'sd1567; us[1] = 13'sd3784;
-                ia[2] = sel[4]; ib[2] = sel[6]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd2896; us[2] = 13'sd2896;
-                ia[3] = sel[5]; ib[3] = sel[7]; um[3] = 2'd1; uf[3] = 1'b0; uc[3] = 13'sd1567; us[3] = 13'sd3784;
-                ia[4] = sel[8]; ib[4] = sel[10]; um[4] = 2'd1; uf[4] = 1'b1; uc[4] = 13'sd2896; us[4] = 13'sd2896;
-                ia[5] = sel[9]; ib[5] = sel[11]; um[5] = 2'd1; uf[5] = 1'b0; uc[5] = 13'sd1567; us[5] = 13'sd3784;
-                ia[6] = sel[12]; ib[6] = sel[14]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd2896; us[6] = 13'sd2896;
-                ia[7] = sel[13]; ib[7] = sel[15]; um[7] = 2'd1; uf[7] = 1'b0; uc[7] = 13'sd1567; us[7] = 13'sd3784;
-                ia[8] = sel[16]; ib[8] = sel[18]; um[8] = 2'd1; uf[8] = 1'b1; uc[8] = 13'sd2896; us[8] = 13'sd2896;
-                ia[9] = sel[17]; ib[9] = sel[19]; um[9] = 2'd1; uf[9] = 1'b0; uc[9] = 13'sd1567; us[9] = 13'sd3784;
-                ia[10] = sel[20]; ib[10] = sel[22]; um[10] = 2'd1; uf[10] = 1'b1; uc[10] = 13'sd2896; us[10] = 13'sd2896;
-                ia[11] = sel[21]; ib[11] = sel[23]; um[11] = 2'd1; uf[11] = 1'b0; uc[11] = 13'sd1567; us[11] = 13'sd3784;
-                ia[12] = sel[24]; ib[12] = sel[26]; um[12] = 2'd1; uf[12] = 1'b1; uc[12] = 13'sd2896; us[12] = 13'sd2896;
-                ia[13] = sel[25]; ib[13] = sel[27]; um[13] = 2'd1; uf[13] = 1'b0; uc[13] = 13'sd1567; us[13] = 13'sd3784;
-                ia[14] = sel[28]; ib[14] = sel[30]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd2896; us[14] = 13'sd2896;
-                ia[15] = sel[29]; ib[15] = sel[31]; um[15] = 2'd1; uf[15] = 1'b0; uc[15] = 13'sd1567; us[15] = 13'sd3784;
-                ia[16] = sel[32]; ib[16] = sel[34]; um[16] = 2'd1; uf[16] = 1'b1; uc[16] = 13'sd2896; us[16] = 13'sd2896;
-                ia[17] = sel[33]; ib[17] = sel[35]; um[17] = 2'd1; uf[17] = 1'b0; uc[17] = 13'sd1567; us[17] = 13'sd3784;
-                ia[18] = sel[36]; ib[18] = sel[38]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd2896; us[18] = 13'sd2896;
-                ia[19] = sel[37]; ib[19] = sel[39]; um[19] = 2'd1; uf[19] = 1'b0; uc[19] = 13'sd1567; us[19] = 13'sd3784;
-                ia[20] = sel[40]; ib[20] = sel[42]; um[20] = 2'd1; uf[20] = 1'b1; uc[20] = 13'sd2896; us[20] = 13'sd2896;
-                ia[21] = sel[41]; ib[21] = sel[43]; um[21] = 2'd1; uf[21] = 1'b0; uc[21] = 13'sd1567; us[21] = 13'sd3784;
-                ia[22] = sel[44]; ib[22] = sel[46]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd2896; us[22] = 13'sd2896;
-                ia[23] = sel[45]; ib[23] = sel[47]; um[23] = 2'd1; uf[23] = 1'b0; uc[23] = 13'sd1567; us[23] = 13'sd3784;
-                ia[24] = sel[48]; ib[24] = sel[50]; um[24] = 2'd1; uf[24] = 1'b1; uc[24] = 13'sd2896; us[24] = 13'sd2896;
-                ia[25] = sel[49]; ib[25] = sel[51]; um[25] = 2'd1; uf[25] = 1'b0; uc[25] = 13'sd1567; us[25] = 13'sd3784;
-                ia[26] = sel[52]; ib[26] = sel[54]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd2896; us[26] = 13'sd2896;
-                ia[27] = sel[53]; ib[27] = sel[55]; um[27] = 2'd1; uf[27] = 1'b0; uc[27] = 13'sd1567; us[27] = 13'sd3784;
-                ia[28] = sel[56]; ib[28] = sel[58]; um[28] = 2'd1; uf[28] = 1'b1; uc[28] = 13'sd2896; us[28] = 13'sd2896;
-                ia[29] = sel[57]; ib[29] = sel[59]; um[29] = 2'd1; uf[29] = 1'b0; uc[29] = 13'sd1567; us[29] = 13'sd3784;
-                ia[30] = sel[60]; ib[30] = sel[62]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd2896; us[30] = 13'sd2896;
-                ia[31] = sel[61]; ib[31] = sel[63]; um[31] = 2'd1; uf[31] = 1'b0; uc[31] = 13'sd1567; us[31] = 13'sd3784;
-            end
-            {3'd0, 4'd1}: begin
-                ia[0] = sel[0]; ib[0] = sel[3]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[2]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[7]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[5]; ib[3] = sel[6]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[4] = sel[8]; ib[4] = sel[11]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[10]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[15]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[13]; ib[7] = sel[14]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[8] = sel[16]; ib[8] = sel[19]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[18]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[20]; ib[10] = sel[23]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[21]; ib[11] = sel[22]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[12] = sel[24]; ib[12] = sel[27]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[25]; ib[13] = sel[26]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[31]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[15] = sel[29]; ib[15] = sel[30]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[16] = sel[32]; ib[16] = sel[35]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[34]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[39]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[37]; ib[19] = sel[38]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[20] = sel[40]; ib[20] = sel[43]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[42]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[44]; ib[22] = sel[47]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[45]; ib[23] = sel[46]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[24] = sel[48]; ib[24] = sel[51]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[50]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[52]; ib[26] = sel[55]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[53]; ib[27] = sel[54]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[28] = sel[56]; ib[28] = sel[59]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[57]; ib[29] = sel[58]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[60]; ib[30] = sel[63]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[61]; ib[31] = sel[62]; um[31] = 2'd2; uf[31] = 1'b0;
-            end
-            {3'd1, 4'd0}: begin
-                ia[0] = sel[0]; ib[0] = sel[4]; um[0] = 2'd1; uf[0] = 1'b1; uc[0] = 13'sd2896; us[0] = 13'sd2896;
-                ia[1] = sel[2]; ib[1] = sel[6]; um[1] = 2'd1; uf[1] = 1'b0; uc[1] = 13'sd1567; us[1] = 13'sd3784;
-                ia[2] = sel[1]; ib[2] = sel[7]; um[2] = 2'd1; uf[2] = 1'b0; uc[2] = 13'sd799; us[2] = 13'sd4017;
-                ia[3] = sel[5]; ib[3] = sel[3]; um[3] = 2'd1; uf[3] = 1'b0; uc[3] = 13'sd3406; us[3] = 13'sd2276;
-                ia[4] = sel[8]; ib[4] = sel[12]; um[4] = 2'd1; uf[4] = 1'b1; uc[4] = 13'sd2896; us[4] = 13'sd2896;
-                ia[5] = sel[10]; ib[5] = sel[14]; um[5] = 2'd1; uf[5] = 1'b0; uc[5] = 13'sd1567; us[5] = 13'sd3784;
-                ia[6] = sel[9]; ib[6] = sel[15]; um[6] = 2'd1; uf[6] = 1'b0; uc[6] = 13'sd799; us[6] = 13'sd4017;
-                ia[7] = sel[13]; ib[7] = sel[11]; um[7] = 2'd1; uf[7] = 1'b0; uc[7] = 13'sd3406; us[7] = 13'sd2276;
-                ia[8] = sel[16]; ib[8] = sel[20]; um[8] = 2'd1; uf[8] = 1'b1; uc[8] = 13'sd2896; us[8] = 13'sd2896;
-                ia[9] = sel[18]; ib[9] = sel[22]; um[9] = 2'd1; uf[9] = 1'b0; uc[9] = 13'sd1567; us[9] = 13'sd3784;
-                ia[10] = sel[17]; ib[10] = sel[23]; um[10] = 2'd1; uf[10] = 1'b0; uc[10] = 13'sd799; us[10] = 13'sd4017;
-                ia[11] = sel[21]; ib[11] = sel[19]; um[11] = 2'd1; uf[11] = 1'b0; uc[11] = 13'sd3406; us[11] = 13'sd2276;
-                ia[12] = sel[24]; ib[12] = sel[28]; um[12] = 2'd1; uf[12] = 1'b1; uc[12] = 13'sd2896; us[12] = 13'sd2896;
-                ia[13] = sel[26]; ib[13] = sel[30]; um[13] = 2'd1; uf[13] = 1'b0; uc[13] = 13'sd1567; us[13] = 13'sd3784;
-                ia[14] = sel[25]; ib[14] = sel[31]; um[14] = 2'd1; uf[14] = 1'b0; uc[14] = 13'sd799; us[14] = 13'sd4017;
-                ia[15] = sel[29]; ib[15] = sel[27]; um[15] = 2'd1; uf[15] = 1'b0; uc[15] = 13'sd3406; us[15] = 13'sd2276;
-                ia[16] = sel[32]; ib[16] = sel[36]; um[16] = 2'd1; uf[16] = 1'b1; uc[16] = 13'sd2896; us[16] = 13'sd2896;
-                ia[17] = sel[34]; ib[17] = sel[38]; um[17] = 2'd1; uf[17] = 1'b0; uc[17] = 13'sd1567; us[17] = 13'sd3784;
-                ia[18] = sel[33]; ib[18] = sel[39]; um[18] = 2'd1; uf[18] = 1'b0; uc[18] = 13'sd799; us[18] = 13'sd4017;
-                ia[19] = sel[37]; ib[19] = sel[35]; um[19] = 2'd1; uf[19] = 1'b0; uc[19] = 13'sd3406; us[19] = 13'sd2276;
-                ia[20] = sel[40]; ib[20] = sel[44]; um[20] = 2'd1; uf[20] = 1'b1; uc[20] = 13'sd2896; us[20] = 13'sd2896;
-                ia[21] = sel[42]; ib[21] = sel[46]; um[21] = 2'd1; uf[21] = 1'b0; uc[21] = 13'sd1567; us[21] = 13'sd3784;
-                ia[22] = sel[41]; ib[22] = sel[47]; um[22] = 2'd1; uf[22] = 1'b0; uc[22] = 13'sd799; us[22] = 13'sd4017;
-                ia[23] = sel[45]; ib[23] = sel[43]; um[23] = 2'd1; uf[23] = 1'b0; uc[23] = 13'sd3406; us[23] = 13'sd2276;
-                ia[24] = sel[48]; ib[24] = sel[52]; um[24] = 2'd1; uf[24] = 1'b1; uc[24] = 13'sd2896; us[24] = 13'sd2896;
-                ia[25] = sel[50]; ib[25] = sel[54]; um[25] = 2'd1; uf[25] = 1'b0; uc[25] = 13'sd1567; us[25] = 13'sd3784;
-                ia[26] = sel[49]; ib[26] = sel[55]; um[26] = 2'd1; uf[26] = 1'b0; uc[26] = 13'sd799; us[26] = 13'sd4017;
-                ia[27] = sel[53]; ib[27] = sel[51]; um[27] = 2'd1; uf[27] = 1'b0; uc[27] = 13'sd3406; us[27] = 13'sd2276;
-                ia[28] = sel[56]; ib[28] = sel[60]; um[28] = 2'd1; uf[28] = 1'b1; uc[28] = 13'sd2896; us[28] = 13'sd2896;
-                ia[29] = sel[58]; ib[29] = sel[62]; um[29] = 2'd1; uf[29] = 1'b0; uc[29] = 13'sd1567; us[29] = 13'sd3784;
-                ia[30] = sel[57]; ib[30] = sel[63]; um[30] = 2'd1; uf[30] = 1'b0; uc[30] = 13'sd799; us[30] = 13'sd4017;
-                ia[31] = sel[61]; ib[31] = sel[59]; um[31] = 2'd1; uf[31] = 1'b0; uc[31] = 13'sd3406; us[31] = 13'sd2276;
-            end
-            {3'd1, 4'd1}: begin
-                ia[0] = sel[0]; ib[0] = sel[3]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[2]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[7]; um[3] = 2'd2; uf[3] = 1'b1;
-                ia[4] = sel[8]; ib[4] = sel[11]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[10]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[14]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[19]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[18]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[20]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[22]; ib[11] = sel[23]; um[11] = 2'd2; uf[11] = 1'b1;
-                ia[12] = sel[24]; ib[12] = sel[27]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[25]; ib[13] = sel[26]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[15] = sel[30]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[35]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[34]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[39]; um[19] = 2'd2; uf[19] = 1'b1;
-                ia[20] = sel[40]; ib[20] = sel[43]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[42]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[44]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[46]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[51]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[50]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[52]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[54]; ib[27] = sel[55]; um[27] = 2'd2; uf[27] = 1'b1;
-                ia[28] = sel[56]; ib[28] = sel[59]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[57]; ib[29] = sel[58]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[60]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[62]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd1, 4'd2}: begin
-                ia[0] = sel[0]; ib[0] = sel[7]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[3]; ib[1] = sel[4]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[6]; ib[2] = sel[5]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd2896; us[2] = 13'sd2896;
-                ia[4] = sel[8]; ib[4] = sel[15]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[11]; ib[5] = sel[12]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[14]; ib[6] = sel[13]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd2896; us[6] = 13'sd2896;
-                ia[8] = sel[16]; ib[8] = sel[23]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[19]; ib[9] = sel[20]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[22]; ib[10] = sel[21]; um[10] = 2'd1; uf[10] = 1'b1; uc[10] = 13'sd2896; us[10] = 13'sd2896;
-                ia[12] = sel[24]; ib[12] = sel[31]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[27]; ib[13] = sel[28]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[14] = sel[30]; ib[14] = sel[29]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd2896; us[14] = 13'sd2896;
-                ia[16] = sel[32]; ib[16] = sel[39]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[35]; ib[17] = sel[36]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[38]; ib[18] = sel[37]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd2896; us[18] = 13'sd2896;
-                ia[20] = sel[40]; ib[20] = sel[47]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[43]; ib[21] = sel[44]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[46]; ib[22] = sel[45]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd2896; us[22] = 13'sd2896;
-                ia[24] = sel[48]; ib[24] = sel[55]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[51]; ib[25] = sel[52]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[54]; ib[26] = sel[53]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd2896; us[26] = 13'sd2896;
-                ia[28] = sel[56]; ib[28] = sel[63]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[59]; ib[29] = sel[60]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[62]; ib[30] = sel[61]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd2896; us[30] = 13'sd2896;
-            end
-            {3'd1, 4'd3}: begin
-                ia[1] = sel[1]; ib[1] = sel[6]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[2]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[14]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[10]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[22]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[18]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[13] = sel[25]; ib[13] = sel[30]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[14] = sel[26]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[38]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[34]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[46]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[42]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[54]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[50]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[29] = sel[57]; ib[29] = sel[62]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[58]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-            end
-            {3'd2, 4'd0}: begin
-                ia[0] = sel[0]; ib[0] = sel[8]; um[0] = 2'd1; uf[0] = 1'b1; uc[0] = 13'sd2896; us[0] = 13'sd2896;
-                ia[1] = sel[4]; ib[1] = sel[12]; um[1] = 2'd1; uf[1] = 1'b0; uc[1] = 13'sd1567; us[1] = 13'sd3784;
-                ia[2] = sel[2]; ib[2] = sel[14]; um[2] = 2'd1; uf[2] = 1'b0; uc[2] = 13'sd799; us[2] = 13'sd4017;
-                ia[3] = sel[10]; ib[3] = sel[6]; um[3] = 2'd1; uf[3] = 1'b0; uc[3] = 13'sd3406; us[3] = 13'sd2276;
-                ia[4] = sel[1]; ib[4] = sel[15]; um[4] = 2'd1; uf[4] = 1'b0; uc[4] = 13'sd401; us[4] = 13'sd4076;
-                ia[5] = sel[9]; ib[5] = sel[7]; um[5] = 2'd1; uf[5] = 1'b0; uc[5] = 13'sd3166; us[5] = 13'sd2598;
-                ia[6] = sel[5]; ib[6] = sel[11]; um[6] = 2'd1; uf[6] = 1'b0; uc[6] = 13'sd1931; us[6] = 13'sd3612;
-                ia[7] = sel[13]; ib[7] = sel[3]; um[7] = 2'd1; uf[7] = 1'b0; uc[7] = 13'sd3920; us[7] = 13'sd1189;
-                ia[8] = sel[16]; ib[8] = sel[24]; um[8] = 2'd1; uf[8] = 1'b1; uc[8] = 13'sd2896; us[8] = 13'sd2896;
-                ia[9] = sel[20]; ib[9] = sel[28]; um[9] = 2'd1; uf[9] = 1'b0; uc[9] = 13'sd1567; us[9] = 13'sd3784;
-                ia[10] = sel[18]; ib[10] = sel[30]; um[10] = 2'd1; uf[10] = 1'b0; uc[10] = 13'sd799; us[10] = 13'sd4017;
-                ia[11] = sel[26]; ib[11] = sel[22]; um[11] = 2'd1; uf[11] = 1'b0; uc[11] = 13'sd3406; us[11] = 13'sd2276;
-                ia[12] = sel[17]; ib[12] = sel[31]; um[12] = 2'd1; uf[12] = 1'b0; uc[12] = 13'sd401; us[12] = 13'sd4076;
-                ia[13] = sel[25]; ib[13] = sel[23]; um[13] = 2'd1; uf[13] = 1'b0; uc[13] = 13'sd3166; us[13] = 13'sd2598;
-                ia[14] = sel[21]; ib[14] = sel[27]; um[14] = 2'd1; uf[14] = 1'b0; uc[14] = 13'sd1931; us[14] = 13'sd3612;
-                ia[15] = sel[29]; ib[15] = sel[19]; um[15] = 2'd1; uf[15] = 1'b0; uc[15] = 13'sd3920; us[15] = 13'sd1189;
-                ia[16] = sel[32]; ib[16] = sel[40]; um[16] = 2'd1; uf[16] = 1'b1; uc[16] = 13'sd2896; us[16] = 13'sd2896;
-                ia[17] = sel[36]; ib[17] = sel[44]; um[17] = 2'd1; uf[17] = 1'b0; uc[17] = 13'sd1567; us[17] = 13'sd3784;
-                ia[18] = sel[34]; ib[18] = sel[46]; um[18] = 2'd1; uf[18] = 1'b0; uc[18] = 13'sd799; us[18] = 13'sd4017;
-                ia[19] = sel[42]; ib[19] = sel[38]; um[19] = 2'd1; uf[19] = 1'b0; uc[19] = 13'sd3406; us[19] = 13'sd2276;
-                ia[20] = sel[33]; ib[20] = sel[47]; um[20] = 2'd1; uf[20] = 1'b0; uc[20] = 13'sd401; us[20] = 13'sd4076;
-                ia[21] = sel[41]; ib[21] = sel[39]; um[21] = 2'd1; uf[21] = 1'b0; uc[21] = 13'sd3166; us[21] = 13'sd2598;
-                ia[22] = sel[37]; ib[22] = sel[43]; um[22] = 2'd1; uf[22] = 1'b0; uc[22] = 13'sd1931; us[22] = 13'sd3612;
-                ia[23] = sel[45]; ib[23] = sel[35]; um[23] = 2'd1; uf[23] = 1'b0; uc[23] = 13'sd3920; us[23] = 13'sd1189;
-                ia[24] = sel[48]; ib[24] = sel[56]; um[24] = 2'd1; uf[24] = 1'b1; uc[24] = 13'sd2896; us[24] = 13'sd2896;
-                ia[25] = sel[52]; ib[25] = sel[60]; um[25] = 2'd1; uf[25] = 1'b0; uc[25] = 13'sd1567; us[25] = 13'sd3784;
-                ia[26] = sel[50]; ib[26] = sel[62]; um[26] = 2'd1; uf[26] = 1'b0; uc[26] = 13'sd799; us[26] = 13'sd4017;
-                ia[27] = sel[58]; ib[27] = sel[54]; um[27] = 2'd1; uf[27] = 1'b0; uc[27] = 13'sd3406; us[27] = 13'sd2276;
-                ia[28] = sel[49]; ib[28] = sel[63]; um[28] = 2'd1; uf[28] = 1'b0; uc[28] = 13'sd401; us[28] = 13'sd4076;
-                ia[29] = sel[57]; ib[29] = sel[55]; um[29] = 2'd1; uf[29] = 1'b0; uc[29] = 13'sd3166; us[29] = 13'sd2598;
-                ia[30] = sel[53]; ib[30] = sel[59]; um[30] = 2'd1; uf[30] = 1'b0; uc[30] = 13'sd1931; us[30] = 13'sd3612;
-                ia[31] = sel[61]; ib[31] = sel[51]; um[31] = 2'd1; uf[31] = 1'b0; uc[31] = 13'sd3920; us[31] = 13'sd1189;
-            end
-            {3'd2, 4'd1}: begin
-                ia[0] = sel[0]; ib[0] = sel[3]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[2]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[7]; um[3] = 2'd2; uf[3] = 1'b1;
-                ia[4] = sel[8]; ib[4] = sel[9]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[10]; ib[5] = sel[11]; um[5] = 2'd2; uf[5] = 1'b1;
-                ia[6] = sel[12]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[14]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[19]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[18]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[20]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[22]; ib[11] = sel[23]; um[11] = 2'd2; uf[11] = 1'b1;
-                ia[12] = sel[24]; ib[12] = sel[25]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[27]; um[13] = 2'd2; uf[13] = 1'b1;
-                ia[14] = sel[28]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[15] = sel[30]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[35]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[34]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[39]; um[19] = 2'd2; uf[19] = 1'b1;
-                ia[20] = sel[40]; ib[20] = sel[41]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[42]; ib[21] = sel[43]; um[21] = 2'd2; uf[21] = 1'b1;
-                ia[22] = sel[44]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[46]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[51]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[50]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[52]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[54]; ib[27] = sel[55]; um[27] = 2'd2; uf[27] = 1'b1;
-                ia[28] = sel[56]; ib[28] = sel[57]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[59]; um[29] = 2'd2; uf[29] = 1'b1;
-                ia[30] = sel[60]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[62]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd2, 4'd2}: begin
-                ia[0] = sel[0]; ib[0] = sel[7]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[3]; ib[1] = sel[4]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[6]; ib[2] = sel[5]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd2896; us[2] = 13'sd2896;
-                ia[4] = sel[8]; ib[4] = sel[11]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[6] = sel[14]; ib[6] = sel[9]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd1567; us[6] = 13'sd3784;
-                ia[5] = sel[13]; ib[5] = sel[10]; um[5] = 2'd1; uf[5] = 1'b1; uc[5] = -13'sd3784; us[5] = 13'sd1567;
-                ia[7] = sel[12]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[23]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[19]; ib[9] = sel[20]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[22]; ib[10] = sel[21]; um[10] = 2'd1; uf[10] = 1'b1; uc[10] = 13'sd2896; us[10] = 13'sd2896;
-                ia[12] = sel[24]; ib[12] = sel[27]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[14] = sel[30]; ib[14] = sel[25]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd1567; us[14] = 13'sd3784;
-                ia[13] = sel[29]; ib[13] = sel[26]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = -13'sd3784; us[13] = 13'sd1567;
-                ia[15] = sel[28]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[39]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[35]; ib[17] = sel[36]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[38]; ib[18] = sel[37]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd2896; us[18] = 13'sd2896;
-                ia[20] = sel[40]; ib[20] = sel[43]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[22] = sel[46]; ib[22] = sel[41]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd1567; us[22] = 13'sd3784;
-                ia[21] = sel[45]; ib[21] = sel[42]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = -13'sd3784; us[21] = 13'sd1567;
-                ia[23] = sel[44]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[55]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[51]; ib[25] = sel[52]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[54]; ib[26] = sel[53]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd2896; us[26] = 13'sd2896;
-                ia[28] = sel[56]; ib[28] = sel[59]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[30] = sel[62]; ib[30] = sel[57]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd1567; us[30] = 13'sd3784;
-                ia[29] = sel[61]; ib[29] = sel[58]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = -13'sd3784; us[29] = 13'sd1567;
-                ia[31] = sel[60]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd2, 4'd3}: begin
-                ia[0] = sel[0]; ib[0] = sel[15]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[6]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[2]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[7]; ib[3] = sel[8]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[10]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[11]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd2896; us[6] = 13'sd2896;
-                ia[7] = sel[13]; ib[7] = sel[14]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[31]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[22]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[18]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[23]; ib[11] = sel[24]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[13] = sel[25]; ib[13] = sel[26]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[27]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd2896; us[14] = 13'sd2896;
-                ia[15] = sel[29]; ib[15] = sel[30]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[47]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[38]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[34]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[39]; ib[19] = sel[40]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[42]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[44]; ib[22] = sel[43]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd2896; us[22] = 13'sd2896;
-                ia[23] = sel[45]; ib[23] = sel[46]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[63]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[54]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[50]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[55]; ib[27] = sel[56]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[29] = sel[57]; ib[29] = sel[58]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[60]; ib[30] = sel[59]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd2896; us[30] = 13'sd2896;
-                ia[31] = sel[61]; ib[31] = sel[62]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd2, 4'd4}: begin
-                ia[1] = sel[1]; ib[1] = sel[14]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[12]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[11]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[9]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[7] = sel[13]; ib[7] = sel[10]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd2896; us[7] = 13'sd2896;
-                ia[9] = sel[17]; ib[9] = sel[30]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[13] = sel[19]; ib[13] = sel[28]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[10] = sel[20]; ib[10] = sel[27]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[22]; ib[11] = sel[25]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[15] = sel[29]; ib[15] = sel[26]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd2896; us[15] = 13'sd2896;
-                ia[17] = sel[33]; ib[17] = sel[46]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[21] = sel[35]; ib[21] = sel[44]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[43]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[41]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[23] = sel[45]; ib[23] = sel[42]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd2896; us[23] = 13'sd2896;
-                ia[25] = sel[49]; ib[25] = sel[62]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[29] = sel[51]; ib[29] = sel[60]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[26] = sel[52]; ib[26] = sel[59]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[54]; ib[27] = sel[57]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[31] = sel[61]; ib[31] = sel[58]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd2896; us[31] = 13'sd2896;
-            end
-            {3'd2, 4'd5}: begin
-                ia[1] = sel[2]; ib[1] = sel[13]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[3] = sel[5]; ib[3] = sel[10]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[9] = sel[18]; ib[9] = sel[29]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[11] = sel[21]; ib[11] = sel[26]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[17] = sel[34]; ib[17] = sel[45]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[19] = sel[37]; ib[19] = sel[42]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[25] = sel[50]; ib[25] = sel[61]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[27] = sel[53]; ib[27] = sel[58]; um[27] = 2'd2; uf[27] = 1'b0;
-            end
-            {3'd3, 4'd0}: begin
-                ia[0] = sel[0]; ib[0] = sel[16]; um[0] = 2'd1; uf[0] = 1'b1; uc[0] = 13'sd2896; us[0] = 13'sd2896;
-                ia[1] = sel[8]; ib[1] = sel[24]; um[1] = 2'd1; uf[1] = 1'b0; uc[1] = 13'sd1567; us[1] = 13'sd3784;
-                ia[2] = sel[4]; ib[2] = sel[28]; um[2] = 2'd1; uf[2] = 1'b0; uc[2] = 13'sd799; us[2] = 13'sd4017;
-                ia[3] = sel[20]; ib[3] = sel[12]; um[3] = 2'd1; uf[3] = 1'b0; uc[3] = 13'sd3406; us[3] = 13'sd2276;
-                ia[4] = sel[2]; ib[4] = sel[30]; um[4] = 2'd1; uf[4] = 1'b0; uc[4] = 13'sd401; us[4] = 13'sd4076;
-                ia[5] = sel[18]; ib[5] = sel[14]; um[5] = 2'd1; uf[5] = 1'b0; uc[5] = 13'sd3166; us[5] = 13'sd2598;
-                ia[6] = sel[10]; ib[6] = sel[22]; um[6] = 2'd1; uf[6] = 1'b0; uc[6] = 13'sd1931; us[6] = 13'sd3612;
-                ia[7] = sel[26]; ib[7] = sel[6]; um[7] = 2'd1; uf[7] = 1'b0; uc[7] = 13'sd3920; us[7] = 13'sd1189;
-                ia[8] = sel[1]; ib[8] = sel[31]; um[8] = 2'd1; uf[8] = 1'b0; uc[8] = 13'sd201; us[8] = 13'sd4091;
-                ia[9] = sel[17]; ib[9] = sel[15]; um[9] = 2'd1; uf[9] = 1'b0; uc[9] = 13'sd3035; us[9] = 13'sd2751;
-                ia[10] = sel[9]; ib[10] = sel[23]; um[10] = 2'd1; uf[10] = 1'b0; uc[10] = 13'sd1751; us[10] = 13'sd3703;
-                ia[13] = sel[25]; ib[13] = sel[7]; um[13] = 2'd1; uf[13] = 1'b0; uc[13] = 13'sd3857; us[13] = 13'sd1380;
-                ia[12] = sel[5]; ib[12] = sel[27]; um[12] = 2'd1; uf[12] = 1'b0; uc[12] = 13'sd995; us[12] = 13'sd3973;
-                ia[11] = sel[21]; ib[11] = sel[11]; um[11] = 2'd1; uf[11] = 1'b0; uc[11] = 13'sd3513; us[11] = 13'sd2106;
-                ia[14] = sel[13]; ib[14] = sel[19]; um[14] = 2'd1; uf[14] = 1'b0; uc[14] = 13'sd2440; us[14] = 13'sd3290;
-                ia[15] = sel[29]; ib[15] = sel[3]; um[15] = 2'd1; uf[15] = 1'b0; uc[15] = 13'sd4052; us[15] = 13'sd601;
-                ia[16] = sel[32]; ib[16] = sel[48]; um[16] = 2'd1; uf[16] = 1'b1; uc[16] = 13'sd2896; us[16] = 13'sd2896;
-                ia[17] = sel[40]; ib[17] = sel[56]; um[17] = 2'd1; uf[17] = 1'b0; uc[17] = 13'sd1567; us[17] = 13'sd3784;
-                ia[18] = sel[36]; ib[18] = sel[60]; um[18] = 2'd1; uf[18] = 1'b0; uc[18] = 13'sd799; us[18] = 13'sd4017;
-                ia[19] = sel[52]; ib[19] = sel[44]; um[19] = 2'd1; uf[19] = 1'b0; uc[19] = 13'sd3406; us[19] = 13'sd2276;
-                ia[20] = sel[34]; ib[20] = sel[62]; um[20] = 2'd1; uf[20] = 1'b0; uc[20] = 13'sd401; us[20] = 13'sd4076;
-                ia[21] = sel[50]; ib[21] = sel[46]; um[21] = 2'd1; uf[21] = 1'b0; uc[21] = 13'sd3166; us[21] = 13'sd2598;
-                ia[22] = sel[42]; ib[22] = sel[54]; um[22] = 2'd1; uf[22] = 1'b0; uc[22] = 13'sd1931; us[22] = 13'sd3612;
-                ia[23] = sel[58]; ib[23] = sel[38]; um[23] = 2'd1; uf[23] = 1'b0; uc[23] = 13'sd3920; us[23] = 13'sd1189;
-                ia[24] = sel[33]; ib[24] = sel[63]; um[24] = 2'd1; uf[24] = 1'b0; uc[24] = 13'sd201; us[24] = 13'sd4091;
-                ia[25] = sel[49]; ib[25] = sel[47]; um[25] = 2'd1; uf[25] = 1'b0; uc[25] = 13'sd3035; us[25] = 13'sd2751;
-                ia[26] = sel[41]; ib[26] = sel[55]; um[26] = 2'd1; uf[26] = 1'b0; uc[26] = 13'sd1751; us[26] = 13'sd3703;
-                ia[29] = sel[57]; ib[29] = sel[39]; um[29] = 2'd1; uf[29] = 1'b0; uc[29] = 13'sd3857; us[29] = 13'sd1380;
-                ia[28] = sel[37]; ib[28] = sel[59]; um[28] = 2'd1; uf[28] = 1'b0; uc[28] = 13'sd995; us[28] = 13'sd3973;
-                ia[27] = sel[53]; ib[27] = sel[43]; um[27] = 2'd1; uf[27] = 1'b0; uc[27] = 13'sd3513; us[27] = 13'sd2106;
-                ia[30] = sel[45]; ib[30] = sel[51]; um[30] = 2'd1; uf[30] = 1'b0; uc[30] = 13'sd2440; us[30] = 13'sd3290;
-                ia[31] = sel[61]; ib[31] = sel[35]; um[31] = 2'd1; uf[31] = 1'b0; uc[31] = 13'sd4052; us[31] = 13'sd601;
-            end
-            {3'd3, 4'd1}: begin
-                ia[0] = sel[0]; ib[0] = sel[3]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[2]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[7]; um[3] = 2'd2; uf[3] = 1'b1;
-                ia[4] = sel[8]; ib[4] = sel[9]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[10]; ib[5] = sel[11]; um[5] = 2'd2; uf[5] = 1'b1;
-                ia[6] = sel[12]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[14]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[17]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[18]; ib[9] = sel[19]; um[9] = 2'd2; uf[9] = 1'b1;
-                ia[10] = sel[20]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[22]; ib[11] = sel[23]; um[11] = 2'd2; uf[11] = 1'b1;
-                ia[12] = sel[24]; ib[12] = sel[25]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[27]; um[13] = 2'd2; uf[13] = 1'b1;
-                ia[14] = sel[28]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[15] = sel[30]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[35]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[34]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[39]; um[19] = 2'd2; uf[19] = 1'b1;
-                ia[20] = sel[40]; ib[20] = sel[41]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[42]; ib[21] = sel[43]; um[21] = 2'd2; uf[21] = 1'b1;
-                ia[22] = sel[44]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[46]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[49]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[50]; ib[25] = sel[51]; um[25] = 2'd2; uf[25] = 1'b1;
-                ia[26] = sel[52]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[54]; ib[27] = sel[55]; um[27] = 2'd2; uf[27] = 1'b1;
-                ia[28] = sel[56]; ib[28] = sel[57]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[59]; um[29] = 2'd2; uf[29] = 1'b1;
-                ia[30] = sel[60]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[62]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd3, 4'd2}: begin
-                ia[0] = sel[0]; ib[0] = sel[7]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[3]; ib[1] = sel[4]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[6]; ib[2] = sel[5]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd2896; us[2] = 13'sd2896;
-                ia[4] = sel[8]; ib[4] = sel[11]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[6] = sel[14]; ib[6] = sel[9]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd1567; us[6] = 13'sd3784;
-                ia[5] = sel[13]; ib[5] = sel[10]; um[5] = 2'd1; uf[5] = 1'b1; uc[5] = -13'sd3784; us[5] = 13'sd1567;
-                ia[7] = sel[12]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[19]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[14] = sel[30]; ib[14] = sel[17]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd799; us[14] = 13'sd4017;
-                ia[9] = sel[29]; ib[9] = sel[18]; um[9] = 2'd1; uf[9] = 1'b1; uc[9] = -13'sd4017; us[9] = 13'sd799;
-                ia[10] = sel[20]; ib[10] = sel[23]; um[10] = 2'd2; uf[10] = 1'b1;
-                ia[13] = sel[26]; ib[13] = sel[21]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd3406; us[13] = 13'sd2276;
-                ia[11] = sel[25]; ib[11] = sel[22]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = -13'sd2276; us[11] = 13'sd3406;
-                ia[12] = sel[24]; ib[12] = sel[27]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[15] = sel[28]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[39]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[35]; ib[17] = sel[36]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[38]; ib[18] = sel[37]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd2896; us[18] = 13'sd2896;
-                ia[20] = sel[40]; ib[20] = sel[43]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[22] = sel[46]; ib[22] = sel[41]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd1567; us[22] = 13'sd3784;
-                ia[21] = sel[45]; ib[21] = sel[42]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = -13'sd3784; us[21] = 13'sd1567;
-                ia[23] = sel[44]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[51]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[30] = sel[62]; ib[30] = sel[49]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd799; us[30] = 13'sd4017;
-                ia[25] = sel[61]; ib[25] = sel[50]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = -13'sd4017; us[25] = 13'sd799;
-                ia[26] = sel[52]; ib[26] = sel[55]; um[26] = 2'd2; uf[26] = 1'b1;
-                ia[29] = sel[58]; ib[29] = sel[53]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd3406; us[29] = 13'sd2276;
-                ia[27] = sel[57]; ib[27] = sel[54]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = -13'sd2276; us[27] = 13'sd3406;
-                ia[28] = sel[56]; ib[28] = sel[59]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[31] = sel[60]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd3, 4'd3}: begin
-                ia[0] = sel[0]; ib[0] = sel[15]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[6]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[2]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[7]; ib[3] = sel[8]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[10]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[11]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd2896; us[6] = 13'sd2896;
-                ia[7] = sel[13]; ib[7] = sel[14]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[23]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[18]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[19]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd1567; us[14] = 13'sd3784;
-                ia[13] = sel[27]; ib[13] = sel[20]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = -13'sd3784; us[13] = 13'sd1567;
-                ia[11] = sel[21]; ib[11] = sel[22]; um[11] = 2'd2; uf[11] = 1'b1;
-                ia[12] = sel[24]; ib[12] = sel[31]; um[12] = 2'd2; uf[12] = 1'b1;
-                ia[15] = sel[25]; ib[15] = sel[26]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[4] = sel[29]; ib[4] = sel[30]; um[4] = 2'd2; uf[4] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[47]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[38]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[34]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[39]; ib[19] = sel[40]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[42]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[44]; ib[22] = sel[43]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd2896; us[22] = 13'sd2896;
-                ia[23] = sel[45]; ib[23] = sel[46]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[55]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[50]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[30] = sel[60]; ib[30] = sel[51]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd1567; us[30] = 13'sd3784;
-                ia[29] = sel[59]; ib[29] = sel[52]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = -13'sd3784; us[29] = 13'sd1567;
-                ia[27] = sel[53]; ib[27] = sel[54]; um[27] = 2'd2; uf[27] = 1'b1;
-                ia[28] = sel[56]; ib[28] = sel[63]; um[28] = 2'd2; uf[28] = 1'b1;
-                ia[31] = sel[57]; ib[31] = sel[58]; um[31] = 2'd2; uf[31] = 1'b0;
-                ia[20] = sel[61]; ib[20] = sel[62]; um[20] = 2'd2; uf[20] = 1'b1;
-            end
-            {3'd3, 4'd4}: begin
-                ia[0] = sel[0]; ib[0] = sel[31]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[14]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[12]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[11]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[9]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[7] = sel[13]; ib[7] = sel[10]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd2896; us[7] = 13'sd2896;
-                ia[8] = sel[15]; ib[8] = sel[16]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[22]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[13] = sel[29]; ib[13] = sel[18]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd1567; us[13] = 13'sd3784;
-                ia[10] = sel[19]; ib[10] = sel[20]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[14] = sel[26]; ib[14] = sel[21]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = -13'sd3784; us[14] = 13'sd1567;
-                ia[11] = sel[24]; ib[11] = sel[23]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = 13'sd2896; us[11] = 13'sd2896;
-                ia[15] = sel[25]; ib[15] = sel[30]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[12] = sel[27]; ib[12] = sel[28]; um[12] = 2'd2; uf[12] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[63]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[46]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[21] = sel[35]; ib[21] = sel[44]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[43]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[41]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[23] = sel[45]; ib[23] = sel[42]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd2896; us[23] = 13'sd2896;
-                ia[24] = sel[47]; ib[24] = sel[48]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[54]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[29] = sel[61]; ib[29] = sel[50]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd1567; us[29] = 13'sd3784;
-                ia[26] = sel[51]; ib[26] = sel[52]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[30] = sel[58]; ib[30] = sel[53]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = -13'sd3784; us[30] = 13'sd1567;
-                ia[27] = sel[56]; ib[27] = sel[55]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd2896; us[27] = 13'sd2896;
-                ia[31] = sel[57]; ib[31] = sel[62]; um[31] = 2'd2; uf[31] = 1'b1;
-                ia[28] = sel[59]; ib[28] = sel[60]; um[28] = 2'd2; uf[28] = 1'b1;
-            end
-            {3'd3, 4'd5}: begin
-                ia[4] = sel[1]; ib[4] = sel[30]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[1] = sel[2]; ib[1] = sel[13]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[28]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[3] = sel[5]; ib[3] = sel[10]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[11] = sel[7]; ib[11] = sel[24]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[8] = sel[8]; ib[8] = sel[23]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[19]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[14]; ib[7] = sel[17]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[10] = sel[18]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[13] = sel[27]; ib[13] = sel[20]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd2896; us[13] = 13'sd2896;
-                ia[15] = sel[25]; ib[15] = sel[22]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd2896; us[15] = 13'sd2896;
-                ia[14] = sel[26]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b1;
-                ia[20] = sel[33]; ib[20] = sel[62]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[17] = sel[34]; ib[17] = sel[45]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[21] = sel[35]; ib[21] = sel[60]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[19] = sel[37]; ib[19] = sel[42]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[27] = sel[39]; ib[27] = sel[56]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[24] = sel[40]; ib[24] = sel[55]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[22] = sel[44]; ib[22] = sel[51]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[46]; ib[23] = sel[49]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[26] = sel[50]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[29] = sel[59]; ib[29] = sel[52]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd2896; us[29] = 13'sd2896;
-                ia[31] = sel[57]; ib[31] = sel[54]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd2896; us[31] = 13'sd2896;
-                ia[30] = sel[58]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b1;
-            end
-            {3'd3, 4'd6}: begin
-                ia[1] = sel[2]; ib[1] = sel[29]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[27]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[25]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[22]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[9] = sel[11]; ib[9] = sel[20]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[7] = sel[13]; ib[7] = sel[18]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[21]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd2896; us[13] = 13'sd2896;
-                ia[17] = sel[34]; ib[17] = sel[61]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[59]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[57]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[54]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[25] = sel[43]; ib[25] = sel[52]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[23] = sel[45]; ib[23] = sel[50]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[53]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd2896; us[29] = 13'sd2896;
-            end
-            {3'd3, 4'd7}: begin
-                ia[3] = sel[5]; ib[3] = sel[26]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[5] = sel[10]; ib[5] = sel[21]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[19] = sel[37]; ib[19] = sel[58]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[21] = sel[42]; ib[21] = sel[53]; um[21] = 2'd2; uf[21] = 1'b0;
-            end
-            {3'd4, 4'd0}: begin
-                ia[0] = sel[0]; ib[0] = sel[32]; um[0] = 2'd1; uf[0] = 1'b1; uc[0] = 13'sd2896; us[0] = 13'sd2896;
-                ia[1] = sel[16]; ib[1] = sel[48]; um[1] = 2'd1; uf[1] = 1'b0; uc[1] = 13'sd1567; us[1] = 13'sd3784;
-                ia[2] = sel[8]; ib[2] = sel[56]; um[2] = 2'd1; uf[2] = 1'b0; uc[2] = 13'sd799; us[2] = 13'sd4017;
-                ia[3] = sel[40]; ib[3] = sel[24]; um[3] = 2'd1; uf[3] = 1'b0; uc[3] = 13'sd3406; us[3] = 13'sd2276;
-                ia[4] = sel[4]; ib[4] = sel[60]; um[4] = 2'd1; uf[4] = 1'b0; uc[4] = 13'sd401; us[4] = 13'sd4076;
-                ia[5] = sel[36]; ib[5] = sel[28]; um[5] = 2'd1; uf[5] = 1'b0; uc[5] = 13'sd3166; us[5] = 13'sd2598;
-                ia[6] = sel[20]; ib[6] = sel[44]; um[6] = 2'd1; uf[6] = 1'b0; uc[6] = 13'sd1931; us[6] = 13'sd3612;
-                ia[7] = sel[52]; ib[7] = sel[12]; um[7] = 2'd1; uf[7] = 1'b0; uc[7] = 13'sd3920; us[7] = 13'sd1189;
-                ia[8] = sel[2]; ib[8] = sel[62]; um[8] = 2'd1; uf[8] = 1'b0; uc[8] = 13'sd201; us[8] = 13'sd4091;
-                ia[9] = sel[34]; ib[9] = sel[30]; um[9] = 2'd1; uf[9] = 1'b0; uc[9] = 13'sd3035; us[9] = 13'sd2751;
-                ia[10] = sel[18]; ib[10] = sel[46]; um[10] = 2'd1; uf[10] = 1'b0; uc[10] = 13'sd1751; us[10] = 13'sd3703;
-                ia[13] = sel[50]; ib[13] = sel[14]; um[13] = 2'd1; uf[13] = 1'b0; uc[13] = 13'sd3857; us[13] = 13'sd1380;
-                ia[12] = sel[10]; ib[12] = sel[54]; um[12] = 2'd1; uf[12] = 1'b0; uc[12] = 13'sd995; us[12] = 13'sd3973;
-                ia[11] = sel[42]; ib[11] = sel[22]; um[11] = 2'd1; uf[11] = 1'b0; uc[11] = 13'sd3513; us[11] = 13'sd2106;
-                ia[14] = sel[26]; ib[14] = sel[38]; um[14] = 2'd1; uf[14] = 1'b0; uc[14] = 13'sd2440; us[14] = 13'sd3290;
-                ia[15] = sel[58]; ib[15] = sel[6]; um[15] = 2'd1; uf[15] = 1'b0; uc[15] = 13'sd4052; us[15] = 13'sd601;
-                ia[16] = sel[1]; ib[16] = sel[63]; um[16] = 2'd1; uf[16] = 1'b0; uc[16] = 13'sd101; us[16] = 13'sd4095;
-                ia[20] = sel[33]; ib[20] = sel[31]; um[20] = 2'd1; uf[20] = 1'b0; uc[20] = 13'sd2967; us[20] = 13'sd2824;
-                ia[17] = sel[17]; ib[17] = sel[47]; um[17] = 2'd1; uf[17] = 1'b0; uc[17] = 13'sd1660; us[17] = 13'sd3745;
-                ia[21] = sel[49]; ib[21] = sel[15]; um[21] = 2'd1; uf[21] = 1'b0; uc[21] = 13'sd3822; us[21] = 13'sd1474;
-                ia[18] = sel[9]; ib[18] = sel[55]; um[18] = 2'd1; uf[18] = 1'b0; uc[18] = 13'sd897; us[18] = 13'sd3996;
-                ia[19] = sel[41]; ib[19] = sel[23]; um[19] = 2'd1; uf[19] = 1'b0; uc[19] = 13'sd3461; us[19] = 13'sd2191;
-                ia[27] = sel[25]; ib[27] = sel[39]; um[27] = 2'd1; uf[27] = 1'b0; uc[27] = 13'sd2359; us[27] = 13'sd3349;
-                ia[31] = sel[57]; ib[31] = sel[7]; um[31] = 2'd1; uf[31] = 1'b0; uc[31] = 13'sd4036; us[31] = 13'sd700;
-                ia[24] = sel[5]; ib[24] = sel[59]; um[24] = 2'd1; uf[24] = 1'b0; uc[24] = 13'sd501; us[24] = 13'sd4065;
-                ia[22] = sel[37]; ib[22] = sel[27]; um[22] = 2'd1; uf[22] = 1'b0; uc[22] = 13'sd3229; us[22] = 13'sd2520;
-                ia[23] = sel[21]; ib[23] = sel[43]; um[23] = 2'd1; uf[23] = 1'b0; uc[23] = 13'sd2019; us[23] = 13'sd3564;
-                ia[25] = sel[53]; ib[25] = sel[11]; um[25] = 2'd1; uf[25] = 1'b0; uc[25] = 13'sd3948; us[25] = 13'sd1092;
-                ia[30] = sel[13]; ib[30] = sel[51]; um[30] = 2'd1; uf[30] = 1'b0; uc[30] = 13'sd1285; us[30] = 13'sd3889;
-                ia[29] = sel[45]; ib[29] = sel[19]; um[29] = 2'd1; uf[29] = 1'b0; uc[29] = 13'sd3659; us[29] = 13'sd1842;
-                ia[26] = sel[29]; ib[26] = sel[35]; um[26] = 2'd1; uf[26] = 1'b0; uc[26] = 13'sd2675; us[26] = 13'sd3102;
-                ia[28] = sel[61]; ib[28] = sel[3]; um[28] = 2'd1; uf[28] = 1'b0; uc[28] = 13'sd4085; us[28] = 13'sd301;
-            end
-            {3'd4, 4'd1}: begin
-                ia[0] = sel[0]; ib[0] = sel[3]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[2]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[7]; um[3] = 2'd2; uf[3] = 1'b1;
-                ia[4] = sel[8]; ib[4] = sel[9]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[10]; ib[5] = sel[11]; um[5] = 2'd2; uf[5] = 1'b1;
-                ia[6] = sel[12]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[14]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[17]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[18]; ib[9] = sel[19]; um[9] = 2'd2; uf[9] = 1'b1;
-                ia[10] = sel[20]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[22]; ib[11] = sel[23]; um[11] = 2'd2; uf[11] = 1'b1;
-                ia[12] = sel[24]; ib[12] = sel[25]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[27]; um[13] = 2'd2; uf[13] = 1'b1;
-                ia[14] = sel[28]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[15] = sel[30]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[33]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[34]; ib[17] = sel[35]; um[17] = 2'd2; uf[17] = 1'b1;
-                ia[18] = sel[36]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[39]; um[19] = 2'd2; uf[19] = 1'b1;
-                ia[20] = sel[40]; ib[20] = sel[41]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[42]; ib[21] = sel[43]; um[21] = 2'd2; uf[21] = 1'b1;
-                ia[22] = sel[44]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[46]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[49]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[50]; ib[25] = sel[51]; um[25] = 2'd2; uf[25] = 1'b1;
-                ia[26] = sel[52]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[54]; ib[27] = sel[55]; um[27] = 2'd2; uf[27] = 1'b1;
-                ia[28] = sel[56]; ib[28] = sel[57]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[59]; um[29] = 2'd2; uf[29] = 1'b1;
-                ia[30] = sel[60]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[62]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd4, 4'd2}: begin
-                ia[0] = sel[0]; ib[0] = sel[7]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[3]; ib[1] = sel[4]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[6]; ib[2] = sel[5]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd2896; us[2] = 13'sd2896;
-                ia[4] = sel[8]; ib[4] = sel[11]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[6] = sel[14]; ib[6] = sel[9]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd1567; us[6] = 13'sd3784;
-                ia[5] = sel[13]; ib[5] = sel[10]; um[5] = 2'd1; uf[5] = 1'b1; uc[5] = -13'sd3784; us[5] = 13'sd1567;
-                ia[7] = sel[12]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[19]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[14] = sel[30]; ib[14] = sel[17]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd799; us[14] = 13'sd4017;
-                ia[9] = sel[29]; ib[9] = sel[18]; um[9] = 2'd1; uf[9] = 1'b1; uc[9] = -13'sd4017; us[9] = 13'sd799;
-                ia[10] = sel[20]; ib[10] = sel[23]; um[10] = 2'd2; uf[10] = 1'b1;
-                ia[13] = sel[26]; ib[13] = sel[21]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd3406; us[13] = 13'sd2276;
-                ia[11] = sel[25]; ib[11] = sel[22]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = -13'sd2276; us[11] = 13'sd3406;
-                ia[12] = sel[24]; ib[12] = sel[27]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[15] = sel[28]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[35]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[30] = sel[62]; ib[30] = sel[33]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd401; us[30] = 13'sd4076;
-                ia[17] = sel[61]; ib[17] = sel[34]; um[17] = 2'd1; uf[17] = 1'b1; uc[17] = -13'sd4076; us[17] = 13'sd401;
-                ia[18] = sel[36]; ib[18] = sel[39]; um[18] = 2'd2; uf[18] = 1'b1;
-                ia[29] = sel[58]; ib[29] = sel[37]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd3166; us[29] = 13'sd2598;
-                ia[19] = sel[57]; ib[19] = sel[38]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = -13'sd2598; us[19] = 13'sd3166;
-                ia[20] = sel[40]; ib[20] = sel[43]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[22] = sel[54]; ib[22] = sel[41]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd1931; us[22] = 13'sd3612;
-                ia[21] = sel[53]; ib[21] = sel[42]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = -13'sd3612; us[21] = 13'sd1931;
-                ia[23] = sel[44]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[25] = sel[50]; ib[25] = sel[45]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = 13'sd3920; us[25] = 13'sd1189;
-                ia[26] = sel[49]; ib[26] = sel[46]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = -13'sd1189; us[26] = 13'sd3920;
-                ia[24] = sel[48]; ib[24] = sel[51]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[27] = sel[52]; ib[27] = sel[55]; um[27] = 2'd2; uf[27] = 1'b1;
-                ia[28] = sel[56]; ib[28] = sel[59]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[31] = sel[60]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b1;
-            end
-            {3'd4, 4'd3}: begin
-                ia[0] = sel[0]; ib[0] = sel[15]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[6]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[2]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[7]; ib[3] = sel[8]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[10]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[11]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd2896; us[6] = 13'sd2896;
-                ia[7] = sel[13]; ib[7] = sel[14]; um[7] = 2'd2; uf[7] = 1'b1;
-                ia[8] = sel[16]; ib[8] = sel[23]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[18]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[19]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd1567; us[14] = 13'sd3784;
-                ia[13] = sel[27]; ib[13] = sel[20]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = -13'sd3784; us[13] = 13'sd1567;
-                ia[11] = sel[21]; ib[11] = sel[22]; um[11] = 2'd2; uf[11] = 1'b1;
-                ia[12] = sel[24]; ib[12] = sel[31]; um[12] = 2'd2; uf[12] = 1'b1;
-                ia[15] = sel[25]; ib[15] = sel[26]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[4] = sel[29]; ib[4] = sel[30]; um[4] = 2'd2; uf[4] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[39]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[34]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[31] = sel[60]; ib[31] = sel[35]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd799; us[31] = 13'sd4017;
-                ia[28] = sel[59]; ib[28] = sel[36]; um[28] = 2'd1; uf[28] = 1'b1; uc[28] = -13'sd4017; us[28] = 13'sd799;
-                ia[19] = sel[37]; ib[19] = sel[38]; um[19] = 2'd2; uf[19] = 1'b1;
-                ia[20] = sel[40]; ib[20] = sel[47]; um[20] = 2'd2; uf[20] = 1'b1;
-                ia[21] = sel[41]; ib[21] = sel[42]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[27] = sel[52]; ib[27] = sel[43]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd3406; us[27] = 13'sd2276;
-                ia[25] = sel[51]; ib[25] = sel[44]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = -13'sd2276; us[25] = 13'sd3406;
-                ia[23] = sel[45]; ib[23] = sel[46]; um[23] = 2'd2; uf[23] = 1'b1;
-                ia[24] = sel[48]; ib[24] = sel[55]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[26] = sel[49]; ib[26] = sel[50]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[22] = sel[53]; ib[22] = sel[54]; um[22] = 2'd2; uf[22] = 1'b1;
-                ia[30] = sel[56]; ib[30] = sel[63]; um[30] = 2'd2; uf[30] = 1'b1;
-                ia[29] = sel[57]; ib[29] = sel[58]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[10] = sel[61]; ib[10] = sel[62]; um[10] = 2'd2; uf[10] = 1'b1;
-            end
-            {3'd4, 4'd4}: begin
-                ia[0] = sel[0]; ib[0] = sel[31]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[14]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[12]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[11]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[9]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[7] = sel[13]; ib[7] = sel[10]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd2896; us[7] = 13'sd2896;
-                ia[8] = sel[15]; ib[8] = sel[16]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[22]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[13] = sel[29]; ib[13] = sel[18]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd1567; us[13] = 13'sd3784;
-                ia[10] = sel[19]; ib[10] = sel[20]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[14] = sel[26]; ib[14] = sel[21]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = -13'sd3784; us[14] = 13'sd1567;
-                ia[11] = sel[24]; ib[11] = sel[23]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = 13'sd2896; us[11] = 13'sd2896;
-                ia[15] = sel[25]; ib[15] = sel[30]; um[15] = 2'd2; uf[15] = 1'b1;
-                ia[12] = sel[27]; ib[12] = sel[28]; um[12] = 2'd2; uf[12] = 1'b1;
-                ia[16] = sel[32]; ib[16] = sel[47]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[38]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[20] = sel[61]; ib[20] = sel[34]; um[20] = 2'd1; uf[20] = 1'b1; uc[20] = 13'sd799; us[20] = 13'sd4017;
-                ia[21] = sel[35]; ib[21] = sel[36]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[37]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = -13'sd4017; us[29] = 13'sd799;
-                ia[27] = sel[56]; ib[27] = sel[39]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd1567; us[27] = 13'sd3784;
-                ia[19] = sel[55]; ib[19] = sel[40]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = -13'sd3784; us[19] = 13'sd1567;
-                ia[22] = sel[41]; ib[22] = sel[46]; um[22] = 2'd2; uf[22] = 1'b1;
-                ia[23] = sel[53]; ib[23] = sel[42]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd3406; us[23] = 13'sd2276;
-                ia[25] = sel[43]; ib[25] = sel[44]; um[25] = 2'd2; uf[25] = 1'b1;
-                ia[26] = sel[50]; ib[26] = sel[45]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = -13'sd2276; us[26] = 13'sd3406;
-                ia[24] = sel[48]; ib[24] = sel[63]; um[24] = 2'd2; uf[24] = 1'b1;
-                ia[31] = sel[49]; ib[31] = sel[54]; um[31] = 2'd2; uf[31] = 1'b0;
-                ia[28] = sel[51]; ib[28] = sel[52]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[30] = sel[57]; ib[30] = sel[62]; um[30] = 2'd2; uf[30] = 1'b1;
-                ia[4] = sel[59]; ib[4] = sel[60]; um[4] = 2'd2; uf[4] = 1'b1;
-            end
-            {3'd4, 4'd5}: begin
-                ia[0] = sel[0]; ib[0] = sel[63]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[4] = sel[1]; ib[4] = sel[30]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[1] = sel[2]; ib[1] = sel[13]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[28]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[3] = sel[5]; ib[3] = sel[10]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[11] = sel[7]; ib[11] = sel[24]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[8] = sel[8]; ib[8] = sel[23]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[19]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[14]; ib[7] = sel[17]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[10] = sel[18]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[13] = sel[27]; ib[13] = sel[20]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd2896; us[13] = 13'sd2896;
-                ia[15] = sel[25]; ib[15] = sel[22]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd2896; us[15] = 13'sd2896;
-                ia[14] = sel[26]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b1;
-                ia[16] = sel[31]; ib[16] = sel[32]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[46]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[34]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[21] = sel[35]; ib[21] = sel[44]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[28] = sel[59]; ib[28] = sel[36]; um[28] = 2'd1; uf[28] = 1'b1; uc[28] = 13'sd1567; us[28] = 13'sd3784;
-                ia[19] = sel[57]; ib[19] = sel[38]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = 13'sd1567; us[19] = 13'sd3784;
-                ia[27] = sel[39]; ib[27] = sel[40]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[22] = sel[54]; ib[22] = sel[41]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = -13'sd3784; us[22] = 13'sd1567;
-                ia[25] = sel[42]; ib[25] = sel[45]; um[25] = 2'd2; uf[25] = 1'b1;
-                ia[26] = sel[52]; ib[26] = sel[43]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = -13'sd3784; us[26] = 13'sd1567;
-                ia[23] = sel[48]; ib[23] = sel[47]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd2896; us[23] = 13'sd2896;
-                ia[31] = sel[49]; ib[31] = sel[62]; um[31] = 2'd2; uf[31] = 1'b1;
-                ia[29] = sel[50]; ib[29] = sel[53]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[51]; ib[30] = sel[60]; um[30] = 2'd2; uf[30] = 1'b1;
-                ia[2] = sel[55]; ib[2] = sel[56]; um[2] = 2'd2; uf[2] = 1'b1;
-                ia[9] = sel[58]; ib[9] = sel[61]; um[9] = 2'd2; uf[9] = 1'b1;
-            end
-            {3'd4, 4'd6}: begin
-                ia[1] = sel[1]; ib[1] = sel[62]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[2]; ib[2] = sel[29]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[4] = sel[3]; ib[4] = sel[60]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[10] = sel[4]; ib[10] = sel[27]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[25]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[11] = sel[7]; ib[11] = sel[56]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[22]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[9] = sel[11]; ib[9] = sel[20]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[7] = sel[13]; ib[7] = sel[18]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[8] = sel[15]; ib[8] = sel[48]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[16] = sel[16]; ib[16] = sel[47]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[21]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd2896; us[13] = 13'sd2896;
-                ia[12] = sel[24]; ib[12] = sel[39]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[35]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[15] = sel[30]; ib[15] = sel[33]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[17] = sel[34]; ib[17] = sel[45]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[43]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[37]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd1567; us[29] = 13'sd3784;
-                ia[19] = sel[38]; ib[19] = sel[41]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[27] = sel[55]; ib[27] = sel[40]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd2896; us[27] = 13'sd2896;
-                ia[21] = sel[53]; ib[21] = sel[42]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = -13'sd3784; us[21] = 13'sd1567;
-                ia[25] = sel[51]; ib[25] = sel[44]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = 13'sd2896; us[25] = 13'sd2896;
-                ia[26] = sel[49]; ib[26] = sel[46]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd2896; us[26] = 13'sd2896;
-                ia[30] = sel[50]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b1;
-                ia[28] = sel[52]; ib[28] = sel[59]; um[28] = 2'd2; uf[28] = 1'b1;
-                ia[22] = sel[54]; ib[22] = sel[57]; um[22] = 2'd2; uf[22] = 1'b1;
-            end
-            {3'd4, 4'd7}: begin
-                ia[1] = sel[2]; ib[1] = sel[61]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[59]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[5]; ib[3] = sel[26]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[19] = sel[6]; ib[19] = sel[57]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[4] = sel[8]; ib[4] = sel[55]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[10]; ib[5] = sel[21]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[51]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[14]; ib[7] = sel[49]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[17] = sel[17]; ib[17] = sel[46]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[9] = sel[19]; ib[9] = sel[44]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[11] = sel[23]; ib[11] = sel[40]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[13] = sel[25]; ib[13] = sel[38]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[21] = sel[27]; ib[21] = sel[36]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[15] = sel[29]; ib[15] = sel[34]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[23] = sel[37]; ib[23] = sel[42]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[22] = sel[54]; ib[22] = sel[41]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd2896; us[22] = 13'sd2896;
-                ia[26] = sel[52]; ib[26] = sel[43]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd2896; us[26] = 13'sd2896;
-                ia[25] = sel[50]; ib[25] = sel[45]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = 13'sd2896; us[25] = 13'sd2896;
-                ia[27] = sel[53]; ib[27] = sel[58]; um[27] = 2'd2; uf[27] = 1'b1;
-            end
-            {3'd4, 4'd8}: begin
-                ia[3] = sel[5]; ib[3] = sel[58]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[54]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[9] = sel[11]; ib[9] = sel[52]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[7] = sel[13]; ib[7] = sel[50]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[10] = sel[18]; ib[10] = sel[45]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[18] = sel[20]; ib[18] = sel[43]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[11] = sel[22]; ib[11] = sel[41]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[37]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[21] = sel[53]; ib[21] = sel[42]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = 13'sd2896; us[21] = 13'sd2896;
-            end
-            {3'd4, 4'd9}: begin
-                ia[5] = sel[10]; ib[5] = sel[53]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[23] = sel[21]; ib[23] = sel[42]; um[23] = 2'd2; uf[23] = 1'b0;
-            end
-            {3'd5, 4'd0}: begin
-                ia[0] = sel[7]; ib[0] = sel[0]; um[0] = 2'd1; uf[0] = 1'b1; uc[0] = 13'sd401; us[0] = 13'sd4076;
-                ia[1] = sel[5]; ib[1] = sel[2]; um[1] = 2'd1; uf[1] = 1'b1; uc[1] = 13'sd1931; us[1] = 13'sd3612;
-                ia[2] = sel[3]; ib[2] = sel[4]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd3166; us[2] = 13'sd2598;
-                ia[3] = sel[1]; ib[3] = sel[6]; um[3] = 2'd1; uf[3] = 1'b1; uc[3] = 13'sd3920; us[3] = 13'sd1189;
-                ia[4] = sel[15]; ib[4] = sel[8]; um[4] = 2'd1; uf[4] = 1'b1; uc[4] = 13'sd401; us[4] = 13'sd4076;
-                ia[5] = sel[13]; ib[5] = sel[10]; um[5] = 2'd1; uf[5] = 1'b1; uc[5] = 13'sd1931; us[5] = 13'sd3612;
-                ia[6] = sel[11]; ib[6] = sel[12]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd3166; us[6] = 13'sd2598;
-                ia[7] = sel[9]; ib[7] = sel[14]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd3920; us[7] = 13'sd1189;
-                ia[8] = sel[23]; ib[8] = sel[16]; um[8] = 2'd1; uf[8] = 1'b1; uc[8] = 13'sd401; us[8] = 13'sd4076;
-                ia[9] = sel[21]; ib[9] = sel[18]; um[9] = 2'd1; uf[9] = 1'b1; uc[9] = 13'sd1931; us[9] = 13'sd3612;
-                ia[10] = sel[19]; ib[10] = sel[20]; um[10] = 2'd1; uf[10] = 1'b1; uc[10] = 13'sd3166; us[10] = 13'sd2598;
-                ia[11] = sel[17]; ib[11] = sel[22]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = 13'sd3920; us[11] = 13'sd1189;
-                ia[12] = sel[31]; ib[12] = sel[24]; um[12] = 2'd1; uf[12] = 1'b1; uc[12] = 13'sd401; us[12] = 13'sd4076;
-                ia[13] = sel[29]; ib[13] = sel[26]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd1931; us[13] = 13'sd3612;
-                ia[14] = sel[27]; ib[14] = sel[28]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd3166; us[14] = 13'sd2598;
-                ia[15] = sel[25]; ib[15] = sel[30]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd3920; us[15] = 13'sd1189;
-                ia[16] = sel[39]; ib[16] = sel[32]; um[16] = 2'd1; uf[16] = 1'b1; uc[16] = 13'sd401; us[16] = 13'sd4076;
-                ia[17] = sel[37]; ib[17] = sel[34]; um[17] = 2'd1; uf[17] = 1'b1; uc[17] = 13'sd1931; us[17] = 13'sd3612;
-                ia[18] = sel[35]; ib[18] = sel[36]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd3166; us[18] = 13'sd2598;
-                ia[19] = sel[33]; ib[19] = sel[38]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = 13'sd3920; us[19] = 13'sd1189;
-                ia[20] = sel[47]; ib[20] = sel[40]; um[20] = 2'd1; uf[20] = 1'b1; uc[20] = 13'sd401; us[20] = 13'sd4076;
-                ia[21] = sel[45]; ib[21] = sel[42]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = 13'sd1931; us[21] = 13'sd3612;
-                ia[25] = sel[43]; ib[25] = sel[44]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = 13'sd3166; us[25] = 13'sd2598;
-                ia[22] = sel[41]; ib[22] = sel[46]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd3920; us[22] = 13'sd1189;
-                ia[24] = sel[55]; ib[24] = sel[48]; um[24] = 2'd1; uf[24] = 1'b1; uc[24] = 13'sd401; us[24] = 13'sd4076;
-                ia[30] = sel[53]; ib[30] = sel[50]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd1931; us[30] = 13'sd3612;
-                ia[26] = sel[51]; ib[26] = sel[52]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd3166; us[26] = 13'sd2598;
-                ia[27] = sel[49]; ib[27] = sel[54]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd3920; us[27] = 13'sd1189;
-                ia[28] = sel[63]; ib[28] = sel[56]; um[28] = 2'd1; uf[28] = 1'b1; uc[28] = 13'sd401; us[28] = 13'sd4076;
-                ia[29] = sel[61]; ib[29] = sel[58]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd1931; us[29] = 13'sd3612;
-                ia[31] = sel[59]; ib[31] = sel[60]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd3166; us[31] = 13'sd2598;
-                ia[23] = sel[57]; ib[23] = sel[62]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd3920; us[23] = 13'sd1189;
-            end
-            {3'd5, 4'd1}: begin
-                ia[0] = sel[0]; ib[0] = sel[4]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[2] = sel[1]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[1] = sel[2]; ib[1] = sel[6]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[7]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[4] = sel[8]; ib[4] = sel[12]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[6] = sel[9]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[7] = sel[10]; ib[7] = sel[14]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[9] = sel[11]; ib[9] = sel[15]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[8] = sel[16]; ib[8] = sel[20]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[10] = sel[17]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[18]; ib[11] = sel[22]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[13] = sel[19]; ib[13] = sel[23]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[12] = sel[24]; ib[12] = sel[28]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[14] = sel[25]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[15] = sel[26]; ib[15] = sel[30]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[21] = sel[27]; ib[21] = sel[31]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[16] = sel[32]; ib[16] = sel[36]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[18] = sel[33]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[17] = sel[34]; ib[17] = sel[38]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[19] = sel[35]; ib[19] = sel[39]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[20] = sel[40]; ib[20] = sel[44]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[22] = sel[41]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[42]; ib[23] = sel[46]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[25] = sel[43]; ib[25] = sel[47]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[24] = sel[48]; ib[24] = sel[52]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[26] = sel[49]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[50]; ib[27] = sel[54]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[29] = sel[51]; ib[29] = sel[55]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[28] = sel[56]; ib[28] = sel[60]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[30] = sel[57]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[58]; ib[31] = sel[62]; um[31] = 2'd2; uf[31] = 1'b0;
-                ia[3] = sel[59]; ib[3] = sel[63]; um[3] = 2'd2; uf[3] = 1'b0;
-            end
-            {3'd5, 4'd2}: begin
-                ia[0] = sel[0]; ib[0] = sel[2]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[3]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[5]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd1567; us[2] = 13'sd3784;
-                ia[3] = sel[7]; ib[3] = sel[6]; um[3] = 2'd1; uf[3] = 1'b1; uc[3] = 13'sd3784; us[3] = 13'sd1567;
-                ia[4] = sel[8]; ib[4] = sel[10]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[11]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[13]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd1567; us[6] = 13'sd3784;
-                ia[7] = sel[15]; ib[7] = sel[14]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd3784; us[7] = 13'sd1567;
-                ia[8] = sel[16]; ib[8] = sel[18]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[9] = sel[17]; ib[9] = sel[19]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[20]; ib[10] = sel[21]; um[10] = 2'd1; uf[10] = 1'b1; uc[10] = 13'sd1567; us[10] = 13'sd3784;
-                ia[11] = sel[23]; ib[11] = sel[22]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = 13'sd3784; us[11] = 13'sd1567;
-                ia[12] = sel[24]; ib[12] = sel[26]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[25]; ib[13] = sel[27]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[29]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd1567; us[14] = 13'sd3784;
-                ia[15] = sel[31]; ib[15] = sel[30]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd3784; us[15] = 13'sd1567;
-                ia[16] = sel[32]; ib[16] = sel[34]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[35]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[37]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd1567; us[18] = 13'sd3784;
-                ia[19] = sel[39]; ib[19] = sel[38]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = 13'sd3784; us[19] = 13'sd1567;
-                ia[20] = sel[40]; ib[20] = sel[42]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[43]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[44]; ib[22] = sel[45]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd1567; us[22] = 13'sd3784;
-                ia[23] = sel[47]; ib[23] = sel[46]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd3784; us[23] = 13'sd1567;
-                ia[24] = sel[48]; ib[24] = sel[50]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[25] = sel[49]; ib[25] = sel[51]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[52]; ib[26] = sel[53]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd1567; us[26] = 13'sd3784;
-                ia[27] = sel[55]; ib[27] = sel[54]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd3784; us[27] = 13'sd1567;
-                ia[28] = sel[56]; ib[28] = sel[58]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[57]; ib[29] = sel[59]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[60]; ib[30] = sel[61]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd1567; us[30] = 13'sd3784;
-                ia[31] = sel[63]; ib[31] = sel[62]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd3784; us[31] = 13'sd1567;
-            end
-            {3'd5, 4'd3}: begin
-                ia[1] = sel[2]; ib[1] = sel[3]; um[1] = 2'd1; uf[1] = 1'b1; uc[1] = 13'sd2896; us[1] = 13'sd2896;
-                ia[2] = sel[4]; ib[2] = sel[6]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[5]; ib[3] = sel[7]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[5] = sel[10]; ib[5] = sel[11]; um[5] = 2'd1; uf[5] = 1'b1; uc[5] = 13'sd2896; us[5] = 13'sd2896;
-                ia[7] = sel[12]; ib[7] = sel[14]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[6] = sel[13]; ib[6] = sel[15]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[9] = sel[18]; ib[9] = sel[19]; um[9] = 2'd1; uf[9] = 1'b1; uc[9] = 13'sd2896; us[9] = 13'sd2896;
-                ia[10] = sel[20]; ib[10] = sel[22]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[21]; ib[11] = sel[23]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[27]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd2896; us[13] = 13'sd2896;
-                ia[15] = sel[28]; ib[15] = sel[30]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[14] = sel[29]; ib[14] = sel[31]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[17] = sel[34]; ib[17] = sel[35]; um[17] = 2'd1; uf[17] = 1'b1; uc[17] = 13'sd2896; us[17] = 13'sd2896;
-                ia[18] = sel[36]; ib[18] = sel[38]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[37]; ib[19] = sel[39]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[21] = sel[42]; ib[21] = sel[43]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = 13'sd2896; us[21] = 13'sd2896;
-                ia[22] = sel[44]; ib[22] = sel[46]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[45]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[25] = sel[50]; ib[25] = sel[51]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = 13'sd2896; us[25] = 13'sd2896;
-                ia[27] = sel[52]; ib[27] = sel[54]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[26] = sel[53]; ib[26] = sel[55]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[59]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd2896; us[29] = 13'sd2896;
-                ia[30] = sel[60]; ib[30] = sel[62]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[61]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b0;
-            end
-            {3'd5, 4'd4}: begin
-                ia[3] = sel[6]; ib[3] = sel[7]; um[3] = 2'd1; uf[3] = 1'b1; uc[3] = 13'sd2896; us[3] = 13'sd2896;
-                ia[7] = sel[14]; ib[7] = sel[15]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd2896; us[7] = 13'sd2896;
-                ia[11] = sel[22]; ib[11] = sel[23]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = 13'sd2896; us[11] = 13'sd2896;
-                ia[15] = sel[30]; ib[15] = sel[31]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd2896; us[15] = 13'sd2896;
-                ia[19] = sel[38]; ib[19] = sel[39]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = 13'sd2896; us[19] = 13'sd2896;
-                ia[23] = sel[46]; ib[23] = sel[47]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd2896; us[23] = 13'sd2896;
-                ia[27] = sel[54]; ib[27] = sel[55]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd2896; us[27] = 13'sd2896;
-                ia[31] = sel[62]; ib[31] = sel[63]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd2896; us[31] = 13'sd2896;
-            end
-            {3'd6, 4'd0}: begin
-                ia[0] = sel[15]; ib[0] = sel[0]; um[0] = 2'd1; uf[0] = 1'b1; uc[0] = 13'sd201; us[0] = 13'sd4091;
-                ia[1] = sel[13]; ib[1] = sel[2]; um[1] = 2'd1; uf[1] = 1'b1; uc[1] = 13'sd995; us[1] = 13'sd3973;
-                ia[2] = sel[11]; ib[2] = sel[4]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd1751; us[2] = 13'sd3703;
-                ia[3] = sel[9]; ib[3] = sel[6]; um[3] = 2'd1; uf[3] = 1'b1; uc[3] = 13'sd2440; us[3] = 13'sd3290;
-                ia[4] = sel[7]; ib[4] = sel[8]; um[4] = 2'd1; uf[4] = 1'b1; uc[4] = 13'sd3035; us[4] = 13'sd2751;
-                ia[5] = sel[5]; ib[5] = sel[10]; um[5] = 2'd1; uf[5] = 1'b1; uc[5] = 13'sd3513; us[5] = 13'sd2106;
-                ia[6] = sel[3]; ib[6] = sel[12]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd3857; us[6] = 13'sd1380;
-                ia[7] = sel[1]; ib[7] = sel[14]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd4052; us[7] = 13'sd601;
-                ia[8] = sel[31]; ib[8] = sel[16]; um[8] = 2'd1; uf[8] = 1'b1; uc[8] = 13'sd201; us[8] = 13'sd4091;
-                ia[9] = sel[29]; ib[9] = sel[18]; um[9] = 2'd1; uf[9] = 1'b1; uc[9] = 13'sd995; us[9] = 13'sd3973;
-                ia[10] = sel[27]; ib[10] = sel[20]; um[10] = 2'd1; uf[10] = 1'b1; uc[10] = 13'sd1751; us[10] = 13'sd3703;
-                ia[11] = sel[25]; ib[11] = sel[22]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = 13'sd2440; us[11] = 13'sd3290;
-                ia[12] = sel[23]; ib[12] = sel[24]; um[12] = 2'd1; uf[12] = 1'b1; uc[12] = 13'sd3035; us[12] = 13'sd2751;
-                ia[13] = sel[21]; ib[13] = sel[26]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd3513; us[13] = 13'sd2106;
-                ia[14] = sel[19]; ib[14] = sel[28]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd3857; us[14] = 13'sd1380;
-                ia[15] = sel[17]; ib[15] = sel[30]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd4052; us[15] = 13'sd601;
-                ia[16] = sel[47]; ib[16] = sel[32]; um[16] = 2'd1; uf[16] = 1'b1; uc[16] = 13'sd201; us[16] = 13'sd4091;
-                ia[17] = sel[45]; ib[17] = sel[34]; um[17] = 2'd1; uf[17] = 1'b1; uc[17] = 13'sd995; us[17] = 13'sd3973;
-                ia[18] = sel[43]; ib[18] = sel[36]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd1751; us[18] = 13'sd3703;
-                ia[19] = sel[41]; ib[19] = sel[38]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = 13'sd2440; us[19] = 13'sd3290;
-                ia[20] = sel[39]; ib[20] = sel[40]; um[20] = 2'd1; uf[20] = 1'b1; uc[20] = 13'sd3035; us[20] = 13'sd2751;
-                ia[21] = sel[37]; ib[21] = sel[42]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = 13'sd3513; us[21] = 13'sd2106;
-                ia[25] = sel[35]; ib[25] = sel[44]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = 13'sd3857; us[25] = 13'sd1380;
-                ia[23] = sel[33]; ib[23] = sel[46]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd4052; us[23] = 13'sd601;
-                ia[24] = sel[63]; ib[24] = sel[48]; um[24] = 2'd1; uf[24] = 1'b1; uc[24] = 13'sd201; us[24] = 13'sd4091;
-                ia[29] = sel[61]; ib[29] = sel[50]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd995; us[29] = 13'sd3973;
-                ia[26] = sel[59]; ib[26] = sel[52]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd1751; us[26] = 13'sd3703;
-                ia[27] = sel[57]; ib[27] = sel[54]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd2440; us[27] = 13'sd3290;
-                ia[28] = sel[55]; ib[28] = sel[56]; um[28] = 2'd1; uf[28] = 1'b1; uc[28] = 13'sd3035; us[28] = 13'sd2751;
-                ia[30] = sel[53]; ib[30] = sel[58]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd3513; us[30] = 13'sd2106;
-                ia[31] = sel[51]; ib[31] = sel[60]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd3857; us[31] = 13'sd1380;
-                ia[22] = sel[49]; ib[22] = sel[62]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd4052; us[22] = 13'sd601;
-            end
-            {3'd6, 4'd1}: begin
-                ia[0] = sel[0]; ib[0] = sel[8]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[4] = sel[1]; ib[4] = sel[9]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[1] = sel[2]; ib[1] = sel[10]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[11]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[12]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[6] = sel[5]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[3] = sel[6]; ib[3] = sel[14]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[7] = sel[7]; ib[7] = sel[15]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[8] = sel[16]; ib[8] = sel[24]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[11] = sel[17]; ib[11] = sel[25]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[9] = sel[18]; ib[9] = sel[26]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[19]; ib[10] = sel[27]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[12] = sel[20]; ib[12] = sel[28]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[14] = sel[21]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[13] = sel[22]; ib[13] = sel[30]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[15] = sel[23]; ib[15] = sel[31]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[16] = sel[32]; ib[16] = sel[40]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[20] = sel[33]; ib[20] = sel[41]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[17] = sel[34]; ib[17] = sel[42]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[21] = sel[35]; ib[21] = sel[43]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[44]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[22] = sel[37]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[46]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[23] = sel[39]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[24] = sel[48]; ib[24] = sel[56]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[27] = sel[49]; ib[27] = sel[57]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[29] = sel[50]; ib[29] = sel[58]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[26] = sel[51]; ib[26] = sel[59]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[28] = sel[52]; ib[28] = sel[60]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[30] = sel[53]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[54]; ib[31] = sel[62]; um[31] = 2'd2; uf[31] = 1'b0;
-                ia[25] = sel[55]; ib[25] = sel[63]; um[25] = 2'd2; uf[25] = 1'b0;
-            end
-            {3'd6, 4'd2}: begin
-                ia[0] = sel[0]; ib[0] = sel[4]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[2] = sel[1]; ib[2] = sel[5]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[1] = sel[2]; ib[1] = sel[6]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[5] = sel[3]; ib[5] = sel[7]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[4] = sel[8]; ib[4] = sel[9]; um[4] = 2'd1; uf[4] = 1'b1; uc[4] = 13'sd799; us[4] = 13'sd4017;
-                ia[6] = sel[10]; ib[6] = sel[11]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd3406; us[6] = 13'sd2276;
-                ia[7] = sel[13]; ib[7] = sel[12]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd4017; us[7] = 13'sd799;
-                ia[8] = sel[15]; ib[8] = sel[14]; um[8] = 2'd1; uf[8] = 1'b1; uc[8] = 13'sd2276; us[8] = 13'sd3406;
-                ia[9] = sel[16]; ib[9] = sel[20]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[10] = sel[17]; ib[10] = sel[21]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[18]; ib[11] = sel[22]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[13] = sel[19]; ib[13] = sel[23]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[12] = sel[24]; ib[12] = sel[25]; um[12] = 2'd1; uf[12] = 1'b1; uc[12] = 13'sd799; us[12] = 13'sd4017;
-                ia[14] = sel[26]; ib[14] = sel[27]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd3406; us[14] = 13'sd2276;
-                ia[15] = sel[29]; ib[15] = sel[28]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd4017; us[15] = 13'sd799;
-                ia[16] = sel[31]; ib[16] = sel[30]; um[16] = 2'd1; uf[16] = 1'b1; uc[16] = 13'sd2276; us[16] = 13'sd3406;
-                ia[17] = sel[32]; ib[17] = sel[36]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[33]; ib[18] = sel[37]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[34]; ib[19] = sel[38]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[21] = sel[35]; ib[21] = sel[39]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[20] = sel[40]; ib[20] = sel[41]; um[20] = 2'd1; uf[20] = 1'b1; uc[20] = 13'sd799; us[20] = 13'sd4017;
-                ia[22] = sel[42]; ib[22] = sel[43]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd3406; us[22] = 13'sd2276;
-                ia[23] = sel[45]; ib[23] = sel[44]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd4017; us[23] = 13'sd799;
-                ia[24] = sel[47]; ib[24] = sel[46]; um[24] = 2'd1; uf[24] = 1'b1; uc[24] = 13'sd2276; us[24] = 13'sd3406;
-                ia[25] = sel[48]; ib[25] = sel[52]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[26] = sel[49]; ib[26] = sel[53]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[27] = sel[50]; ib[27] = sel[54]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[29] = sel[51]; ib[29] = sel[55]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[28] = sel[56]; ib[28] = sel[57]; um[28] = 2'd1; uf[28] = 1'b1; uc[28] = 13'sd799; us[28] = 13'sd4017;
-                ia[30] = sel[58]; ib[30] = sel[59]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd3406; us[30] = 13'sd2276;
-                ia[31] = sel[61]; ib[31] = sel[60]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd4017; us[31] = 13'sd799;
-                ia[3] = sel[63]; ib[3] = sel[62]; um[3] = 2'd1; uf[3] = 1'b1; uc[3] = 13'sd2276; us[3] = 13'sd3406;
-            end
-            {3'd6, 4'd3}: begin
-                ia[0] = sel[0]; ib[0] = sel[2]; um[0] = 2'd2; uf[0] = 1'b0;
-                ia[1] = sel[1]; ib[1] = sel[3]; um[1] = 2'd2; uf[1] = 1'b0;
-                ia[2] = sel[4]; ib[2] = sel[5]; um[2] = 2'd1; uf[2] = 1'b1; uc[2] = 13'sd1567; us[2] = 13'sd3784;
-                ia[3] = sel[7]; ib[3] = sel[6]; um[3] = 2'd1; uf[3] = 1'b1; uc[3] = 13'sd3784; us[3] = 13'sd1567;
-                ia[4] = sel[8]; ib[4] = sel[12]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[6] = sel[9]; ib[6] = sel[13]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[5] = sel[10]; ib[5] = sel[14]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[9] = sel[11]; ib[9] = sel[15]; um[9] = 2'd2; uf[9] = 1'b0;
-                ia[8] = sel[16]; ib[8] = sel[18]; um[8] = 2'd2; uf[8] = 1'b0;
-                ia[11] = sel[17]; ib[11] = sel[19]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[10] = sel[20]; ib[10] = sel[21]; um[10] = 2'd1; uf[10] = 1'b1; uc[10] = 13'sd1567; us[10] = 13'sd3784;
-                ia[15] = sel[23]; ib[15] = sel[22]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd3784; us[15] = 13'sd1567;
-                ia[12] = sel[24]; ib[12] = sel[28]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[14] = sel[25]; ib[14] = sel[29]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[13] = sel[26]; ib[13] = sel[30]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[21] = sel[27]; ib[21] = sel[31]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[16] = sel[32]; ib[16] = sel[34]; um[16] = 2'd2; uf[16] = 1'b0;
-                ia[17] = sel[33]; ib[17] = sel[35]; um[17] = 2'd2; uf[17] = 1'b0;
-                ia[18] = sel[36]; ib[18] = sel[37]; um[18] = 2'd1; uf[18] = 1'b1; uc[18] = 13'sd1567; us[18] = 13'sd3784;
-                ia[19] = sel[39]; ib[19] = sel[38]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = 13'sd3784; us[19] = 13'sd1567;
-                ia[20] = sel[40]; ib[20] = sel[44]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[22] = sel[41]; ib[22] = sel[45]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[42]; ib[23] = sel[46]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[25] = sel[43]; ib[25] = sel[47]; um[25] = 2'd2; uf[25] = 1'b0;
-                ia[24] = sel[48]; ib[24] = sel[50]; um[24] = 2'd2; uf[24] = 1'b0;
-                ia[27] = sel[49]; ib[27] = sel[51]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[26] = sel[52]; ib[26] = sel[53]; um[26] = 2'd1; uf[26] = 1'b1; uc[26] = 13'sd1567; us[26] = 13'sd3784;
-                ia[31] = sel[55]; ib[31] = sel[54]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd3784; us[31] = 13'sd1567;
-                ia[28] = sel[56]; ib[28] = sel[60]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[30] = sel[57]; ib[30] = sel[61]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[29] = sel[58]; ib[29] = sel[62]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[7] = sel[59]; ib[7] = sel[63]; um[7] = 2'd2; uf[7] = 1'b0;
-            end
-            {3'd6, 4'd4}: begin
-                ia[1] = sel[2]; ib[1] = sel[3]; um[1] = 2'd1; uf[1] = 1'b1; uc[1] = 13'sd2896; us[1] = 13'sd2896;
-                ia[2] = sel[4]; ib[2] = sel[6]; um[2] = 2'd2; uf[2] = 1'b0;
-                ia[3] = sel[5]; ib[3] = sel[7]; um[3] = 2'd2; uf[3] = 1'b0;
-                ia[4] = sel[8]; ib[4] = sel[10]; um[4] = 2'd2; uf[4] = 1'b0;
-                ia[5] = sel[9]; ib[5] = sel[11]; um[5] = 2'd2; uf[5] = 1'b0;
-                ia[6] = sel[12]; ib[6] = sel[13]; um[6] = 2'd1; uf[6] = 1'b1; uc[6] = 13'sd1567; us[6] = 13'sd3784;
-                ia[7] = sel[15]; ib[7] = sel[14]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd3784; us[7] = 13'sd1567;
-                ia[9] = sel[18]; ib[9] = sel[19]; um[9] = 2'd1; uf[9] = 1'b1; uc[9] = 13'sd2896; us[9] = 13'sd2896;
-                ia[10] = sel[20]; ib[10] = sel[22]; um[10] = 2'd2; uf[10] = 1'b0;
-                ia[11] = sel[21]; ib[11] = sel[23]; um[11] = 2'd2; uf[11] = 1'b0;
-                ia[12] = sel[24]; ib[12] = sel[26]; um[12] = 2'd2; uf[12] = 1'b0;
-                ia[13] = sel[25]; ib[13] = sel[27]; um[13] = 2'd2; uf[13] = 1'b0;
-                ia[14] = sel[28]; ib[14] = sel[29]; um[14] = 2'd1; uf[14] = 1'b1; uc[14] = 13'sd1567; us[14] = 13'sd3784;
-                ia[15] = sel[31]; ib[15] = sel[30]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd3784; us[15] = 13'sd1567;
-                ia[17] = sel[34]; ib[17] = sel[35]; um[17] = 2'd1; uf[17] = 1'b1; uc[17] = 13'sd2896; us[17] = 13'sd2896;
-                ia[18] = sel[36]; ib[18] = sel[38]; um[18] = 2'd2; uf[18] = 1'b0;
-                ia[19] = sel[37]; ib[19] = sel[39]; um[19] = 2'd2; uf[19] = 1'b0;
-                ia[20] = sel[40]; ib[20] = sel[42]; um[20] = 2'd2; uf[20] = 1'b0;
-                ia[21] = sel[41]; ib[21] = sel[43]; um[21] = 2'd2; uf[21] = 1'b0;
-                ia[22] = sel[44]; ib[22] = sel[45]; um[22] = 2'd1; uf[22] = 1'b1; uc[22] = 13'sd1567; us[22] = 13'sd3784;
-                ia[23] = sel[47]; ib[23] = sel[46]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd3784; us[23] = 13'sd1567;
-                ia[25] = sel[50]; ib[25] = sel[51]; um[25] = 2'd1; uf[25] = 1'b1; uc[25] = 13'sd2896; us[25] = 13'sd2896;
-                ia[27] = sel[52]; ib[27] = sel[54]; um[27] = 2'd2; uf[27] = 1'b0;
-                ia[26] = sel[53]; ib[26] = sel[55]; um[26] = 2'd2; uf[26] = 1'b0;
-                ia[28] = sel[56]; ib[28] = sel[58]; um[28] = 2'd2; uf[28] = 1'b0;
-                ia[29] = sel[57]; ib[29] = sel[59]; um[29] = 2'd2; uf[29] = 1'b0;
-                ia[30] = sel[60]; ib[30] = sel[61]; um[30] = 2'd1; uf[30] = 1'b1; uc[30] = 13'sd1567; us[30] = 13'sd3784;
-                ia[31] = sel[63]; ib[31] = sel[62]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd3784; us[31] = 13'sd1567;
-            end
-            {3'd6, 4'd5}: begin
-                ia[3] = sel[6]; ib[3] = sel[7]; um[3] = 2'd1; uf[3] = 1'b1; uc[3] = 13'sd2896; us[3] = 13'sd2896;
-                ia[5] = sel[10]; ib[5] = sel[11]; um[5] = 2'd1; uf[5] = 1'b1; uc[5] = 13'sd2896; us[5] = 13'sd2896;
-                ia[7] = sel[12]; ib[7] = sel[14]; um[7] = 2'd2; uf[7] = 1'b0;
-                ia[6] = sel[13]; ib[6] = sel[15]; um[6] = 2'd2; uf[6] = 1'b0;
-                ia[11] = sel[22]; ib[11] = sel[23]; um[11] = 2'd1; uf[11] = 1'b1; uc[11] = 13'sd2896; us[11] = 13'sd2896;
-                ia[13] = sel[26]; ib[13] = sel[27]; um[13] = 2'd1; uf[13] = 1'b1; uc[13] = 13'sd2896; us[13] = 13'sd2896;
-                ia[15] = sel[28]; ib[15] = sel[30]; um[15] = 2'd2; uf[15] = 1'b0;
-                ia[14] = sel[29]; ib[14] = sel[31]; um[14] = 2'd2; uf[14] = 1'b0;
-                ia[19] = sel[38]; ib[19] = sel[39]; um[19] = 2'd1; uf[19] = 1'b1; uc[19] = 13'sd2896; us[19] = 13'sd2896;
-                ia[21] = sel[42]; ib[21] = sel[43]; um[21] = 2'd1; uf[21] = 1'b1; uc[21] = 13'sd2896; us[21] = 13'sd2896;
-                ia[22] = sel[44]; ib[22] = sel[46]; um[22] = 2'd2; uf[22] = 1'b0;
-                ia[23] = sel[45]; ib[23] = sel[47]; um[23] = 2'd2; uf[23] = 1'b0;
-                ia[27] = sel[54]; ib[27] = sel[55]; um[27] = 2'd1; uf[27] = 1'b1; uc[27] = 13'sd2896; us[27] = 13'sd2896;
-                ia[29] = sel[58]; ib[29] = sel[59]; um[29] = 2'd1; uf[29] = 1'b1; uc[29] = 13'sd2896; us[29] = 13'sd2896;
-                ia[30] = sel[60]; ib[30] = sel[62]; um[30] = 2'd2; uf[30] = 1'b0;
-                ia[31] = sel[61]; ib[31] = sel[63]; um[31] = 2'd2; uf[31] = 1'b0;
-            end
-            {3'd6, 4'd6}: begin
-                ia[7] = sel[14]; ib[7] = sel[15]; um[7] = 2'd1; uf[7] = 1'b1; uc[7] = 13'sd2896; us[7] = 13'sd2896;
-                ia[15] = sel[30]; ib[15] = sel[31]; um[15] = 2'd1; uf[15] = 1'b1; uc[15] = 13'sd2896; us[15] = 13'sd2896;
-                ia[23] = sel[46]; ib[23] = sel[47]; um[23] = 2'd1; uf[23] = 1'b1; uc[23] = 13'sd2896; us[23] = 13'sd2896;
-                ia[31] = sel[62]; ib[31] = sel[63]; um[31] = 2'd1; uf[31] = 1'b1; uc[31] = 13'sd2896; us[31] = 13'sd2896;
-            end
+        for (int u = 0; u < NU; u++) begin ia[u] = '0; ib[u] = '0; end
+        case (sa_r[0])
+            4'd1: ia[0] = sel[0];
+            4'd2: ia[0] = sel[7];
+            4'd3: ia[0] = sel[15];
+            default: ;
+        endcase
+        case (sb_r[0])
+            4'd1: ib[0] = sel[2];
+            4'd2: ib[0] = sel[3];
+            4'd3: ib[0] = sel[4];
+            4'd4: ib[0] = sel[7];
+            4'd5: ib[0] = sel[8];
+            4'd6: ib[0] = sel[15];
+            4'd7: ib[0] = sel[16];
+            4'd8: ib[0] = sel[31];
+            4'd9: ib[0] = sel[32];
+            4'd10: ib[0] = sel[63];
+            4'd11: ib[0] = sel[0];
+            default: ;
+        endcase
+        case (sa_r[1])
+            4'd1: ia[1] = sel[1];
+            4'd2: ia[1] = sel[2];
+            4'd3: ia[1] = sel[3];
+            4'd4: ia[1] = sel[4];
+            4'd5: ia[1] = sel[8];
+            4'd6: ia[1] = sel[16];
+            4'd7: ia[1] = sel[5];
+            4'd8: ia[1] = sel[13];
+            default: ;
+        endcase
+        case (sb_r[1])
+            4'd1: ib[1] = sel[3];
+            4'd2: ib[1] = sel[2];
+            4'd3: ib[1] = sel[6];
+            4'd4: ib[1] = sel[4];
+            4'd5: ib[1] = sel[12];
+            4'd6: ib[1] = sel[14];
+            4'd7: ib[1] = sel[13];
+            4'd8: ib[1] = sel[24];
+            4'd9: ib[1] = sel[29];
+            4'd10: ib[1] = sel[48];
+            4'd11: ib[1] = sel[62];
+            4'd12: ib[1] = sel[61];
+            4'd13: ib[1] = sel[10];
+            default: ;
+        endcase
+        case (sa_r[2])
+            4'd1: ia[2] = sel[4];
+            4'd2: ia[2] = sel[1];
+            4'd3: ia[2] = sel[6];
+            4'd4: ia[2] = sel[2];
+            4'd5: ia[2] = sel[8];
+            4'd6: ia[2] = sel[55];
+            4'd7: ia[2] = sel[3];
+            4'd8: ia[2] = sel[11];
+            default: ;
+        endcase
+        case (sb_r[2])
+            4'd1: ib[2] = sel[6];
+            4'd2: ib[2] = sel[7];
+            4'd3: ib[2] = sel[5];
+            4'd4: ib[2] = sel[14];
+            4'd5: ib[2] = sel[11];
+            4'd6: ib[2] = sel[28];
+            4'd7: ib[2] = sel[27];
+            4'd8: ib[2] = sel[56];
+            4'd9: ib[2] = sel[29];
+            4'd10: ib[2] = sel[59];
+            4'd11: ib[2] = sel[4];
+            4'd12: ib[2] = sel[12];
+            default: ;
+        endcase
+        case (sa_r[3])
+            4'd1: ia[3] = sel[5];
+            4'd2: ia[3] = sel[6];
+            4'd3: ia[3] = sel[10];
+            4'd4: ia[3] = sel[7];
+            4'd5: ia[3] = sel[20];
+            4'd6: ia[3] = sel[40];
+            4'd7: ia[3] = sel[1];
+            4'd8: ia[3] = sel[59];
+            4'd9: ia[3] = sel[9];
+            4'd10: ia[3] = sel[63];
+            default: ;
+        endcase
+        case (sb_r[3])
+            4'd1: ib[3] = sel[7];
+            4'd2: ib[3] = sel[6];
+            4'd3: ib[3] = sel[3];
+            4'd4: ib[3] = sel[8];
+            4'd5: ib[3] = sel[9];
+            4'd6: ib[3] = sel[10];
+            4'd7: ib[3] = sel[12];
+            4'd8: ib[3] = sel[25];
+            4'd9: ib[3] = sel[26];
+            4'd10: ib[3] = sel[24];
+            4'd11: ib[3] = sel[58];
+            4'd12: ib[3] = sel[63];
+            4'd13: ib[3] = sel[14];
+            4'd14: ib[3] = sel[62];
+            default: ;
+        endcase
+        case (sa_r[4])
+            4'd1: ia[4] = sel[8];
+            4'd2: ia[4] = sel[1];
+            4'd3: ia[4] = sel[2];
+            4'd4: ia[4] = sel[29];
+            4'd5: ia[4] = sel[4];
+            4'd6: ia[4] = sel[59];
+            4'd7: ia[4] = sel[3];
+            4'd8: ia[4] = sel[15];
+            4'd9: ia[4] = sel[7];
+            default: ;
+        endcase
+        case (sb_r[4])
+            4'd1: ib[4] = sel[10];
+            4'd2: ib[4] = sel[11];
+            4'd3: ib[4] = sel[12];
+            4'd4: ib[4] = sel[15];
+            4'd5: ib[4] = sel[9];
+            4'd6: ib[4] = sel[30];
+            4'd7: ib[4] = sel[60];
+            4'd8: ib[4] = sel[55];
+            4'd9: ib[4] = sel[8];
+            default: ;
+        endcase
+        case (sa_r[5])
+            4'd1: ia[5] = sel[9];
+            4'd2: ia[5] = sel[10];
+            4'd3: ia[5] = sel[11];
+            4'd4: ia[5] = sel[13];
+            4'd5: ia[5] = sel[3];
+            4'd6: ia[5] = sel[18];
+            4'd7: ia[5] = sel[36];
+            4'd8: ia[5] = sel[5];
+            default: ;
+        endcase
+        case (sb_r[5])
+            4'd1: ib[5] = sel[11];
+            4'd2: ib[5] = sel[10];
+            4'd3: ib[5] = sel[14];
+            4'd4: ib[5] = sel[12];
+            4'd5: ib[5] = sel[7];
+            4'd6: ib[5] = sel[28];
+            4'd7: ib[5] = sel[22];
+            4'd8: ib[5] = sel[21];
+            4'd9: ib[5] = sel[54];
+            4'd10: ib[5] = sel[53];
+            default: ;
+        endcase
+        case (sa_r[6])
+            4'd1: ia[6] = sel[12];
+            4'd2: ia[6] = sel[9];
+            4'd3: ia[6] = sel[14];
+            4'd4: ia[6] = sel[10];
+            4'd5: ia[6] = sel[5];
+            4'd6: ia[6] = sel[20];
+            4'd7: ia[6] = sel[11];
+            4'd8: ia[6] = sel[13];
+            4'd9: ia[6] = sel[3];
+            default: ;
+        endcase
+        case (sb_r[6])
+            4'd1: ib[6] = sel[14];
+            4'd2: ib[6] = sel[15];
+            4'd3: ib[6] = sel[13];
+            4'd4: ib[6] = sel[11];
+            4'd5: ib[6] = sel[9];
+            4'd6: ib[6] = sel[22];
+            4'd7: ib[6] = sel[19];
+            4'd8: ib[6] = sel[44];
+            4'd9: ib[6] = sel[51];
+            4'd10: ib[6] = sel[12];
+            default: ;
+        endcase
+        case (sa_r[7])
+            4'd1: ia[7] = sel[13];
+            4'd2: ia[7] = sel[14];
+            4'd3: ia[7] = sel[12];
+            4'd4: ia[7] = sel[26];
+            4'd5: ia[7] = sel[52];
+            4'd6: ia[7] = sel[9];
+            4'd7: ia[7] = sel[10];
+            4'd8: ia[7] = sel[15];
+            4'd9: ia[7] = sel[1];
+            4'd10: ia[7] = sel[7];
+            4'd11: ia[7] = sel[59];
+            default: ;
+        endcase
+        case (sb_r[7])
+            4'd1: ib[7] = sel[15];
+            4'd2: ib[7] = sel[14];
+            4'd3: ib[7] = sel[11];
+            4'd4: ib[7] = sel[3];
+            4'd5: ib[7] = sel[10];
+            4'd6: ib[7] = sel[6];
+            4'd7: ib[7] = sel[17];
+            4'd8: ib[7] = sel[18];
+            4'd9: ib[7] = sel[12];
+            4'd10: ib[7] = sel[49];
+            4'd11: ib[7] = sel[50];
+            4'd12: ib[7] = sel[63];
+            default: ;
+        endcase
+        case (sa_r[8])
+            4'd1: ia[8] = sel[16];
+            4'd2: ia[8] = sel[1];
+            4'd3: ia[8] = sel[15];
+            4'd4: ia[8] = sel[8];
+            4'd5: ia[8] = sel[2];
+            4'd6: ia[8] = sel[23];
+            4'd7: ia[8] = sel[31];
+            default: ;
+        endcase
+        case (sb_r[8])
+            4'd1: ib[8] = sel[18];
+            4'd2: ib[8] = sel[19];
+            4'd3: ib[8] = sel[20];
+            4'd4: ib[8] = sel[23];
+            4'd5: ib[8] = sel[24];
+            4'd6: ib[8] = sel[31];
+            4'd7: ib[8] = sel[17];
+            4'd8: ib[8] = sel[16];
+            4'd9: ib[8] = sel[62];
+            4'd10: ib[8] = sel[48];
+            4'd11: ib[8] = sel[14];
+            default: ;
+        endcase
+        case (sa_r[9])
+            4'd1: ia[9] = sel[17];
+            4'd2: ia[9] = sel[18];
+            4'd3: ia[9] = sel[19];
+            4'd4: ia[9] = sel[20];
+            4'd5: ia[9] = sel[29];
+            4'd6: ia[9] = sel[11];
+            4'd7: ia[9] = sel[34];
+            4'd8: ia[9] = sel[58];
+            4'd9: ia[9] = sel[21];
+            4'd10: ia[9] = sel[16];
+            default: ;
+        endcase
+        case (sb_r[9])
+            4'd1: ib[9] = sel[19];
+            4'd2: ib[9] = sel[18];
+            4'd3: ib[9] = sel[22];
+            4'd4: ib[9] = sel[20];
+            4'd5: ib[9] = sel[28];
+            4'd6: ib[9] = sel[30];
+            4'd7: ib[9] = sel[29];
+            4'd8: ib[9] = sel[15];
+            4'd9: ib[9] = sel[61];
+            4'd10: ib[9] = sel[44];
+            4'd11: ib[9] = sel[52];
+            4'd12: ib[9] = sel[26];
+            default: ;
+        endcase
+        case (sa_r[10])
+            4'd1: ia[10] = sel[20];
+            4'd2: ia[10] = sel[17];
+            4'd3: ia[10] = sel[22];
+            4'd4: ia[10] = sel[18];
+            4'd5: ia[10] = sel[9];
+            4'd6: ia[10] = sel[19];
+            4'd7: ia[10] = sel[61];
+            4'd8: ia[10] = sel[4];
+            4'd9: ia[10] = sel[27];
+            default: ;
+        endcase
+        case (sb_r[10])
+            4'd1: ib[10] = sel[22];
+            4'd2: ib[10] = sel[23];
+            4'd3: ib[10] = sel[21];
+            4'd4: ib[10] = sel[30];
+            4'd5: ib[10] = sel[27];
+            4'd6: ib[10] = sel[20];
+            4'd7: ib[10] = sel[46];
+            4'd8: ib[10] = sel[62];
+            4'd9: ib[10] = sel[45];
+            default: ;
+        endcase
+        case (sa_r[11])
+            4'd1: ia[11] = sel[21];
+            4'd2: ia[11] = sel[22];
+            4'd3: ia[11] = sel[26];
+            4'd4: ia[11] = sel[23];
+            4'd5: ia[11] = sel[25];
+            4'd6: ia[11] = sel[24];
+            4'd7: ia[11] = sel[7];
+            4'd8: ia[11] = sel[42];
+            4'd9: ia[11] = sel[17];
+            4'd10: ia[11] = sel[18];
+            default: ;
+        endcase
+        case (sb_r[11])
+            4'd1: ib[11] = sel[23];
+            4'd2: ib[11] = sel[22];
+            4'd3: ib[11] = sel[19];
+            4'd4: ib[11] = sel[24];
+            4'd5: ib[11] = sel[25];
+            4'd6: ib[11] = sel[26];
+            4'd7: ib[11] = sel[11];
+            4'd8: ib[11] = sel[56];
+            4'd9: ib[11] = sel[40];
+            4'd10: ib[11] = sel[41];
+            default: ;
+        endcase
+        case (sa_r[12])
+            4'd1: ia[12] = sel[24];
+            4'd2: ia[12] = sel[17];
+            4'd3: ia[12] = sel[5];
+            4'd4: ia[12] = sel[27];
+            4'd5: ia[12] = sel[10];
+            4'd6: ia[12] = sel[31];
+            4'd7: ia[12] = sel[23];
+            4'd8: ia[12] = sel[20];
+            default: ;
+        endcase
+        case (sb_r[12])
+            4'd1: ib[12] = sel[26];
+            4'd2: ib[12] = sel[27];
+            4'd3: ib[12] = sel[28];
+            4'd4: ib[12] = sel[31];
+            4'd5: ib[12] = sel[25];
+            4'd6: ib[12] = sel[54];
+            4'd7: ib[12] = sel[39];
+            4'd8: ib[12] = sel[24];
+            default: ;
+        endcase
+        case (sa_r[13])
+            4'd1: ia[13] = sel[25];
+            4'd2: ia[13] = sel[26];
+            4'd3: ia[13] = sel[27];
+            4'd4: ia[13] = sel[29];
+            4'd5: ia[13] = sel[19];
+            4'd6: ia[13] = sel[50];
+            4'd7: ia[13] = sel[21];
+            4'd8: ia[13] = sel[22];
+            default: ;
+        endcase
+        case (sb_r[13])
+            4'd1: ib[13] = sel[27];
+            4'd2: ib[13] = sel[26];
+            4'd3: ib[13] = sel[30];
+            4'd4: ib[13] = sel[28];
+            4'd5: ib[13] = sel[23];
+            4'd6: ib[13] = sel[7];
+            4'd7: ib[13] = sel[21];
+            4'd8: ib[13] = sel[20];
+            4'd9: ib[13] = sel[18];
+            4'd10: ib[13] = sel[14];
+            4'd11: ib[13] = sel[38];
+            4'd12: ib[13] = sel[37];
+            default: ;
+        endcase
+        case (sa_r[14])
+            4'd1: ia[14] = sel[28];
+            4'd2: ia[14] = sel[25];
+            4'd3: ia[14] = sel[30];
+            4'd4: ia[14] = sel[26];
+            4'd5: ia[14] = sel[21];
+            4'd6: ia[14] = sel[13];
+            4'd7: ia[14] = sel[27];
+            4'd8: ia[14] = sel[29];
+            4'd9: ia[14] = sel[19];
+            default: ;
+        endcase
+        case (sb_r[14])
+            4'd1: ib[14] = sel[30];
+            4'd2: ib[14] = sel[31];
+            4'd3: ib[14] = sel[29];
+            4'd4: ib[14] = sel[27];
+            4'd5: ib[14] = sel[25];
+            4'd6: ib[14] = sel[19];
+            4'd7: ib[14] = sel[17];
+            4'd8: ib[14] = sel[21];
+            4'd9: ib[14] = sel[38];
+            4'd10: ib[14] = sel[35];
+            4'd11: ib[14] = sel[28];
+            default: ;
+        endcase
+        case (sa_r[15])
+            4'd1: ia[15] = sel[29];
+            4'd2: ia[15] = sel[30];
+            4'd3: ia[15] = sel[28];
+            4'd4: ia[15] = sel[25];
+            4'd5: ia[15] = sel[58];
+            4'd6: ia[15] = sel[26];
+            4'd7: ia[15] = sel[31];
+            4'd8: ia[15] = sel[17];
+            4'd9: ia[15] = sel[23];
+            default: ;
+        endcase
+        case (sb_r[15])
+            4'd1: ib[15] = sel[31];
+            4'd2: ib[15] = sel[30];
+            4'd3: ib[15] = sel[27];
+            4'd4: ib[15] = sel[19];
+            4'd5: ib[15] = sel[26];
+            4'd6: ib[15] = sel[3];
+            4'd7: ib[15] = sel[22];
+            4'd8: ib[15] = sel[6];
+            4'd9: ib[15] = sel[33];
+            4'd10: ib[15] = sel[34];
+            4'd11: ib[15] = sel[28];
+            default: ;
+        endcase
+        case (sa_r[16])
+            4'd1: ia[16] = sel[32];
+            4'd2: ia[16] = sel[1];
+            4'd3: ia[16] = sel[31];
+            4'd4: ia[16] = sel[16];
+            4'd5: ia[16] = sel[39];
+            4'd6: ia[16] = sel[47];
+            default: ;
+        endcase
+        case (sb_r[16])
+            4'd1: ib[16] = sel[34];
+            4'd2: ib[16] = sel[35];
+            4'd3: ib[16] = sel[36];
+            4'd4: ib[16] = sel[39];
+            4'd5: ib[16] = sel[40];
+            4'd6: ib[16] = sel[47];
+            4'd7: ib[16] = sel[48];
+            4'd8: ib[16] = sel[63];
+            4'd9: ib[16] = sel[33];
+            4'd10: ib[16] = sel[32];
+            4'd11: ib[16] = sel[30];
+            default: ;
+        endcase
+        case (sa_r[17])
+            4'd1: ia[17] = sel[33];
+            4'd2: ia[17] = sel[34];
+            4'd3: ia[17] = sel[35];
+            4'd4: ia[17] = sel[36];
+            4'd5: ia[17] = sel[40];
+            4'd6: ia[17] = sel[17];
+            4'd7: ia[17] = sel[61];
+            4'd8: ia[17] = sel[37];
+            4'd9: ia[17] = sel[45];
+            4'd10: ia[17] = sel[32];
+            default: ;
+        endcase
+        case (sb_r[17])
+            4'd1: ib[17] = sel[35];
+            4'd2: ib[17] = sel[34];
+            4'd3: ib[17] = sel[38];
+            4'd4: ib[17] = sel[36];
+            4'd5: ib[17] = sel[44];
+            4'd6: ib[17] = sel[46];
+            4'd7: ib[17] = sel[45];
+            4'd8: ib[17] = sel[56];
+            4'd9: ib[17] = sel[61];
+            4'd10: ib[17] = sel[47];
+            4'd11: ib[17] = sel[42];
+            default: ;
+        endcase
+        case (sa_r[18])
+            4'd1: ia[18] = sel[36];
+            4'd2: ia[18] = sel[33];
+            4'd3: ia[18] = sel[38];
+            4'd4: ia[18] = sel[34];
+            4'd5: ia[18] = sel[9];
+            4'd6: ia[18] = sel[20];
+            4'd7: ia[18] = sel[35];
+            4'd8: ia[18] = sel[43];
+            default: ;
+        endcase
+        case (sb_r[18])
+            4'd1: ib[18] = sel[38];
+            4'd2: ib[18] = sel[39];
+            4'd3: ib[18] = sel[37];
+            4'd4: ib[18] = sel[46];
+            4'd5: ib[18] = sel[43];
+            4'd6: ib[18] = sel[60];
+            4'd7: ib[18] = sel[59];
+            4'd8: ib[18] = sel[55];
+            4'd9: ib[18] = sel[36];
+            4'd10: ib[18] = sel[44];
+            default: ;
+        endcase
+        case (sa_r[19])
+            4'd1: ia[19] = sel[37];
+            4'd2: ia[19] = sel[38];
+            4'd3: ia[19] = sel[42];
+            4'd4: ia[19] = sel[39];
+            4'd5: ia[19] = sel[52];
+            4'd6: ia[19] = sel[41];
+            4'd7: ia[19] = sel[57];
+            4'd8: ia[19] = sel[55];
+            4'd9: ia[19] = sel[6];
+            4'd10: ia[19] = sel[33];
+            4'd11: ia[19] = sel[35];
+            4'd12: ia[19] = sel[34];
+            default: ;
+        endcase
+        case (sb_r[19])
+            4'd1: ib[19] = sel[39];
+            4'd2: ib[19] = sel[38];
+            4'd3: ib[19] = sel[35];
+            4'd4: ib[19] = sel[40];
+            4'd5: ib[19] = sel[41];
+            4'd6: ib[19] = sel[42];
+            4'd7: ib[19] = sel[44];
+            4'd8: ib[19] = sel[57];
+            4'd9: ib[19] = sel[58];
+            4'd10: ib[19] = sel[23];
+            4'd11: ib[19] = sel[46];
+            default: ;
+        endcase
+        case (sa_r[20])
+            4'd1: ia[20] = sel[40];
+            4'd2: ia[20] = sel[33];
+            4'd3: ia[20] = sel[34];
+            4'd4: ia[20] = sel[61];
+            4'd5: ia[20] = sel[47];
+            4'd6: ia[20] = sel[39];
+            default: ;
+        endcase
+        case (sb_r[20])
+            4'd1: ib[20] = sel[42];
+            4'd2: ib[20] = sel[43];
+            4'd3: ib[20] = sel[44];
+            4'd4: ib[20] = sel[47];
+            4'd5: ib[20] = sel[41];
+            4'd6: ib[20] = sel[62];
+            4'd7: ib[20] = sel[31];
+            4'd8: ib[20] = sel[34];
+            4'd9: ib[20] = sel[40];
+            default: ;
+        endcase
+        case (sa_r[21])
+            4'd1: ia[21] = sel[41];
+            4'd2: ia[21] = sel[42];
+            4'd3: ia[21] = sel[43];
+            4'd4: ia[21] = sel[45];
+            4'd5: ia[21] = sel[35];
+            4'd6: ia[21] = sel[50];
+            4'd7: ia[21] = sel[49];
+            4'd8: ia[21] = sel[53];
+            4'd9: ia[21] = sel[27];
+            4'd10: ia[21] = sel[37];
+            default: ;
+        endcase
+        case (sb_r[21])
+            4'd1: ib[21] = sel[43];
+            4'd2: ib[21] = sel[42];
+            4'd3: ib[21] = sel[46];
+            4'd4: ib[21] = sel[44];
+            4'd5: ib[21] = sel[39];
+            4'd6: ib[21] = sel[60];
+            4'd7: ib[21] = sel[54];
+            4'd8: ib[21] = sel[53];
+            4'd9: ib[21] = sel[15];
+            4'd10: ib[21] = sel[36];
+            4'd11: ib[21] = sel[31];
+            default: ;
+        endcase
+        case (sa_r[22])
+            4'd1: ia[22] = sel[44];
+            4'd2: ia[22] = sel[41];
+            4'd3: ia[22] = sel[46];
+            4'd4: ia[22] = sel[42];
+            4'd5: ia[22] = sel[37];
+            4'd6: ia[22] = sel[54];
+            4'd7: ia[22] = sel[53];
+            4'd8: ia[22] = sel[49];
+            default: ;
+        endcase
+        case (sb_r[22])
+            4'd1: ib[22] = sel[46];
+            4'd2: ib[22] = sel[47];
+            4'd3: ib[22] = sel[45];
+            4'd4: ib[22] = sel[43];
+            4'd5: ib[22] = sel[41];
+            4'd6: ib[22] = sel[54];
+            4'd7: ib[22] = sel[51];
+            4'd8: ib[22] = sel[27];
+            4'd9: ib[22] = sel[57];
+            4'd10: ib[22] = sel[62];
+            default: ;
+        endcase
+        case (sa_r[23])
+            4'd1: ia[23] = sel[45];
+            4'd2: ia[23] = sel[46];
+            4'd3: ia[23] = sel[44];
+            4'd4: ia[23] = sel[58];
+            4'd5: ia[23] = sel[21];
+            4'd6: ia[23] = sel[53];
+            4'd7: ia[23] = sel[48];
+            4'd8: ia[23] = sel[37];
+            4'd9: ia[23] = sel[57];
+            4'd10: ia[23] = sel[42];
+            4'd11: ia[23] = sel[47];
+            4'd12: ia[23] = sel[33];
+            4'd13: ia[23] = sel[39];
+            default: ;
+        endcase
+        case (sb_r[23])
+            4'd1: ib[23] = sel[47];
+            4'd2: ib[23] = sel[46];
+            4'd3: ib[23] = sel[43];
+            4'd4: ib[23] = sel[35];
+            4'd5: ib[23] = sel[42];
+            4'd6: ib[23] = sel[38];
+            4'd7: ib[23] = sel[49];
+            4'd8: ib[23] = sel[50];
+            4'd9: ib[23] = sel[62];
+            4'd10: ib[23] = sel[44];
+            default: ;
+        endcase
+        case (sa_r[24])
+            4'd1: ia[24] = sel[48];
+            4'd2: ia[24] = sel[33];
+            4'd3: ia[24] = sel[47];
+            4'd4: ia[24] = sel[40];
+            4'd5: ia[24] = sel[5];
+            4'd6: ia[24] = sel[55];
+            4'd7: ia[24] = sel[63];
+            default: ;
+        endcase
+        case (sb_r[24])
+            4'd1: ib[24] = sel[50];
+            4'd2: ib[24] = sel[51];
+            4'd3: ib[24] = sel[52];
+            4'd4: ib[24] = sel[55];
+            4'd5: ib[24] = sel[56];
+            4'd6: ib[24] = sel[63];
+            4'd7: ib[24] = sel[49];
+            4'd8: ib[24] = sel[48];
+            4'd9: ib[24] = sel[59];
+            4'd10: ib[24] = sel[46];
+            default: ;
+        endcase
+        case (sa_r[25])
+            4'd1: ia[25] = sel[49];
+            4'd2: ia[25] = sel[50];
+            4'd3: ia[25] = sel[51];
+            4'd4: ia[25] = sel[52];
+            4'd5: ia[25] = sel[61];
+            4'd6: ia[25] = sel[43];
+            4'd7: ia[25] = sel[53];
+            4'd8: ia[25] = sel[42];
+            4'd9: ia[25] = sel[35];
+            4'd10: ia[25] = sel[55];
+            4'd11: ia[25] = sel[48];
+            default: ;
+        endcase
+        case (sb_r[25])
+            4'd1: ib[25] = sel[51];
+            4'd2: ib[25] = sel[50];
+            4'd3: ib[25] = sel[54];
+            4'd4: ib[25] = sel[52];
+            4'd5: ib[25] = sel[60];
+            4'd6: ib[25] = sel[62];
+            4'd7: ib[25] = sel[61];
+            4'd8: ib[25] = sel[47];
+            4'd9: ib[25] = sel[11];
+            4'd10: ib[25] = sel[45];
+            4'd11: ib[25] = sel[44];
+            4'd12: ib[25] = sel[63];
+            default: ;
+        endcase
+        case (sa_r[26])
+            4'd1: ia[26] = sel[52];
+            4'd2: ia[26] = sel[49];
+            4'd3: ia[26] = sel[54];
+            4'd4: ia[26] = sel[50];
+            4'd5: ia[26] = sel[41];
+            4'd6: ia[26] = sel[51];
+            4'd7: ia[26] = sel[29];
+            4'd8: ia[26] = sel[53];
+            4'd9: ia[26] = sel[59];
+            default: ;
+        endcase
+        case (sb_r[26])
+            4'd1: ib[26] = sel[54];
+            4'd2: ib[26] = sel[55];
+            4'd3: ib[26] = sel[53];
+            4'd4: ib[26] = sel[62];
+            4'd5: ib[26] = sel[59];
+            4'd6: ib[26] = sel[52];
+            4'd7: ib[26] = sel[35];
+            4'd8: ib[26] = sel[46];
+            4'd9: ib[26] = sel[50];
+            4'd10: ib[26] = sel[45];
+            4'd11: ib[26] = sel[43];
+            default: ;
+        endcase
+        case (sa_r[27])
+            4'd1: ia[27] = sel[53];
+            4'd2: ia[27] = sel[54];
+            4'd3: ia[27] = sel[58];
+            4'd4: ia[27] = sel[55];
+            4'd5: ia[27] = sel[57];
+            4'd6: ia[27] = sel[56];
+            4'd7: ia[27] = sel[39];
+            4'd8: ia[27] = sel[25];
+            4'd9: ia[27] = sel[52];
+            4'd10: ia[27] = sel[49];
+            4'd11: ia[27] = sel[50];
+            default: ;
+        endcase
+        case (sb_r[27])
+            4'd1: ib[27] = sel[55];
+            4'd2: ib[27] = sel[54];
+            4'd3: ib[27] = sel[51];
+            4'd4: ib[27] = sel[56];
+            4'd5: ib[27] = sel[57];
+            4'd6: ib[27] = sel[58];
+            4'd7: ib[27] = sel[43];
+            4'd8: ib[27] = sel[39];
+            4'd9: ib[27] = sel[40];
+            default: ;
+        endcase
+        case (sa_r[28])
+            4'd1: ia[28] = sel[56];
+            4'd2: ia[28] = sel[49];
+            4'd3: ia[28] = sel[37];
+            4'd4: ia[28] = sel[59];
+            4'd5: ia[28] = sel[61];
+            4'd6: ia[28] = sel[51];
+            4'd7: ia[28] = sel[52];
+            4'd8: ia[28] = sel[63];
+            4'd9: ia[28] = sel[55];
+            default: ;
+        endcase
+        case (sb_r[28])
+            4'd1: ib[28] = sel[58];
+            4'd2: ib[28] = sel[59];
+            4'd3: ib[28] = sel[60];
+            4'd4: ib[28] = sel[63];
+            4'd5: ib[28] = sel[57];
+            4'd6: ib[28] = sel[3];
+            4'd7: ib[28] = sel[36];
+            4'd8: ib[28] = sel[52];
+            4'd9: ib[28] = sel[56];
+            default: ;
+        endcase
+        case (sa_r[29])
+            4'd1: ia[29] = sel[57];
+            4'd2: ia[29] = sel[58];
+            4'd3: ia[29] = sel[59];
+            4'd4: ia[29] = sel[61];
+            4'd5: ia[29] = sel[51];
+            4'd6: ia[29] = sel[45];
+            4'd7: ia[29] = sel[50];
+            default: ;
+        endcase
+        case (sb_r[29])
+            4'd1: ib[29] = sel[59];
+            4'd2: ib[29] = sel[58];
+            4'd3: ib[29] = sel[62];
+            4'd4: ib[29] = sel[60];
+            4'd5: ib[29] = sel[55];
+            4'd6: ib[29] = sel[39];
+            4'd7: ib[29] = sel[53];
+            4'd8: ib[29] = sel[52];
+            4'd9: ib[29] = sel[50];
+            4'd10: ib[29] = sel[19];
+            4'd11: ib[29] = sel[37];
+            default: ;
+        endcase
+        case (sa_r[30])
+            4'd1: ia[30] = sel[60];
+            4'd2: ia[30] = sel[57];
+            4'd3: ia[30] = sel[62];
+            4'd4: ia[30] = sel[58];
+            4'd5: ia[30] = sel[53];
+            4'd6: ia[30] = sel[45];
+            4'd7: ia[30] = sel[13];
+            4'd8: ia[30] = sel[56];
+            4'd9: ia[30] = sel[51];
+            4'd10: ia[30] = sel[50];
+            default: ;
+        endcase
+        case (sb_r[30])
+            4'd1: ib[30] = sel[62];
+            4'd2: ib[30] = sel[63];
+            4'd3: ib[30] = sel[61];
+            4'd4: ib[30] = sel[59];
+            4'd5: ib[30] = sel[57];
+            4'd6: ib[30] = sel[51];
+            4'd7: ib[30] = sel[49];
+            4'd8: ib[30] = sel[53];
+            4'd9: ib[30] = sel[33];
+            4'd10: ib[30] = sel[60];
+            4'd11: ib[30] = sel[50];
+            4'd12: ib[30] = sel[58];
+            default: ;
+        endcase
+        case (sa_r[31])
+            4'd1: ia[31] = sel[61];
+            4'd2: ia[31] = sel[62];
+            4'd3: ia[31] = sel[60];
+            4'd4: ia[31] = sel[57];
+            4'd5: ia[31] = sel[49];
+            4'd6: ia[31] = sel[59];
+            4'd7: ia[31] = sel[58];
+            4'd8: ia[31] = sel[63];
+            4'd9: ia[31] = sel[51];
+            4'd10: ia[31] = sel[54];
+            4'd11: ia[31] = sel[55];
+            default: ;
+        endcase
+        case (sb_r[31])
+            4'd1: ib[31] = sel[63];
+            4'd2: ib[31] = sel[62];
+            4'd3: ib[31] = sel[59];
+            4'd4: ib[31] = sel[51];
+            4'd5: ib[31] = sel[58];
+            4'd6: ib[31] = sel[35];
+            4'd7: ib[31] = sel[54];
+            4'd8: ib[31] = sel[7];
+            4'd9: ib[31] = sel[60];
             default: ;
         endcase
     end
 
     logic signed [TW-1:0] clip_lo, clip_hi;
-    assign clip_lo = -(TW'(1) <<< (rr - 5'd1));
-    assign clip_hi =  (TW'(1) <<< (rr - 5'd1)) - TW'(1);
+    assign clip_lo = -(TW'(1) <<< (r_l - 5'd1));
+    assign clip_hi =  (TW'(1) <<< (r_l - 5'd1)) - TW'(1);
     genvar gu;
     generate for (gu = 0; gu < NU; gu++) begin : g_unit
-        itx_pair #(.TW(TW)) u_pair (.ia(ia[gu]), .ib(ib[gu]), .c(uc[gu]), .s(us[gu]), .mode(um[gu]), .flip(uf[gu]),
+        itx_pair #(.TW(TW)) u_pair (.ia(ia[gu]), .ib(ib[gu]), .c(uc_r[gu]), .s(us_r[gu]), .mode(um_r[gu]), .flip(uf_r[gu]),
                                     .clip_lo(clip_lo), .clip_hi(clip_hi), .oa(oa[gu]), .ob(ob[gu]));
     end endgenerate
 
-    // write-back per (program, level): touched lanes take their unit's output, the rest hold
+    // sequencing: p_l / r_l track the inputs while idle (so level 0 needs no input mux), lvl_l counts while busy
     always_ff @(posedge clk) begin
         done <= 1'b0;
         if (rst) begin
             busy <= 1'b0;
             lvl_l <= 4'd0;
-        end else if (step) begin
+        end else begin
             if (!busy) begin p_l <= prog; r_l <= r; end
-            if (lvl + 4'd1 == nlvl) begin busy <= 1'b0; done <= 1'b1; lvl_l <= 4'd0; end
-            else begin busy <= 1'b1; lvl_l <= lvl + 4'd1; end
-            case ({p, lvl})
-                {3'd0, 4'd0}: begin
-                    rv[0] <= oa[0]; rv[1] <= ob[0];
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[17] <= ob[8];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[33] <= ob[16];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[45] <= ob[22];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[49] <= ob[24];
-                    rv[50] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[61] <= ob[30];
-                    rv[62] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd0, 4'd1}: begin
-                    rv[0] <= oa[0]; rv[3] <= ob[0];
-                    rv[1] <= oa[1]; rv[2] <= ob[1];
-                    rv[4] <= oa[2]; rv[7] <= ob[2];
-                    rv[5] <= oa[3]; rv[6] <= ob[3];
-                    rv[8] <= oa[4]; rv[11] <= ob[4];
-                    rv[9] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[6]; rv[15] <= ob[6];
-                    rv[13] <= oa[7]; rv[14] <= ob[7];
-                    rv[16] <= oa[8]; rv[19] <= ob[8];
-                    rv[17] <= oa[9]; rv[18] <= ob[9];
-                    rv[20] <= oa[10]; rv[23] <= ob[10];
-                    rv[21] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[27] <= ob[12];
-                    rv[25] <= oa[13]; rv[26] <= ob[13];
-                    rv[28] <= oa[14]; rv[31] <= ob[14];
-                    rv[29] <= oa[15]; rv[30] <= ob[15];
-                    rv[32] <= oa[16]; rv[35] <= ob[16];
-                    rv[33] <= oa[17]; rv[34] <= ob[17];
-                    rv[36] <= oa[18]; rv[39] <= ob[18];
-                    rv[37] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[43] <= ob[20];
-                    rv[41] <= oa[21]; rv[42] <= ob[21];
-                    rv[44] <= oa[22]; rv[47] <= ob[22];
-                    rv[45] <= oa[23]; rv[46] <= ob[23];
-                    rv[48] <= oa[24]; rv[51] <= ob[24];
-                    rv[49] <= oa[25]; rv[50] <= ob[25];
-                    rv[52] <= oa[26]; rv[55] <= ob[26];
-                    rv[53] <= oa[27]; rv[54] <= ob[27];
-                    rv[56] <= oa[28]; rv[59] <= ob[28];
-                    rv[57] <= oa[29]; rv[58] <= ob[29];
-                    rv[60] <= oa[30]; rv[63] <= ob[30];
-                    rv[61] <= oa[31]; rv[62] <= ob[31];
-                end
-                {3'd1, 4'd0}: begin
-                    rv[0] <= oa[0]; rv[1] <= ob[0];
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[7] <= ob[2];
-                    rv[5] <= oa[3]; rv[6] <= ob[3];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[15] <= ob[6];
-                    rv[13] <= oa[7]; rv[14] <= ob[7];
-                    rv[16] <= oa[8]; rv[17] <= ob[8];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[23] <= ob[10];
-                    rv[21] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[31] <= ob[14];
-                    rv[29] <= oa[15]; rv[30] <= ob[15];
-                    rv[32] <= oa[16]; rv[33] <= ob[16];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[39] <= ob[18];
-                    rv[37] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[47] <= ob[22];
-                    rv[45] <= oa[23]; rv[46] <= ob[23];
-                    rv[48] <= oa[24]; rv[49] <= ob[24];
-                    rv[50] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[26]; rv[55] <= ob[26];
-                    rv[53] <= oa[27]; rv[54] <= ob[27];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[63] <= ob[30];
-                    rv[61] <= oa[31]; rv[62] <= ob[31];
-                end
-                {3'd1, 4'd1}: begin
-                    rv[0] <= oa[0]; rv[3] <= ob[0];
-                    rv[1] <= oa[1]; rv[2] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[11] <= ob[4];
-                    rv[9] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[19] <= ob[8];
-                    rv[17] <= oa[9]; rv[18] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[27] <= ob[12];
-                    rv[25] <= oa[13]; rv[26] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[35] <= ob[16];
-                    rv[33] <= oa[17]; rv[34] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[43] <= ob[20];
-                    rv[41] <= oa[21]; rv[42] <= ob[21];
-                    rv[44] <= oa[22]; rv[45] <= ob[22];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[51] <= ob[24];
-                    rv[49] <= oa[25]; rv[50] <= ob[25];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[59] <= ob[28];
-                    rv[57] <= oa[29]; rv[58] <= ob[29];
-                    rv[60] <= oa[30]; rv[61] <= ob[30];
-                    rv[62] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd1, 4'd2}: begin
-                    rv[0] <= oa[0]; rv[7] <= ob[0];
-                    rv[3] <= oa[1]; rv[4] <= ob[1];
-                    rv[6] <= oa[2]; rv[5] <= ob[2];
-                    rv[8] <= oa[4]; rv[15] <= ob[4];
-                    rv[11] <= oa[5]; rv[12] <= ob[5];
-                    rv[14] <= oa[6]; rv[13] <= ob[6];
-                    rv[16] <= oa[8]; rv[23] <= ob[8];
-                    rv[19] <= oa[9]; rv[20] <= ob[9];
-                    rv[22] <= oa[10]; rv[21] <= ob[10];
-                    rv[24] <= oa[12]; rv[31] <= ob[12];
-                    rv[27] <= oa[13]; rv[28] <= ob[13];
-                    rv[30] <= oa[14]; rv[29] <= ob[14];
-                    rv[32] <= oa[16]; rv[39] <= ob[16];
-                    rv[35] <= oa[17]; rv[36] <= ob[17];
-                    rv[38] <= oa[18]; rv[37] <= ob[18];
-                    rv[40] <= oa[20]; rv[47] <= ob[20];
-                    rv[43] <= oa[21]; rv[44] <= ob[21];
-                    rv[46] <= oa[22]; rv[45] <= ob[22];
-                    rv[48] <= oa[24]; rv[55] <= ob[24];
-                    rv[51] <= oa[25]; rv[52] <= ob[25];
-                    rv[54] <= oa[26]; rv[53] <= ob[26];
-                    rv[56] <= oa[28]; rv[63] <= ob[28];
-                    rv[59] <= oa[29]; rv[60] <= ob[29];
-                    rv[62] <= oa[30]; rv[61] <= ob[30];
-                end
-                {3'd1, 4'd3}: begin
-                    rv[1] <= oa[1]; rv[6] <= ob[1];
-                    rv[2] <= oa[2]; rv[5] <= ob[2];
-                    rv[9] <= oa[5]; rv[14] <= ob[5];
-                    rv[10] <= oa[6]; rv[13] <= ob[6];
-                    rv[17] <= oa[9]; rv[22] <= ob[9];
-                    rv[18] <= oa[10]; rv[21] <= ob[10];
-                    rv[25] <= oa[13]; rv[30] <= ob[13];
-                    rv[26] <= oa[14]; rv[29] <= ob[14];
-                    rv[33] <= oa[17]; rv[38] <= ob[17];
-                    rv[34] <= oa[18]; rv[37] <= ob[18];
-                    rv[41] <= oa[21]; rv[46] <= ob[21];
-                    rv[42] <= oa[22]; rv[45] <= ob[22];
-                    rv[49] <= oa[25]; rv[54] <= ob[25];
-                    rv[50] <= oa[26]; rv[53] <= ob[26];
-                    rv[57] <= oa[29]; rv[62] <= ob[29];
-                    rv[58] <= oa[30]; rv[61] <= ob[30];
-                end
-                {3'd2, 4'd0}: begin
-                    rv[0] <= oa[0]; rv[1] <= ob[0];
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[7] <= ob[2];
-                    rv[5] <= oa[3]; rv[6] <= ob[3];
-                    rv[8] <= oa[4]; rv[15] <= ob[4];
-                    rv[9] <= oa[5]; rv[14] <= ob[5];
-                    rv[10] <= oa[6]; rv[13] <= ob[6];
-                    rv[11] <= oa[7]; rv[12] <= ob[7];
-                    rv[16] <= oa[8]; rv[17] <= ob[8];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[23] <= ob[10];
-                    rv[21] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[31] <= ob[12];
-                    rv[25] <= oa[13]; rv[30] <= ob[13];
-                    rv[26] <= oa[14]; rv[29] <= ob[14];
-                    rv[27] <= oa[15]; rv[28] <= ob[15];
-                    rv[32] <= oa[16]; rv[33] <= ob[16];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[39] <= ob[18];
-                    rv[37] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[47] <= ob[20];
-                    rv[41] <= oa[21]; rv[46] <= ob[21];
-                    rv[42] <= oa[22]; rv[45] <= ob[22];
-                    rv[43] <= oa[23]; rv[44] <= ob[23];
-                    rv[48] <= oa[24]; rv[49] <= ob[24];
-                    rv[50] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[26]; rv[55] <= ob[26];
-                    rv[53] <= oa[27]; rv[54] <= ob[27];
-                    rv[56] <= oa[28]; rv[63] <= ob[28];
-                    rv[57] <= oa[29]; rv[62] <= ob[29];
-                    rv[58] <= oa[30]; rv[61] <= ob[30];
-                    rv[59] <= oa[31]; rv[60] <= ob[31];
-                end
-                {3'd2, 4'd1}: begin
-                    rv[0] <= oa[0]; rv[3] <= ob[0];
-                    rv[1] <= oa[1]; rv[2] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[19] <= ob[8];
-                    rv[17] <= oa[9]; rv[18] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[35] <= ob[16];
-                    rv[33] <= oa[17]; rv[34] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[45] <= ob[22];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[51] <= ob[24];
-                    rv[49] <= oa[25]; rv[50] <= ob[25];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[61] <= ob[30];
-                    rv[62] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd2, 4'd2}: begin
-                    rv[0] <= oa[0]; rv[7] <= ob[0];
-                    rv[3] <= oa[1]; rv[4] <= ob[1];
-                    rv[6] <= oa[2]; rv[5] <= ob[2];
-                    rv[8] <= oa[4]; rv[11] <= ob[4];
-                    rv[14] <= oa[6]; rv[9] <= ob[6];
-                    rv[13] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[23] <= ob[8];
-                    rv[19] <= oa[9]; rv[20] <= ob[9];
-                    rv[22] <= oa[10]; rv[21] <= ob[10];
-                    rv[24] <= oa[12]; rv[27] <= ob[12];
-                    rv[30] <= oa[14]; rv[25] <= ob[14];
-                    rv[29] <= oa[13]; rv[26] <= ob[13];
-                    rv[28] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[39] <= ob[16];
-                    rv[35] <= oa[17]; rv[36] <= ob[17];
-                    rv[38] <= oa[18]; rv[37] <= ob[18];
-                    rv[40] <= oa[20]; rv[43] <= ob[20];
-                    rv[46] <= oa[22]; rv[41] <= ob[22];
-                    rv[45] <= oa[21]; rv[42] <= ob[21];
-                    rv[44] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[55] <= ob[24];
-                    rv[51] <= oa[25]; rv[52] <= ob[25];
-                    rv[54] <= oa[26]; rv[53] <= ob[26];
-                    rv[56] <= oa[28]; rv[59] <= ob[28];
-                    rv[62] <= oa[30]; rv[57] <= ob[30];
-                    rv[61] <= oa[29]; rv[58] <= ob[29];
-                    rv[60] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd2, 4'd3}: begin
-                    rv[0] <= oa[0]; rv[15] <= ob[0];
-                    rv[1] <= oa[1]; rv[6] <= ob[1];
-                    rv[2] <= oa[2]; rv[5] <= ob[2];
-                    rv[7] <= oa[3]; rv[8] <= ob[3];
-                    rv[9] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[6]; rv[11] <= ob[6];
-                    rv[13] <= oa[7]; rv[14] <= ob[7];
-                    rv[16] <= oa[8]; rv[31] <= ob[8];
-                    rv[17] <= oa[9]; rv[22] <= ob[9];
-                    rv[18] <= oa[10]; rv[21] <= ob[10];
-                    rv[23] <= oa[11]; rv[24] <= ob[11];
-                    rv[25] <= oa[13]; rv[26] <= ob[13];
-                    rv[28] <= oa[14]; rv[27] <= ob[14];
-                    rv[29] <= oa[15]; rv[30] <= ob[15];
-                    rv[32] <= oa[16]; rv[47] <= ob[16];
-                    rv[33] <= oa[17]; rv[38] <= ob[17];
-                    rv[34] <= oa[18]; rv[37] <= ob[18];
-                    rv[39] <= oa[19]; rv[40] <= ob[19];
-                    rv[41] <= oa[21]; rv[42] <= ob[21];
-                    rv[44] <= oa[22]; rv[43] <= ob[22];
-                    rv[45] <= oa[23]; rv[46] <= ob[23];
-                    rv[48] <= oa[24]; rv[63] <= ob[24];
-                    rv[49] <= oa[25]; rv[54] <= ob[25];
-                    rv[50] <= oa[26]; rv[53] <= ob[26];
-                    rv[55] <= oa[27]; rv[56] <= ob[27];
-                    rv[57] <= oa[29]; rv[58] <= ob[29];
-                    rv[60] <= oa[30]; rv[59] <= ob[30];
-                    rv[61] <= oa[31]; rv[62] <= ob[31];
-                end
-                {3'd2, 4'd4}: begin
-                    rv[1] <= oa[1]; rv[14] <= ob[1];
-                    rv[3] <= oa[5]; rv[12] <= ob[5];
-                    rv[4] <= oa[2]; rv[11] <= ob[2];
-                    rv[6] <= oa[3]; rv[9] <= ob[3];
-                    rv[13] <= oa[7]; rv[10] <= ob[7];
-                    rv[17] <= oa[9]; rv[30] <= ob[9];
-                    rv[19] <= oa[13]; rv[28] <= ob[13];
-                    rv[20] <= oa[10]; rv[27] <= ob[10];
-                    rv[22] <= oa[11]; rv[25] <= ob[11];
-                    rv[29] <= oa[15]; rv[26] <= ob[15];
-                    rv[33] <= oa[17]; rv[46] <= ob[17];
-                    rv[35] <= oa[21]; rv[44] <= ob[21];
-                    rv[36] <= oa[18]; rv[43] <= ob[18];
-                    rv[38] <= oa[19]; rv[41] <= ob[19];
-                    rv[45] <= oa[23]; rv[42] <= ob[23];
-                    rv[49] <= oa[25]; rv[62] <= ob[25];
-                    rv[51] <= oa[29]; rv[60] <= ob[29];
-                    rv[52] <= oa[26]; rv[59] <= ob[26];
-                    rv[54] <= oa[27]; rv[57] <= ob[27];
-                    rv[61] <= oa[31]; rv[58] <= ob[31];
-                end
-                {3'd2, 4'd5}: begin
-                    rv[2] <= oa[1]; rv[13] <= ob[1];
-                    rv[5] <= oa[3]; rv[10] <= ob[3];
-                    rv[18] <= oa[9]; rv[29] <= ob[9];
-                    rv[21] <= oa[11]; rv[26] <= ob[11];
-                    rv[34] <= oa[17]; rv[45] <= ob[17];
-                    rv[37] <= oa[19]; rv[42] <= ob[19];
-                    rv[50] <= oa[25]; rv[61] <= ob[25];
-                    rv[53] <= oa[27]; rv[58] <= ob[27];
-                end
-                {3'd3, 4'd0}: begin
-                    rv[0] <= oa[0]; rv[1] <= ob[0];
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[7] <= ob[2];
-                    rv[5] <= oa[3]; rv[6] <= ob[3];
-                    rv[8] <= oa[4]; rv[15] <= ob[4];
-                    rv[9] <= oa[5]; rv[14] <= ob[5];
-                    rv[10] <= oa[6]; rv[13] <= ob[6];
-                    rv[11] <= oa[7]; rv[12] <= ob[7];
-                    rv[16] <= oa[8]; rv[31] <= ob[8];
-                    rv[17] <= oa[9]; rv[30] <= ob[9];
-                    rv[18] <= oa[10]; rv[29] <= ob[10];
-                    rv[19] <= oa[13]; rv[28] <= ob[13];
-                    rv[20] <= oa[12]; rv[27] <= ob[12];
-                    rv[21] <= oa[11]; rv[26] <= ob[11];
-                    rv[22] <= oa[14]; rv[25] <= ob[14];
-                    rv[23] <= oa[15]; rv[24] <= ob[15];
-                    rv[32] <= oa[16]; rv[33] <= ob[16];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[39] <= ob[18];
-                    rv[37] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[47] <= ob[20];
-                    rv[41] <= oa[21]; rv[46] <= ob[21];
-                    rv[42] <= oa[22]; rv[45] <= ob[22];
-                    rv[43] <= oa[23]; rv[44] <= ob[23];
-                    rv[48] <= oa[24]; rv[63] <= ob[24];
-                    rv[49] <= oa[25]; rv[62] <= ob[25];
-                    rv[50] <= oa[26]; rv[61] <= ob[26];
-                    rv[51] <= oa[29]; rv[60] <= ob[29];
-                    rv[52] <= oa[28]; rv[59] <= ob[28];
-                    rv[53] <= oa[27]; rv[58] <= ob[27];
-                    rv[54] <= oa[30]; rv[57] <= ob[30];
-                    rv[55] <= oa[31]; rv[56] <= ob[31];
-                end
-                {3'd3, 4'd1}: begin
-                    rv[0] <= oa[0]; rv[3] <= ob[0];
-                    rv[1] <= oa[1]; rv[2] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[17] <= ob[8];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[35] <= ob[16];
-                    rv[33] <= oa[17]; rv[34] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[45] <= ob[22];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[49] <= ob[24];
-                    rv[50] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[61] <= ob[30];
-                    rv[62] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd3, 4'd2}: begin
-                    rv[0] <= oa[0]; rv[7] <= ob[0];
-                    rv[3] <= oa[1]; rv[4] <= ob[1];
-                    rv[6] <= oa[2]; rv[5] <= ob[2];
-                    rv[8] <= oa[4]; rv[11] <= ob[4];
-                    rv[14] <= oa[6]; rv[9] <= ob[6];
-                    rv[13] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[19] <= ob[8];
-                    rv[30] <= oa[14]; rv[17] <= ob[14];
-                    rv[29] <= oa[9]; rv[18] <= ob[9];
-                    rv[20] <= oa[10]; rv[23] <= ob[10];
-                    rv[26] <= oa[13]; rv[21] <= ob[13];
-                    rv[25] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[27] <= ob[12];
-                    rv[28] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[39] <= ob[16];
-                    rv[35] <= oa[17]; rv[36] <= ob[17];
-                    rv[38] <= oa[18]; rv[37] <= ob[18];
-                    rv[40] <= oa[20]; rv[43] <= ob[20];
-                    rv[46] <= oa[22]; rv[41] <= ob[22];
-                    rv[45] <= oa[21]; rv[42] <= ob[21];
-                    rv[44] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[51] <= ob[24];
-                    rv[62] <= oa[30]; rv[49] <= ob[30];
-                    rv[61] <= oa[25]; rv[50] <= ob[25];
-                    rv[52] <= oa[26]; rv[55] <= ob[26];
-                    rv[58] <= oa[29]; rv[53] <= ob[29];
-                    rv[57] <= oa[27]; rv[54] <= ob[27];
-                    rv[56] <= oa[28]; rv[59] <= ob[28];
-                    rv[60] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd3, 4'd3}: begin
-                    rv[0] <= oa[0]; rv[15] <= ob[0];
-                    rv[1] <= oa[1]; rv[6] <= ob[1];
-                    rv[2] <= oa[2]; rv[5] <= ob[2];
-                    rv[7] <= oa[3]; rv[8] <= ob[3];
-                    rv[9] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[6]; rv[11] <= ob[6];
-                    rv[13] <= oa[7]; rv[14] <= ob[7];
-                    rv[16] <= oa[8]; rv[23] <= ob[8];
-                    rv[17] <= oa[9]; rv[18] <= ob[9];
-                    rv[28] <= oa[14]; rv[19] <= ob[14];
-                    rv[27] <= oa[13]; rv[20] <= ob[13];
-                    rv[21] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[31] <= ob[12];
-                    rv[25] <= oa[15]; rv[26] <= ob[15];
-                    rv[29] <= oa[4]; rv[30] <= ob[4];
-                    rv[32] <= oa[16]; rv[47] <= ob[16];
-                    rv[33] <= oa[17]; rv[38] <= ob[17];
-                    rv[34] <= oa[18]; rv[37] <= ob[18];
-                    rv[39] <= oa[19]; rv[40] <= ob[19];
-                    rv[41] <= oa[21]; rv[42] <= ob[21];
-                    rv[44] <= oa[22]; rv[43] <= ob[22];
-                    rv[45] <= oa[23]; rv[46] <= ob[23];
-                    rv[48] <= oa[24]; rv[55] <= ob[24];
-                    rv[49] <= oa[25]; rv[50] <= ob[25];
-                    rv[60] <= oa[30]; rv[51] <= ob[30];
-                    rv[59] <= oa[29]; rv[52] <= ob[29];
-                    rv[53] <= oa[27]; rv[54] <= ob[27];
-                    rv[56] <= oa[28]; rv[63] <= ob[28];
-                    rv[57] <= oa[31]; rv[58] <= ob[31];
-                    rv[61] <= oa[20]; rv[62] <= ob[20];
-                end
-                {3'd3, 4'd4}: begin
-                    rv[0] <= oa[0]; rv[31] <= ob[0];
-                    rv[1] <= oa[1]; rv[14] <= ob[1];
-                    rv[3] <= oa[5]; rv[12] <= ob[5];
-                    rv[4] <= oa[2]; rv[11] <= ob[2];
-                    rv[6] <= oa[3]; rv[9] <= ob[3];
-                    rv[13] <= oa[7]; rv[10] <= ob[7];
-                    rv[15] <= oa[8]; rv[16] <= ob[8];
-                    rv[17] <= oa[9]; rv[22] <= ob[9];
-                    rv[29] <= oa[13]; rv[18] <= ob[13];
-                    rv[19] <= oa[10]; rv[20] <= ob[10];
-                    rv[26] <= oa[14]; rv[21] <= ob[14];
-                    rv[24] <= oa[11]; rv[23] <= ob[11];
-                    rv[25] <= oa[15]; rv[30] <= ob[15];
-                    rv[27] <= oa[12]; rv[28] <= ob[12];
-                    rv[32] <= oa[16]; rv[63] <= ob[16];
-                    rv[33] <= oa[17]; rv[46] <= ob[17];
-                    rv[35] <= oa[21]; rv[44] <= ob[21];
-                    rv[36] <= oa[18]; rv[43] <= ob[18];
-                    rv[38] <= oa[19]; rv[41] <= ob[19];
-                    rv[45] <= oa[23]; rv[42] <= ob[23];
-                    rv[47] <= oa[24]; rv[48] <= ob[24];
-                    rv[49] <= oa[25]; rv[54] <= ob[25];
-                    rv[61] <= oa[29]; rv[50] <= ob[29];
-                    rv[51] <= oa[26]; rv[52] <= ob[26];
-                    rv[58] <= oa[30]; rv[53] <= ob[30];
-                    rv[56] <= oa[27]; rv[55] <= ob[27];
-                    rv[57] <= oa[31]; rv[62] <= ob[31];
-                    rv[59] <= oa[28]; rv[60] <= ob[28];
-                end
-                {3'd3, 4'd5}: begin
-                    rv[1] <= oa[4]; rv[30] <= ob[4];
-                    rv[2] <= oa[1]; rv[13] <= ob[1];
-                    rv[3] <= oa[5]; rv[28] <= ob[5];
-                    rv[5] <= oa[3]; rv[10] <= ob[3];
-                    rv[7] <= oa[11]; rv[24] <= ob[11];
-                    rv[8] <= oa[8]; rv[23] <= ob[8];
-                    rv[12] <= oa[6]; rv[19] <= ob[6];
-                    rv[14] <= oa[7]; rv[17] <= ob[7];
-                    rv[18] <= oa[10]; rv[21] <= ob[10];
-                    rv[27] <= oa[13]; rv[20] <= ob[13];
-                    rv[25] <= oa[15]; rv[22] <= ob[15];
-                    rv[26] <= oa[14]; rv[29] <= ob[14];
-                    rv[33] <= oa[20]; rv[62] <= ob[20];
-                    rv[34] <= oa[17]; rv[45] <= ob[17];
-                    rv[35] <= oa[21]; rv[60] <= ob[21];
-                    rv[37] <= oa[19]; rv[42] <= ob[19];
-                    rv[39] <= oa[27]; rv[56] <= ob[27];
-                    rv[40] <= oa[24]; rv[55] <= ob[24];
-                    rv[44] <= oa[22]; rv[51] <= ob[22];
-                    rv[46] <= oa[23]; rv[49] <= ob[23];
-                    rv[50] <= oa[26]; rv[53] <= ob[26];
-                    rv[59] <= oa[29]; rv[52] <= ob[29];
-                    rv[57] <= oa[31]; rv[54] <= ob[31];
-                    rv[58] <= oa[30]; rv[61] <= ob[30];
-                end
-                {3'd3, 4'd6}: begin
-                    rv[2] <= oa[1]; rv[29] <= ob[1];
-                    rv[4] <= oa[2]; rv[27] <= ob[2];
-                    rv[6] <= oa[3]; rv[25] <= ob[3];
-                    rv[9] <= oa[5]; rv[22] <= ob[5];
-                    rv[11] <= oa[9]; rv[20] <= ob[9];
-                    rv[13] <= oa[7]; rv[18] <= ob[7];
-                    rv[26] <= oa[13]; rv[21] <= ob[13];
-                    rv[34] <= oa[17]; rv[61] <= ob[17];
-                    rv[36] <= oa[18]; rv[59] <= ob[18];
-                    rv[38] <= oa[19]; rv[57] <= ob[19];
-                    rv[41] <= oa[21]; rv[54] <= ob[21];
-                    rv[43] <= oa[25]; rv[52] <= ob[25];
-                    rv[45] <= oa[23]; rv[50] <= ob[23];
-                    rv[58] <= oa[29]; rv[53] <= ob[29];
-                end
-                {3'd3, 4'd7}: begin
-                    rv[5] <= oa[3]; rv[26] <= ob[3];
-                    rv[10] <= oa[5]; rv[21] <= ob[5];
-                    rv[37] <= oa[19]; rv[58] <= ob[19];
-                    rv[42] <= oa[21]; rv[53] <= ob[21];
-                end
-                {3'd4, 4'd0}: begin
-                    rv[0] <= oa[0]; rv[1] <= ob[0];
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[7] <= ob[2];
-                    rv[5] <= oa[3]; rv[6] <= ob[3];
-                    rv[8] <= oa[4]; rv[15] <= ob[4];
-                    rv[9] <= oa[5]; rv[14] <= ob[5];
-                    rv[10] <= oa[6]; rv[13] <= ob[6];
-                    rv[11] <= oa[7]; rv[12] <= ob[7];
-                    rv[16] <= oa[8]; rv[31] <= ob[8];
-                    rv[17] <= oa[9]; rv[30] <= ob[9];
-                    rv[18] <= oa[10]; rv[29] <= ob[10];
-                    rv[19] <= oa[13]; rv[28] <= ob[13];
-                    rv[20] <= oa[12]; rv[27] <= ob[12];
-                    rv[21] <= oa[11]; rv[26] <= ob[11];
-                    rv[22] <= oa[14]; rv[25] <= ob[14];
-                    rv[23] <= oa[15]; rv[24] <= ob[15];
-                    rv[32] <= oa[16]; rv[63] <= ob[16];
-                    rv[33] <= oa[20]; rv[62] <= ob[20];
-                    rv[34] <= oa[17]; rv[61] <= ob[17];
-                    rv[35] <= oa[21]; rv[60] <= ob[21];
-                    rv[36] <= oa[18]; rv[59] <= ob[18];
-                    rv[37] <= oa[19]; rv[58] <= ob[19];
-                    rv[38] <= oa[27]; rv[57] <= ob[27];
-                    rv[39] <= oa[31]; rv[56] <= ob[31];
-                    rv[40] <= oa[24]; rv[55] <= ob[24];
-                    rv[41] <= oa[22]; rv[54] <= ob[22];
-                    rv[42] <= oa[23]; rv[53] <= ob[23];
-                    rv[43] <= oa[25]; rv[52] <= ob[25];
-                    rv[44] <= oa[30]; rv[51] <= ob[30];
-                    rv[45] <= oa[29]; rv[50] <= ob[29];
-                    rv[46] <= oa[26]; rv[49] <= ob[26];
-                    rv[47] <= oa[28]; rv[48] <= ob[28];
-                end
-                {3'd4, 4'd1}: begin
-                    rv[0] <= oa[0]; rv[3] <= ob[0];
-                    rv[1] <= oa[1]; rv[2] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[17] <= ob[8];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[33] <= ob[16];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[45] <= ob[22];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[49] <= ob[24];
-                    rv[50] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[61] <= ob[30];
-                    rv[62] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd4, 4'd2}: begin
-                    rv[0] <= oa[0]; rv[7] <= ob[0];
-                    rv[3] <= oa[1]; rv[4] <= ob[1];
-                    rv[6] <= oa[2]; rv[5] <= ob[2];
-                    rv[8] <= oa[4]; rv[11] <= ob[4];
-                    rv[14] <= oa[6]; rv[9] <= ob[6];
-                    rv[13] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[19] <= ob[8];
-                    rv[30] <= oa[14]; rv[17] <= ob[14];
-                    rv[29] <= oa[9]; rv[18] <= ob[9];
-                    rv[20] <= oa[10]; rv[23] <= ob[10];
-                    rv[26] <= oa[13]; rv[21] <= ob[13];
-                    rv[25] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[27] <= ob[12];
-                    rv[28] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[35] <= ob[16];
-                    rv[62] <= oa[30]; rv[33] <= ob[30];
-                    rv[61] <= oa[17]; rv[34] <= ob[17];
-                    rv[36] <= oa[18]; rv[39] <= ob[18];
-                    rv[58] <= oa[29]; rv[37] <= ob[29];
-                    rv[57] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[43] <= ob[20];
-                    rv[54] <= oa[22]; rv[41] <= ob[22];
-                    rv[53] <= oa[21]; rv[42] <= ob[21];
-                    rv[44] <= oa[23]; rv[47] <= ob[23];
-                    rv[50] <= oa[25]; rv[45] <= ob[25];
-                    rv[49] <= oa[26]; rv[46] <= ob[26];
-                    rv[48] <= oa[24]; rv[51] <= ob[24];
-                    rv[52] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[59] <= ob[28];
-                    rv[60] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd4, 4'd3}: begin
-                    rv[0] <= oa[0]; rv[15] <= ob[0];
-                    rv[1] <= oa[1]; rv[6] <= ob[1];
-                    rv[2] <= oa[2]; rv[5] <= ob[2];
-                    rv[7] <= oa[3]; rv[8] <= ob[3];
-                    rv[9] <= oa[5]; rv[10] <= ob[5];
-                    rv[12] <= oa[6]; rv[11] <= ob[6];
-                    rv[13] <= oa[7]; rv[14] <= ob[7];
-                    rv[16] <= oa[8]; rv[23] <= ob[8];
-                    rv[17] <= oa[9]; rv[18] <= ob[9];
-                    rv[28] <= oa[14]; rv[19] <= ob[14];
-                    rv[27] <= oa[13]; rv[20] <= ob[13];
-                    rv[21] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[31] <= ob[12];
-                    rv[25] <= oa[15]; rv[26] <= ob[15];
-                    rv[29] <= oa[4]; rv[30] <= ob[4];
-                    rv[32] <= oa[16]; rv[39] <= ob[16];
-                    rv[33] <= oa[17]; rv[34] <= ob[17];
-                    rv[60] <= oa[31]; rv[35] <= ob[31];
-                    rv[59] <= oa[28]; rv[36] <= ob[28];
-                    rv[37] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[47] <= ob[20];
-                    rv[41] <= oa[21]; rv[42] <= ob[21];
-                    rv[52] <= oa[27]; rv[43] <= ob[27];
-                    rv[51] <= oa[25]; rv[44] <= ob[25];
-                    rv[45] <= oa[23]; rv[46] <= ob[23];
-                    rv[48] <= oa[24]; rv[55] <= ob[24];
-                    rv[49] <= oa[26]; rv[50] <= ob[26];
-                    rv[53] <= oa[22]; rv[54] <= ob[22];
-                    rv[56] <= oa[30]; rv[63] <= ob[30];
-                    rv[57] <= oa[29]; rv[58] <= ob[29];
-                    rv[61] <= oa[10]; rv[62] <= ob[10];
-                end
-                {3'd4, 4'd4}: begin
-                    rv[0] <= oa[0]; rv[31] <= ob[0];
-                    rv[1] <= oa[1]; rv[14] <= ob[1];
-                    rv[3] <= oa[5]; rv[12] <= ob[5];
-                    rv[4] <= oa[2]; rv[11] <= ob[2];
-                    rv[6] <= oa[3]; rv[9] <= ob[3];
-                    rv[13] <= oa[7]; rv[10] <= ob[7];
-                    rv[15] <= oa[8]; rv[16] <= ob[8];
-                    rv[17] <= oa[9]; rv[22] <= ob[9];
-                    rv[29] <= oa[13]; rv[18] <= ob[13];
-                    rv[19] <= oa[10]; rv[20] <= ob[10];
-                    rv[26] <= oa[14]; rv[21] <= ob[14];
-                    rv[24] <= oa[11]; rv[23] <= ob[11];
-                    rv[25] <= oa[15]; rv[30] <= ob[15];
-                    rv[27] <= oa[12]; rv[28] <= ob[12];
-                    rv[32] <= oa[16]; rv[47] <= ob[16];
-                    rv[33] <= oa[17]; rv[38] <= ob[17];
-                    rv[61] <= oa[20]; rv[34] <= ob[20];
-                    rv[35] <= oa[21]; rv[36] <= ob[21];
-                    rv[58] <= oa[29]; rv[37] <= ob[29];
-                    rv[56] <= oa[27]; rv[39] <= ob[27];
-                    rv[55] <= oa[19]; rv[40] <= ob[19];
-                    rv[41] <= oa[22]; rv[46] <= ob[22];
-                    rv[53] <= oa[23]; rv[42] <= ob[23];
-                    rv[43] <= oa[25]; rv[44] <= ob[25];
-                    rv[50] <= oa[26]; rv[45] <= ob[26];
-                    rv[48] <= oa[24]; rv[63] <= ob[24];
-                    rv[49] <= oa[31]; rv[54] <= ob[31];
-                    rv[51] <= oa[28]; rv[52] <= ob[28];
-                    rv[57] <= oa[30]; rv[62] <= ob[30];
-                    rv[59] <= oa[4]; rv[60] <= ob[4];
-                end
-                {3'd4, 4'd5}: begin
-                    rv[0] <= oa[0]; rv[63] <= ob[0];
-                    rv[1] <= oa[4]; rv[30] <= ob[4];
-                    rv[2] <= oa[1]; rv[13] <= ob[1];
-                    rv[3] <= oa[5]; rv[28] <= ob[5];
-                    rv[5] <= oa[3]; rv[10] <= ob[3];
-                    rv[7] <= oa[11]; rv[24] <= ob[11];
-                    rv[8] <= oa[8]; rv[23] <= ob[8];
-                    rv[12] <= oa[6]; rv[19] <= ob[6];
-                    rv[14] <= oa[7]; rv[17] <= ob[7];
-                    rv[18] <= oa[10]; rv[21] <= ob[10];
-                    rv[27] <= oa[13]; rv[20] <= ob[13];
-                    rv[25] <= oa[15]; rv[22] <= ob[15];
-                    rv[26] <= oa[14]; rv[29] <= ob[14];
-                    rv[31] <= oa[16]; rv[32] <= ob[16];
-                    rv[33] <= oa[17]; rv[46] <= ob[17];
-                    rv[34] <= oa[18]; rv[37] <= ob[18];
-                    rv[35] <= oa[21]; rv[44] <= ob[21];
-                    rv[59] <= oa[28]; rv[36] <= ob[28];
-                    rv[57] <= oa[19]; rv[38] <= ob[19];
-                    rv[39] <= oa[27]; rv[40] <= ob[27];
-                    rv[54] <= oa[22]; rv[41] <= ob[22];
-                    rv[42] <= oa[25]; rv[45] <= ob[25];
-                    rv[52] <= oa[26]; rv[43] <= ob[26];
-                    rv[48] <= oa[23]; rv[47] <= ob[23];
-                    rv[49] <= oa[31]; rv[62] <= ob[31];
-                    rv[50] <= oa[29]; rv[53] <= ob[29];
-                    rv[51] <= oa[30]; rv[60] <= ob[30];
-                    rv[55] <= oa[2]; rv[56] <= ob[2];
-                    rv[58] <= oa[9]; rv[61] <= ob[9];
-                end
-                {3'd4, 4'd6}: begin
-                    rv[1] <= oa[1]; rv[62] <= ob[1];
-                    rv[2] <= oa[2]; rv[29] <= ob[2];
-                    rv[3] <= oa[4]; rv[60] <= ob[4];
-                    rv[4] <= oa[10]; rv[27] <= ob[10];
-                    rv[6] <= oa[3]; rv[25] <= ob[3];
-                    rv[7] <= oa[11]; rv[56] <= ob[11];
-                    rv[9] <= oa[5]; rv[22] <= ob[5];
-                    rv[11] <= oa[9]; rv[20] <= ob[9];
-                    rv[13] <= oa[7]; rv[18] <= ob[7];
-                    rv[15] <= oa[8]; rv[48] <= ob[8];
-                    rv[16] <= oa[16]; rv[47] <= ob[16];
-                    rv[26] <= oa[13]; rv[21] <= ob[13];
-                    rv[24] <= oa[12]; rv[39] <= ob[12];
-                    rv[28] <= oa[14]; rv[35] <= ob[14];
-                    rv[30] <= oa[15]; rv[33] <= ob[15];
-                    rv[34] <= oa[17]; rv[45] <= ob[17];
-                    rv[36] <= oa[18]; rv[43] <= ob[18];
-                    rv[58] <= oa[29]; rv[37] <= ob[29];
-                    rv[38] <= oa[19]; rv[41] <= ob[19];
-                    rv[55] <= oa[27]; rv[40] <= ob[27];
-                    rv[53] <= oa[21]; rv[42] <= ob[21];
-                    rv[51] <= oa[25]; rv[44] <= ob[25];
-                    rv[49] <= oa[26]; rv[46] <= ob[26];
-                    rv[50] <= oa[30]; rv[61] <= ob[30];
-                    rv[52] <= oa[28]; rv[59] <= ob[28];
-                    rv[54] <= oa[22]; rv[57] <= ob[22];
-                end
-                {3'd4, 4'd7}: begin
-                    rv[2] <= oa[1]; rv[61] <= ob[1];
-                    rv[4] <= oa[2]; rv[59] <= ob[2];
-                    rv[5] <= oa[3]; rv[26] <= ob[3];
-                    rv[6] <= oa[19]; rv[57] <= ob[19];
-                    rv[8] <= oa[4]; rv[55] <= ob[4];
-                    rv[10] <= oa[5]; rv[21] <= ob[5];
-                    rv[12] <= oa[6]; rv[51] <= ob[6];
-                    rv[14] <= oa[7]; rv[49] <= ob[7];
-                    rv[17] <= oa[17]; rv[46] <= ob[17];
-                    rv[19] <= oa[9]; rv[44] <= ob[9];
-                    rv[23] <= oa[11]; rv[40] <= ob[11];
-                    rv[25] <= oa[13]; rv[38] <= ob[13];
-                    rv[27] <= oa[21]; rv[36] <= ob[21];
-                    rv[29] <= oa[15]; rv[34] <= ob[15];
-                    rv[37] <= oa[23]; rv[42] <= ob[23];
-                    rv[54] <= oa[22]; rv[41] <= ob[22];
-                    rv[52] <= oa[26]; rv[43] <= ob[26];
-                    rv[50] <= oa[25]; rv[45] <= ob[25];
-                    rv[53] <= oa[27]; rv[58] <= ob[27];
-                end
-                {3'd4, 4'd8}: begin
-                    rv[5] <= oa[3]; rv[58] <= ob[3];
-                    rv[9] <= oa[5]; rv[54] <= ob[5];
-                    rv[11] <= oa[9]; rv[52] <= ob[9];
-                    rv[13] <= oa[7]; rv[50] <= ob[7];
-                    rv[18] <= oa[10]; rv[45] <= ob[10];
-                    rv[20] <= oa[18]; rv[43] <= ob[18];
-                    rv[22] <= oa[11]; rv[41] <= ob[11];
-                    rv[26] <= oa[13]; rv[37] <= ob[13];
-                    rv[53] <= oa[21]; rv[42] <= ob[21];
-                end
-                {3'd4, 4'd9}: begin
-                    rv[10] <= oa[5]; rv[53] <= ob[5];
-                    rv[21] <= oa[23]; rv[42] <= ob[23];
-                end
-                {3'd5, 4'd0}: begin
-                    rv[0] <= oa[0]; rv[1] <= ob[0];
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[17] <= ob[8];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[33] <= ob[16];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[25]; rv[45] <= ob[25];
-                    rv[46] <= oa[22]; rv[47] <= ob[22];
-                    rv[48] <= oa[24]; rv[49] <= ob[24];
-                    rv[50] <= oa[30]; rv[51] <= ob[30];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[31]; rv[61] <= ob[31];
-                    rv[62] <= oa[23]; rv[63] <= ob[23];
-                end
-                {3'd5, 4'd1}: begin
-                    rv[0] <= oa[0]; rv[4] <= ob[0];
-                    rv[1] <= oa[2]; rv[5] <= ob[2];
-                    rv[2] <= oa[1]; rv[6] <= ob[1];
-                    rv[3] <= oa[5]; rv[7] <= ob[5];
-                    rv[8] <= oa[4]; rv[12] <= ob[4];
-                    rv[9] <= oa[6]; rv[13] <= ob[6];
-                    rv[10] <= oa[7]; rv[14] <= ob[7];
-                    rv[11] <= oa[9]; rv[15] <= ob[9];
-                    rv[16] <= oa[8]; rv[20] <= ob[8];
-                    rv[17] <= oa[10]; rv[21] <= ob[10];
-                    rv[18] <= oa[11]; rv[22] <= ob[11];
-                    rv[19] <= oa[13]; rv[23] <= ob[13];
-                    rv[24] <= oa[12]; rv[28] <= ob[12];
-                    rv[25] <= oa[14]; rv[29] <= ob[14];
-                    rv[26] <= oa[15]; rv[30] <= ob[15];
-                    rv[27] <= oa[21]; rv[31] <= ob[21];
-                    rv[32] <= oa[16]; rv[36] <= ob[16];
-                    rv[33] <= oa[18]; rv[37] <= ob[18];
-                    rv[34] <= oa[17]; rv[38] <= ob[17];
-                    rv[35] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[44] <= ob[20];
-                    rv[41] <= oa[22]; rv[45] <= ob[22];
-                    rv[42] <= oa[23]; rv[46] <= ob[23];
-                    rv[43] <= oa[25]; rv[47] <= ob[25];
-                    rv[48] <= oa[24]; rv[52] <= ob[24];
-                    rv[49] <= oa[26]; rv[53] <= ob[26];
-                    rv[50] <= oa[27]; rv[54] <= ob[27];
-                    rv[51] <= oa[29]; rv[55] <= ob[29];
-                    rv[56] <= oa[28]; rv[60] <= ob[28];
-                    rv[57] <= oa[30]; rv[61] <= ob[30];
-                    rv[58] <= oa[31]; rv[62] <= ob[31];
-                    rv[59] <= oa[3]; rv[63] <= ob[3];
-                end
-                {3'd5, 4'd2}: begin
-                    rv[0] <= oa[0]; rv[2] <= ob[0];
-                    rv[1] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[7] <= oa[3]; rv[6] <= ob[3];
-                    rv[8] <= oa[4]; rv[10] <= ob[4];
-                    rv[9] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[15] <= oa[7]; rv[14] <= ob[7];
-                    rv[16] <= oa[8]; rv[18] <= ob[8];
-                    rv[17] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[23] <= oa[11]; rv[22] <= ob[11];
-                    rv[24] <= oa[12]; rv[26] <= ob[12];
-                    rv[25] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[31] <= oa[15]; rv[30] <= ob[15];
-                    rv[32] <= oa[16]; rv[34] <= ob[16];
-                    rv[33] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[39] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[42] <= ob[20];
-                    rv[41] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[45] <= ob[22];
-                    rv[47] <= oa[23]; rv[46] <= ob[23];
-                    rv[48] <= oa[24]; rv[50] <= ob[24];
-                    rv[49] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[55] <= oa[27]; rv[54] <= ob[27];
-                    rv[56] <= oa[28]; rv[58] <= ob[28];
-                    rv[57] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[61] <= ob[30];
-                    rv[63] <= oa[31]; rv[62] <= ob[31];
-                end
-                {3'd5, 4'd3}: begin
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[6] <= ob[2];
-                    rv[5] <= oa[3]; rv[7] <= ob[3];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[7]; rv[14] <= ob[7];
-                    rv[13] <= oa[6]; rv[15] <= ob[6];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[22] <= ob[10];
-                    rv[21] <= oa[11]; rv[23] <= ob[11];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[15]; rv[30] <= ob[15];
-                    rv[29] <= oa[14]; rv[31] <= ob[14];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[38] <= ob[18];
-                    rv[37] <= oa[19]; rv[39] <= ob[19];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[46] <= ob[22];
-                    rv[45] <= oa[23]; rv[47] <= ob[23];
-                    rv[50] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[27]; rv[54] <= ob[27];
-                    rv[53] <= oa[26]; rv[55] <= ob[26];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[62] <= ob[30];
-                    rv[61] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd5, 4'd4}: begin
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[62] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd6, 4'd0}: begin
-                    rv[0] <= oa[0]; rv[1] <= ob[0];
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[17] <= ob[8];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[33] <= ob[16];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[25]; rv[45] <= ob[25];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[49] <= ob[24];
-                    rv[50] <= oa[29]; rv[51] <= ob[29];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[30]; rv[59] <= ob[30];
-                    rv[60] <= oa[31]; rv[61] <= ob[31];
-                    rv[62] <= oa[22]; rv[63] <= ob[22];
-                end
-                {3'd6, 4'd1}: begin
-                    rv[0] <= oa[0]; rv[8] <= ob[0];
-                    rv[1] <= oa[4]; rv[9] <= ob[4];
-                    rv[2] <= oa[1]; rv[10] <= ob[1];
-                    rv[3] <= oa[5]; rv[11] <= ob[5];
-                    rv[4] <= oa[2]; rv[12] <= ob[2];
-                    rv[5] <= oa[6]; rv[13] <= ob[6];
-                    rv[6] <= oa[3]; rv[14] <= ob[3];
-                    rv[7] <= oa[7]; rv[15] <= ob[7];
-                    rv[16] <= oa[8]; rv[24] <= ob[8];
-                    rv[17] <= oa[11]; rv[25] <= ob[11];
-                    rv[18] <= oa[9]; rv[26] <= ob[9];
-                    rv[19] <= oa[10]; rv[27] <= ob[10];
-                    rv[20] <= oa[12]; rv[28] <= ob[12];
-                    rv[21] <= oa[14]; rv[29] <= ob[14];
-                    rv[22] <= oa[13]; rv[30] <= ob[13];
-                    rv[23] <= oa[15]; rv[31] <= ob[15];
-                    rv[32] <= oa[16]; rv[40] <= ob[16];
-                    rv[33] <= oa[20]; rv[41] <= ob[20];
-                    rv[34] <= oa[17]; rv[42] <= ob[17];
-                    rv[35] <= oa[21]; rv[43] <= ob[21];
-                    rv[36] <= oa[18]; rv[44] <= ob[18];
-                    rv[37] <= oa[22]; rv[45] <= ob[22];
-                    rv[38] <= oa[19]; rv[46] <= ob[19];
-                    rv[39] <= oa[23]; rv[47] <= ob[23];
-                    rv[48] <= oa[24]; rv[56] <= ob[24];
-                    rv[49] <= oa[27]; rv[57] <= ob[27];
-                    rv[50] <= oa[29]; rv[58] <= ob[29];
-                    rv[51] <= oa[26]; rv[59] <= ob[26];
-                    rv[52] <= oa[28]; rv[60] <= ob[28];
-                    rv[53] <= oa[30]; rv[61] <= ob[30];
-                    rv[54] <= oa[31]; rv[62] <= ob[31];
-                    rv[55] <= oa[25]; rv[63] <= ob[25];
-                end
-                {3'd6, 4'd2}: begin
-                    rv[0] <= oa[0]; rv[4] <= ob[0];
-                    rv[1] <= oa[2]; rv[5] <= ob[2];
-                    rv[2] <= oa[1]; rv[6] <= ob[1];
-                    rv[3] <= oa[5]; rv[7] <= ob[5];
-                    rv[8] <= oa[4]; rv[9] <= ob[4];
-                    rv[10] <= oa[6]; rv[11] <= ob[6];
-                    rv[13] <= oa[7]; rv[12] <= ob[7];
-                    rv[15] <= oa[8]; rv[14] <= ob[8];
-                    rv[16] <= oa[9]; rv[20] <= ob[9];
-                    rv[17] <= oa[10]; rv[21] <= ob[10];
-                    rv[18] <= oa[11]; rv[22] <= ob[11];
-                    rv[19] <= oa[13]; rv[23] <= ob[13];
-                    rv[24] <= oa[12]; rv[25] <= ob[12];
-                    rv[26] <= oa[14]; rv[27] <= ob[14];
-                    rv[29] <= oa[15]; rv[28] <= ob[15];
-                    rv[31] <= oa[16]; rv[30] <= ob[16];
-                    rv[32] <= oa[17]; rv[36] <= ob[17];
-                    rv[33] <= oa[18]; rv[37] <= ob[18];
-                    rv[34] <= oa[19]; rv[38] <= ob[19];
-                    rv[35] <= oa[21]; rv[39] <= ob[21];
-                    rv[40] <= oa[20]; rv[41] <= ob[20];
-                    rv[42] <= oa[22]; rv[43] <= ob[22];
-                    rv[45] <= oa[23]; rv[44] <= ob[23];
-                    rv[47] <= oa[24]; rv[46] <= ob[24];
-                    rv[48] <= oa[25]; rv[52] <= ob[25];
-                    rv[49] <= oa[26]; rv[53] <= ob[26];
-                    rv[50] <= oa[27]; rv[54] <= ob[27];
-                    rv[51] <= oa[29]; rv[55] <= ob[29];
-                    rv[56] <= oa[28]; rv[57] <= ob[28];
-                    rv[58] <= oa[30]; rv[59] <= ob[30];
-                    rv[61] <= oa[31]; rv[60] <= ob[31];
-                    rv[63] <= oa[3]; rv[62] <= ob[3];
-                end
-                {3'd6, 4'd3}: begin
-                    rv[0] <= oa[0]; rv[2] <= ob[0];
-                    rv[1] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[5] <= ob[2];
-                    rv[7] <= oa[3]; rv[6] <= ob[3];
-                    rv[8] <= oa[4]; rv[12] <= ob[4];
-                    rv[9] <= oa[6]; rv[13] <= ob[6];
-                    rv[10] <= oa[5]; rv[14] <= ob[5];
-                    rv[11] <= oa[9]; rv[15] <= ob[9];
-                    rv[16] <= oa[8]; rv[18] <= ob[8];
-                    rv[17] <= oa[11]; rv[19] <= ob[11];
-                    rv[20] <= oa[10]; rv[21] <= ob[10];
-                    rv[23] <= oa[15]; rv[22] <= ob[15];
-                    rv[24] <= oa[12]; rv[28] <= ob[12];
-                    rv[25] <= oa[14]; rv[29] <= ob[14];
-                    rv[26] <= oa[13]; rv[30] <= ob[13];
-                    rv[27] <= oa[21]; rv[31] <= ob[21];
-                    rv[32] <= oa[16]; rv[34] <= ob[16];
-                    rv[33] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[37] <= ob[18];
-                    rv[39] <= oa[19]; rv[38] <= ob[19];
-                    rv[40] <= oa[20]; rv[44] <= ob[20];
-                    rv[41] <= oa[22]; rv[45] <= ob[22];
-                    rv[42] <= oa[23]; rv[46] <= ob[23];
-                    rv[43] <= oa[25]; rv[47] <= ob[25];
-                    rv[48] <= oa[24]; rv[50] <= ob[24];
-                    rv[49] <= oa[27]; rv[51] <= ob[27];
-                    rv[52] <= oa[26]; rv[53] <= ob[26];
-                    rv[55] <= oa[31]; rv[54] <= ob[31];
-                    rv[56] <= oa[28]; rv[60] <= ob[28];
-                    rv[57] <= oa[30]; rv[61] <= ob[30];
-                    rv[58] <= oa[29]; rv[62] <= ob[29];
-                    rv[59] <= oa[7]; rv[63] <= ob[7];
-                end
-                {3'd6, 4'd4}: begin
-                    rv[2] <= oa[1]; rv[3] <= ob[1];
-                    rv[4] <= oa[2]; rv[6] <= ob[2];
-                    rv[5] <= oa[3]; rv[7] <= ob[3];
-                    rv[8] <= oa[4]; rv[10] <= ob[4];
-                    rv[9] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[6]; rv[13] <= ob[6];
-                    rv[15] <= oa[7]; rv[14] <= ob[7];
-                    rv[18] <= oa[9]; rv[19] <= ob[9];
-                    rv[20] <= oa[10]; rv[22] <= ob[10];
-                    rv[21] <= oa[11]; rv[23] <= ob[11];
-                    rv[24] <= oa[12]; rv[26] <= ob[12];
-                    rv[25] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[14]; rv[29] <= ob[14];
-                    rv[31] <= oa[15]; rv[30] <= ob[15];
-                    rv[34] <= oa[17]; rv[35] <= ob[17];
-                    rv[36] <= oa[18]; rv[38] <= ob[18];
-                    rv[37] <= oa[19]; rv[39] <= ob[19];
-                    rv[40] <= oa[20]; rv[42] <= ob[20];
-                    rv[41] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[45] <= ob[22];
-                    rv[47] <= oa[23]; rv[46] <= ob[23];
-                    rv[50] <= oa[25]; rv[51] <= ob[25];
-                    rv[52] <= oa[27]; rv[54] <= ob[27];
-                    rv[53] <= oa[26]; rv[55] <= ob[26];
-                    rv[56] <= oa[28]; rv[58] <= ob[28];
-                    rv[57] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[61] <= ob[30];
-                    rv[63] <= oa[31]; rv[62] <= ob[31];
-                end
-                {3'd6, 4'd5}: begin
-                    rv[6] <= oa[3]; rv[7] <= ob[3];
-                    rv[10] <= oa[5]; rv[11] <= ob[5];
-                    rv[12] <= oa[7]; rv[14] <= ob[7];
-                    rv[13] <= oa[6]; rv[15] <= ob[6];
-                    rv[22] <= oa[11]; rv[23] <= ob[11];
-                    rv[26] <= oa[13]; rv[27] <= ob[13];
-                    rv[28] <= oa[15]; rv[30] <= ob[15];
-                    rv[29] <= oa[14]; rv[31] <= ob[14];
-                    rv[38] <= oa[19]; rv[39] <= ob[19];
-                    rv[42] <= oa[21]; rv[43] <= ob[21];
-                    rv[44] <= oa[22]; rv[46] <= ob[22];
-                    rv[45] <= oa[23]; rv[47] <= ob[23];
-                    rv[54] <= oa[27]; rv[55] <= ob[27];
-                    rv[58] <= oa[29]; rv[59] <= ob[29];
-                    rv[60] <= oa[30]; rv[62] <= ob[30];
-                    rv[61] <= oa[31]; rv[63] <= ob[31];
-                end
-                {3'd6, 4'd6}: begin
-                    rv[14] <= oa[7]; rv[15] <= ob[7];
-                    rv[30] <= oa[15]; rv[31] <= ob[15];
-                    rv[46] <= oa[23]; rv[47] <= ob[23];
-                    rv[62] <= oa[31]; rv[63] <= ob[31];
-                end
+            if (step) begin
+                if (last) begin busy <= 1'b0; done <= 1'b1; lvl_l <= 4'd0; end
+                else begin busy <= 1'b1; lvl_l <= lvl_l + 4'd1; end
+            end
+        end
+    end
+
+    // write-back: each lane takes the registered candidate's unit output, or holds
+    always_ff @(posedge clk) begin
+        if (step) begin
+            case (wb_r[0])
+                4'd1: rv[0] <= oa[0];
+                default: ;
+            endcase
+            case (wb_r[1])
+                4'd1: rv[1] <= ob[0];
+                4'd2: rv[1] <= oa[1];
+                4'd3: rv[1] <= oa[4];
+                4'd4: rv[1] <= oa[2];
+                default: ;
+            endcase
+            case (wb_r[2])
+                4'd1: rv[2] <= oa[1];
+                4'd2: rv[2] <= ob[1];
+                4'd3: rv[2] <= oa[2];
+                4'd4: rv[2] <= ob[0];
+                default: ;
+            endcase
+            case (wb_r[3])
+                4'd1: rv[3] <= ob[1];
+                4'd2: rv[3] <= ob[0];
+                4'd3: rv[3] <= oa[1];
+                4'd4: rv[3] <= oa[5];
+                4'd5: rv[3] <= oa[4];
+                default: ;
+            endcase
+            case (wb_r[4])
+                4'd1: rv[4] <= oa[2];
+                4'd2: rv[4] <= ob[1];
+                4'd3: rv[4] <= oa[10];
+                4'd4: rv[4] <= ob[0];
+                default: ;
+            endcase
+            case (wb_r[5])
+                4'd1: rv[5] <= ob[2];
+                4'd2: rv[5] <= oa[3];
+                4'd3: rv[5] <= oa[6];
+                default: ;
+            endcase
+            case (wb_r[6])
+                4'd1: rv[6] <= oa[3];
+                4'd2: rv[6] <= ob[3];
+                4'd3: rv[6] <= oa[2];
+                4'd4: rv[6] <= ob[1];
+                4'd5: rv[6] <= oa[19];
+                4'd6: rv[6] <= ob[2];
+                default: ;
+            endcase
+            case (wb_r[7])
+                4'd1: rv[7] <= ob[3];
+                4'd2: rv[7] <= ob[2];
+                4'd3: rv[7] <= ob[0];
+                4'd4: rv[7] <= oa[3];
+                4'd5: rv[7] <= oa[11];
+                4'd6: rv[7] <= ob[5];
+                4'd7: rv[7] <= oa[7];
+                default: ;
+            endcase
+            case (wb_r[8])
+                4'd1: rv[8] <= oa[4];
+                4'd2: rv[8] <= ob[3];
+                4'd3: rv[8] <= oa[8];
+                4'd4: rv[8] <= ob[0];
+                default: ;
+            endcase
+            case (wb_r[9])
+                4'd1: rv[9] <= ob[4];
+                4'd2: rv[9] <= oa[5];
+                4'd3: rv[9] <= ob[6];
+                4'd4: rv[9] <= ob[3];
+                4'd5: rv[9] <= oa[6];
+                default: ;
+            endcase
+            case (wb_r[10])
+                4'd1: rv[10] <= oa[5];
+                4'd2: rv[10] <= ob[5];
+                4'd3: rv[10] <= oa[6];
+                4'd4: rv[10] <= ob[7];
+                4'd5: rv[10] <= ob[3];
+                4'd6: rv[10] <= oa[7];
+                4'd7: rv[10] <= ob[4];
+                4'd8: rv[10] <= ob[1];
+                default: ;
+            endcase
+            case (wb_r[11])
+                4'd1: rv[11] <= ob[5];
+                4'd2: rv[11] <= ob[4];
+                4'd3: rv[11] <= oa[5];
+                4'd4: rv[11] <= oa[7];
+                4'd5: rv[11] <= ob[6];
+                4'd6: rv[11] <= ob[2];
+                4'd7: rv[11] <= oa[9];
+                default: ;
+            endcase
+            case (wb_r[12])
+                4'd1: rv[12] <= oa[6];
+                4'd2: rv[12] <= ob[5];
+                4'd3: rv[12] <= ob[7];
+                4'd4: rv[12] <= oa[7];
+                4'd5: rv[12] <= ob[4];
+                4'd6: rv[12] <= ob[2];
+                default: ;
+            endcase
+            case (wb_r[13])
+                4'd1: rv[13] <= ob[6];
+                4'd2: rv[13] <= oa[7];
+                4'd3: rv[13] <= oa[5];
+                4'd4: rv[13] <= ob[1];
+                4'd5: rv[13] <= oa[6];
+                default: ;
+            endcase
+            case (wb_r[14])
+                4'd1: rv[14] <= oa[7];
+                4'd2: rv[14] <= ob[7];
+                4'd3: rv[14] <= oa[6];
+                4'd4: rv[14] <= ob[5];
+                4'd5: rv[14] <= ob[1];
+                4'd6: rv[14] <= ob[3];
+                4'd7: rv[14] <= ob[8];
+                default: ;
+            endcase
+            case (wb_r[15])
+                4'd1: rv[15] <= ob[7];
+                4'd2: rv[15] <= ob[6];
+                4'd3: rv[15] <= ob[4];
+                4'd4: rv[15] <= ob[0];
+                4'd5: rv[15] <= oa[8];
+                4'd6: rv[15] <= ob[9];
+                4'd7: rv[15] <= oa[7];
+                default: ;
+            endcase
+            case (wb_r[16])
+                4'd1: rv[16] <= oa[8];
+                4'd2: rv[16] <= ob[8];
+                4'd3: rv[16] <= oa[16];
+                4'd4: rv[16] <= oa[9];
+                default: ;
+            endcase
+            case (wb_r[17])
+                4'd1: rv[17] <= ob[8];
+                4'd2: rv[17] <= oa[9];
+                4'd3: rv[17] <= ob[14];
+                4'd4: rv[17] <= ob[7];
+                4'd5: rv[17] <= oa[17];
+                4'd6: rv[17] <= oa[10];
+                4'd7: rv[17] <= oa[11];
+                default: ;
+            endcase
+            case (wb_r[18])
+                4'd1: rv[18] <= oa[9];
+                4'd2: rv[18] <= ob[9];
+                4'd3: rv[18] <= oa[10];
+                4'd4: rv[18] <= ob[13];
+                4'd5: rv[18] <= ob[7];
+                4'd6: rv[18] <= oa[11];
+                4'd7: rv[18] <= ob[8];
+                default: ;
+            endcase
+            case (wb_r[19])
+                4'd1: rv[19] <= ob[9];
+                4'd2: rv[19] <= ob[8];
+                4'd3: rv[19] <= oa[9];
+                4'd4: rv[19] <= oa[13];
+                4'd5: rv[19] <= ob[14];
+                4'd6: rv[19] <= oa[10];
+                4'd7: rv[19] <= ob[6];
+                4'd8: rv[19] <= ob[11];
+                default: ;
+            endcase
+            case (wb_r[20])
+                4'd1: rv[20] <= oa[10];
+                4'd2: rv[20] <= ob[9];
+                4'd3: rv[20] <= oa[12];
+                4'd4: rv[20] <= ob[13];
+                4'd5: rv[20] <= ob[10];
+                4'd6: rv[20] <= oa[18];
+                4'd7: rv[20] <= ob[8];
+                default: ;
+            endcase
+            case (wb_r[21])
+                4'd1: rv[21] <= ob[10];
+                4'd2: rv[21] <= oa[11];
+                4'd3: rv[21] <= ob[13];
+                4'd4: rv[21] <= ob[14];
+                4'd5: rv[21] <= ob[5];
+                4'd6: rv[21] <= oa[23];
+                4'd7: rv[21] <= oa[14];
+                default: ;
+            endcase
+            case (wb_r[22])
+                4'd1: rv[22] <= oa[11];
+                4'd2: rv[22] <= ob[11];
+                4'd3: rv[22] <= oa[10];
+                4'd4: rv[22] <= ob[9];
+                4'd5: rv[22] <= oa[14];
+                4'd6: rv[22] <= ob[15];
+                4'd7: rv[22] <= ob[5];
+                4'd8: rv[22] <= ob[10];
+                4'd9: rv[22] <= oa[13];
+                default: ;
+            endcase
+            case (wb_r[23])
+                4'd1: rv[23] <= ob[11];
+                4'd2: rv[23] <= ob[10];
+                4'd3: rv[23] <= ob[8];
+                4'd4: rv[23] <= oa[11];
+                4'd5: rv[23] <= oa[15];
+                4'd6: rv[23] <= ob[13];
+                default: ;
+            endcase
+            case (wb_r[24])
+                4'd1: rv[24] <= oa[12];
+                4'd2: rv[24] <= ob[11];
+                4'd3: rv[24] <= ob[15];
+                4'd4: rv[24] <= oa[11];
+                4'd5: rv[24] <= ob[8];
+                default: ;
+            endcase
+            case (wb_r[25])
+                4'd1: rv[25] <= ob[12];
+                4'd2: rv[25] <= oa[13];
+                4'd3: rv[25] <= ob[14];
+                4'd4: rv[25] <= ob[11];
+                4'd5: rv[25] <= oa[11];
+                4'd6: rv[25] <= oa[15];
+                4'd7: rv[25] <= ob[3];
+                4'd8: rv[25] <= oa[14];
+                default: ;
+            endcase
+            case (wb_r[26])
+                4'd1: rv[26] <= oa[13];
+                4'd2: rv[26] <= ob[13];
+                4'd3: rv[26] <= oa[14];
+                4'd4: rv[26] <= ob[15];
+                4'd5: rv[26] <= ob[11];
+                4'd6: rv[26] <= ob[3];
+                4'd7: rv[26] <= oa[15];
+                4'd8: rv[26] <= ob[12];
+                4'd9: rv[26] <= ob[9];
+                default: ;
+            endcase
+            case (wb_r[27])
+                4'd1: rv[27] <= ob[13];
+                4'd2: rv[27] <= ob[12];
+                4'd3: rv[27] <= oa[13];
+                4'd4: rv[27] <= oa[15];
+                4'd5: rv[27] <= ob[14];
+                4'd6: rv[27] <= ob[10];
+                4'd7: rv[27] <= oa[12];
+                4'd8: rv[27] <= ob[2];
+                4'd9: rv[27] <= oa[21];
+                default: ;
+            endcase
+            case (wb_r[28])
+                4'd1: rv[28] <= oa[14];
+                4'd2: rv[28] <= ob[13];
+                4'd3: rv[28] <= ob[15];
+                4'd4: rv[28] <= oa[15];
+                4'd5: rv[28] <= ob[12];
+                4'd6: rv[28] <= ob[5];
+                default: ;
+            endcase
+            case (wb_r[29])
+                4'd1: rv[29] <= ob[14];
+                4'd2: rv[29] <= oa[15];
+                4'd3: rv[29] <= oa[13];
+                4'd4: rv[29] <= ob[9];
+                4'd5: rv[29] <= ob[10];
+                4'd6: rv[29] <= oa[9];
+                4'd7: rv[29] <= oa[4];
+                4'd8: rv[29] <= ob[1];
+                4'd9: rv[29] <= ob[2];
+                4'd10: rv[29] <= oa[14];
+                default: ;
+            endcase
+            case (wb_r[30])
+                4'd1: rv[30] <= oa[15];
+                4'd2: rv[30] <= ob[15];
+                4'd3: rv[30] <= oa[14];
+                4'd4: rv[30] <= ob[13];
+                4'd5: rv[30] <= ob[9];
+                4'd6: rv[30] <= ob[4];
+                4'd7: rv[30] <= ob[16];
+                default: ;
+            endcase
+            case (wb_r[31])
+                4'd1: rv[31] <= ob[15];
+                4'd2: rv[31] <= ob[14];
+                4'd3: rv[31] <= ob[12];
+                4'd4: rv[31] <= ob[8];
+                4'd5: rv[31] <= ob[0];
+                4'd6: rv[31] <= oa[16];
+                4'd7: rv[31] <= ob[21];
+                4'd8: rv[31] <= oa[15];
+                default: ;
+            endcase
+            case (wb_r[32])
+                4'd1: rv[32] <= oa[16];
+                4'd2: rv[32] <= ob[16];
+                4'd3: rv[32] <= oa[17];
+                default: ;
+            endcase
+            case (wb_r[33])
+                4'd1: rv[33] <= ob[16];
+                4'd2: rv[33] <= oa[17];
+                4'd3: rv[33] <= oa[20];
+                4'd4: rv[33] <= ob[30];
+                4'd5: rv[33] <= ob[15];
+                4'd6: rv[33] <= oa[18];
+                default: ;
+            endcase
+            case (wb_r[34])
+                4'd1: rv[34] <= oa[17];
+                4'd2: rv[34] <= ob[17];
+                4'd3: rv[34] <= oa[18];
+                4'd4: rv[34] <= ob[20];
+                4'd5: rv[34] <= ob[15];
+                4'd6: rv[34] <= ob[16];
+                4'd7: rv[34] <= oa[19];
+                default: ;
+            endcase
+            case (wb_r[35])
+                4'd1: rv[35] <= ob[17];
+                4'd2: rv[35] <= ob[16];
+                4'd3: rv[35] <= oa[17];
+                4'd4: rv[35] <= oa[21];
+                4'd5: rv[35] <= ob[31];
+                4'd6: rv[35] <= ob[14];
+                4'd7: rv[35] <= oa[19];
+                default: ;
+            endcase
+            case (wb_r[36])
+                4'd1: rv[36] <= oa[18];
+                4'd2: rv[36] <= ob[17];
+                4'd3: rv[36] <= ob[28];
+                4'd4: rv[36] <= ob[21];
+                4'd5: rv[36] <= ob[16];
+                default: ;
+            endcase
+            case (wb_r[37])
+                4'd1: rv[37] <= ob[18];
+                4'd2: rv[37] <= oa[19];
+                4'd3: rv[37] <= ob[29];
+                4'd4: rv[37] <= oa[23];
+                4'd5: rv[37] <= ob[13];
+                4'd6: rv[37] <= oa[22];
+                default: ;
+            endcase
+            case (wb_r[38])
+                4'd1: rv[38] <= oa[19];
+                4'd2: rv[38] <= ob[19];
+                4'd3: rv[38] <= oa[18];
+                4'd4: rv[38] <= ob[17];
+                4'd5: rv[38] <= oa[27];
+                4'd6: rv[38] <= ob[13];
+                4'd7: rv[38] <= ob[18];
+                default: ;
+            endcase
+            case (wb_r[39])
+                4'd1: rv[39] <= ob[19];
+                4'd2: rv[39] <= ob[18];
+                4'd3: rv[39] <= ob[16];
+                4'd4: rv[39] <= oa[19];
+                4'd5: rv[39] <= oa[27];
+                4'd6: rv[39] <= oa[31];
+                4'd7: rv[39] <= ob[27];
+                4'd8: rv[39] <= ob[12];
+                4'd9: rv[39] <= oa[23];
+                4'd10: rv[39] <= ob[21];
+                default: ;
+            endcase
+            case (wb_r[40])
+                4'd1: rv[40] <= oa[20];
+                4'd2: rv[40] <= ob[19];
+                4'd3: rv[40] <= oa[24];
+                4'd4: rv[40] <= ob[27];
+                4'd5: rv[40] <= ob[11];
+                4'd6: rv[40] <= ob[16];
+                default: ;
+            endcase
+            case (wb_r[41])
+                4'd1: rv[41] <= ob[20];
+                4'd2: rv[41] <= oa[21];
+                4'd3: rv[41] <= ob[22];
+                4'd4: rv[41] <= ob[19];
+                4'd5: rv[41] <= oa[22];
+                4'd6: rv[41] <= ob[11];
+                default: ;
+            endcase
+            case (wb_r[42])
+                4'd1: rv[42] <= oa[21];
+                4'd2: rv[42] <= ob[21];
+                4'd3: rv[42] <= oa[22];
+                4'd4: rv[42] <= ob[23];
+                4'd5: rv[42] <= ob[19];
+                4'd6: rv[42] <= oa[23];
+                4'd7: rv[42] <= oa[25];
+                4'd8: rv[42] <= ob[20];
+                4'd9: rv[42] <= ob[17];
+                default: ;
+            endcase
+            case (wb_r[43])
+                4'd1: rv[43] <= ob[21];
+                4'd2: rv[43] <= ob[20];
+                4'd3: rv[43] <= oa[21];
+                4'd4: rv[43] <= oa[23];
+                4'd5: rv[43] <= ob[22];
+                4'd6: rv[43] <= ob[18];
+                4'd7: rv[43] <= oa[25];
+                4'd8: rv[43] <= ob[27];
+                4'd9: rv[43] <= ob[26];
+                default: ;
+            endcase
+            case (wb_r[44])
+                4'd1: rv[44] <= oa[22];
+                4'd2: rv[44] <= ob[21];
+                4'd3: rv[44] <= ob[23];
+                4'd4: rv[44] <= oa[23];
+                4'd5: rv[44] <= oa[30];
+                4'd6: rv[44] <= ob[25];
+                4'd7: rv[44] <= ob[9];
+                4'd8: rv[44] <= oa[25];
+                4'd9: rv[44] <= ob[20];
+                4'd10: rv[44] <= ob[18];
+                default: ;
+            endcase
+            case (wb_r[45])
+                4'd1: rv[45] <= ob[22];
+                4'd2: rv[45] <= oa[23];
+                4'd3: rv[45] <= oa[21];
+                4'd4: rv[45] <= ob[17];
+                4'd5: rv[45] <= oa[29];
+                4'd6: rv[45] <= ob[25];
+                4'd7: rv[45] <= ob[26];
+                4'd8: rv[45] <= ob[10];
+                default: ;
+            endcase
+            case (wb_r[46])
+                4'd1: rv[46] <= oa[23];
+                4'd2: rv[46] <= ob[23];
+                4'd3: rv[46] <= oa[22];
+                4'd4: rv[46] <= ob[21];
+                4'd5: rv[46] <= ob[17];
+                4'd6: rv[46] <= oa[26];
+                4'd7: rv[46] <= ob[26];
+                4'd8: rv[46] <= ob[22];
+                4'd9: rv[46] <= ob[19];
+                4'd10: rv[46] <= ob[24];
+                default: ;
+            endcase
+            case (wb_r[47])
+                4'd1: rv[47] <= ob[23];
+                4'd2: rv[47] <= ob[22];
+                4'd3: rv[47] <= ob[20];
+                4'd4: rv[47] <= ob[16];
+                4'd5: rv[47] <= oa[24];
+                4'd6: rv[47] <= oa[28];
+                4'd7: rv[47] <= ob[25];
+                4'd8: rv[47] <= oa[23];
+                default: ;
+            endcase
+            case (wb_r[48])
+                4'd1: rv[48] <= oa[24];
+                4'd2: rv[48] <= ob[24];
+                4'd3: rv[48] <= ob[28];
+                4'd4: rv[48] <= oa[23];
+                4'd5: rv[48] <= ob[8];
+                4'd6: rv[48] <= oa[25];
+                default: ;
+            endcase
+            case (wb_r[49])
+                4'd1: rv[49] <= ob[24];
+                4'd2: rv[49] <= oa[25];
+                4'd3: rv[49] <= ob[30];
+                4'd4: rv[49] <= ob[23];
+                4'd5: rv[49] <= ob[26];
+                4'd6: rv[49] <= oa[26];
+                4'd7: rv[49] <= oa[31];
+                4'd8: rv[49] <= ob[7];
+                4'd9: rv[49] <= oa[27];
+                default: ;
+            endcase
+            case (wb_r[50])
+                4'd1: rv[50] <= oa[25];
+                4'd2: rv[50] <= ob[25];
+                4'd3: rv[50] <= oa[26];
+                4'd4: rv[50] <= ob[29];
+                4'd5: rv[50] <= ob[23];
+                4'd6: rv[50] <= ob[26];
+                4'd7: rv[50] <= oa[29];
+                4'd8: rv[50] <= oa[30];
+                4'd9: rv[50] <= ob[7];
+                4'd10: rv[50] <= oa[27];
+                4'd11: rv[50] <= ob[24];
+                default: ;
+            endcase
+            case (wb_r[51])
+                4'd1: rv[51] <= ob[25];
+                4'd2: rv[51] <= ob[24];
+                4'd3: rv[51] <= oa[25];
+                4'd4: rv[51] <= oa[29];
+                4'd5: rv[51] <= ob[30];
+                4'd6: rv[51] <= oa[26];
+                4'd7: rv[51] <= ob[22];
+                4'd8: rv[51] <= oa[28];
+                4'd9: rv[51] <= oa[30];
+                4'd10: rv[51] <= ob[6];
+                4'd11: rv[51] <= ob[29];
+                4'd12: rv[51] <= ob[27];
+                default: ;
+            endcase
+            case (wb_r[52])
+                4'd1: rv[52] <= oa[26];
+                4'd2: rv[52] <= ob[25];
+                4'd3: rv[52] <= oa[28];
+                4'd4: rv[52] <= ob[29];
+                4'd5: rv[52] <= ob[26];
+                4'd6: rv[52] <= oa[27];
+                4'd7: rv[52] <= ob[28];
+                4'd8: rv[52] <= ob[9];
+                4'd9: rv[52] <= ob[24];
+                default: ;
+            endcase
+            case (wb_r[53])
+                4'd1: rv[53] <= ob[26];
+                4'd2: rv[53] <= oa[27];
+                4'd3: rv[53] <= ob[29];
+                4'd4: rv[53] <= ob[30];
+                4'd5: rv[53] <= ob[21];
+                4'd6: rv[53] <= ob[23];
+                4'd7: rv[53] <= oa[21];
+                4'd8: rv[53] <= oa[22];
+                4'd9: rv[53] <= oa[23];
+                4'd10: rv[53] <= ob[5];
+                4'd11: rv[53] <= oa[26];
+                4'd12: rv[53] <= oa[30];
+                default: ;
+            endcase
+            case (wb_r[54])
+                4'd1: rv[54] <= oa[27];
+                4'd2: rv[54] <= ob[27];
+                4'd3: rv[54] <= oa[26];
+                4'd4: rv[54] <= ob[25];
+                4'd5: rv[54] <= oa[30];
+                4'd6: rv[54] <= ob[31];
+                4'd7: rv[54] <= ob[21];
+                4'd8: rv[54] <= ob[22];
+                4'd9: rv[54] <= oa[22];
+                4'd10: rv[54] <= ob[5];
+                4'd11: rv[54] <= oa[31];
+                default: ;
+            endcase
+            case (wb_r[55])
+                4'd1: rv[55] <= ob[27];
+                4'd2: rv[55] <= ob[26];
+                4'd3: rv[55] <= ob[24];
+                4'd4: rv[55] <= oa[27];
+                4'd5: rv[55] <= oa[31];
+                4'd6: rv[55] <= oa[19];
+                4'd7: rv[55] <= oa[2];
+                4'd8: rv[55] <= ob[4];
+                4'd9: rv[55] <= ob[29];
+                4'd10: rv[55] <= oa[25];
+                default: ;
+            endcase
+            case (wb_r[56])
+                4'd1: rv[56] <= oa[28];
+                4'd2: rv[56] <= ob[27];
+                4'd3: rv[56] <= ob[31];
+                4'd4: rv[56] <= oa[27];
+                4'd5: rv[56] <= oa[30];
+                4'd6: rv[56] <= ob[2];
+                4'd7: rv[56] <= ob[11];
+                4'd8: rv[56] <= ob[24];
+                default: ;
+            endcase
+            case (wb_r[57])
+                4'd1: rv[57] <= ob[28];
+                4'd2: rv[57] <= oa[29];
+                4'd3: rv[57] <= ob[30];
+                4'd4: rv[57] <= ob[27];
+                4'd5: rv[57] <= oa[27];
+                4'd6: rv[57] <= oa[31];
+                4'd7: rv[57] <= ob[19];
+                4'd8: rv[57] <= oa[19];
+                4'd9: rv[57] <= oa[30];
+                4'd10: rv[57] <= ob[22];
+                default: ;
+            endcase
+            case (wb_r[58])
+                4'd1: rv[58] <= oa[29];
+                4'd2: rv[58] <= ob[29];
+                4'd3: rv[58] <= oa[30];
+                4'd4: rv[58] <= ob[31];
+                4'd5: rv[58] <= ob[27];
+                4'd6: rv[58] <= ob[19];
+                4'd7: rv[58] <= oa[9];
+                4'd8: rv[58] <= ob[3];
+                4'd9: rv[58] <= oa[31];
+                4'd10: rv[58] <= ob[28];
+                default: ;
+            endcase
+            case (wb_r[59])
+                4'd1: rv[59] <= ob[29];
+                4'd2: rv[59] <= ob[28];
+                4'd3: rv[59] <= oa[29];
+                4'd4: rv[59] <= oa[31];
+                4'd5: rv[59] <= ob[30];
+                4'd6: rv[59] <= ob[26];
+                4'd7: rv[59] <= oa[28];
+                4'd8: rv[59] <= ob[18];
+                4'd9: rv[59] <= oa[4];
+                4'd10: rv[59] <= ob[2];
+                4'd11: rv[59] <= oa[3];
+                4'd12: rv[59] <= oa[7];
+                default: ;
+            endcase
+            case (wb_r[60])
+                4'd1: rv[60] <= oa[30];
+                4'd2: rv[60] <= ob[29];
+                4'd3: rv[60] <= ob[31];
+                4'd4: rv[60] <= oa[31];
+                4'd5: rv[60] <= ob[28];
+                4'd6: rv[60] <= ob[21];
+                4'd7: rv[60] <= ob[4];
+                4'd8: rv[60] <= ob[30];
+                default: ;
+            endcase
+            case (wb_r[61])
+                4'd1: rv[61] <= ob[30];
+                4'd2: rv[61] <= oa[31];
+                4'd3: rv[61] <= oa[29];
+                4'd4: rv[61] <= ob[25];
+                4'd5: rv[61] <= ob[26];
+                4'd6: rv[61] <= oa[25];
+                4'd7: rv[61] <= oa[20];
+                4'd8: rv[61] <= ob[17];
+                4'd9: rv[61] <= oa[17];
+                4'd10: rv[61] <= oa[10];
+                4'd11: rv[61] <= ob[9];
+                4'd12: rv[61] <= ob[1];
+                4'd13: rv[61] <= ob[31];
+                default: ;
+            endcase
+            case (wb_r[62])
+                4'd1: rv[62] <= oa[31];
+                4'd2: rv[62] <= ob[31];
+                4'd3: rv[62] <= oa[30];
+                4'd4: rv[62] <= ob[29];
+                4'd5: rv[62] <= ob[25];
+                4'd6: rv[62] <= ob[20];
+                4'd7: rv[62] <= ob[10];
+                4'd8: rv[62] <= ob[30];
+                4'd9: rv[62] <= ob[1];
+                4'd10: rv[62] <= oa[23];
+                4'd11: rv[62] <= oa[22];
+                4'd12: rv[62] <= ob[3];
+                default: ;
+            endcase
+            case (wb_r[63])
+                4'd1: rv[63] <= ob[31];
+                4'd2: rv[63] <= ob[30];
+                4'd3: rv[63] <= ob[28];
+                4'd4: rv[63] <= ob[24];
+                4'd5: rv[63] <= ob[16];
+                4'd6: rv[63] <= ob[0];
+                4'd7: rv[63] <= ob[23];
+                4'd8: rv[63] <= ob[3];
+                4'd9: rv[63] <= oa[31];
+                4'd10: rv[63] <= ob[22];
+                4'd11: rv[63] <= ob[25];
+                4'd12: rv[63] <= oa[3];
+                4'd13: rv[63] <= ob[7];
                 default: ;
             endcase
         end

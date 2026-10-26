@@ -385,7 +385,8 @@ module mv_stack
                     end
                 endcase
             end
-            // ---- one scanned position: address out, entry in, stack update
+            // ---- one scanned position: address out, entry in, stack update (mv_mem answers two cycles after the
+            // address: M_ISSUE presents it, M_WAIT covers the latency, M_PROC consumes; the same for M_EX_*)
             M_ISSUE: begin
                 if (!is_inside(mv_r, mv_c)) begin
                     // scan row / col: stop the whole scan; point: nothing to add

@@ -29,6 +29,14 @@
 // (top slot first, so rows store in reverse order). ADST4, identity and WHT rows stream through itx_row
 // instead (load one cycle, store the next). NLANES is kept for interface compatibility and ignored.
 //
+// v5 (timing, 2026-10-26): the transpose memory's read vector and write port are registered. The read side (bank
+// address, distributed RAM, 6-stage rotator) lands in rd_r and everything after it (valid-bit mask, rectangular
+// x2896 pre-scale, the engine's pk_in shift, the stream unit, the residual port) reads the register; the write
+// side (slot select, Round2, clamp, or the coefficient port) lands in wr_*_r and the rotator + bank write follow
+// from there. The residual port therefore answers one cycle after res_addr. Routed at 100 MHz the unregistered
+// paths were 21-25 logic levels (-0.5 .. -0.66 ns): dequant DSP -> clamp -> rotator -> bank, bank -> rotator ->
+// x2896 DSP -> pk_in, bank -> rotator -> recon add.
+//
 // v3 (mappable): the transpose memory replaces the two register arrays (coef[32][32], res[64][64]) whose
 // random multi-row reads were a 64:1 mux per element and synthesised to several hundred thousand LUTs.
 // Element (i, j) lives in bank (i + j) mod 64 at address i, so row i is "all banks, address i" and column j
@@ -57,7 +65,7 @@ module itx2d #(
     output logic          busy,
     output logic          done,
 
-    // residual read port (valid after done): addr = i*64 + j
+    // residual read port (valid after done): addr = i*64 + j; the data answer one cycle after the address
     input  logic [11:0]   res_addr,
     output logic [TW-1:0] res_data,
     output logic [4*TW-1:0] res_data4       // the aligned group of 4 columns containing res_addr
@@ -162,19 +170,28 @@ module itx2d #(
         for (int b = 0; b < 64; b++) rdat[b] = tm_rdata[b];
         rd_vec = rot_left(rdat, rd_s);                                      // rotate left by s
     end
-    // write side: a vector (row or column s) with per-element enables, from the store states or the coefficient port
-    logic        wr_col;
-    logic [5:0]  wr_s;
-    logic [63:0] wr_en;
-    vec_t        wr_vec;
+    // write side: a vector (row or column s) with per-element enables, from the store states or the coefficient
+    // port, registered (wr_*_r) before the rotator and the bank write. Nothing reads a row / column in the cycle
+    // its write lands: the passes read other rows / columns than they store, S_GSZ separates the row pass from
+    // the column pass and S_DONE separates the last store from the residual reads.
+    logic        wr_col, wr_col_r;
+    logic [5:0]  wr_s, wr_s_r;
+    logic [63:0] wr_en, wr_en_r;
+    vec_t        wr_vec, wr_vec_r;
+    always_ff @(posedge clk) begin
+        wr_col_r <= wr_col;
+        wr_s_r   <= wr_s;
+        wr_en_r  <= rst ? '0 : wr_en;
+        wr_vec_r <= wr_vec;
+    end
     always_comb begin
         vec_t wdat;
-        wdat = rot_right(wr_vec, wr_s);                                     // element b - s lands in bank b
+        wdat = rot_right(wr_vec_r, wr_s_r);                                 // element b - s lands in bank b
         for (int b = 0; b < 64; b++) begin
             logic [5:0] k;
-            k = 6'(b - 32'(wr_s));
-            tm_we[b]    = wr_en[k];
-            tm_waddr[b] = wr_col ? k : wr_s;
+            k = 6'(b - 32'(wr_s_r));
+            tm_we[b]    = wr_en_r[k];
+            tm_waddr[b] = wr_col_r ? k : wr_s_r;
             tm_wdata[b] = wdat[b];
         end
     end
@@ -240,12 +257,13 @@ module itx2d #(
     itx_lvl #(.TW(TW)) u_lvl (.clk, .rst, .start(e_start), .prog(e_prog), .r(e_r), .in_vec(pk_in),
                               .busy(e_busy), .done(e_done), .out_vec(e_out));
     logic [64*TW-1:0] ld_vec_f;         // the loaded row as a flat vector
-    // streamed rows (ADST4 / identity / WHT): a 3-stage pipeline, one row per clock —
-    //   1 read row ri -> ld_row   2 ld_row -> itx_row -> st_row   3 st_row -> round/clamp -> write row st_i
+    // streamed rows (ADST4 / identity / WHT): a 4-stage pipeline, one row per clock —
+    //   1 read row ri -> rd_r   2 rd_r -> mask / pre-scale -> ld_row   3 ld_row -> itx_row -> st_row
+    //   4 st_row -> round/clamp -> write row st_i (which lands a cycle later through wr_*_r)
     logic [1:0]       rk;               // row unit kind: 0 ADST4, 1 identity, 2 WHT
     logic [32*TW-1:0] rw_out;
     logic [32*TW-1:0] ld_row, st_row;
-    logic             ld_v, st_v, ld_zero;
+    logic             rd_v, ld_v, st_v, ld_zero;
     logic [6:0]       ri, ld_i, st_i;
     assign rk = l_lossless ? 2'd2 : (cls_l == 2'd2) ? 2'd1 : 2'd0;
     itx_row #(.TW(TW)) u_row (.kind(rk), .n(n_l), .wht_shift(col ? 2'd0 : 2'd2), .in_vec(ld_row), .out_vec(rw_out));
@@ -262,22 +280,34 @@ module itx2d #(
     assign clip_lo = -(TW'(1) <<< (col_clamp - 5'd1));
     assign clip_hi =  (TW'(1) <<< (col_clamp - 5'd1)) - TW'(1);
 
-    // loaded vector for the current row / column: row cur of the coefficients (valid bits, size, rectangular
-    // pre-scale) or column cur of the residuals (rows below h)
-    vec_t ld_vec;
+    // read stage register: the rotated vector read this cycle, with its index, its row's valid bits and the
+    // residual port's column; everything downstream reads these
     logic [6:0] ld_idx;                 // the row / column being read: the stream index or the group's cur
     assign ld_idx = (state == S_STRM) ? ri : cur;
+    vec_t        rd_r;
+    logic [6:0]  rd_idx_r;
+    logic [31:0] cv_row_r;
+    logic [5:0]  res_lo_r;
+    always_ff @(posedge clk) begin
+        rd_r     <= rd_vec;
+        rd_idx_r <= ld_idx;
+        cv_row_r <= cv[ld_idx[4:0]];
+        res_lo_r <= res_addr[5:0];
+    end
+    // loaded vector for the row / column in rd_r: a coefficient row (valid bits, size, rectangular pre-scale) or
+    // a residual column (rows below h)
+    vec_t ld_vec;
     always_comb begin
         for (int k = 0; k < 64; k++) begin
             logic signed [TW-1:0]  c;
             logic signed [TW+12:0] p;
             c = '0; p = '0;
             if (!col) begin
-                c = (ld_idx < 7'd32 && ld_idx < h && k < 32 && k < 32'(w) && cv[ld_idx[4:0]][k[4:0]]) ? signed'(rd_vec[k]) : '0;
+                c = (rd_idx_r < 7'd32 && rd_idx_r < h && k < 32 && k < 32'(w) && cv_row_r[k[4:0]]) ? signed'(rd_r[k]) : '0;
                 p = c * 13'sd2896;
                 ld_vec[k] = rect ? TW'((p + (TW+13)'(2048)) >>> 12) : TW'(c);
             end else begin
-                ld_vec[k] = (k < 32'(h) && ld_idx < w) ? rd_vec[k] : '0;
+                ld_vec[k] = (k < 32'(h) && rd_idx_r < w) ? rd_r[k] : '0;
             end
             ld_vec_f[k*TW +: TW] = ld_vec[k];
         end
@@ -288,8 +318,24 @@ module itx2d #(
         else if (state == S_STRM) begin rd_col = col; rd_s = ri[5:0]; end
         else begin rd_col = 1'b0; rd_s = res_addr[11:6]; end
     end
-    assign res_data = rd_vec[res_addr[5:0]];
-    always_comb for (int l = 0; l < 4; l++) res_data4[l*TW +: TW] = rd_vec[{res_addr[5:2], 2'(l)}];
+    assign res_data = rd_r[res_lo_r];
+    always_comb for (int l = 0; l < 4; l++) res_data4[l*TW +: TW] = rd_r[{res_lo_r[5:2], 2'(l)}];
+
+    // engine load: the row read in S_LD lands in rd_r; the cycle after, its vector shifts into pk_in from the top
+    // (the last row's shift is the S_GO cycle, so pk_in is whole when the engine starts in S_RUN)
+    logic ldp_v;
+    always_ff @(posedge clk) begin
+        ldp_v <= (state == S_LD) && !rst;
+        if (ldp_v) begin
+            case (n_l)
+                3'd2:    pk_in <= {ld_vec_f[4*TW-1:0],  pk_in[64*TW-1:4*TW]};
+                3'd3:    pk_in <= {ld_vec_f[8*TW-1:0],  pk_in[64*TW-1:8*TW]};
+                3'd4:    pk_in <= {ld_vec_f[16*TW-1:0], pk_in[64*TW-1:16*TW]};
+                3'd5:    pk_in <= {ld_vec_f[32*TW-1:0], pk_in[64*TW-1:32*TW]};
+                default: pk_in <= ld_vec_f;
+            endcase
+        end
+    end
 
     // the row being stored: the top slot of pk_out (lanes 64-N .. 63), the streamed row, or zeros
     logic [TW-1:0] st_vec [64];
@@ -385,32 +431,26 @@ module itx2d #(
                     first    <= 1'b0;
                     g        <= '0;
                     state    <= stream ? S_STRM : zero_grp_next ? S_ST : S_LD;
-                    ri <= '0; ld_v <= 1'b0; st_v <= 1'b0;
+                    ri <= '0; rd_v <= 1'b0; ld_v <= 1'b0; st_v <= 1'b0;
                 end
                 // ---- load the rows of the group: shift into pk_in from the top (engine) or through itx_row (stream)
                 // ---- streamed rows: the whole pass, one row per clock through the 3-stage pipeline
                 S_STRM: begin
-                    ld_row  <= ld_vec_f[32*TW-1:0];
-                    ld_v    <= (ri < count);
-                    ld_i    <= ri;
-                    ld_zero <= !col && (ri >= 7'd32);
+                    rd_v    <= (ri < count);
                     ri      <= ri + 7'd1;
+                    ld_row  <= ld_vec_f[32*TW-1:0];
+                    ld_v    <= rd_v;
+                    ld_i    <= rd_idx_r;
+                    ld_zero <= !col && (rd_idx_r >= 7'd32);
                     st_row  <= ld_zero ? '0 : rw_out;
                     st_v    <= ld_v;
                     st_i    <= ld_i;
-                    if (ri >= count && !ld_v && !st_v) begin      // all rows read, pipeline drained
+                    if (ri >= count && !rd_v && !ld_v && !st_v) begin   // all rows read, pipeline drained
                         if (col) state <= S_DONE;
                         else begin col <= 1'b1; first <= 1'b1; state <= S_GSZ; end
                     end
                 end
-                S_LD: begin
-                    case (n_l)
-                        3'd2:    pk_in <= {ld_vec_f[4*TW-1:0],  pk_in[64*TW-1:4*TW]};
-                        3'd3:    pk_in <= {ld_vec_f[8*TW-1:0],  pk_in[64*TW-1:8*TW]};
-                        3'd4:    pk_in <= {ld_vec_f[16*TW-1:0], pk_in[64*TW-1:16*TW]};
-                        3'd5:    pk_in <= {ld_vec_f[32*TW-1:0], pk_in[64*TW-1:32*TW]};
-                        default: pk_in <= ld_vec_f;
-                    endcase
+                S_LD: begin                                   // read row cur (the shift into pk_in follows above)
                     if (g + 5'd1 == gsz) begin
                         g     <= '0;
                         state <= S_GO;

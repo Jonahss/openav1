@@ -190,26 +190,38 @@ module coef_rd
     end
 
     // ---------------------------------------------------------------- CDF addresses
+    // The size-class strides as a table rather than a product (k is 0..4): written as int'(k) * S, Vivado built the
+    // address through a DSP (three DSP stages in the path from the transform-size register to the CDF memory's
+    // address, 23 logic levels and -0.49 ns at 100 MHz routed).
+    function automatic int mul5(input logic [2:0] k, input int s);
+        case (k)
+            3'd0:    return 0;
+            3'd1:    return s;
+            3'd2:    return 2 * s;
+            3'd3:    return 3 * s;
+            default: return 4 * s;
+        endcase
+    endfunction
     logic [CDF_AW-1:0] a_txb_skip, a_eob_pt, a_eob_extra, a_base_eob, a_base, a_br, a_dc_sign;
     logic [3:0] n_eob_pt;
     logic [2:0] br_ctx_sz;
     always_comb begin
-        a_txb_skip = CDF_AW'(CDF_TXB_SKIP + int'(tx_sz_ctx) * CDF_TXB_SKIP_S0 + int'(az_ctx));
+        a_txb_skip = CDF_AW'(CDF_TXB_SKIP + mul5(tx_sz_ctx, CDF_TXB_SKIP_S0) + int'(az_ctx));
         case (eob_ms)
-            3'd0: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_16  + int'(cfg_ptype) * 2 + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_16_N - 1); end
-            3'd1: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_32  + int'(cfg_ptype) * 2 + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_32_N - 1); end
-            3'd2: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_64  + int'(cfg_ptype) * 2 + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_64_N - 1); end
-            3'd3: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_128 + int'(cfg_ptype) * 2 + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_128_N - 1); end
-            3'd4: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_256 + int'(cfg_ptype) * 2 + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_256_N - 1); end
+            3'd0: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_16  + (cfg_ptype ? 2 : 0) + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_16_N - 1); end
+            3'd1: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_32  + (cfg_ptype ? 2 : 0) + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_32_N - 1); end
+            3'd2: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_64  + (cfg_ptype ? 2 : 0) + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_64_N - 1); end
+            3'd3: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_128 + (cfg_ptype ? 2 : 0) + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_128_N - 1); end
+            3'd4: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_256 + (cfg_ptype ? 2 : 0) + int'(cls != CLS_2D)); n_eob_pt = 4'(CDF_EOB_PT_256_N - 1); end
             3'd5: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_512 + int'(cfg_ptype));                          n_eob_pt = 4'(CDF_EOB_PT_512_N - 1); end
             default: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_1024 + int'(cfg_ptype));                     n_eob_pt = 4'(CDF_EOB_PT_1024_N - 1); end
         endcase
-        a_eob_extra = CDF_AW'(CDF_EOB_EXTRA + int'(tx_sz_ctx) * CDF_EOB_EXTRA_S0 + int'(cfg_ptype) * CDF_EOB_EXTRA_S1 + int'(eob_pt) - 3);
-        a_base_eob  = CDF_AW'(CDF_COEFF_BASE_EOB + int'(tx_sz_ctx) * CDF_COEFF_BASE_EOB_S0 + int'(cfg_ptype) * CDF_COEFF_BASE_EOB_S1 + int'(ctx_eob));
-        a_base      = CDF_AW'(CDF_COEFF_BASE + int'(tx_sz_ctx) * CDF_COEFF_BASE_S0 + int'(cfg_ptype) * CDF_COEFF_BASE_S1 + int'(ctx_base_now));
+        a_eob_extra = CDF_AW'(CDF_EOB_EXTRA + mul5(tx_sz_ctx, CDF_EOB_EXTRA_S0) + (cfg_ptype ? CDF_EOB_EXTRA_S1 : 0) + int'(eob_pt) - 3);
+        a_base_eob  = CDF_AW'(CDF_COEFF_BASE_EOB + mul5(tx_sz_ctx, CDF_COEFF_BASE_EOB_S0) + (cfg_ptype ? CDF_COEFF_BASE_EOB_S1 : 0) + int'(ctx_eob));
+        a_base      = CDF_AW'(CDF_COEFF_BASE + mul5(tx_sz_ctx, CDF_COEFF_BASE_S0) + (cfg_ptype ? CDF_COEFF_BASE_S1 : 0) + int'(ctx_base_now));
         br_ctx_sz   = tx_sz_ctx > 3'd3 ? 3'd3 : tx_sz_ctx;
-        a_br        = CDF_AW'(CDF_COEFF_BR + int'(br_ctx_sz) * CDF_COEFF_BR_S0 + int'(cfg_ptype) * CDF_COEFF_BR_S1 + int'(ctx_br));
-        a_dc_sign   = CDF_AW'(CDF_DC_SIGN + int'(cfg_ptype) * CDF_DC_SIGN_S0 + int'(dcs_ctx));
+        a_br        = CDF_AW'(CDF_COEFF_BR + mul5(br_ctx_sz, CDF_COEFF_BR_S0) + (cfg_ptype ? CDF_COEFF_BR_S1 : 0) + int'(ctx_br));
+        a_dc_sign   = CDF_AW'(CDF_DC_SIGN + (cfg_ptype ? CDF_DC_SIGN_S0 : 0) + int'(dcs_ctx));
     end
 
     // ---------------------------------------------------------------- sequencer requests (combinational)
@@ -229,7 +241,7 @@ module coef_rd
         // eob_extra: issued from B_EOBPT_W on the response (see FSM); modelled as its own request cycle below
         if (st == B_EOBPT_W && sq_done && (4'(sq_sym) + 4'd1) >= 4'd3) begin
             sq_go = 1'b1; sq_kind = 2'd0; sq_n = 4'd1;
-            sq_addr = CDF_AW'(CDF_EOB_EXTRA + int'(tx_sz_ctx) * CDF_EOB_EXTRA_S0 + int'(cfg_ptype) * CDF_EOB_EXTRA_S1 + int'(sq_sym) + 1 - 3);
+            sq_addr = CDF_AW'(CDF_EOB_EXTRA + mul5(tx_sz_ctx, CDF_EOB_EXTRA_S0) + (cfg_ptype ? CDF_EOB_EXTRA_S1 : 0) + int'(sq_sym) + 1 - 3);
         end
     end
 

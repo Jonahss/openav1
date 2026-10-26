@@ -169,7 +169,7 @@ module recon_top
     endfunction
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
-                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_WR,
+                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_R4, B_IBC_WR,
                               B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
@@ -185,7 +185,7 @@ module recon_top
     logic [PXW-1:0] ib_bx, ib_by, ib_lastx, ib_lasty;
     logic [3:0]  ib_fx, ib_fy;
     logic signed [PXS-1:0] ib_x0, ib_y0;
-    logic [11:0] ib_s0, ib_s1, ib_s2;
+    logic [11:0] ib_s0, ib_s1, ib_s2, ib_s3;
     logic [4:0]  ib_r0, ib_r1;
     assign ibc_sx = (ib_pl != 2'd0) && hdr.ssx;
     assign ibc_sy = (ib_pl != 2'd0) && hdr.ssy;
@@ -241,6 +241,8 @@ module recon_top
     logic        mc_l, mc_comp;
     logic [1:0]  mc_bmode;                                   // list-1 blend mode: 2 average, 3 distance
     logic [4:0]  mc_wt0, mc_wt1;
+    logic [4:0]  dw_d0, dw_d1;                               // the two references' distances, the cycle before the weights
+    always_ff @(posedge clk) {mc_wt1, mc_wt0} <= dist_weights(dw_d0, dw_d1);
     logic [3:0]  u_ref0, u_ref1;                             // the unit's motion
     logic signed [15:0] u_mv0r, u_mv0c, u_mv1r, u_mv1c;
     logic [1:0]  u_i0, u_i1;
@@ -379,20 +381,26 @@ module recon_top
         m = 1 << (int'(ih.order_hint_bits) - 1);
         return (diff & (m - 1)) - (diff & m);
     endfunction
-    function automatic logic [9:0] dist_weights(input ihdr_t ih, input logic [3:0] r0, input logic [3:0] r1);
-        int dist0, dist1, d0, d1, i, c0, c1;
+    // The distance weights (7.11.3.15) in two cycles: dist_abs (the relative distance of each reference, absolute,
+    // clamped) is registered at B_MC_INIT, dist_weights (the ordered compares and the table) the cycle after; the
+    // filter latches the weights at its start, many cycles later. In one cycle, from the block record's ref0 through
+    // the order-hint pick, the differences, the products and the compares into the filter's weight register was 31
+    // logic levels (-0.68 ns at 100 MHz routed).
+    function automatic logic [4:0] dist_abs(input ihdr_t ih, input logic [3:0] r);
+        int dd;
+        dd = rel_dist(ih, ih.order_hints[8 * (int'(r) - 1) +: 8], ih.order_hint);
+        if (dd < 0) dd = -dd;
+        if (dd > 31) dd = 31;
+        return 5'(dd);
+    endfunction
+    function automatic logic [9:0] dist_weights(input logic [4:0] dist0, input logic [4:0] dist1);
+        int d0, d1, i, c0, c1;
         logic order, found;
         logic [4:0] qdw [4][2];
         logic [4:0] qdl [4][2];
         qdw = '{'{5'd2, 5'd3}, '{5'd2, 5'd5}, '{5'd2, 5'd7}, '{5'd1, 5'd31}};
         qdl = '{'{5'd9, 5'd7}, '{5'd11, 5'd5}, '{5'd12, 5'd4}, '{5'd13, 5'd3}};
-        dist0 = rel_dist(ih, ih.order_hints[8 * (int'(r0) - 1) +: 8], ih.order_hint);
-        dist1 = rel_dist(ih, ih.order_hints[8 * (int'(r1) - 1) +: 8], ih.order_hint);
-        if (dist0 < 0) dist0 = -dist0;
-        if (dist1 < 0) dist1 = -dist1;
-        if (dist0 > 31) dist0 = 31;
-        if (dist1 > 31) dist1 = 31;
-        d0 = dist1; d1 = dist0;
+        d0 = int'(dist1); d1 = int'(dist0);
         order = (d0 <= d1);
         i = 3; found = 1'b0;
         if (d0 != 0 && d1 != 0)
@@ -413,7 +421,7 @@ module recon_top
         R_PAL, R_PAL_LAST,
         R_EDGE, R_IP_START, R_IP_W,
         R_CFL_L, R_CFL_D, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2,
+        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3,
         R_FIN, R_MIW
     } rst_t;
     rst_t rs;
@@ -428,7 +436,7 @@ module recon_top
         logic [24:0] v;
         logic [13:0] o;
         a0 = ib_fx[3] ? 20'd64 * 20'(ib_s0) + 20'd64 * 20'(ib_s1) : 20'd128 * 20'(ib_s0);
-        a1 = ib_fx[3] ? 20'd64 * 20'(ib_s2) + 20'd64 * 20'(fb_rdata) : 20'd128 * 20'(ib_s2);
+        a1 = ib_fx[3] ? 20'd64 * 20'(ib_s2) + 20'd64 * 20'(ib_s3) : 20'd128 * 20'(ib_s2);
         h0 = 17'((a0 + (20'd1 << (ib_r0 - 5'd1))) >> ib_r0);
         h1 = 17'((a1 + (20'd1 << (ib_r0 - 5'd1))) >> ib_r0);
         v = ib_fy[3] ? 25'd64 * 25'(h0) + 25'd64 * 25'(h1) : 25'd128 * 25'(h0);
@@ -484,12 +492,10 @@ module recon_top
                 // ---- inter prediction (stage 2a): see the declarations above
                 B_MC_INIT: if (rs == R_IDLE) begin
                     logic comp;
-                    logic [9:0] wts;
                     comp = (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7);
                     mc_comp <= comp;
                     mc_bmode <= (b.compound_type == 3'd4) ? 2'd3 : 2'd2;
-                    wts = dist_weights(ihdr, b.ref0, b.ref1);
-                    mc_wt0 <= wts[4:0]; mc_wt1 <= wts[9:5];
+                    dw_d0 <= dist_abs(ihdr, b.ref0); dw_d1 <= dist_abs(ihdr, b.ref1);   // mc_wt0 / mc_wt1 follow a cycle later
                     if (comp && b.compound_type == 3'd3) mc_unsup <= 1'b1;
                     // warp candidates (7.11.3.1): LOCALWARP (list 0), or GLOBALMV / GLOBAL_GLOBALMV with a non-translational
                     // gm_type and an unscaled reference; never with force_integer_mv. warp_setup settles the validity.
@@ -787,7 +793,10 @@ module recon_top
             B_IBC_R0: bst <= B_IBC_R1;
             B_IBC_R1: begin ib_s0 <= fb_rdata; bst <= B_IBC_R2; end
             B_IBC_R2: begin ib_s1 <= fb_rdata; bst <= B_IBC_R3; end
-            B_IBC_R3: begin ib_s2 <= fb_rdata; bst <= B_IBC_WR; end
+            B_IBC_R3: begin ib_s2 <= fb_rdata; bst <= B_IBC_R4; end
+            B_IBC_R4: begin ib_s3 <= fb_rdata; bst <= B_IBC_WR; end     // the fourth sample lands here, the filter and the
+                                                                       // write run from registers (the UltraRAM read into the
+                                                                       // bilinear filter and the write capture was 22 levels)
             B_IBC_WR: begin
                 if (ib_j + 8'd1 < ib_w) begin ib_j <= ib_j + 8'd1; bst <= B_IBC_R0; end
                 else if (ib_i + 8'd1 < ib_h) begin ib_j <= 8'd0; ib_i <= ib_i + 8'd1; bst <= B_IBC_R0; end
@@ -1004,6 +1013,10 @@ module recon_top
     logic        is_pal, is_cfl;
     logic [3:0]  mode;
     logic        have_l, have_a, have_ar, have_bl;
+    logic        have_l_r, have_a_r;                       // the flags a cycle late, for the edge read addresses (the block
+                                                           // record is loaded at R_SETUP, R_EDGE comes cycles later): the
+                                                           // availability compares into the frame memory's address was 19 levels
+    always_ff @(posedge clk) begin have_l_r <= have_l; have_a_r <= have_a; end
     logic [PXW-1:0] above_lim, left_lim;
     // The limits are constant over a transform block (geometry, the flag rows, the picture edge) and are only used
     // by the edge gather: registered in R_SETUP, so the per-cycle read coordinate is an add and a compare on
@@ -1258,10 +1271,6 @@ module recon_top
             else dq_out = TW'(v);
         end
     end
-    always_ff @(posedge clk) begin                            // add stage: sum of the group read last cycle, written next cycle
-        a_valid <= p_valid && (rs == R_ADD || rs == R_ADD_LAST) && !rst;
-        add_r <= add_out4; aadd_x_r <= padd_x_r; aadd_y_r <= padd_y_r;
-    end
     always_ff @(posedge clk) begin                            // dequant stage 1 -> 2
         dq_v2 <= p_valid && (rs == R_DQ || rs == R_DQ_LAST) && !rst;
         dq_ci2 <= pci; dq_cj2 <= pcj; q_eff_r <= q_eff; q_data_r <= q_data;
@@ -1279,7 +1288,13 @@ module recon_top
     // The sum is registered too and written the cycle after: the residual read out of the transform engine's
     // banks, the add, the clamp and the frame memory's write-port mux and capture were one path (0.00 ns at 80 MHz,
     // 2026-10-18). Groups of a block are each written once and read (for the prediction) before their own add, so
-    // the later landing changes nothing; R_ADD_LAST2 drains the last write before R_FIN.
+    // the later landing changes nothing; R_ADD_LAST2 / R_ADD_LAST3 drain the last write before R_FIN.
+    // Stages: R_ADD issues the reads of (ci, cj) -> p: (pci, pcj) issued, res_addr out, prediction fb_rdata4 in ->
+    // q: prediction held in fb4_q, residual res_data4 in, sum -> a: add_r written.
+    logic           q_valid;
+    logic [47:0]    fb4_q;
+    logic [FBX-1:0] qadd_x_r;
+    logic [FBY-1:0] qadd_y_r;
     logic           a_valid;
     logic [47:0]    add_r;
     logic [FBX-1:0] aadd_x_r;
@@ -1292,9 +1307,17 @@ module recon_top
             logic signed [TW:0] sum;
             logic [TW-1:0] r;
             r = res_data4[(flip_lr ? 3 - m : m) * TW +: TW];
-            sum = $signed({1'b0, (TW - 12)'(0), fb_rdata4[m*12 +: 12]}) + $signed({r[TW-1], r});
+            sum = $signed({1'b0, (TW - 12)'(0), fb4_q[m*12 +: 12]}) + $signed({r[TW-1], r});
             add_out4[m*12 +: 12] = (sum < 0) ? 12'd0 : (sum > $signed({1'b0, (TW - 12)'(0), pix_max})) ? pix_max : 12'(sum);
         end
+    end
+    always_ff @(posedge clk) begin                            // residual stage: the prediction group read last cycle waits
+        q_valid <= p_valid && (rs == R_ADD || rs == R_ADD_LAST) && !rst;   // for the residual (itx2d answers a cycle
+        fb4_q <= fb_rdata4; qadd_x_r <= padd_x_r; qadd_y_r <= padd_y_r;   // after res_addr since 2026-10-26)
+    end
+    always_ff @(posedge clk) begin                            // add stage: the sum, written the cycle after
+        a_valid <= q_valid && !rst;
+        add_r <= add_out4; aadd_x_r <= qadd_x_r; aadd_y_r <= qadd_y_r;
     end
 
     // ---------------------------------------------------------------- combinational outputs
@@ -1330,8 +1353,8 @@ module recon_top
             end
             R_EDGE: begin
                 if (ek < n_above) begin                                      // above row: one aligned group of 4 per read
-                    if (have_a) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(ek)); fb_y = FBY'(t.y - PXW'(1)); end
-                    else if (have_l) begin fb_re = 1'b1; fb_x = FBX'(t.x - PXW'(1)); fb_y = FBY'(t.y); end
+                    if (have_a_r) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(ek)); fb_y = FBY'(t.y - PXW'(1)); end
+                    else if (have_l_r) begin fb_re = 1'b1; fb_x = FBX'(t.x - PXW'(1)); fb_y = FBY'(t.y); end
                 end else if (ek <= n_edges && !e_const) begin fb_re = 1'b1; fb_x = FBX'(e_rx); fb_y = FBY'(e_ry); end
                 if (ep_valid && !ep_grp) edge_we = 1'b1;
                 if (ep_valid && ep_grp) edge_we4 = 1'b1;
@@ -1351,7 +1374,7 @@ module recon_top
             // dequant: one coefficient per clock (address (ci, cj) out, the previous position's data in)
             R_DQ, R_DQ_LAST, R_ITX_START: if (dq_v2) begin itx_we = 1'b1; itx_addr = {dq_ci2[4:0], dq_cj2[4:0]}; itx_data = dq_out; end
             // residual add: read the group at (ci, cj) through port 1, write the previous group through port 4
-            R_ADD, R_ADD_LAST, R_ADD_LAST2: begin
+            R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3: begin
                 if (rs == R_ADD) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(add_xx)); fb_y = FBY'(t.y + PXW'(add_yy)); end
                 if (a_valid) begin fb4_we = 1'b1; fb4_x = aadd_x_r; fb4_y = aadd_y_r; fb4_wdata = add_r; end
             end
@@ -1488,7 +1511,8 @@ module recon_top
                     else rs <= R_ADD_LAST;
                 end
                 R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_ADD_LAST2; end
-                R_ADD_LAST2: begin rs <= R_FIN; end
+                R_ADD_LAST2: begin rs <= R_ADD_LAST3; end
+                R_ADD_LAST3: begin rs <= R_FIN; end
                 // ---- bookkeeping + ack
                 R_FIN: begin
                     // mark the block's area: one row per clock, rows sb_row_p+1 .. sb_row_p+step_y (the RAM write

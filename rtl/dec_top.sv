@@ -209,7 +209,7 @@ module dec_top
                                          .d4_we(lr_we4), .d4_be(lr_be4), .d4_wdata(lr_wdata4),
                                          .d_we(lr_we2), .d_plane(lr_dplane), .d_x(lr_dx), .d_y(lr_dy), .d_wdata(lr_wdata));
 
-    logic sr_re, sr_we; logic [1:0] sr_plane; logic [FBX-1:0] sr_sx, sr_dx; logic [FBY-1:0] sr_sy, sr_dy; logic [11:0] sr_wdata;
+    logic sr_re, sr_we; logic [1:0] sr_plane, sr_dplane; logic [FBX-1:0] sr_sx, sr_dx; logic [FBY-1:0] sr_sy, sr_dy; logic [11:0] sr_wdata;
     logic sr0, sr1;
     assign sr_buf_i = pipe_en ? sr_sub : sr_buf;
     assign lr_from_deblocked_i = pipe_en ? !cdef_en : lr_from_deblocked;
@@ -217,7 +217,7 @@ module dec_top
     assign sr1 = sr_busy && sr_buf_i;
     sr_top #(.FBX(FBX), .FBY(FBY)) u_sr (.clk, .rst, .hdr, .lh, .start(sr_start_i), .ly_first(sr_ly_first), .ly_last(sr_ly_last), .busy(sr_busy), .done(sr_done),
                                          .s_re(sr_re), .plane(sr_plane), .s_x(sr_sx), .s_y(sr_sy), .s_rdata(sr_buf_i ? sr1_rdata : sr0_rdata),
-                                         .d_we(sr_we), .d_x(sr_dx), .d_y(sr_dy), .d_wdata(sr_wdata));
+                                         .d_we(sr_we), .d_plane(sr_dplane), .d_x(sr_dx), .d_y(sr_dy), .d_wdata(sr_wdata));
     logic        sr_en;                                      // super-resolution this frame (assigned with the sequencer below)
     logic [11:0] h_rdata0, h_rdata1, h_rdata2, h_rdata3;
     logic [47:0] h_rdata40, h_rdata41, h_rdata42, h_rdata43;
@@ -244,7 +244,7 @@ module dec_top
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_lf (.we1(lf_we), .plane1(lf_plane), .x1(lf_x), .y1(lf_y), .d1(lf_wdata),
                                                 .we4(lf4_we), .plane4(lf_plane), .x4(lf4_x), .y4(lf4_y), .d4(lf4_wdata),
                                                 .we(w_lf_we), .be(w_lf_be), .plane(w_lf_pl), .x(w_lf_x), .y(w_lf_y), .data(w_lf_d));
-    frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_sr0 (.we1(sr0 && sr_we), .plane1(sr_plane), .x1(sr_dx), .y1(sr_dy), .d1(sr_wdata),
+    frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_sr0 (.we1(sr0 && sr_we), .plane1(sr_dplane), .x1(sr_dx), .y1(sr_dy), .d1(sr_wdata),
                                                  .we4(1'b0), .plane4(2'd0), .x4('0), .y4('0), .d4('0),
                                                  .we(w_sr0_we), .be(w_sr0_be), .plane(w_sr0_pl), .x(w_sr0_x), .y(w_sr0_y), .data(w_sr0_d));
     assign fb0_we = {w_sr0_we, w_lf_we, w_rc_we}; assign fb0_be = {w_sr0_be, w_lf_be, w_rc_be}; assign fb0_wplane = {w_sr0_pl, w_lf_pl, w_rc_pl};
@@ -310,7 +310,7 @@ module dec_top
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_cd (.we1(cd_we), .plane1(cd_dplane), .x1(cd_dx), .y1(cd_dy), .d1(cd_wdata),
                                                 .we4(cd4_we), .plane4(cd4_plane), .x4(cd4_x), .y4(cd4_y), .d4(cd4_wdata),
                                                 .we(w_cd_we), .be(w_cd_be), .plane(w_cd_pl), .x(w_cd_x), .y(w_cd_y), .data(w_cd_d));
-    frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_sr1 (.we1(sr1 && sr_we), .plane1(sr_plane), .x1(sr_dx), .y1(sr_dy), .d1(sr_wdata),
+    frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_sr1 (.we1(sr1 && sr_we), .plane1(sr_dplane), .x1(sr_dx), .y1(sr_dy), .d1(sr_wdata),
                                                  .we4(1'b0), .plane4(2'd0), .x4('0), .y4('0), .d4('0),
                                                  .we(w_sr1_we), .be(w_sr1_be), .plane(w_sr1_pl), .x(w_sr1_x), .y(w_sr1_y), .data(w_sr1_d));
     assign fb1_we = {w_sr1_we, w_cd_we}; assign fb1_be = {w_sr1_be, w_cd_be}; assign fb1_wplane = {w_sr1_pl, w_cd_pl};
@@ -390,31 +390,43 @@ module dec_top
     // free; CDEF holds row r until fb1's row r - FRAME_WIN1 is free; LR holds stripe s (rows s-1 and s) until fb2's
     // row s - FRAME_WIN2 is free.
     logic [SBW-1:0] rel_upto, rel_next, flushed_cnt;
-    logic [SBW-1:0] fb0_free, fb1_free, fb2_free, fbs_free;
+    logic [SBW-1:0] fb0_free, fb1_free, fb2_free, fbs_free;                 // registered copies of the *_c below
+    logic [SBW-1:0] fb0_free_c, fb1_free_c, fb2_free_c, fbs_free_c, rel_upto_c;
     // the final picture: LrFrame, else CdefFrame, else (RING build, super-res) SR's upscaled rows in fb0s, else fb0
     assign final_buf = lr_en ? 2'd2 : cdef_en ? 2'd1 : (RING && sr_en) ? 2'd3 : 2'd0;
     function automatic logic [SBW-1:0] minr(input logic [SBW-1:0] a, input logic [SBW-1:0] b); return (a < b) ? a : b; endfunction
     function automatic logic [SBW-1:0] dec1(input logic [SBW-1:0] a); return (a == SBW'(0)) ? SBW'(0) : a - SBW'(1); endfunction
     always_comb begin
         // "stage past q+1" with next = q+2 is a count of q+1 free rows: next-1; a finished stage frees every row
-        fb0_free = (lf_next >= n_rows) ? n_rows : dec1(lf_next);
-        if (cdef_en) fb0_free = minr(fb0_free, (cd_next >= n_rows) ? n_rows : dec1(cd_next));
-        if (sr_en)   fb0_free = minr(fb0_free, sr_next);
-        if (lr_en)   fb0_free = minr(fb0_free, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
-        if (final_buf == 2'd0) fb0_free = minr(fb0_free, flushed_cnt);
-        fb1_free = n_rows;
-        if (sr_en)   fb1_free = minr(fb1_free, sr_next);
-        if (lr_en)   fb1_free = minr(fb1_free, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
-        if (final_buf == 2'd1) fb1_free = minr(fb1_free, flushed_cnt);
-        fb2_free = flushed_cnt;
-        fbs_free = n_rows;                                       // fb0s: SR's rows, read by LR source 0, flushed when final
-        if (lr_en)   fbs_free = minr(fbs_free, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
-        if (final_buf == 2'd3) fbs_free = minr(fbs_free, flushed_cnt);
+        fb0_free_c = (lf_next >= n_rows) ? n_rows : dec1(lf_next);
+        if (cdef_en) fb0_free_c = minr(fb0_free_c, (cd_next >= n_rows) ? n_rows : dec1(cd_next));
+        if (sr_en)   fb0_free_c = minr(fb0_free_c, sr_next);
+        if (lr_en)   fb0_free_c = minr(fb0_free_c, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
+        if (final_buf == 2'd0) fb0_free_c = minr(fb0_free_c, flushed_cnt);
+        fb1_free_c = n_rows;
+        if (sr_en)   fb1_free_c = minr(fb1_free_c, sr_next);
+        if (lr_en)   fb1_free_c = minr(fb1_free_c, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
+        if (final_buf == 2'd1) fb1_free_c = minr(fb1_free_c, flushed_cnt);
+        fb2_free_c = flushed_cnt;
+        fbs_free_c = n_rows;                                     // fb0s: SR's rows, read by LR source 0, flushed when final
+        if (lr_en)   fbs_free_c = minr(fbs_free_c, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
+        if (final_buf == 2'd3) fbs_free_c = minr(fbs_free_c, flushed_cnt);
         // the final rows of the last enabled stage's buffer (rows 0 .. rel_upto-1)
-        if (lr_en)        rel_upto = (lr_next >= n_stripes) ? n_rows : dec1(lr_next);   // stripe s done writes rows s-1 and s: s-1 final
-        else if (sr_en)   rel_upto = sr_next;                                             // SR(r) in place, after CDEF / LF of r+1
-        else if (cdef_en) rel_upto = cd_next;                                             // CDEF(r) writes fb1 row r whole
-        else              rel_upto = (lf_next >= n_rows) ? n_rows : dec1(lf_next);        // LF(r) done makes row r-1 final
+        if (lr_en)        rel_upto_c = (lr_next >= n_stripes) ? n_rows : dec1(lr_next);   // stripe s done writes rows s-1 and s: s-1 final
+        else if (sr_en)   rel_upto_c = sr_next;                                             // SR(r) in place, after CDEF / LF of r+1
+        else if (cdef_en) rel_upto_c = cd_next;                                             // CDEF(r) writes fb1 row r whole
+        else              rel_upto_c = (lf_next >= n_rows) ? n_rows : dec1(lf_next);        // LF(r) done makes row r-1 final
+    end
+    // The counts are used a cycle late. Every input only grows within a frame (the stage cursors, the flushed count), so
+    // a stale count is at most one row short: a hold lasts a cycle longer, a release comes a cycle later, nothing is
+    // released or started early. At 100 MHz routed the header's mi_rows through n_rows, the four-way minimum, the
+    // hold compare and the event pop into row_cnt was 29 logic levels (-0.44 ns).
+    // Cleared with the frame (a stale rel_upto from the previous frame released rows at the next frame's start), and the
+    // frame-done test below uses the live rel_upto_c (with the registered one, rel_next matched it a cycle before the last
+    // rows were released: the 2026-10-26 nightly flushed 49,152 of 61,440 bytes).
+    always_ff @(posedge clk) begin
+        if (rst || frame_start) begin fb0_free <= '0; fb1_free <= '0; fb2_free <= '0; fbs_free <= '0; rel_upto <= '0; end
+        else begin fb0_free <= fb0_free_c; fb1_free <= fb1_free_c; fb2_free <= fb2_free_c; fbs_free <= fbs_free_c; rel_upto <= rel_upto_c; end
     end
     assign hold_rc = (FRAME_WIN > 0) && ev_valid && (ev_kind == 2'd2) && (32'(sb_pop_row) >= FRAME_WIN)
                      && (32'(sb_pop_row) - FRAME_WIN >= 32'(fb0_free));
@@ -547,7 +559,7 @@ module dec_top
             if (lr_pend && lr_done_o) begin lr_pend <= 1'b0; lr_next <= lr_next + SBW'(1); end
             // frame done: every enabled stage past its last unit
             if (rows_seen && !tile_busy && (lf_next >= n_rows) && (!cdef_en || cd_next >= n_rows) && (!sr_en || sr_next >= n_rows) && (!lr_en || lr_next >= n_stripes)
-                && !lf_pend && !cd_pend && !sr_pend && !lr_pend && rel_next == rel_upto) begin           // every row released (the flush queue sees them all)
+                && !lf_pend && !cd_pend && !sr_pend && !lr_pend && rel_next == rel_upto_c && rel_upto == rel_upto_c) begin   // every row released (the flush queue sees them all)
                 seq_active <= 1'b0; frame_busy <= 1'b0; frame_done <= 1'b1; frame_done_lvl <= 1'b1;
             end
         end

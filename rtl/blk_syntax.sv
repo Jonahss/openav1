@@ -127,7 +127,7 @@ module blk_syntax
         S_DLF, S_DLF_GO, S_DLF_W, S_DLF_REM_W, S_DLF_ABS_W, S_DLF_SIGN, S_DLF_SIGN_W, S_DLF_NEXT,
         S_YMODE, S_YMODE_W, S_ANGY, S_ANGY_GO, S_ANGY_W, S_UV, S_UV_W, S_CFLS, S_CFLS_W, S_CFLU, S_CFLU_GO, S_CFLU_W,
         S_CFLV, S_CFLV_GO, S_CFLV_W, S_ANGUV, S_ANGUV_GO, S_ANGUV_W, S_FI, S_FI_GO, S_FI_W, S_FIM, S_FIM_W,
-        S_TXD, S_TXD_GO, S_TXD_W, S_RBC0, S_RBC, S_CMV, S_CMV_W, S_CMV_P,
+        S_TXD, S_TXD_GO, S_TXD_W, S_RBC0, S_RBC, S_CMV, S_CMV_W, S_CMV_W2, S_CMV_P,
         S_RES_PLANE, S_RES_TX, S_TX_CTX_W, S_TX_A, S_TX_A_W, S_TXTYPE, S_TXTYPE_W, S_TX_B, S_TX_B_W, S_TX_UPD, S_TX_EMIT,
         S_RES_NEXT, S_END, S_END_W, S_DONE,
         S_PAL, S_PAL_W, S_PTOK, S_PTOK_W, S_HOLD, S_IBC, S_IBC_GO, S_IBC_W,
@@ -137,13 +137,13 @@ module blk_syntax
         S_LIT, S_LIT_W,
         S_NBW, S_MVFR, S_MVFR_GO, S_MVFR_W, S_MVHP, S_MVHP_GO, S_MVHP_W,   // shared with the intra block copy path (kept out of the inter group below)
         // inter frames (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33)
-        S_NBA, S_NBA_W, S_NBL, S_NBL_W, S_ISEG, S_SP_RD, S_SP_W, S_SP_END, S_SEGP_GO, S_SEGP_W,
+        S_NBA, S_NBA_W, S_NBA_W2, S_NBL, S_NBL_W, S_NBL_W2, S_ISEG, S_SP_RD, S_SP_W, S_SP_END, S_SEGP_GO, S_SEGP_W,
         S_SKM, S_SKM_GO, S_SKM_W, S_ISI, S_ISI_GO, S_ISI_W, S_RF, S_RFS_GO, S_RFS_W,
         S_MODE, S_CMODE_GO, S_CMODE_W, S_NEWMV_GO, S_NEWMV_W, S_ZEROMV_GO, S_ZEROMV_W, S_REFMV_GO, S_REFMV_W,
         S_DRL, S_DRL_IT, S_DRL_GO, S_DRL_W, S_AMV, S_AMV_NEXT,
         S_II, S_II_GO, S_II_W, S_IIM_GO, S_IIM_W, S_WII_GO, S_WII_W, S_WIDX_GO, S_WIDX_W,
-        S_MM, S_OV, S_OV_W, S_OV_P, S_WS, S_WS_W, S_WS_P, S_MM2, S_OBMC_GO, S_OBMC_W, S_MMS_GO, S_MMS_W,
-        S_OB_A, S_OB_A_W, S_OB_A_P, S_OB_L, S_OB_L_W, S_OB_L_P,
+        S_MM, S_OV, S_OV_W, S_OV_W2, S_OV_P, S_WS, S_WS_W, S_WS_W2, S_WS_P, S_MM2, S_OBMC_GO, S_OBMC_W, S_MMS_GO, S_MMS_W,
+        S_OB_A, S_OB_A_W, S_OB_A_W2, S_OB_A_P, S_OB_L, S_OB_L_W, S_OB_L_W2, S_OB_L_P,
         S_CT, S_CGI_GO, S_CGI_W, S_CT2, S_CIDX_GO, S_CIDX_W, S_CTYPE_GO, S_CTYPE_W, S_CT3, S_WIDX2_GO, S_WIDX2_W, S_WSGN_W, S_MASK_W,
         S_IF, S_IF_D, S_IF_GO, S_IF_W, S_IF_END
     } st_t;
@@ -425,11 +425,12 @@ module blk_syntax
         if (n4 > 6'd16) return 5'd16;
         return 5'(n4);
     endfunction
-    assign nb_rd = (INTER != 0) && ((st == S_NBA) || (st == S_NBA_W) || (st == S_NBL) || (st == S_NBL_W) || (st == S_OV_W) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_P)
-                 || (st == S_OB_A_W) || (st == S_OB_A_P) || (st == S_OB_L_W) || (st == S_OB_L_P));
+    assign nb_rd = (INTER != 0) && ((st == S_NBA) || (st == S_NBA_W) || (st == S_NBA_W2) || (st == S_NBL) || (st == S_NBL_W) || (st == S_NBL_W2)
+                 || (st == S_OV_W) || (st == S_OV_W2) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_W2) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_W2) || (st == S_CMV_P)
+                 || (st == S_OB_A_W) || (st == S_OB_A_W2) || (st == S_OB_A_P) || (st == S_OB_L_W) || (st == S_OB_L_W2) || (st == S_OB_L_P));
     always_comb begin
-        if (st == S_NBA || st == S_NBA_W) begin mvr_row = br - MIW'(1); mvr_col = bc; end
-        else if (st == S_NBL || st == S_NBL_W) begin mvr_row = br; mvr_col = bc - MIW'(1); end
+        if (st == S_NBA || st == S_NBA_W || st == S_NBA_W2) begin mvr_row = br - MIW'(1); mvr_col = bc; end
+        else if (st == S_NBL || st == S_NBL_W || st == S_NBL_W2) begin mvr_row = br; mvr_col = bc - MIW'(1); end
         else if (nb_rd) begin mvr_row = nb_row; mvr_col = nb_col; end
         else begin mvr_row = mvs_rd_row; mvr_col = mvs_rd_col; end
     end
@@ -646,7 +647,10 @@ module blk_syntax
     logic [23:0] vt_arec, vt_lrec;
     logic [7:0]  vt_above_w, vt_left_h;          // 8 bits: a skipped inter neighbour counts with its block size (up to 128)
     logic [2:0]  vt_max_tx;
-    logic [4:0]  vt_ctx;
+    logic [4:0]  vt_ctx, vt_ctx_r;               // vt_ctx_r: the context a cycle late, for the symbol address (the node is
+                                                 // set before S_VTX_NODE, which always precedes S_VTX_GO; the stack and
+                                                 // neighbour-record muxes into the CDF address were 23 levels, -0.63 ns)
+    always_ff @(posedge clk) vt_ctx_r <= vt_ctx;
     always_comb begin
         vt_tx = nd_tx[vt_d]; vt_r = nd_r[vt_d]; vt_c = nd_c[vt_d];
         vt_arec = a_recs[24 * (int'(bc[3:0]) + int'(vt_c)) +: 24];
@@ -738,7 +742,7 @@ module blk_syntax
                     default: begin sq_addr = CDF_AW'(CDF_TX_8X8 + int'(txd_ctx)); sq_n = 4'd1; end
                 endcase
             end
-            S_VTX_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_TXFM_SPLIT + int'(vt_ctx)); sq_n = 4'd1; end
+            S_VTX_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_TXFM_SPLIT + int'(vt_ctx_r)); sq_n = 4'd1; end
             // MV coding: MvCtx = MV_INTRABC_CONTEXT (1) for intra block copy, 0 for inter blocks
             S_MVJ:   begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_MV_JOINT + (use_ibc ? 1 : 0)); sq_n = 4'd3; end
             S_MVSGN: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_MV_SIGN + (use_ibc ? CDF_MV_SIGN_S0 : 0) + int'(mv_comp)); sq_n = 4'd1; end
@@ -814,10 +818,13 @@ module blk_syntax
                 // inter-frame states (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33): compiled out at INTER = 0
                 case (st)
                     // ---- inter frame: the two neighbours' motion info (contexts), then inter_frame_mode_info
+                    // (mv_mem answers two cycles after the address: the *_W states cover the latency)
                     S_NBA: st <= S_NBA_W;
-                    S_NBA_W: begin a_ent <= mvr_ent; a_ok <= avail_u && mvr_written; st <= S_NBL; end
+                    S_NBA_W: st <= S_NBA_W2;
+                    S_NBA_W2: begin a_ent <= mvr_ent; a_ok <= avail_u && mvr_written; st <= S_NBL; end
                     S_NBL: st <= S_NBL_W;
-                    S_NBL_W: begin l_ent <= mvr_ent; l_ok <= avail_l && mvr_written; seg_pre <= 1'b1; st <= S_ISEG; end
+                    S_NBL_W: st <= S_NBL_W2;
+                    S_NBL_W2: begin l_ent <= mvr_ent; l_ok <= avail_l && mvr_written; seg_pre <= 1'b1; st <= S_ISEG; end
                     // inter_segment_id(preSkip = seg_pre) (5.11.8)
                     S_ISEG: begin
                         if (!hdr.seg_enabled) begin seg <= 3'd0; lossless <= hdr.lossless[0]; st <= seg_pre ? S_SKM : S_CDEF; end
@@ -980,7 +987,8 @@ module blk_syntax
                             else st <= S_CT;                                                    // none: SIMPLE
                         end
                     end
-                    S_OV_W: st <= S_OV_P;
+                    S_OV_W: st <= S_OV_W2;
+                    S_OV_W2: st <= S_OV_P;
                     S_OV_P: begin
                         if (mvr_written && mvr_ent.ref0 >= R_LAST && mvr_ent.ref0 <= R_ALTREF) begin
                             ws_found <= 1'b0; do_tl <= 1'b1; do_tr <= 1'b1; ws_i <= 6'd0;
@@ -1003,7 +1011,8 @@ module blk_syntax
                             default: st <= S_MM2;
                         endcase
                     end
-                    S_WS_W: st <= S_WS_P;
+                    S_WS_W: st <= S_WS_W2;
+                    S_WS_W2: st <= S_WS_P;
                     S_WS_P: begin
                         logic [5:0] srcw, srch;
                         logic in_tile;
@@ -1091,7 +1100,8 @@ module blk_syntax
                             ob_x <= br; ob_n <= 3'd0; ob_lim <= ob_limit(bh4); ob_i <= 3'd4; st <= S_OB_L;
                         end
                     end
-                    S_OB_A_W: st <= S_OB_A_P;
+                    S_OB_A_W: st <= S_OB_A_W2;
+                    S_OB_A_W2: st <= S_OB_A_P;
                     S_OB_A_P: begin
                         logic [4:0] step4;
                         step4 = ob_step(num4x4w(mvr_ent.bsize));
@@ -1107,7 +1117,8 @@ module blk_syntax
                             nb_row <= ob_x | MIW'(1); nb_col <= bc - MIW'(1); st <= S_OB_L_W;
                         end else st <= S_CT;
                     end
-                    S_OB_L_W: st <= S_OB_L_P;
+                    S_OB_L_W: st <= S_OB_L_W2;
+                    S_OB_L_W2: st <= S_OB_L_P;
                     S_OB_L_P: begin
                         logic [4:0] step4;
                         step4 = ob_step(num4x4h(mvr_ent.bsize));
@@ -1544,7 +1555,8 @@ module blk_syntax
                         nb_row <= rr; nb_col <= cc; st <= S_CMV_W;
                     end
                 end
-                S_CMV_W: st <= S_CMV_P;
+                S_CMV_W: st <= S_CMV_W2;
+                S_CMV_W2: st <= S_CMV_P;
                 S_CMV_P: begin
                     int ku;
                     ku = int'(cm_r) * int'(cm_uc) + int'(cm_c);

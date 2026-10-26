@@ -1,6 +1,10 @@
 // Motion information of the frame being decoded, per 4x4 luma unit (spec IsInters / RefFrames / Mvs / MiSizes
 // as the MV stack needs them): written per block by the syntax stage as soon as the block's mode info is
-// complete (area fill, `busy` while in flight), read one position per cycle by mv_stack (registered read).
+// complete (area fill, `busy` while in flight), read one position per cycle by mv_stack: the read is registered
+// twice, rd_ent / rd_written answer TWO cycles after rd_row / rd_col (2026-10-26: the second register is the
+// UltraRAM's output register; with one, the cascaded URAM read ran straight into the stack's candidate compare,
+// 23 logic levels and -0.45 ns at 100 MHz routed). mv_stack's issue / wait / process steps already span two
+// cycles; blk_syntax's own reads have a second wait state.
 // A 64-row bitmap of "written" bits (per 4x4 column) says whether a position has been written in this
 // frame; the tile decoder clears the bitmap rows of a superblock row when it starts one (the MV stack looks
 // at most one superblock row up), so no state depends on memory initialisation.
@@ -34,11 +38,17 @@ module mv_mem
     logic           m_we;
     logic [ML2R+ML2C-1:0] m_waddr, m_raddr;
     logic [EW-1:0]  m_wdata, m_rdata;
+    logic [EW-1:0]  m_rdata2;                              // the URAM output register
+    logic           rd_written1;
     always_ff @(posedge clk) begin
         if (m_we) mem[m_waddr] <= m_wdata;
         m_rdata <= mem[m_raddr];
     end
-    assign rd_ent = mv_ent_t'(m_rdata);
+    always_ff @(posedge clk) begin
+        m_rdata2 <= m_rdata;
+        rd_written <= rd_written1;
+    end
+    assign rd_ent = mv_ent_t'(m_rdata2);
     // "written" bitmap: 64 row words of WC bits in distributed RAM (one write port: a row clear writes zeros, a
     // bit set writes the row word read asynchronously with the bit merged in, so both land in the same cycle the
     // flop version did). As flops it grew with the frame width: 16k at 1024 wide, 32k at 1080p.
@@ -82,7 +92,7 @@ module mv_mem
                 else w_busy <= 1'b0;
             end
         end
-        rd_written <= written[rd_row[5:0]][rd_col[ML2C-1:0]];   // one async read port, bit select, registered
+        rd_written1 <= written[rd_row[5:0]][rd_col[ML2C-1:0]];  // one async read port, bit select, registered (+ the output stage above)
     end
     // the area-fill writer stores one entry per cycle while busy (the FSM above steps wi/wj over the block)
     assign w_rr = b_r + MIW'(wi); assign w_cc = b_c + MIW'(wj);

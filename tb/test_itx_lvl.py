@@ -71,9 +71,11 @@ async def fuzz_vs_model(dut):
             vec = [x for row in rows for x in row]
             if any(not m.fits(x, TW) for x in exp) or any(not m.fits(x, TW) for x in vec):
                 continue
+            dut.prog.value = pid                          # prog / r stable in the cycle before start (the
+            dut.r.value = r                               # engine decodes level 0's control word from them)
+            await RisingEdge(dut.clk)
+            await Timer(1, "ns")
             dut.in_vec.value = pack(vec)
-            dut.prog.value = pid
-            dut.r.value = r
             dut.start.value = 1
             await RisingEdge(dut.clk)
             await Timer(1, "ns")

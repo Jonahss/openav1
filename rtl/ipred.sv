@@ -344,6 +344,18 @@ module ipred #(
         return r;
     endfunction
 
+    // DC-sum read-address lookahead (2026-10-26): the eight L[k+l] / A[k+l-h] addresses of a step, computed where k is
+    // set (S_SETUP, S_DC_SUM) into a register; in front of the LUT-RAM address every cycle (k + l, the compare with h,
+    // the subtract, the state mux) they headed the block's worst routed path at 100 MHz (32 levels, -0.35 ns).
+    function automatic logic [159:0] dc_la(input int kk);        // 8 L addresses, then 8 A addresses, 10 bits each
+        logic [159:0] r;
+        for (int l = 0; l < 8; l++) begin
+            r[l * 10 +: 10]      = 10'(kk + l);
+            r[80 + l * 10 +: 10] = (l_hl && kk + l < int'(h)) ? 10'sd0 : 10'(kk + l - (l_hl ? int'(h) : 0));
+        end
+        return r;
+    endfunction
+    logic [159:0]  dc_la_v;
     logic [19:0]   dc_sum, dc_part;   // running sum and the sum of the next (up to) 8 edge samples
     logic [8:0]    dc_n;              // number of edge samples summed
     logic [PW-1:0] dc_val;
@@ -665,9 +677,9 @@ module ipred #(
                 for (int l = 0; l < 4; l++)
                     {rpA_a[2 * l], rpA_a[2 * l + 1], rpL_a[2 * l], rpL_a[2 * l + 1]} = {la_a0[l], la_a1[l], la_l0[l], la_l1[l]};
             end
-            S_DC_SUM: for (int l = 0; l < 8; l++) begin                 // L[k+l] and A[k+l-h] (A side clamped at 0)
-                rpL_a[l] = 10'(int'(k) + l);
-                rpA_a[l] = (l_hl && int'(k) + l < int'(h)) ? 10'sd0 : 10'(int'(k) + l - (l_hl ? int'(h) : 0));
+            S_DC_SUM: for (int l = 0; l < 8; l++) begin                 // L[k+l] and A[k+l-h] (A side clamped at 0), from the lookahead
+                rpL_a[l] = dc_la_v[l * 10 +: 10];
+                rpA_a[l] = dc_la_v[80 + l * 10 +: 10];
             end
             S_EF, S_UP_A, S_UP_L:                                       // the lookahead (ef_la / up_la), set with k
                 for (int q = 0; q < 6; q++) begin rpA_a[q] = la_v[q * 10 +: 10]; rpL_a[q] = la_v[q * 10 +: 10]; end
@@ -752,7 +764,7 @@ module ipred #(
                 end
             end
             S_SETUP: begin
-                px <= 0; py <= 0; dc_sum <= 0; k <= 0;
+                px <= 0; py <= 0; dc_sum <= 0; k <= 0; dc_la_v <= dc_la(0);
                 idx_i_r <= 17'(dx);                                     // (0+1)*dx, (l+1)*dy for the first row
                 for (int l = 0; l < 4; l++) idx_j_r[l] <= 17'((l + 1) * int'(dy));
                 if (is_dir) begin
@@ -842,7 +854,7 @@ module ipred #(
             end
             S_UP_DONE: state <= S_PIX;
             S_DC_SUM: begin
-                if (k < dc_n) begin dc_sum <= dc_sum + dc_part; k <= k + 9'd8; end
+                if (k < dc_n) begin dc_sum <= dc_sum + dc_part; k <= k + 9'd8; dc_la_v <= dc_la(int'(k) + 8); end
                 else begin
                     // both edges: (sum + (w+h)/2) / (w+h), an exact integer division by one of 12 possible sizes
                     if (l_hl && l_ha) dc_val <= dc_both;

@@ -136,12 +136,16 @@ module lr_top
     logic        ring_src [0:RING-1];
     logic        ring_ok  [0:RING-1];
     logic [3:0]  k;                                     // window row being checked / loaded
-    logic [PXW:0] k_rule;
-    logic [3:0]  k_slot;
+    logic [PXW:0] k_rule, k_rule_r;
+    logic [3:0]  k_slot, k_slot_r;
     logic        k_hit;
     assign k_rule = row_rule(k);
     assign k_slot = k_rule[3:0];
     assign k_hit = ring_ok[k_slot] && (ring_row[k_slot] == k_rule[PXW-1:0]) && (ring_src[k_slot] == k_rule[PXW]);
+    // The loader uses the rule a cycle late (k_rule_r): k is settled a cycle before L_LOAD starts (L_ROWS decides on
+    // the live rule) and holds through the load. The frame height through the rule's clamps into the source buffer's
+    // UltraRAM address was 22 logic levels at 100 MHz routed (-0.83 ns).
+    always_ff @(posedge clk) begin k_rule_r <= k_rule; k_slot_r <= k_slot; end
     // slot of window row k for the compute phases (all rows present)
     function automatic logic [3:0] slot_of(input logic [3:0] kk);
         logic [PXW:0] r;
@@ -549,15 +553,15 @@ module lr_top
     logic ld_pend;                                      // a load read is in flight (lands this cycle)
     logic [PXW-1:0] ld_x;                                  // its x (aligned group of 4)
     always_comb begin
-        lb_we = ld_pend; lb_wslot = k_slot; lb_waddr = GW'(ld_x >> 2);
-        for (int l = 0; l < 4; l++) lb_wdata[l * 12 +: 12] = k_rule[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
+        lb_we = ld_pend; lb_wslot = k_slot_r; lb_waddr = GW'(ld_x >> 2);
+        for (int l = 0; l < 4; l++) lb_wdata[l * 12 +: 12] = k_rule_r[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
         // the compute phases move to the next group: output states every clock, the box phase at a group's last column
         win_shift = out_issue || (st == L_AB && ax[1:0] == 2'd3);
-        s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule[PXW-1:0]);
+        s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule_r[PXW-1:0]);
         d_we_c = 1'b0; d_plane_c = plane4; d_x_c = FBX'(x4); d_y_c = y4; d_wdata_c = 12'd0;
         d4_we_c = v4; d4_be_c = be4; d4_wdata_c = out4;                 // the group leaving S4 is written (P3 is combinational)
         case (st)
-            L_LOAD: begin s0_re = k_rule[PXW]; s1_re = !k_rule[PXW]; end
+            L_LOAD: begin s0_re = k_rule_r[PXW]; s1_re = !k_rule_r[PXW]; end
             default: ;
         endcase
     end
@@ -604,7 +608,7 @@ module lr_top
                 else st <= L_LOAD_LAST;
             end
             L_LOAD_LAST: begin                                                // the last group lands this cycle
-                ring_row[k_slot] <= k_rule[PXW-1:0]; ring_src[k_slot] <= k_rule[PXW]; ring_ok[k_slot] <= 1'b1;
+                ring_row[k_slot_r] <= k_rule_r[PXW-1:0]; ring_src[k_slot_r] <= k_rule_r[PXW]; ring_ok[k_slot_r] <= 1'b1;
                 k <= k + 4'd1; st <= L_ROWS;
             end
             // ---- unit column segment

@@ -4,6 +4,12 @@
 // input picture of loop restoration (the deblocked frame and the CDEF frame); the caller selects the buffer.
 // Spec-literal arithmetic: stepX / initialSubpelX use truncating divisions (one 32-bit divider, evaluated
 // once per plane; fine for simulation, to be replaced by a sequential divider for synthesis).
+// The output sample is a 4-stage pipeline (2026-10-26): source position -> the 8 clamped line-buffer indices and
+// the subpel; the 8 samples and taps; the 8 products; the sum, Round2 and clamp into the write port. Combinational
+// from src_x into the frame memory's write capture it was the decoder's worst path at 100 MHz routed (-1.43 ns, 33
+// logic levels: the clamps, the line-buffer reads, the tap ROM, 8 DSPs, the adder tree). Writes follow S_OUT by 4
+// cycles; S_DRAIN empties the pipeline before done. The line buffer is read in stage 1 only (the cycle after
+// S_OUT at the latest), before the next row's S_RD overwrites it.
 module sr_top
   import syn_pkg::*;
   import blk_tables_pkg::*;
@@ -26,6 +32,8 @@ module sr_top
     output logic [FBY-1:0] s_y,
     input  logic [11:0] s_rdata,
     output logic        d_we,
+    output logic [1:0]  d_plane,              // the write's plane: the pipeline's last samples of a plane's last row leave
+                                              // after `plane` has moved on (2026-10-26: they landed in the next plane)
     output logic [FBX-1:0] d_x,
     output logic [FBY-1:0] d_y,
     output logic [11:0] d_wdata
@@ -34,7 +42,7 @@ module sr_top
     localparam int SUPERRES_EXTRA_BITS = 8;
     localparam int FILTER_BITS = 7;
 
-    typedef enum logic [3:0] {S_IDLE, S_PLANE, S_DIV, S_INIT1, S_INIT2, S_RD, S_RD_LAST, S_OUT, S_NEXT, S_DONE} st_t;
+    typedef enum logic [3:0] {S_IDLE, S_PLANE, S_DIV, S_INIT1, S_INIT2, S_RD, S_RD_LAST, S_OUT, S_NEXT, S_DRAIN, S_DONE} st_t;
     st_t st;
     logic        sub_x, sub_y;
     logic [PXW-1:0] up_w, plane_h, max_x;
@@ -75,32 +83,55 @@ module sr_top
     end
     logic signed [31:0] sr_err;              // up * stepX - (down << 14)
 
-    // output sample: 8 taps around srcXPx from the line buffer
+    // output sample: 8 taps around srcXPx from the line buffer, as a 4-stage pipeline behind S_OUT
     logic signed [31:0] src_px;
     logic [5:0]  subpel;
+    logic [FBX-1:0] sxc [8];
+    always_comb begin
+        src_px = src_x >>> SUPERRES_SCALE_BITS;
+        subpel = 6'((src_x & 32'sd16383) >> SUPERRES_EXTRA_BITS);
+        for (int k = 0; k < 8; k++) begin
+            logic signed [31:0] sx_;
+            logic [PXW-1:0] sxp;
+            sx_ = src_px + 32'(k) - 32'sd3;
+            sxp = (sx_ < 0) ? PXW'(0) : (sx_ > 32'(max_x)) ? max_x : PXW'(sx_);
+            sxc[k] = sxp[FBX-1:0];
+        end
+    end
+    // stage 1: indices + subpel   2: samples + taps   3: products   4: sum / round / clamp
+    logic           p1_v, p2_v, p3_v, p4_v;
+    logic [1:0]     p1_pl, p2_pl, p3_pl, p4_pl;
+    logic [FBX-1:0] p1_x, p2_x, p3_x, p4_x;
+    logic [FBY-1:0] p1_y, p2_y, p3_y, p4_y;
+    logic [FBX-1:0] p1_idx [8];
+    logic [5:0]     p1_subpel;
+    logic [11:0]    p2_s [8];
+    logic signed [8:0] p2_tap [8];
+    logic signed [21:0] p3_prod [8];
+    logic [11:0]    p4_pix;
     logic signed [21:0] acc;
     logic signed [14:0] o_val;
     logic [11:0] o_pix;
     always_comb begin
-        src_px = src_x >>> SUPERRES_SCALE_BITS;
-        subpel = 6'((src_x & 32'sd16383) >> SUPERRES_EXTRA_BITS);
         acc = 22'sd0;
-        for (int k = 0; k < 8; k++) begin
-            logic signed [31:0] sx_;
-            logic [PXW-1:0] sxc;
-            sx_ = src_px + 32'(k) - 32'sd3;
-            sxc = (sx_ < 0) ? PXW'(0) : (sx_ > 32'(max_x)) ? max_x : PXW'(sx_);
-            acc = acc + 22'(signed'({1'b0, line[sxc[FBX-1:0]]})) * 22'(upscale_filter(subpel, 3'(k)));
-        end
+        for (int k = 0; k < 8; k++) acc = acc + p3_prod[k];
         o_val = 15'((acc + 22'sd64) >>> FILTER_BITS);           // Round2(sum, FILTER_BITS)
         o_pix = (o_val < 0) ? 12'd0 : (o_val > 15'(signed'({3'b0, pix_max}))) ? pix_max : 12'(o_val);
+    end
+    always_ff @(posedge clk) begin
+        p1_v <= (st == S_OUT) && !rst; p1_x <= FBX'(xo); p1_y <= FBY'(y); p1_pl <= plane; p1_idx <= sxc; p1_subpel <= subpel;
+        p2_v <= p1_v && !rst; p2_x <= p1_x; p2_y <= p1_y; p2_pl <= p1_pl;
+        for (int k = 0; k < 8; k++) begin p2_s[k] <= line[p1_idx[k]]; p2_tap[k] <= upscale_filter(p1_subpel, 3'(k)); end
+        p3_v <= p2_v && !rst; p3_x <= p2_x; p3_y <= p2_y; p3_pl <= p2_pl;
+        for (int k = 0; k < 8; k++) p3_prod[k] <= 22'(signed'({1'b0, p2_s[k]})) * 22'(p2_tap[k]);
+        p4_v <= p3_v && !rst; p4_x <= p3_x; p4_y <= p3_y; p4_pl <= p3_pl; p4_pix <= o_pix;
     end
 
     assign busy = (st != S_IDLE);
     assign s_re = (st == S_RD);
     assign s_x = FBX'(x); assign s_y = FBY'(y);
-    assign d_we = (st == S_OUT);
-    assign d_x = FBX'(xo); assign d_y = FBY'(y); assign d_wdata = o_pix;
+    assign d_we = p4_v;
+    assign d_plane = p4_pl; assign d_x = p4_x; assign d_y = p4_y; assign d_wdata = p4_pix;
 
     always_ff @(posedge clk) begin
         done <= 1'b0;
@@ -159,8 +190,9 @@ module sr_top
                 x <= PXW'(0);
                 if (y + PXW'(1) < plane_h && y + PXW'(1) <= (ly_last >> sub_y)) begin y <= y + PXW'(1); st <= S_RD; end
                 else if (plane + 2'd1 < (hdr.mono ? 2'd1 : 2'd3)) begin plane <= plane + 2'd1; st <= S_PLANE; end
-                else st <= S_DONE;
+                else st <= S_DRAIN;
             end
+            S_DRAIN: if (!p1_v && !p2_v && !p3_v && !p4_v) st <= S_DONE;   // the last writes are out
             S_DONE: begin done <= 1'b1; st <= S_IDLE; end
             default: st <= S_IDLE;
         endcase
