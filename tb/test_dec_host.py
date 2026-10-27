@@ -328,7 +328,7 @@ async def dec_host_streams(dut):
         decs = []
         dut._log.info(f"{tag} {W}x{H}: {len(d.tiles)} tiles, sb128 {d.tiles[0][0].use_128x128_superblock}, decoding the model")
         h0 = d.tiles[0][0]
-        if WIN and not HostDecoder.window_ok(h0, len({th.MiColStart for th, _ in d.tiles})):
+        if WIN and not HostDecoder.window_ok(h0, len({th.MiColStart for th, _ in d.tiles}), sb128=bool(int(os.environ.get("SB128", "0")))):
             dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc), skipped")
             continue
         if WIN and CORE and ((h0.enable_cdef and not h0.CodedLossless and not h0.allow_intrabc) or any(t != 0 for t in h0.FrameRestorationType[:h0.NumPlanes])):

@@ -5,7 +5,7 @@
 // decoder clock; the PS side's own clock domain crossing is in its interconnect). Register map (byte offsets,
 // 32-bit words; the words of a wide field are little-endian: word 0 = bits 31:0):
 //   0x000 ID        R   32'hA71D_0001
-//   0x004 CFG       R   {8'd0, FBX[7:0], FBY[7:0], ITX_LANES[3:0], 3'd0, FRAME_URAM}
+//   0x004 CFG       R   {8'd0, FBX[7:0], FBY[7:0], ITX_LANES[3:0], 2'd0, SB128, FRAME_URAM}
 //   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 1 pipe_en, 2 lr_from_deblocked, 3 sr_buf,
 //                       [5:4] h_buf (the host port's frame buffer: 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
 //                       in the RING build; a row flush reads dec_top's final_buf instead), 8 eos (no more bytes for
@@ -73,7 +73,8 @@ module dec_host
     parameter int FRAME_WIN1 = -1,           // fb1 / fb2 rings with FRAME_URAM (dec_top; -1: left out, the core build)
     parameter int FRAME_WIN2 = -1,
     parameter int FIFO_LW = 10,              // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
-    parameter int INTER = 1                  // 0: the intra-only decoder (dec_top INTER)
+    parameter int INTER = 1,                 // 0: the intra-only decoder (dec_top INTER)
+    parameter int SB128 = 0                  // 1: the window build takes 128x128 superblocks (dec_top SB128; CFG bit 1)
 ) (
     input  logic        clk,
     input  logic        clk2x,
@@ -198,7 +199,7 @@ module dec_host
     logic [15:0]    rs_xs [8], rs_ys [8];                    // 7.11.3.3 scale factors per slot (for the current frame)
     logic [20:0]    ref_slot_r;
     logic [31:0]    ref_cfg_r;
-    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER)) u_dec (
+    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_data,
@@ -556,7 +557,7 @@ module dec_host
                 ar_v <= 1'b0; s_axi_rvalid <= 1'b1;
                 case (ri)
                     10'h000: s_axi_rdata <= 32'hA71D_0001;
-                    10'h001: s_axi_rdata <= {8'd0, 8'(FBX), 8'(FBY), 4'(ITX_LANES), 3'd0, 1'(FRAME_URAM)};
+                    10'h001: s_axi_rdata <= {8'd0, 8'(FBX), 8'(FBY), 4'(ITX_LANES), 2'd0, 1'(SB128), 1'(FRAME_URAM)};
                     10'h002: s_axi_rdata <= ctrl;
                     10'h004: s_axi_rdata <= {16'(f_free), !ow_valid && f_empty, f_ovf || f_badw, in_ready, lr_done_s, lr_busy, sr_done_s, sr_busy,
                                              cdef_done_s, cdef_busy, lf_done_s, lf_busy, frame_done_lvl, frame_busy, unsupported, tile_done_lvl, tile_busy};

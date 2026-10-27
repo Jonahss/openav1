@@ -11,11 +11,13 @@ module frame_mem_uram #(
     parameter int FBX = 9,
     parameter int FBY = 9,
     parameter int PW = 12,
-    parameter int FRAME_WIN = 0                             // 0: the whole picture; N: a window of N superblock rows
+    parameter int FRAME_WIN = 0,                            // 0: the whole picture; N: a window of N superblock rows
+    parameter int SB128 = 0                                 // 1: the window's slots hold 128-line superblock rows (sb128 streams; twice the words)
 ) (
     input  logic                clk,
     input  logic                clk2x,
     input  logic                phase,      // 1 at the mid-cycle clk2x edge, 0 at the clk-aligned one (clock generator)
+    input  logic                sb128,      // the stream's superblock size (SB128 builds: 128-line rows; else ignored)
     // read ports (2)
     input  logic [1:0]          re,
     input  logic [3:0]          r_plane,
@@ -42,7 +44,7 @@ module frame_mem_uram #(
     // FRAME_WIN > 0: a window of FRAME_WIN superblock rows (64 lines) of the full width instead of the whole picture,
     // the lines addressed by superblock row modulo FRAME_WIN (docs/frame-memory.md, window version); the
     // y coordinate keeps its FBY bits
-    localparam int WLINES = (FRAME_WIN > 0) ? FRAME_WIN * 64 : (1 << FBY);
+    localparam int WLINES = (FRAME_WIN > 0) ? FRAME_WIN * (SB128 != 0 ? 128 : 64) : (1 << FBY);
     localparam int NW0   = WPR * WLINES;                     // luma words
     localparam int NW1   = NW0 >> 2;                         // chroma plane words (4:2:0)
     localparam int NWORD = NW0 + 2 * NW1;
@@ -53,14 +55,19 @@ module frame_mem_uram #(
     // path (-1.03 ns, 39 logic levels, 2026-10-17) ran from the reconstruction stage's transform-size register into the
     // UltraRAM address through this function and the plane arithmetic below, synthesised as a divider and adders.
     localparam int NROW = 1 << (FBY - 5);                    // superblock rows a y coordinate can address (chroma rows are 32 lines)
+    // SB128 builds: an sb128 stream's rows are 128 luma / 64 chroma lines, slot pitch 128 / 64 (the window holds
+    // FRAME_WIN of them: WLINES); an sb64 stream in the same build keeps the 64 / 32 pitch and uses half the words.
     function automatic logic [FBY-1:0] wline(input logic [1:0] p, input logic [FBY-1:0] y);
         logic [FBY-6:0] row;
         logic [FBY-1:0] slot;
+        logic big;
         if (FRAME_WIN == 0) return y;
-        row = (p == 2'd0) ? (FBY-5)'(y >> 6) : (FBY-5)'(y >> 5);
+        big = (SB128 != 0) && sb128;
+        row = (p == 2'd0) ? (big ? (FBY-5)'(y >> 7) : (FBY-5)'(y >> 6)) : (big ? (FBY-5)'(y >> 6) : (FBY-5)'(y >> 5));
         slot = '0;
         for (int r = 0; r < NROW; r++) if (row == (FBY-5)'(r)) slot = FBY'(r % FRAME_WIN);
-        return (p == 2'd0) ? FBY'((slot << 6) | (y & FBY'(63))) : FBY'((slot << 5) | (y & FBY'(31)));
+        if (p == 2'd0) return big ? FBY'((slot << 7) | (y & FBY'(127))) : FBY'((slot << 6) | (y & FBY'(63)));
+        return big ? FBY'((slot << 6) | (y & FBY'(63))) : FBY'((slot << 5) | (y & FBY'(31)));
     endfunction
     // Address = plane base + line * words-per-row + x / 4. The words-per-row are powers of two and x / 4 is below them
     // (chroma planes are half as wide), so line and group concatenate; only the plane base is added, and its low bits

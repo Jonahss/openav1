@@ -407,7 +407,7 @@ class HostDecoder:
         if ident != ID_VALUE:
             raise HostError(f"ID register reads 0x{ident:08x}, expected 0x{ID_VALUE:08x}: no decoder at this address?")
         cfg = self.rd(R_CFG)
-        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1)
+        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1, sb128=bool(cfg >> 1 & 1))
         return self.geom
 
     def reset(self):
@@ -551,10 +551,10 @@ class HostDecoder:
                 raise HostError(f"{tag}: intra block copy is not in the window build")
 
     @staticmethod
-    def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None):
+    def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None, sb128=False):
         """Whether a window build takes the frame: sb64, 4:2:0 or mono, one tile column, no intra block copy, and (when
-        the image's geometry is known: identify()) a picture no wider than 1 << FBX and no taller than 1 << FBY."""
-        return not hdr.use_128x128_superblock and (hdr.NumPlanes == 1 or (hdr.subsampling_x and hdr.subsampling_y)) \
+        the image's geometry is known: identify()) a picture no wider than 1 << FBX and no taller than 1 << FBY; sb128 builds (CFG bit 1) take 128x128 superblocks."""
+        return (sb128 or not hdr.use_128x128_superblock) and (hdr.NumPlanes == 1 or (hdr.subsampling_x and hdr.subsampling_y)) \
             and n_tile_cols == 1 and not hdr.allow_intrabc \
             and (fbx is None or hdr.UpscaledWidth <= (1 << fbx)) and (fby is None or hdr.FrameHeight <= (1 << fby))
 
@@ -690,7 +690,7 @@ class HostDecoder:
             # A frame the image cannot take (sb128 / non-4:2:0 / several tile columns / intrabc / too large) is decoded by
             # the model alone and its picture uploaded into a pool buffer, so the frames after it still run on the card
             # with the right references (the twin, tb/test_dec_host_inter.py, does the same: model_only).
-            model_only = not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby")})
+            model_only = not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby", "sb128")})
             if model_only and write is None:
                 raise HostError(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
             t = {}
