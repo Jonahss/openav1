@@ -339,6 +339,8 @@ module dec_host
     logic [39:0]    fl_addr [3];                             // next row's first address per plane
     logic [15:0]    fl_y [3];                                // next row's first line per plane
     logic [7:0]     fl_rows;                                 // rows flushed since the last frame start
+    logic [15:0]    row_lines;                               // lines of plane d_plane in one released superblock row
+    assign row_lines = (d_plane == 2'd0) ? ((SB128 != 0 && hdr.sb128) ? 16'd128 : 16'd64) : ((SB128 != 0 && hdr.sb128) ? 16'd64 : 16'd32);
     logic           fl_auto;
     assign fl_auto = dma_cfg[8];
     assign flush_rd = dma_busy && fl_run;
@@ -425,7 +427,9 @@ module dec_host
                 D_PLANE: begin                               // first line of plane d_plane in this run
                     d_row_addr <= fl_run ? fl_addr[d_plane] : dma_base[d_plane];
                     d_y <= fl_run ? FBY'(fl_y[d_plane]) : '0;
-                    d_y1 <= fl_run ? ((fl_y[d_plane] + (d_plane == 2'd0 ? 16'd64 : 16'd32) < dma_h[d_plane]) ? fl_y[d_plane] + (d_plane == 2'd0 ? 16'd64 : 16'd32) : dma_h[d_plane])
+                    // a released superblock row is 64 luma / 32 chroma lines, 128 / 64 for an sb128 stream (SB128 builds; the
+                    // 64-line flush of a 128-line row left half of every row unflushed and the sequencer waiting: 2026-10-27)
+                    d_y1 <= fl_run ? ((fl_y[d_plane] + row_lines < dma_h[d_plane]) ? fl_y[d_plane] + row_lines : dma_h[d_plane])
                                    : dma_h[d_plane];
                     ds <= (fl_run && fl_y[d_plane] >= dma_h[d_plane]) ? D_NEXT : D_ROW;   // nothing left in this plane
                 end
