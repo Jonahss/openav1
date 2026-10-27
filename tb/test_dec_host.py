@@ -155,14 +155,20 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
     ctrl0 = (await ax.read(R_CTRL, record=False)) & ~HR.CTRL_ENG_MASK
     await ax.write(R_CTRL, ctrl0)
     await ax.write(R_START, START_TILE)
+    cocotb.log.info(f"{tag}: {len(tiles)} engines started, cols {[(th.MiColStart, th.MiColEnd) for th, _, _ in tiles]}, bytes {[len(d) for _, _, d in tiles]}, ctrl 0x{ctrl0:x}")
     pos = [0] * len(tiles)
     idle = 0
+    loops = 0
     while any(pos[e] < len(d) for e, (_, _, d) in enumerate(tiles)):
         progressed = False
+        loops += 1
         for e, (_, _, data) in enumerate(tiles):
             if pos[e] >= len(data):
                 continue
-            free = (await ax.read(HR.R_TILE_FIFO + 4 * e, record=False)) >> 16
+            fst = await ax.read(HR.R_TILE_FIFO + 4 * e, record=False)
+            free = fst >> 16
+            if loops <= 3 or loops % 200 == 0:
+                cocotb.log.info(f"{tag}: loop {loops} engine {e} fifo 0x{fst:08x} pos {pos} status 0x{await ax.read(R_STATUS, record=False):08x}")
             if free == 0:
                 continue
             await ax.write(R_CTRL, ctrl0 | (e << HR.CTRL_ENG_SHIFT))
@@ -181,7 +187,8 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
             assert idle < 100_000, f"{tag}: no engine FIFO freed a word"
             await ClockCycles(ax.clk, 64)
     await ax.write(R_CTRL, ctrl0 | CTRL_EOS)
-    st = await ax.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, 400_000_000, tag)
+    cocotb.log.info(f"{tag}: all bytes pushed ({loops} loops), EOS set, status 0x{await ax.read(R_STATUS, record=False):08x}")
+    st = await ax.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, 4_000_000, tag)
     await ax.write(HR.R_TILE_ENG, 0)
     assert not (st & ST_UNSUP), f"{tag}: RTL flagged unsupported syntax"
     assert not (st & (1 << 14)), f"{tag}: a tile FIFO dropped a push (overflow or a split write)"

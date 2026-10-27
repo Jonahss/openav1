@@ -190,7 +190,7 @@ module tile_engines
     end
 `ifndef SYNTHESIS
     // +vis: trace the arbiter (tile_start, advances, engine done) on stdout
-    always_ff @(posedge clk) if ($test$plusargs("vis")) begin
+    always_ff @(posedge clk) begin                            // (temporary: unconditional while the TE=2 hang is chased)
         if (tile_start) $display("[te] t=%0t tile_start mask %b", $time, mask);
         if (advance) $display("[te] t=%0t advance cur %0d -> %0d wrap %0d (new_row %0d exhausted %b h_valid %b done_lvl %b)", $time, cur, nxt, wrap, new_row, exhausted, h_valid, done_lvl);
         for (int e = 0; e < TE; e++) if (e_done[e]) $display("[te] t=%0t engine %0d done (queue valid %0d)", $time, e, h_valid[e]);
