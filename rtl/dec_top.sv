@@ -378,6 +378,13 @@ module dec_top
     logic [SBW-1:0]  tile_row_prev; logic tile_row_valid;
     logic        sb_pop; logic [SBW-1:0] sb_pop_row;
     assign sb_shift = hdr.sb128 ? 5'd5 : 5'd4;
+    // LR works in 64-line stripes (stripe s = lines 64s-8 .. 64s+55); the window counts superblock rows (64 or 128 lines):
+    // the rows wholly final after lr_next stripes, and the last row stripe lr_next touches (sb64: lr_next - 1 and lr_next)
+    logic [SBW-1:0] lr_rows_done, lr_row_cur;
+    always_comb begin
+        lr_rows_done = (lr_next == SBW'(0)) ? SBW'(0) : SBW'((32'(lr_next) * 64 - 8) >> (hdr.sb128 ? 7 : 6));
+        lr_row_cur   = SBW'((32'(lr_next) * 64 + 55) >> (hdr.sb128 ? 7 : 6));
+    end
     logic           hold_rc, hold_cd, hold_lr, hold_sr;      // slot-reuse holds (assigned below)
     // A superblock event held back from the reconstruction stage by the window (hold_rc, below) still marks the end
     // of the previous row once reconstruction has finished its last block: the hold waits for a flush that waits
@@ -407,18 +414,18 @@ module dec_top
         fb0_free_c = (lf_next >= n_rows) ? n_rows : dec1(lf_next);
         if (cdef_en) fb0_free_c = minr(fb0_free_c, (cd_next >= n_rows) ? n_rows : dec1(cd_next));
         if (sr_en)   fb0_free_c = minr(fb0_free_c, sr_next);
-        if (lr_en)   fb0_free_c = minr(fb0_free_c, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
+        if (lr_en)   fb0_free_c = minr(fb0_free_c, (lr_next >= n_stripes) ? n_rows : lr_rows_done);
         if (final_buf == 2'd0) fb0_free_c = minr(fb0_free_c, flushed_cnt);
         fb1_free_c = n_rows;
         if (sr_en)   fb1_free_c = minr(fb1_free_c, sr_next);
-        if (lr_en)   fb1_free_c = minr(fb1_free_c, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
+        if (lr_en)   fb1_free_c = minr(fb1_free_c, (lr_next >= n_stripes) ? n_rows : lr_rows_done);
         if (final_buf == 2'd1) fb1_free_c = minr(fb1_free_c, flushed_cnt);
         fb2_free_c = flushed_cnt;
         fbs_free_c = n_rows;                                     // fb0s: SR's rows, read by LR source 0, flushed when final
-        if (lr_en)   fbs_free_c = minr(fbs_free_c, (lr_next >= n_stripes) ? n_rows : dec1(lr_next));
+        if (lr_en)   fbs_free_c = minr(fbs_free_c, (lr_next >= n_stripes) ? n_rows : lr_rows_done);
         if (final_buf == 2'd3) fbs_free_c = minr(fbs_free_c, flushed_cnt);
         // the final rows of the last enabled stage's buffer (rows 0 .. rel_upto-1)
-        if (lr_en)        rel_upto_c = (lr_next >= n_stripes) ? n_rows : dec1(lr_next);   // stripe s done writes rows s-1 and s: s-1 final
+        if (lr_en)        rel_upto_c = (lr_next >= n_stripes) ? n_rows : lr_rows_done;   // stripe s done writes rows s-1 and s: s-1 final
         else if (sr_en)   rel_upto_c = sr_next;                                             // SR(r) in place, after CDEF / LF of r+1
         else if (cdef_en) rel_upto_c = cd_next;                                             // CDEF(r) writes fb1 row r whole
         else              rel_upto_c = (lf_next >= n_rows) ? n_rows : dec1(lf_next);        // LF(r) done makes row r-1 final
@@ -437,7 +444,7 @@ module dec_top
     assign hold_rc = (FRAME_WIN > 0) && ev_valid && (ev_kind == 2'd2) && (32'(sb_pop_row) >= FRAME_WIN)
                      && (32'(sb_pop_row) - FRAME_WIN >= 32'(fb0_free));
     assign hold_cd = (FRAME_URAM != 0) && (FRAME_WIN1 > 0) && (32'(cd_next) >= FRAME_WIN1) && (32'(cd_next) - FRAME_WIN1 >= 32'(fb1_free));
-    assign hold_lr = (FRAME_URAM != 0) && (FRAME_WIN2 > 0) && (32'(lr_next) >= FRAME_WIN2) && (32'(lr_next) - FRAME_WIN2 >= 32'(fb2_free));
+    assign hold_lr = (FRAME_URAM != 0) && (FRAME_WIN2 > 0) && (32'(lr_row_cur) >= FRAME_WIN2) && (32'(lr_row_cur) - FRAME_WIN2 >= 32'(fb2_free));
     assign hold_sr = RING && (FRAME_WIN1 > 0) && (32'(sr_next) >= FRAME_WIN1) && (32'(sr_next) - FRAME_WIN1 >= 32'(fbs_free));
     assign ev_valid_rc = ev_valid && !hold_rc;
     // the window build's limits (docs/frame-memory.md): 64-pixel superblocks, 4:2:0 or mono, pipelined frames, one tile
