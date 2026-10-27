@@ -5,6 +5,7 @@ picture read-back). tb/test_dec_host.py uses the packing from here under cocotb;
 HostDecoder on the KV260 over /dev/mem. One definition of the protocol, so the board does what the test does."""
 import array
 import sys
+import os
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -312,14 +313,20 @@ class HostDecoder:
         self.stats = dict(frames=0, tiles=0, bytes=0, pixels=0, writes=0, reads=0)
         self._def_seq = {}                      # base_q_idx -> the CDF default rows as a write sequence
 
-    # -- primitives
+    # -- primitives (TS_REG_LOG=<file>: every register write and read as "w addr value" / "r addr value" lines, so a
+    # simulation twin and a board run of the same stream can be diffed; the bulk backend's traffic is not logged)
+    _reg_log = open(os.environ["TS_REG_LOG"], "w") if os.environ.get("TS_REG_LOG") else None
+
     def wr(self, a, v):
         self.r.wr(a, v)
         self.stats["writes"] += 1
+        if self._reg_log: self._reg_log.write(f"w {a:03x} {v & 0xFFFFFFFF:08x}\n")
 
     def rd(self, a):
         self.stats["reads"] += 1
-        return self.r.rd(a)
+        v = self.r.rd(a)
+        if self._reg_log: self._reg_log.write(f"r {a:03x} {v & 0xFFFFFFFF:08x}\n")
+        return v
 
     def write_wide(self, base, v, nwords):
         for i, w in enumerate(words(v, nwords)):
@@ -526,6 +533,8 @@ class HostDecoder:
 
     # -- a whole stream
     def check_core_build(self, hdr, tag, window=False, n_tile_cols=1):
+        if os.environ.get("HOST_SKIP_CORE_CHECK"):           # debugging on a full build: run the tiles / deblocking only, no CDEF / LR
+            return
         if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             raise HostError(f"{tag}: CDEF is not in the core build (encode with --enable-cdef=0)")
         if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):

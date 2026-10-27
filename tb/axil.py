@@ -2,6 +2,9 @@
 register traffic: W <addr> <data>, R <addr> <expect> (a read whose value is checked), P <addr> <mask> <value>
 (poll until (read & mask) == value). tools/kv260/play.py replays a transcript against the real register file
 over /dev/mem, so a board run needs no model: the expected pixel values are in the transcript."""
+import os
+_REG_LOG = open(os.environ["TS_REG_LOG"], "w") if os.environ.get("TS_REG_LOG") else None
+_GAP = int(os.environ.get("TS_AXIL_GAP", "0"))   # idle clocks after every write / read: a host over PCIe is ~1000 cycles per access   # TS_REG_LOG: every write as "w addr value" (tb/host_regs.py logs the board run the same way)
 from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge, Timer
 
 
@@ -19,6 +22,7 @@ class AxiLite:
         return getattr(self.dut, self.p + name)
 
     async def write(self, addr, data, strb=0xF):
+        if _REG_LOG: _REG_LOG.write(f"w {addr:03x} {data & 0xFFFFFFFF:08x}\n")
         s = self.sig
         s("awaddr").value = addr
         s("awvalid").value = 1
@@ -49,6 +53,7 @@ class AxiLite:
         s("bready").value = 0
         if self.t is not None:
             self.t.append(("W", addr, data & 0xFFFFFFFF))
+        if _GAP: await ClockCycles(self.clk, _GAP)
 
     async def read(self, addr, expect=None, record=True):
         s = self.sig
@@ -74,6 +79,7 @@ class AxiLite:
         s("rready").value = 0
         if self.t is not None and record:
             self.t.append(("R", addr, v if expect is None else expect))
+        if _GAP: await ClockCycles(self.clk, _GAP)
         return v
 
     async def poll(self, addr, mask, value, limit=10_000_000, tag=""):

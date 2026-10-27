@@ -74,7 +74,7 @@ build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECT
              + (["--trace-depth", os.environ["WAVE_DEPTH"]] if waves and os.environ.get("WAVE_DEPTH") else [])
 if os.environ.get("SIM_FAST", "0") == "1":
     threads = int(os.environ.get("SIM_THREADS", str(os.cpu_count() or 1)))
-    build_args += ["-O3", "--x-assign", "fast", "--x-initial", "fast", "-CFLAGS", "-O2", "--threads", str(threads), "-Wno-UNOPTTHREADS"]
+    build_args += ["-O3", "--x-assign", "fast", "--x-initial", ("unique" if os.environ.get("TS_XINIT") else "fast"), "-CFLAGS", "-O2", "--threads", str(threads), "-Wno-UNOPTTHREADS"]
 # One build dir per configuration (build/<top> or build/<top>_fb<X>x<Y>), so Argon classes with different
 # frame-buffer sizes build and run side by side instead of rebuilding one dir in turn.
 build_dir = ROOT / "build" / (top + (f"_fb{params['FBX']}x{params['FBY']}" if "FBX" in params else "")
@@ -95,5 +95,9 @@ if os.environ.get("TS_TEST_DIR"):
         (tdir / "rtl").symlink_to(ROOT / "rtl")
 else:
     test_dir = build_dir
-plusargs = [f"+vis={os.environ['TS_VIS']}"] if os.environ.get("TS_VIS") else []   # decode-progress trace (docs/vis-trace.md)
+plusargs = [f"+vis={os.environ['TS_VIS']}"] if os.environ.get("TS_VIS") else []
+# TS_XINIT=<seed>: every register and memory starts random instead of zero (Verilator --x-initial unique +
+# +verilator+rand+reset+2), to catch state the RTL reads before writing; hardware starts from whatever the last decode left
+if os.environ.get("TS_XINIT"):
+    plusargs += ["+verilator+rand+reset+2", f"+verilator+seed+{int(os.environ['TS_XINIT'])}"]   # decode-progress trace (docs/vis-trace.md)
 r.test(hdl_toplevel=top, test_module=mod, build_dir=build_dir, test_dir=test_dir, waves=waves, plusargs=plusargs)

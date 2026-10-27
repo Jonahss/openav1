@@ -118,6 +118,71 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, debloc
     return layout
 
 
+# The ILA probe set of the ila-u200 debug build (fpga/u200/pre_opt_ila.tcl): hierarchical name under dec_host -> how to read it.
+# Struct columns (ev_tx / t) are the tx_rec_t fields (TT.TX_FIELDS); the ILA exports them as <bus>[<field>].
+ILA_PROBES = [
+    "start", "u_dec/ev_kind", "u_dec/ev_pop", "u_dec/ev_sb_c", "u_dec/ev_sb_r", "u_dec/ev_tx", "u_dec/ev_blk", "u_dec/ev_valid", "u_dec/tx_inflight",
+    "u_dec/u_rc/a_valid", "u_dec/u_rc/aadd_x_r", "u_dec/u_rc/aadd_y_r", "u_dec/u_rc/add_r", "u_dec/u_rc/ci", "u_dec/u_rc/cj",
+    "u_dec/u_rc/dq_ci2", "u_dec/u_rc/dq_cj2", "u_dec/u_rc/dq_out", "u_dec/u_rc/dq_v2", "u_dec/u_rc/fb4_q", "u_dec/u_rc/itx_addr",
+    "u_dec/u_rc/itx_clr", "u_dec/u_rc/itx_data", "u_dec/u_rc/itx_done", "u_dec/u_rc/itx_start", "u_dec/u_rc/itx_we", "u_dec/u_rc/p_valid",
+    "u_dec/u_rc/pci", "u_dec/u_rc/pcj", "u_dec/u_rc/q_valid", "u_dec/u_rc/res_addr", "u_dec/u_rc/res_data4", "u_dec/u_rc/rs",
+    "u_dec/u_rc/sd_k", "u_dec/u_rc/sd_valid", "u_dec/u_rc/sk", "u_dec/u_rc/t",
+    "u_dec/u_ts/u_coef/c", "u_dec/u_ts/u_coef/cul", "u_dec/u_ts/u_coef/eob", "u_dec/u_ts/u_coef/glen", "u_dec/u_ts/u_coef/gx",
+    "u_dec/u_ts/u_coef/level", "u_dec/u_ts/u_coef/nz_we", "u_dec/u_ts/u_coef/pos", "u_dec/u_ts/u_coef/q_nz", "u_dec/u_ts/u_coef/q_raw",
+    "u_dec/u_ts/u_coef/sign", "u_dec/u_ts/u_coef/st",
+]
+ILA_STRUCTS = {"u_dec/ev_tx": TT.TX_FIELDS, "u_dec/u_rc/t": TT.TX_FIELDS, "u_dec/ev_blk": TT.BLK_FIELDS}   # struct -> fields (twin-only columns are fine: the diff skips them)
+
+
+async def ila_log(dut, path):
+    """TS_ILA_LOG=<file>: the ILA probe set of the ila-u200 debug build, sampled every clk from the first ev_pop of the
+    RTL-decoded frame for TS_ILA_N cycles (default 8192, the ILA depth), one hex value per column, so a capture off
+    the card (the ILA CSV export) can be diffed against the twin cycle by cycle: tools/ila_diff.py <ila.csv> <this>."""
+    n_max = int(os.environ.get("TS_ILA_N", "8192"))
+    handles = []
+    for name in ILA_PROBES:
+        h = dut
+        try:
+            for part in name.split("/"):
+                h = getattr(h, part)
+            int(h.value)
+        except Exception as e:                                   # not reachable through VPI: logged as NA
+            dut._log.warning(f"ila_log: {name} unavailable ({e})")
+            h = None
+        handles.append((name, h))
+    cols = []
+    for name, h in handles:
+        if name in ILA_STRUCTS:
+            cols += [f"{name}[{f}]" for f, _ in ILA_STRUCTS[name]]
+        else:
+            cols.append(name)
+    out = open(path, "w")
+    out.write(",".join(cols) + "\n")
+    armed = False
+    n = 0
+    while n < n_max:
+        await cocotb.triggers.RisingEdge(dut.clk)
+        if not armed:
+            if int(dut.u_dec.ev_pop.value) != 1:
+                continue
+            armed = True
+        row = []
+        for name, h in handles:
+            if h is None:
+                row.append("NA" if name not in ILA_STRUCTS else ",".join(["NA"] * len(ILA_STRUCTS[name])))
+                continue
+            v = int(h.value)
+            if name in ILA_STRUCTS:
+                d = TT.unpack(ILA_STRUCTS[name], v)
+                row += [f"{d[f]:x}" for f, _ in ILA_STRUCTS[name]]
+            else:
+                row.append(f"{v:x}")
+        out.write(",".join(row) + "\n")
+        n += 1
+    out.close()
+    dut._log.info(f"ila_log: {n} cycles -> {path}")
+
+
 @cocotb.test()
 async def dec_host_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
@@ -126,6 +191,8 @@ async def dec_host_inter_vs_model(dut):
         cocotb.start_soon(TI.mc_trace(dut, dut.u_dec.u_rc))      # the same MC launch trace as test_dec_inter
     if os.environ.get("TD_ARTRACE"):
         cocotb.start_soon(TI.ar_trace(dut))
+    if os.environ.get("TS_ILA_LOG"):
+        cocotb.start_soon(ila_log(dut, os.environ["TS_ILA_LOG"]))
     if hasattr(dut, "clk2x"):
         cocotb.start_soon(Clock(dut.clk2x, 5, unit="ns").start())
 
