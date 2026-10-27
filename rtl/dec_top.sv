@@ -447,14 +447,14 @@ module dec_top
     assign hold_lr = (FRAME_URAM != 0) && (FRAME_WIN2 > 0) && (32'(lr_row_cur) >= FRAME_WIN2) && (32'(lr_row_cur) - FRAME_WIN2 >= 32'(fb2_free));
     assign hold_sr = RING && (FRAME_WIN1 > 0) && (32'(sr_next) >= FRAME_WIN1) && (32'(sr_next) - FRAME_WIN1 >= 32'(fbs_free));
     assign ev_valid_rc = ev_valid && !hold_rc;
-    // the window build's limits (docs/frame-memory.md): 64-pixel superblocks, 4:2:0 or mono, pipelined frames, one tile
-    // column (a tile column spans every row, so a window of the full width could never release one), no intra block
-    // copy. Sticky until the next frame, so software sees it after the tile (which may well have deadlocked on the hold).
+    // the window build's limits (docs/frame-memory.md): 64-pixel superblocks (128 with SB128), 4:2:0 or mono, pipelined
+    // frames, at most TE tile columns (a tile column spans every row, so a window of the full width could never release
+    // one unless every column of the row is decoded at once: rtl/tile_engines.sv), no intra block copy. Sticky until the next frame, so software sees it after the tile (which may well have deadlocked on the hold).
     logic win_unsup;
     always_ff @(posedge clk) begin
         if (rst || frame_start) win_unsup <= 1'b0;
         else if ((FRAME_WIN > 0) && tile_busy && ((hdr.sb128 && SB128 == 0) || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en
-                                                  || n_tile_cols != 6'd1)) win_unsup <= 1'b1;
+                                                  || 32'(n_tile_cols) > TE)) win_unsup <= 1'b1;   // more tile columns than engines
         // (a core build asked for CDEF / LR is the host software's business: HostDecoder.check_core_build; an RTL flag here
         // broke the core build's lf-stage suites on 2026-10-24, whose frames carry CDEF headers the host never starts)
         else if (RING && (FRAME_WIN > 0) && tile_busy && pipe_en && (32'(FRAME_WIN) < 3 + 32'(cdef_en) + 32'(lr_en)))
