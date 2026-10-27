@@ -51,10 +51,11 @@ class XdmaStage:
             pos += len(chunk)
         return bytes(out)
 
-    def write(self, off, data):
+    def write(self, off, data, chunk=1 << 20):
+        """Host to card; in 1 MB pieces (a 3 MB model-decoded picture in one pwrite returned EIO on 2026-10-27)."""
         pos, view = self.base + off, memoryview(data)
         while view:
-            k = os.pwrite(self.h2c, view, pos)
+            k = os.pwrite(self.h2c, view[:chunk], pos)
             if k <= 0:
                 raise OSError(f"xdma: short write at 0x{pos:x}")
             view, pos = view[k:], pos + k
