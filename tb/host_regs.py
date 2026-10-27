@@ -407,7 +407,8 @@ class HostDecoder:
         if ident != ID_VALUE:
             raise HostError(f"ID register reads 0x{ident:08x}, expected 0x{ID_VALUE:08x}: no decoder at this address?")
         cfg = self.rd(R_CFG)
-        return dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1)
+        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1)
+        return self.geom
 
     def reset(self):
         self.wr(R_CTRL, CTRL_RST)
@@ -550,9 +551,12 @@ class HostDecoder:
                 raise HostError(f"{tag}: intra block copy is not in the window build")
 
     @staticmethod
-    def window_ok(hdr, n_tile_cols=1):
+    def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None):
+        """Whether a window build takes the frame: sb64, 4:2:0 or mono, one tile column, no intra block copy, and (when
+        the image's geometry is known: identify()) a picture no wider than 1 << FBX and no taller than 1 << FBY."""
         return not hdr.use_128x128_superblock and (hdr.NumPlanes == 1 or (hdr.subsampling_x and hdr.subsampling_y)) \
-            and n_tile_cols == 1 and not hdr.allow_intrabc
+            and n_tile_cols == 1 and not hdr.allow_intrabc \
+            and (fbx is None or hdr.UpscaledWidth <= (1 << fbx)) and (fby is None or hdr.FrameHeight <= (1 << fby))
 
     def frame_pipe_start(self, hdr, n_tile_cols):
         """Pipelined frame (pipe_en): the in-loop filters trail the tile decoder by superblock rows under the decoder's
@@ -657,8 +661,8 @@ class HostDecoder:
             ctx = seq.start_frame(ph)
             hdr0 = dec.tiles[tile_idx[0]][0]
             n_tile_cols = len({dec.tiles[ti][0].MiColStart for ti in tile_idx})
-            if not self.window_ok(hdr0, n_tile_cols):
-                raise HostError(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc)")
+            if not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby")}):
+                raise HostError(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
             t = {}
             t0 = time.monotonic()
             # the flush target: a frame buffer no live reference slot holds
