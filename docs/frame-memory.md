@@ -122,12 +122,21 @@ Geometry: at 4:2:0 the window is `3 x 64 x W` luma samples plus two chroma plane
 
 against 24 for the 512 x 512 full-picture memory, so 1080p fits the K26 with ~20 UltraRAMs to spare. Limits of
 this version, all flagged as `unsupported` by the RTL (sticky for the frame) and refused by the driver rather than
-silently wrong: 64-pixel superblocks only (128-pixel rows would need a 6-row window), 4:2:0 or monochrome,
+silently wrong: 64-pixel superblocks only unless the build sets `SB128` (below), 4:2:0 or monochrome,
 pipelined frame mode only, **one tile column** (a tile column spans every superblock row, so with several the
 window of the full width could never release a row before the next column started: the first run on a four-column
 stream deadlocked on the hold), no intra block copy (it reads anywhere in the picture), and CDEF / loop restoration
 stay out (they would lengthen the window by the rows they lag). Tile rows are fine. Full-picture builds
 (`FRAME_WIN = 0`) are unchanged.
+
+128x128 superblocks (`SB128 = 1`, 2026-10-27): libaom picks sb128 from 720p up, so most real streams need it. The
+window's slot keeps counting superblock rows, only the slot pitch follows the stream: 128 luma / 64 chroma lines for an
+sb128 stream (`frame_mem_uram` gets the header's `sb128`; `WLINES = FRAME_WIN * 128`, twice the UltraRAM of the sb64
+window), 64 / 32 for an sb64 stream in the same build, which then uses half the words. The hold and release logic in
+`dec_top` is already in superblock rows; what grows is the mode-info rings that hold "the rows in flight" in 4x4
+units: `tile_syntax` ML2R / MFL2R / SPL2R, `recon_top` ML2R and `mi_store` (FRAME_WIN * 32 MI rows) each get one more
+bit. CFG bit 1 tells the host (`HostDecoder.window_ok(..., sb128=)`); `U200_SB128=1` builds it (the K26 has no room
+for the doubled window).
 
 Two things the first simulations taught (2026-10-14 evening): the UltraRAM serves the host port only in the
 filter's read slot when that port is idle, and the flush now runs while the filter works, so the memory reports
