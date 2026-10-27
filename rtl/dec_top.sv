@@ -14,7 +14,8 @@ module dec_top
     parameter int FRAME_WIN1 = -1,           // with FRAME_URAM: fb1 (CdefFrame) as an UltraRAM ring of this many superblock rows (0: the whole
     parameter int FRAME_WIN2 = -1,           //   picture; -1: no fb1 / fb2 at all, the core build); fb2 (LrFrame) likewise (docs/picture-memory.md)
     parameter int INTER = 1,                 // 0: the intra-only build (no ref_fetch / mc_filt / warp_setup, no inter syntax): the K26 board
-    parameter int SB128 = 0                  // 1: the window build takes 128x128 superblocks too (128-line window rows, deeper mode-info rings)
+    parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks too (128-line window rows, deeper mode-info rings)
+    parameter int TE = 1                     // tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
                                              //    phase); fb1 / fb2 are left out, so only the core build (no CDEF / LR / SR) can use it
 ) (
     input  logic              clk,
@@ -26,17 +27,18 @@ module dec_top
     input  rec_hdr_t          rh,
     input  lf_hdr_t           lh,
     input  cdef_hdr_t         ch,
-    // tile bytes
-    input  logic [7:0]        in_data,
-    input  logic              in_valid,
-    output logic              in_ready,
-    input  logic              in_eos,
+    // tile bytes, one feed per tile engine
+    input  logic [TE*8-1:0]   in_data,
+    input  logic [TE-1:0]     in_valid,
+    output logic [TE-1:0]     in_ready,
+    input  logic [TE-1:0]     in_eos,
     // cdf defaults
     input  logic              def_we,
     input  logic [CDF_AW-1:0] def_addr,
     input  logic [245:0]      def_data,
     input  logic              rb_en,           // cdf read-back (tile_syntax)
     input  logic [CDF_AW-1:0] rb_addr,
+    input  logic [$clog2(TE > 1 ? TE : 2)-1:0] rb_sel,   // the engine read back
     output logic [245:0]      rb_data,
     // inter frames: the motion field band and the previous segmentation map band (host-written in stage 1)
     input  logic              mf_we,
@@ -69,6 +71,9 @@ module dec_top
     input  logic              m_axi_rvalid,
     output logic              m_axi_rready,
     input  logic              tile_start,
+    input  logic [TE-1:0]     eng_mask,            // engines of this tile row (0: engine 0, the header's columns)
+    input  logic [TE*MIW-1:0] col_start,           // MiColStart / MiColEnd per engine
+    input  logic [TE*MIW-1:0] col_end,
     output logic              tile_busy,
     output logic              tile_done,           // syntax finished and every block reconstructed (1-cycle pulse)
     output logic              tile_done_lvl,       // same, held until the next tile_start (for slow pollers)
@@ -119,7 +124,7 @@ module dec_top
     output logic              h_ok,                // the host read sampled at the last edge was served (the UltraRAM shares a slot)
     output logic [1:0]        final_buf            // the buffer holding the final picture of this frame (2 with LR, 1 with CDEF, else 0)
 );
-    logic ts_done, tx_ack, sb_start, blk_info, pal_hold, pm_plane, blk_ack; logic [MIW-1:0] sb_r, sb_c;
+    logic ts_done, tx_ack, pal_hold, pm_plane, blk_ack;
     logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
     logic ts_unsup;                                 // tile_syntax's; the window build adds its own limits below
     // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
@@ -127,24 +132,24 @@ module dec_top
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
     // the motion-field and segmentation-map bands hold the PREVIOUS frame's whole picture (the host writes them before the
     // frame), so they are full-height whenever inter is built; the window build trims them only at INTER = 0 (unused there)
-    tile_syntax #(.INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R((FRAME_WIN > 0 && INTER == 0) ? 4 + SB128 : FBY - 3), .MFL2C(FBX - 3),
-                  .SPL2R((FRAME_WIN > 0 && INTER == 0) ? 5 + SB128 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
-                  .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
-                  .clk, .rst, .hdr, .ihdr, .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_data,
-                      .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
-                      .sb_start_o(sb_start), .sb_r_o(sb_r), .sb_c_o(sb_c), .blk_info, .blk_done, .blk_rec,
-                      .tx_done, .tx_rec, .tx_ack, .lr_done, .lr_rec, .q_slot_w, .q_slot_r, .q_addr, .q_data,
-                      .pal_hold, .blk_ack, .pm_plane, .pm_x, .pm_y, .pm_idx);
-    // event queue: the syntax decoder runs ahead of reconstruction; a palette block is released (blk_ack) only
-    // once reconstruction has drained the queue, because its colour map lives in the syntax stage
+    tile_engines #(.TE(TE), .INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R((FRAME_WIN > 0 && INTER == 0) ? 4 + SB128 : FBY - 3), .MFL2C(FBX - 3),
+                   .SPL2R((FRAME_WIN > 0 && INTER == 0) ? 5 + SB128 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
+                   .clk, .rst, .hdr, .ihdr, .eng_mask, .col_start, .col_end,
+                   .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_sel, .rb_data,
+                   .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
+                   .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
+                   .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight, .rc_busy,
+                   .q_slot_r, .q_addr, .q_data, .pal_hold, .blk_ack, .pm_plane, .pm_x, .pm_y, .pm_idx,
+                   .lr_done, .lr_rec, .blk_done, .blk_rec, .tx_done, .tx_rec, .tx_ack);
+    // event queue (inside tile_engines, one per engine): the syntax decoder runs ahead of reconstruction; a palette
+    // block is released (blk_ack) only once reconstruction has drained the queue, because its colour map lives in the
+    // syntax stage
     logic ev_valid_rc;                              // ev_valid as the reconstruction stage sees it (held by the window)
     logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
     logic rc_busy, cdef_en, sr_sub;
     logic [MIW-1:0] cd_rd_row, cd_rd_col; logic [SBW-1:0] cdr_row64, cdr_col64; logic [3:0] cdr_val; mi_lf_t cd_rd_info;
     logic [11:0] lf_rdata, cd_rdata, lr0_rdata, sr0_rdata, lr1_rdata, sr1_rdata; logic [47:0] lf_rdata4, cd_rdata4;
-    rec_fifo u_q (.clk, .rst, .flush(tile_start), .sb_start, .sb_r, .sb_c, .blk_info, .blk_rec, .tx_done, .tx_rec, .tx_ack, .w_slot(q_slot_w),
-                  .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight);
     assign blk_ack = pal_hold && !ev_valid && !rc_busy;
 
     logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;

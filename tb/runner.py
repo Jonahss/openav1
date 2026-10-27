@@ -64,6 +64,9 @@ if top == "dec_host" and os.environ.get("FIFO_LW"):
 # FRAME_WIN=N (with FRAME_URAM=1): the frame memory as a window of N superblock rows, rows flushed to DDR (docs/frame-memory.md)
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN"):
     params["FRAME_WIN"] = int(os.environ["FRAME_WIN"])
+# TE=N: N tile engines (the tile columns of a tile row decoded at once, rtl/tile_engines.sv)
+if top in ("dec_top", "dec_host") and os.environ.get("TE"):
+    params["TE"] = int(os.environ["TE"])
 # SB128=1: the window build takes 128x128 superblocks (128-line window rows, deeper mode-info rings)
 if top in ("dec_top", "dec_host") and os.environ.get("SB128"):
     params["SB128"] = int(os.environ["SB128"])

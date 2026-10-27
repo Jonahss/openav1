@@ -171,6 +171,8 @@ def lf_vals(th):
 
 # ---------------------------------------------------------------- register map (rtl/dec_host.sv)
 R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_PERF_SYN, R_PERF_REC = 0x000, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x018
+R_TILE_ENG, R_TILE_COL, R_TILE_FIFO = 0x038, 0x060, 0x070      # tile engines: mask, columns per engine (+4e), FIFO status per engine (+4e)
+CTRL_ENG_SHIFT, CTRL_ENG_MASK = 24, 3 << 24                     # CTRL[25:24]: the engine DATA1 / DATA4 push to
 R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR = 0x01C, 0x020, 0x024, 0x028, 0x02C
 R_HDATA2, R_HDATA4 = 0x030, 0x034
 R_DMA_CFG, R_DMA_START, R_DMA_STATUS, R_DMA_BEATS, R_DMA_PLANE = 0x180, 0x184, 0x188, 0x18C, 0x190   # + 0x10 per plane
@@ -407,7 +409,8 @@ class HostDecoder:
         if ident != ID_VALUE:
             raise HostError(f"ID register reads 0x{ident:08x}, expected 0x{ID_VALUE:08x}: no decoder at this address?")
         cfg = self.rd(R_CFG)
-        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1, sb128=bool(cfg >> 1 & 1))
+        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1, sb128=bool(cfg >> 1 & 1),
+                         te=max(1, cfg >> 24 & 0xF))
         return self.geom
 
     def reset(self):
@@ -465,6 +468,76 @@ class HostDecoder:
             raise HostError(f"{tag}: FIFO overflow or a split register write (STATUS bit 14)")
         self.stats["tiles"] += 1
         self.stats["bytes"] += len(data)
+
+    def run_tile_row(self, tiles, tag, dec=None, rows=None, chunk=1024):
+        """The tiles of one tile row ([(th, data), ...] in column order) through TE engines at once (rtl/tile_engines.sv):
+        the headers once (the row's rows), the engine mask and each engine's columns, the CDF rows (broadcast), one
+        start, then the tiles' bytes round-robin in chunks so no engine starves (reconstruction waits for every
+        column's superblock row before moving on), end of stream, tile done. One tile = run_tile."""
+        if len(tiles) == 1:
+            th, data = tiles[0]
+            return self.run_tile(th, data, tag, dec=dec, rows=rows)
+        te = getattr(self, "geom", {}).get("te", 1)
+        if len(tiles) > te:
+            raise HostError(f"{tag}: {len(tiles)} tile columns on a {te}-engine build")
+        th0 = tiles[0][0]
+        seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th0, dec, 0)), HDR_WORDS))]
+        seq += [(R_RH + 4 * i, w) for i, w in enumerate(words(pack(REC_FIELDS, rec_vals(th0)), RH_WORDS))]
+        seq += [(R_IH + 4 * i, w) for i, w in enumerate(words(pack(IHDR_FIELDS, ihdr_vals(th0)), IH_WORDS))]
+        for e, (th, _) in enumerate(tiles):
+            seq.append((R_TILE_COL + 4 * e, (th.MiColEnd << 16) | th.MiColStart))
+        seq.append((R_TILE_ENG, (1 << len(tiles)) - 1))
+        self.write_seq(seq)
+        if rows is None:
+            self.write_seq(self.default_rows_seq(th0.base_q_idx))
+        else:
+            pairs = []
+            for i, row in enumerate(rows):
+                pairs += [(R_DEF + 4 * k, w) for k, w in enumerate(words(row, 8))]
+                pairs.append((R_DEF_ADDR, i))
+            self.write_seq(pairs)
+        ctrl0 = self.rd(R_CTRL) & ~CTRL_ENG_MASK
+        self.wr(R_CTRL, ctrl0)
+        self.wr(R_START, START_TILE)
+        pos = [0] * len(tiles)
+        t0 = time.monotonic()
+        while any(pos[e] < len(d) for e, (_, d) in enumerate(tiles)):
+            progressed = False
+            for e, (_, data) in enumerate(tiles):
+                if pos[e] >= len(data):
+                    continue
+                free = self.rd(R_TILE_FIFO + 4 * e) >> 16
+                if free == 0:
+                    continue
+                self.wr(R_CTRL, ctrl0 | (e << CTRL_ENG_SHIFT))
+                end = min(len(data), pos[e] + min(chunk, free * 4))
+                piece = data[pos[e]:end]
+                if self.fast is not None:
+                    n = self.fast.push(piece, self.poll_timeout)
+                    if n != len(piece):
+                        raise HostError(f"{tag}: engine {e}'s FIFO never freed a word")
+                    self.stats["writes"] += (len(piece) + 3) // 4
+                else:
+                    q = 0
+                    while q < len(piece):
+                        c = piece[q:q + 4]
+                        if len(c) == 4:
+                            self.wr(R_DATA4, int.from_bytes(c, "little")); q += 4
+                        else:
+                            self.wr(R_DATA1, c[0]); q += 1
+                pos[e] = end
+                progressed = True
+            if not progressed and time.monotonic() - t0 > self.poll_timeout:
+                raise HostError(f"{tag}: no engine FIFO freed a word")
+        self.wr(R_CTRL, ctrl0 | CTRL_EOS)
+        st = self.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, f"{tag}: tile row done")
+        self.wr(R_TILE_ENG, 0)
+        if st & ST_UNSUP:
+            raise HostError(f"{tag}: the decoder flagged unsupported syntax")
+        if st & ST_FIFO_BAD:
+            raise HostError(f"{tag}: FIFO overflow or a split register write (STATUS bit 14)")
+        self.stats["tiles"] += len(tiles)
+        self.stats["bytes"] += sum(len(d) for _, d in tiles)
 
     def loop_filter(self, hdr, tag):
         self.write_wide(R_LH, pack(LF_FIELDS, lf_vals(hdr)), LH_WORDS)
@@ -551,11 +624,11 @@ class HostDecoder:
                 raise HostError(f"{tag}: intra block copy is not in the window build")
 
     @staticmethod
-    def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None, sb128=False):
+    def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None, sb128=False, te=1):
         """Whether a window build takes the frame: sb64, 4:2:0 or mono, one tile column, no intra block copy, and (when
         the image's geometry is known: identify()) a picture no wider than 1 << FBX and no taller than 1 << FBY; sb128 builds (CFG bit 1) take 128x128 superblocks."""
         return (sb128 or not hdr.use_128x128_superblock) and (hdr.NumPlanes == 1 or (hdr.subsampling_x and hdr.subsampling_y)) \
-            and n_tile_cols == 1 and not hdr.allow_intrabc \
+            and n_tile_cols <= max(1, te) and not hdr.allow_intrabc \
             and (fbx is None or hdr.UpscaledWidth <= (1 << fbx)) and (fby is None or hdr.FrameHeight <= (1 << fby))
 
     def frame_pipe_start(self, hdr, n_tile_cols):
@@ -690,7 +763,7 @@ class HostDecoder:
             # A frame the image cannot take (sb128 / non-4:2:0 / several tile columns / intrabc / too large) is decoded by
             # the model alone and its picture uploaded into a pool buffer, so the frames after it still run on the card
             # with the right references (the twin, tb/test_dec_host_inter.py, does the same: model_only).
-            model_only = not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby", "sb128")})
+            model_only = not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby", "sb128", "te")})
             if model_only and write is None:
                 raise HostError(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
             t = {}
@@ -725,6 +798,8 @@ class HostDecoder:
             rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None
             summaries = []
             state = xf.FrameState(hdr0)
+            # the tiles of a tile row go to the engines together (run_tile_row; one tile = run_tile)
+            pending, pending_dec = [], None
             for k, ti in enumerate(tile_idx):
                 th, data = dec.tiles[ti]
                 mdec = rm.FrameRecon(th, data, frame, ctx=ctx)
@@ -734,7 +809,15 @@ class HostDecoder:
                 t["model"] = t.get("model", 0) + time.monotonic() - t0
                 t0 = time.monotonic()
                 if not model_only:
-                    self.run_tile(th, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", dec=mdec, rows=rows)
+                    if pending and th.MiRowStart != pending[0][0].MiRowStart:
+                        self.run_tile_row(pending, f"{tag} tile row {pending[0][0].MiRowStart}", dec=pending_dec, rows=rows)
+                        pending, pending_dec = [], None
+                    pending.append((th, data))
+                    if pending_dec is None:
+                        pending_dec = mdec
+                    if k == len(tile_idx) - 1:
+                        self.run_tile_row(pending, f"{tag} tile row {pending[0][0].MiRowStart}", dec=pending_dec, rows=rows)
+                        pending, pending_dec = [], None
                 t["tiles"] = t.get("tiles", 0) + time.monotonic() - t0
                 t0 = time.monotonic()
                 del mdec

@@ -253,7 +253,7 @@ async def dec_host_inter_vs_model(dut):
             dut._log.info(f"{tag}: {th0.FrameWidth}x{th0.FrameHeight} (upscaled {th0.UpscaledWidth}) bd{th0.BitDepth} {'intra' if ph.FrameIsIntra else 'inter'}, "
                           f"refs {list(ph.ref_frame_idx) if not ph.FrameIsIntra else []}, refresh 0x{ph.refresh_frame_flags:02x}, cdef {HR.cdef_on(th0)} sr {th0.use_superres} "
                           f"lr {[t for t in th0.FrameRestorationType[:th0.NumPlanes]]}")
-            model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols, sb128=bool(int(os.environ.get("SB128", "0"))))
+            model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols, sb128=bool(int(os.environ.get("SB128", "0"))), te=int(os.environ.get("TE", "1")))
             if model_only and not frames_sel:
                 dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc): model only")
             # ---- the model decodes the frame (the RTL follows tile by tile unless model_only)
@@ -291,6 +291,7 @@ async def dec_host_inter_vs_model(dut):
                     pass                                     # intra frames read neither band
                 flush_base = FLUSH_BASE + fi_global * FLUSH_STRIDE
                 await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False)
+            pending = []                                      # the tiles of a tile row go to the engines together
             for k, ti in enumerate(tile_idx):
                 th, data = d.tiles[ti]
                 dec = TD.RecFrame(th, data, frame, ctx=ctx)
@@ -298,7 +299,13 @@ async def dec_host_inter_vs_model(dut):
                 decs.append(dec)
                 summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
                 if not model_only:
-                    await TH.run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats, rows=rows)
+                    if pending and th.MiRowStart != pending[0][0].MiRowStart:
+                        await TH.run_tile_row(ax, pending, f"{tag} tile row {pending[0][0].MiRowStart}", stats, rows=rows)
+                        pending = []
+                    pending.append((th, dec, data))
+                    if k == len(tile_idx) - 1:
+                        await TH.run_tile_row(ax, pending, f"{tag} tile row {pending[0][0].MiRowStart}", stats, rows=rows)
+                        pending = []
             # ---- the in-loop filters: the sequencer runs them, the model follows (LF in place: frame["planes"] = deblocked)
             pre = [[row[:] for row in p_] for p_ in frame["planes"]] if not model_only else None
             planes = TH.model_filters(th0, decs, frame["planes"])
