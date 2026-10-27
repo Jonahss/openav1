@@ -242,10 +242,13 @@ def main():
 
     def frames():
         if args.inter:
-            for fi, hdr, planes, _mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read), name=Path(args.stream).name,
-                                                                    pool=args.pool, want_planes=bool(out or ref)):
+            for fi, hdr, planes, mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read, stage.write), name=Path(args.stream).name,
+                                                                   pool=args.pool, want_planes=bool(out or ref)):
                 t["lf"] = t.get("filters", 0.0)
                 t["tiles"] = t.get("tiles", 0.0) + t.get("model", 0.0) + t.get("setup", 0.0)
+                t["read"] = t.get("read", 0.0)
+                if t.get("model_only"):
+                    t["model_planes"] = mp
                 yield fi, hdr, planes, t
         else:
             yield from host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
@@ -262,6 +265,15 @@ def main():
             fmt = "mono" if hdr.NumPlanes == 1 else ("444" if not hdr.subsampling_x else ("420" if hdr.subsampling_y else "422"))
             line = (f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}, {len(d.frames[fi])} tile(s): "
                     f"tiles {t['tiles']:.2f}s, lf {t['lf']:.2f}s, read-back {t['read']:.2f}s")
+            if t.get("model_only"):
+                # the image could not take this frame: the model decoded it and the card got its picture as a reference
+                line = f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}: model only (outside the window build's limits)"
+                if fi in ref_frames:
+                    lo, hi = ref_frames[fi]
+                    mbad = compare(ref[lo:hi], hdr, t["model_planes"])
+                    line += f": model {'differs from' if mbad else 'identical to'} the reference" + (f" ({len(mbad)} samples)" if mbad else "")
+                print(line, flush=True)
+                continue
             if fi in ref_frames:
                 lo, hi = ref_frames[fi]
                 bad = compare(ref[lo:hi], hdr, planes)

@@ -625,6 +625,31 @@ class HostDecoder:
             self.stats["frames"] += 1
             yield fi, hdr0, planes, t
 
+    @staticmethod
+    def upload_picture(write, off, base, hdr, planes, budget, tag):
+        """A model-decoded picture into the pool buffer at base (write(off, bytes) = the DMA region's writer, off = the
+        buffer's offset in it), in the flush layout the reference reader expects: dav1d's sample format (bytes for
+        8-bit, 16-bit little-endian otherwise), rows on 8-byte strides, planes one after the other. Returns the
+        slot-table geometry [(plane base, stride)]."""
+        bps = 1 if hdr.BitDepth == 8 else 2
+        mem, pos = [], 0
+        for p in range(hdr.NumPlanes):
+            w, h = len(planes[p][0]), len(planes[p])
+            stride = (w * bps + 7) & ~7
+            if pos + stride * h > budget:
+                raise HostError(f"{tag}: a model-decoded {w}x{h} picture overruns its {budget}-byte frame buffer")
+            buf = bytearray(stride * h)
+            for y, row in enumerate(planes[p]):
+                if bps == 1:
+                    buf[y * stride:y * stride + w] = bytes(row)
+                else:
+                    a = array.array("H", row)
+                    buf[y * stride:y * stride + 2 * w] = a.tobytes()
+            write(off + pos, bytes(buf))
+            mem.append((base + pos, stride))
+            pos += stride * h
+        return mem
+
     def decode_frames_inter(self, dec, dma, name="stream", pool=8, want_planes=True, model_planes=False):
         """Inter streams on a RING build (docs/picture-memory.md step A; tb/test_dec_host_inter.py is the simulation
         twin): every frame pipelined under the sequencer with CDEF / super-res / LR, flushed into one of `pool`
@@ -640,7 +665,8 @@ class HostDecoder:
         import lr_model as lrm
         import superres_model as srm
         import xcheck_frame as xf
-        base, size, read = dma
+        base, size, read = dma[:3]
+        write = dma[3] if len(dma) > 3 else None            # (offset, bytes): needed to hand the card a model-decoded reference
         stride = (size // pool) & ~0xFFF
         seq = sm.SequenceState()
         store = {}                                       # slot -> dict(planes (model), upscaled_width, frame_height, mem=[(base, stride)...])
@@ -661,7 +687,11 @@ class HostDecoder:
             ctx = seq.start_frame(ph)
             hdr0 = dec.tiles[tile_idx[0]][0]
             n_tile_cols = len({dec.tiles[ti][0].MiColStart for ti in tile_idx})
-            if not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby")}):
+            # A frame the image cannot take (sb128 / non-4:2:0 / several tile columns / intrabc / too large) is decoded by
+            # the model alone and its picture uploaded into a pool buffer, so the frames after it still run on the card
+            # with the right references (the twin, tb/test_dec_host_inter.py, does the same: model_only).
+            model_only = not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby")})
+            if model_only and write is None:
                 raise HostError(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
             t = {}
             t0 = time.monotonic()
@@ -674,8 +704,9 @@ class HostDecoder:
             self.last_target = target                    # where this frame's picture lands (tools/kv260/decode.py --show)
             if total > stride:
                 raise HostError(f"{tag}: a {total}-byte picture does not fit a {stride}-byte frame buffer (pool {pool} in {size} bytes)")
-            self.reset()
-            if not ph.FrameIsIntra:
+            if not model_only:
+              self.reset()
+            if not model_only and not ph.FrameIsIntra:
                 self.write_seq(seg_map_seq(ctx.prev_segment_ids, hdr0.MiRows, hdr0.MiCols))
                 self.write_seq(motion_field_seq(ctx.motion_field, hdr0.MiRows, hdr0.MiCols))
                 for i in range(7):
@@ -684,8 +715,9 @@ class HostDecoder:
                         raise HostError(f"{tag}: reference {i + 1} points at slot {slot}, which holds no decoded picture")
                 self.write_seq(ref_seq(ph, {s_: dict(planes=e["mem"], upscaled_width=e["upscaled_width"], frame_height=e["frame_height"])
                                            for s_, e in store.items() if e.get("mem")}, hdr0.BitDepth > 8))
-            self.write_seq([(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in dseq])
-            self.frame_pipe_start(hdr0, n_tile_cols)
+            if not model_only:
+                self.write_seq([(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in dseq])
+                self.frame_pipe_start(hdr0, n_tile_cols)
             t["setup"] = time.monotonic() - t0
             t0 = time.monotonic()
             # the model decodes each tile first (the RTL needs the same CDF rows; the sequence state needs the tile's summary)
@@ -701,16 +733,19 @@ class HostDecoder:
                 summaries.append(sm.TileSummary(mdec, keep_cdf=(k == ph.context_update_tile_id)))
                 t["model"] = t.get("model", 0) + time.monotonic() - t0
                 t0 = time.monotonic()
-                self.run_tile(th, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", dec=mdec, rows=rows)
+                if not model_only:
+                    self.run_tile(th, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", dec=mdec, rows=rows)
                 t["tiles"] = t.get("tiles", 0) + time.monotonic() - t0
                 t0 = time.monotonic()
                 del mdec
-            self.frame_pipe_finish(tag)
-            self.flush_wait(tag)
+            if not model_only:
+                self.frame_pipe_finish(tag)
+                self.flush_wait(tag)
             t["filters"] = time.monotonic() - t0
             t0 = time.monotonic()
-            planes = unpack_dma(hdr0, read(target - base, total), layout) if want_planes else None
-            self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
+            planes = unpack_dma(hdr0, read(target - base, total), layout) if (want_planes and not model_only) else None
+            if not model_only:
+                self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             t["read"] = time.monotonic() - t0
             t0 = time.monotonic()
             # the model's final picture: the reference store (and, if asked, the comparison)
@@ -725,11 +760,18 @@ class HostDecoder:
             if any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
                 mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
             seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
-            entry = dict(planes=mp, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight,
-                         mem=[(b, st) for b, st, _, _ in layout])
+            if model_only:
+                mem_at = self.upload_picture(write, target - base, target, hdr0, mp, stride, tag)
+                t["upload"] = time.monotonic() - t0
+                t["model_only"] = True
+                self.stats["model_only"] = self.stats.get("model_only", 0) + 1
+            else:
+                mem_at = [(b, st) for b, st, _, _ in layout]
+            entry = dict(planes=mp, upscaled_width=ph.UpscaledWidth, frame_height=ph.FrameHeight, mem=mem_at)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
                     store[i] = entry
             t["model_filters"] = time.monotonic() - t0
-            self.stats["frames"] += 1
-            yield fi, hdr0, planes, (mp if model_planes else None), t
+            if not model_only:
+                self.stats["frames"] += 1
+            yield fi, hdr0, planes, (mp if (model_planes or model_only) else None), t
