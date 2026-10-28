@@ -510,7 +510,14 @@ class HostDecoder:
                 if free == 0:
                     continue
                 self.wr(R_CTRL, ctrl0 | (e << CTRL_ENG_SHIFT))
-                end = min(len(data), pos[e] + min(chunk, free * 4))
+                # every push is one FIFO word, a tail byte included: the budget counts pushes, not bytes (the single-
+                # engine loop's 2026-10-15 lesson; this loop budgeted free * 4 bytes, and test5413 frame 0's 3-byte
+                # tail into one free word overflowed engine 0's FIFO, 2026-10-28)
+                end = pos[e]
+                for _ in range(min(free, chunk // 4)):
+                    if end >= len(data):
+                        break
+                    end += 4 if len(data) - end >= 4 else 1
                 piece = data[pos[e]:end]
                 if self.fast is not None:
                     n = self.fast.push(piece, self.poll_timeout)

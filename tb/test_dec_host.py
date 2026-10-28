@@ -174,15 +174,19 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
             if free == 0:
                 continue
             await ax.write(R_CTRL, ctrl0 | (e << HR.CTRL_ENG_SHIFT))
-            end = min(len(data), pos[e] + min(chunk, free * 4))
+            # every push is one FIFO word, a tail byte included: the budget counts pushes, not bytes (the single-engine
+            # loop's 2026-10-15 lesson; this loop budgeted free * 4 bytes, and test5413 frame 0's 3-byte tail into one
+            # free word overflowed engine 0's FIFO, 2026-10-28)
             q = pos[e]
-            while q < end:
+            for _ in range(min(free, chunk // 4)):
+                if q >= len(data):
+                    break
                 c = data[q:q + 4]
                 if len(c) == 4:
                     await ax.write(R_DATA4, int.from_bytes(c, "little")); q += 4
                 else:
                     await ax.write(R_DATA1, c[0]); q += 1
-            pos[e] = end
+            pos[e] = q
             progressed = True
         if not progressed:
             idle += 1
