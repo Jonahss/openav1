@@ -172,7 +172,9 @@ module tile_engines
     end
     logic pop_q;                                              // a pop last cycle: reconstruction's busy may follow it a cycle later
     always_ff @(posedge clk) pop_q <= !rst && ev_valid && ev_pop;
-    assign advance = (TE > 1) && (new_row || (exhausted[cur] && !all_done)) && !rc_busy && !pop_q && (h_infl[cur] == 4'd0) && found;
+    // (rec_fifo's tx_inflight counts the transform records still queued, the next row's included, so it must not gate
+    // the switch: reconstruction idle, and no pop last cycle, is what protects the coefficient slots being read)
+    assign advance = (TE > 1) && (new_row || (exhausted[cur] && !all_done)) && !rc_busy && !pop_q && found;
     always_ff @(posedge clk) begin
         if (rst) begin cur <= '0; done_lvl <= '0; row_valid <= 1'b0; cur_row <= '0; end
         else begin
