@@ -7,5 +7,3 @@ set c1 [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *clkgen/clk_out1
 set c2 [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *clkgen/clk_out2}]]
 set_multicycle_path -setup 2 -from $c1 -to $c2
 set_multicycle_path -hold 1 -from $c1 -to $c2
-set_multicycle_path -setup 2 -start -from $c2 -to $c1
-set_multicycle_path -hold 1 -start -from $c2 -to $c1

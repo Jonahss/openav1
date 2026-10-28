@@ -11,11 +11,13 @@ module frame_mem_uram #(
     parameter int FBX = 9,
     parameter int FBY = 9,
     parameter int PW = 12,
-    parameter int FRAME_WIN = 0                             // 0: the whole picture; N: a window of N superblock rows
+    parameter int FRAME_WIN = 0,                            // 0: the whole picture; N: a window of N superblock rows
+    parameter int SB128 = 0                                 // 1: the window's slots hold 128-line superblock rows (sb128 streams; twice the words)
 ) (
     input  logic                clk,
     input  logic                clk2x,
     input  logic                phase,      // 1 at the mid-cycle clk2x edge, 0 at the clk-aligned one (clock generator)
+    input  logic                sb128,      // the stream's superblock size (SB128 builds: 128-line rows; else ignored)
     // read ports (2)
     input  logic [1:0]          re,
     input  logic [3:0]          r_plane,
@@ -42,7 +44,7 @@ module frame_mem_uram #(
     // FRAME_WIN > 0: a window of FRAME_WIN superblock rows (64 lines) of the full width instead of the whole picture,
     // the lines addressed by superblock row modulo FRAME_WIN (docs/frame-memory.md, window version); the
     // y coordinate keeps its FBY bits
-    localparam int WLINES = (FRAME_WIN > 0) ? FRAME_WIN * 64 : (1 << FBY);
+    localparam int WLINES = (FRAME_WIN > 0) ? FRAME_WIN * (SB128 != 0 ? 128 : 64) : (1 << FBY);
     localparam int NW0   = WPR * WLINES;                     // luma words
     localparam int NW1   = NW0 >> 2;                         // chroma plane words (4:2:0)
     localparam int NWORD = NW0 + 2 * NW1;
@@ -53,14 +55,19 @@ module frame_mem_uram #(
     // path (-1.03 ns, 39 logic levels, 2026-10-17) ran from the reconstruction stage's transform-size register into the
     // UltraRAM address through this function and the plane arithmetic below, synthesised as a divider and adders.
     localparam int NROW = 1 << (FBY - 5);                    // superblock rows a y coordinate can address (chroma rows are 32 lines)
+    // SB128 builds: an sb128 stream's rows are 128 luma / 64 chroma lines, slot pitch 128 / 64 (the window holds
+    // FRAME_WIN of them: WLINES); an sb64 stream in the same build keeps the 64 / 32 pitch and uses half the words.
     function automatic logic [FBY-1:0] wline(input logic [1:0] p, input logic [FBY-1:0] y);
         logic [FBY-6:0] row;
         logic [FBY-1:0] slot;
+        logic big;
         if (FRAME_WIN == 0) return y;
-        row = (p == 2'd0) ? (FBY-5)'(y >> 6) : (FBY-5)'(y >> 5);
+        big = (SB128 != 0) && sb128;
+        row = (p == 2'd0) ? (big ? (FBY-5)'(y >> 7) : (FBY-5)'(y >> 6)) : (big ? (FBY-5)'(y >> 6) : (FBY-5)'(y >> 5));
         slot = '0;
         for (int r = 0; r < NROW; r++) if (row == (FBY-5)'(r)) slot = FBY'(r % FRAME_WIN);
-        return (p == 2'd0) ? FBY'((slot << 6) | (y & FBY'(63))) : FBY'((slot << 5) | (y & FBY'(31)));
+        if (p == 2'd0) return big ? FBY'((slot << 7) | (y & FBY'(127))) : FBY'((slot << 6) | (y & FBY'(63)));
+        return big ? FBY'((slot << 6) | (y & FBY'(63))) : FBY'((slot << 5) | (y & FBY'(31)));
     endfunction
     // Address = plane base + line * words-per-row + x / 4. The words-per-row are powers of two and x / 4 is below them
     // (chroma planes are half as wide), so line and group concatenate; only the plane base is added, and its low bits
@@ -91,29 +98,59 @@ module frame_mem_uram #(
     // The RAM: 72-bit words, 9 bytes of 8 bits; lane l = bytes 2l, 2l+1 (bits 16l .. 16l+15, sample in the low 12),
     // byte 8 unused. Vivado's inference accepts UltraRAM only for full-word no-change writes (probed 2026-10-13:
     // read-first and per-byte enables are both "invalid write mode"), but the URAM288 primitive has byte-write
-    // enables, so synthesis instantiates it through the XPM macro and simulation uses the behavioural model
-    // below; the gate-level replay (tb/gate) checks the two agree.
+    // enables, so synthesis instantiates the primitives directly (below) and simulation uses the behavioural model;
+    // the gate-level replay (tb/gate) checks the two agree.
     logic           a_en, b_en;
     logic [8:0]     a_bwe, b_bwe;                            // byte-write enables; none set = read
     logic [AW-1:0]  a_addr, b_addr;
     logic [71:0]    a_d, b_d;
     logic [71:0]    a_q, b_q;
 `ifdef SYNTHESIS
-    xpm_memory_tdpram #(
-        .MEMORY_SIZE(NWORD * 72), .MEMORY_PRIMITIVE("ultra"), .CLOCKING_MODE("common_clock"), .MEMORY_INIT_FILE("none"),
-        .MEMORY_INIT_PARAM("0"), .USE_MEM_INIT(0), .WAKEUP_TIME("disable_sleep"), .MESSAGE_CONTROL(0),
-        .ECC_MODE("no_ecc"), .AUTO_SLEEP_TIME(0), .USE_EMBEDDED_CONSTRAINT(0), .MEMORY_OPTIMIZATION("true"),
-        .WRITE_DATA_WIDTH_A(72), .READ_DATA_WIDTH_A(72), .BYTE_WRITE_WIDTH_A(8), .ADDR_WIDTH_A(AW), .READ_RESET_VALUE_A("0"),
-        .READ_LATENCY_A(1), .WRITE_MODE_A("no_change"),
-        .WRITE_DATA_WIDTH_B(72), .READ_DATA_WIDTH_B(72), .BYTE_WRITE_WIDTH_B(8), .ADDR_WIDTH_B(AW), .READ_RESET_VALUE_B("0"),
-        .READ_LATENCY_B(1), .WRITE_MODE_B("no_change"),
-        .CASCADE_HEIGHT(4)                                   // 8-deep columns put seven cascade hops (~1.8 ns) on every read
-    ) u_ram (
-        .clka(clk2x), .ena(a_en), .wea(a_bwe), .addra(a_addr), .dina(a_d), .douta(a_q), .regcea(1'b1), .rsta(1'b0),
-        .clkb(clk2x), .enb(b_en), .web(b_bwe), .addrb(b_addr), .dinb(b_d), .doutb(b_q), .regceb(1'b1), .rstb(1'b0),
-        .sleep(1'b0), .injectsbiterra(1'b0), .injectdbiterra(1'b0), .injectsbiterrb(1'b0), .injectdbiterrb(1'b0),
-        .sbiterra(), .dbiterra(), .sbiterrb(), .dbiterrb()
-    );
+    // The UltraRAMs instantiated directly (2026-10-27), not through the XPM macro: NU independent URAM288s (no cascade),
+    // each enabled by its own address decode, and an output mux whose select is a register loaded at E_b only. With
+    // the XPM the column select came from the URAMs' RDACCESS flags through a LUT and a hold register, logic that
+    // transitions at E_a (the write edge): a read-path launch the clk <-> clk2x multicycle exception tells the timer
+    // to ignore. Whether such a launch corrupted a clk-side capture depended on path lengths: the 100 MHz images were
+    // fine, two 50 MHz images decoded wrongly, and the same RTL with the exceptions removed decoded bit-exact. Here
+    // nothing on the read path changes at E_a: the URAMs hold DOUT through a write (no-change), the select changes
+    // at E_b, so the data launched at E_b is valid for the whole clk cycle and the exception is honest.
+    localparam int NU   = (NWORD + 4095) / 4096;              // UltraRAMs (4096 x 72 each)
+    localparam int SW   = (NU > 1) ? $clog2(NU) : 1;
+    logic [SW-1:0]  a_sel, b_sel, a_sel_r, b_sel_r;
+    logic [71:0]    a_dout [NU], b_dout [NU];
+    assign a_sel = (NU > 1) ? SW'(a_addr >> 12) : '0;
+    assign b_sel = (NU > 1) ? SW'(b_addr >> 12) : '0;
+    always_ff @(posedge clk2x) if (!phase) begin a_sel_r <= a_sel; b_sel_r <= b_sel; end   // the read's URAM, held through E_a
+    // The read data is captured at E_a, the edge of the write: the URAMs' DOUT is disturbed by a write on the same port
+    // (two 50 MHz images decoded wrongly with DOUT feeding the clk domain directly, under a 2-cycle exception that
+    // let the timer ignore everything launched at E_a; the exception-free 40 MHz image was exact). A register loaded
+    // at E_a samples DOUT before the write can touch it (DOUT moves a clock-to-out after the edge) and then holds for
+    // a whole clk cycle, so every path from the frame memory into the clk domain is an ordinary one-clk2x-cycle path:
+    // no exception on the read side (sys.xdc keeps the clk -> clk2x one for the requests captured at E_b).
+    logic [71:0] a_q_r, b_q_r;
+    always_ff @(posedge clk2x) if (phase) begin a_q_r <= a_dout[a_sel_r]; b_q_r <= b_dout[b_sel_r]; end
+    assign a_q = a_q_r;
+    assign b_q = b_q_r;
+    for (genvar k = 0; k < NU; k++) begin : g_uram
+        URAM288 #(
+            .CASCADE_ORDER_A("NONE"), .CASCADE_ORDER_B("NONE"), .OREG_A("FALSE"), .OREG_B("FALSE"), .REG_CAS_A("FALSE"), .REG_CAS_B("FALSE"),
+            .BWE_MODE_A("PARITY_INDEPENDENT"), .BWE_MODE_B("PARITY_INDEPENDENT"), .EN_AUTO_SLEEP_MODE("FALSE"),
+            .IREG_PRE_A("FALSE"), .IREG_PRE_B("FALSE"), .RST_MODE_A("SYNC"), .RST_MODE_B("SYNC"), .USE_EXT_CE_A("FALSE"), .USE_EXT_CE_B("FALSE")
+        ) u (
+            .CLK(clk2x), .SLEEP(1'b0), .RST_A(1'b0), .RST_B(1'b0),
+            .EN_A(a_en && (a_sel == SW'(k))), .RDB_WR_A(|a_bwe), .ADDR_A({11'd0, a_addr[11:0]}), .BWE_A(a_bwe), .DIN_A(a_d), .DOUT_A(a_dout[k]),
+            .EN_B(b_en && (b_sel == SW'(k))), .RDB_WR_B(|b_bwe), .ADDR_B({11'd0, b_addr[11:0]}), .BWE_B(b_bwe), .DIN_B(b_d), .DOUT_B(b_dout[k]),
+            .OREG_CE_A(1'b1), .OREG_CE_B(1'b1), .OREG_ECC_CE_A(1'b0), .OREG_ECC_CE_B(1'b0),
+            .INJECT_SBITERR_A(1'b0), .INJECT_DBITERR_A(1'b0), .INJECT_SBITERR_B(1'b0), .INJECT_DBITERR_B(1'b0),
+            .CAS_IN_ADDR_A(23'd0), .CAS_IN_ADDR_B(23'd0), .CAS_IN_BWE_A(9'd0), .CAS_IN_BWE_B(9'd0), .CAS_IN_DBITERR_A(1'b0), .CAS_IN_DBITERR_B(1'b0),
+            .CAS_IN_DIN_A(72'd0), .CAS_IN_DIN_B(72'd0), .CAS_IN_DOUT_A(72'd0), .CAS_IN_DOUT_B(72'd0), .CAS_IN_EN_A(1'b0), .CAS_IN_EN_B(1'b0),
+            .CAS_IN_RDACCESS_A(1'b0), .CAS_IN_RDACCESS_B(1'b0), .CAS_IN_RDB_WR_A(1'b0), .CAS_IN_RDB_WR_B(1'b0), .CAS_IN_SBITERR_A(1'b0), .CAS_IN_SBITERR_B(1'b0),
+            .CAS_OUT_ADDR_A(), .CAS_OUT_ADDR_B(), .CAS_OUT_BWE_A(), .CAS_OUT_BWE_B(), .CAS_OUT_DBITERR_A(), .CAS_OUT_DBITERR_B(),
+            .CAS_OUT_DIN_A(), .CAS_OUT_DIN_B(), .CAS_OUT_DOUT_A(), .CAS_OUT_DOUT_B(), .CAS_OUT_EN_A(), .CAS_OUT_EN_B(),
+            .CAS_OUT_RDACCESS_A(), .CAS_OUT_RDACCESS_B(), .CAS_OUT_RDB_WR_A(), .CAS_OUT_RDB_WR_B(), .CAS_OUT_SBITERR_A(), .CAS_OUT_SBITERR_B(),
+            .DBITERR_A(), .DBITERR_B(), .SBITERR_A(), .SBITERR_B(), .RDACCESS_A(), .RDACCESS_B()
+        );
+    end
 `else
     logic [71:0] mem [0:NWORD-1];
     always_ff @(posedge clk2x) if (a_en) begin

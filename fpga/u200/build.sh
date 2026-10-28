@@ -7,6 +7,8 @@
 #                         DDR4 controller's 100 MHz user clock, so 50 / 80 / 100 / 125 / 160 / 200 work directly
 #   U200_FBX=11 U200_FBY=11 U200_WIN=3   frame memory geometry (window of 3 superblock rows at full 1080p width;
 #                         U200_WIN=0 with FBX=FBY=9 is the 512 x 512 whole-picture memory)
+#   U200_SB128=0          1: the window takes 128x128 superblocks too (128-line window rows: twice the frame-memory
+#                         UltraRAM; libaom's default superblock size from 720p up)
 #   U200_INTER=0          1: the inter decoder (ref_fetch / mc_filt / warp_setup); needs a frame memory that is not
 #                         the window (docs/frame-memory.md), so 0 until that exists
 #   U200_CORE=1           1: CDEF and LR as null stubs (the core build, as on the KV260); 0: the real blocks, with
@@ -27,7 +29,7 @@ tag=${1:-$(git -C "$root" rev-parse --short HEAD)}
 out=${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/u200-$tag
 export U200_ROOT=$root U200_OUT=$out U200_MHZ=${U200_MHZ:-100}
 export U200_FBX=${U200_FBX:-11} U200_FBY=${U200_FBY:-11} U200_WIN=${U200_WIN:-3} U200_INTER=${U200_INTER:-0}
-export U200_CORE=${U200_CORE:-1} U200_DDR=${U200_DDR:-1} U200_BOARD_REPO=${U200_BOARD_REPO:-$HOME/vivado-dl/boards}
+export U200_CORE=${U200_CORE:-1} U200_DDR=${U200_DDR:-1} U200_BOARD_REPO=${U200_BOARD_REPO:-$HOME/vivado-dl/boards} U200_SB128=${U200_SB128:-0}
 if [ "$U200_CORE" = 1 ]; then export U200_WIN1=${U200_WIN1:--1} U200_WIN2=${U200_WIN2:--1}; else export U200_WIN1=${U200_WIN1:-3} U200_WIN2=${U200_WIN2:-3}; fi
 [ -d "$U200_BOARD_REPO/au200" ] || { echo "no board files at $U200_BOARD_REPO/au200 (unpack au200_board_files_*.zip there)" >&2; exit 1; }
 mkdir -p "$out/stubs" "$out/work"
@@ -50,7 +52,7 @@ export U200_SOURCES=$sources
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): the runs execute in
 # proj/u200.runs/<run>/, so proj/rtl must be the rtl directory
 mkdir -p "$out/proj"; ln -sfn "$root/rtl" "$out/proj/rtl"
-echo "u200 build $tag at $U200_MHZ MHz (FBX $U200_FBX FBY $U200_FBY WIN $U200_WIN/$U200_WIN1/$U200_WIN2 INTER $U200_INTER CORE $U200_CORE DDR bank $U200_DDR${U200_STRATEGY:+ strategy $U200_STRATEGY}${U200_PBLOCK:+ pblock $U200_PBLOCK}) -> $out"
+echo "u200 build $tag at $U200_MHZ MHz (FBX $U200_FBX FBY $U200_FBY WIN $U200_WIN/$U200_WIN1/$U200_WIN2 INTER $U200_INTER SB128 $U200_SB128 CORE $U200_CORE DDR bank $U200_DDR${U200_STRATEGY:+ strategy $U200_STRATEGY}${U200_PBLOCK:+ pblock $U200_PBLOCK}) -> $out"
 cd "$out/work"
 vivado -mode batch -nojournal -log "$out/vivado.log" -source "$here/build.tcl"
 grep -q BUILD_DONE "$out/vivado.log" || { echo "build failed, see $out/vivado.log" >&2; exit 1; }

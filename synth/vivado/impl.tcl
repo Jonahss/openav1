@@ -12,8 +12,9 @@ if {[llength [get_ports -quiet clk2x]]} { set_property HD.CLK_SRC BUFGCTRL_X0Y1 
 # edge. So a path from a URAM output into the clk2x domain (read data -> recon add -> write request) has a full
 # clk cycle, not a clk2x one. The launching cells are the UltraRAMs and the XPM's column-select registers (both
 # loaded by a read at the clk-aligned edge); they only exist after synthesis, hence the constraint lives here.
-set fmregs [get_cells -quiet -hier -filter {NAME =~ *u_fb/u_ram/* && IS_SEQUENTIAL}]
-if {[llength $fmregs]} {
+# (the launching cells: the UltraRAMs and the output-mux select registers of every frame-memory ring, all loaded at E_b)
+set fmregs [get_cells -quiet -hier -filter {(NAME =~ *u_fb*/g_uram[*].u || NAME =~ *u_fb*/*_sel_r_reg*) && IS_SEQUENTIAL}]
+if {0 && [llength $fmregs]} {   # read data registered at E_a since 2026-10-27: single-cycle paths, no exception
     set_multicycle_path -setup 2 -from $fmregs -to [get_clocks clk2x]
     set_multicycle_path -hold 1 -from $fmregs -to [get_clocks clk2x]
 }

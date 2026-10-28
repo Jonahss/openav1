@@ -233,7 +233,7 @@ def main():
         print(f"framebuffer {stage.xres}x{stage.yres} ({stage.bpp} bpp) at 0x{stage.smem_start:x}; staging {stage.stage_len} bytes at 0x{stage.base:x}")
     cfg = host.identify()
     where = regs.path if args.xdma is not None else f"0x{args.base:08x}"
-    print(f"decoder at {where} ({'libhostregs.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']}; "
+    print(f"decoder at {where} ({'libhostregs.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']} sb128 {int(cfg['sb128'])}; "
           f"{len(d.frames)} coded frames, {len(shown)} shown")
     n_bad_frames = 0
     t_all = time.monotonic()

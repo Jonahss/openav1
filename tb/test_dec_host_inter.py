@@ -12,6 +12,7 @@ decoded by the model only; a reference the RTL did not produce is loaded into th
 Env: TS_IVF=a.obu[,b.obu] (required), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_PIPE / TS_WIN / TS_DMA are 1.
 """
 import os
+import time
 from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
@@ -253,7 +254,7 @@ async def dec_host_inter_vs_model(dut):
             dut._log.info(f"{tag}: {th0.FrameWidth}x{th0.FrameHeight} (upscaled {th0.UpscaledWidth}) bd{th0.BitDepth} {'intra' if ph.FrameIsIntra else 'inter'}, "
                           f"refs {list(ph.ref_frame_idx) if not ph.FrameIsIntra else []}, refresh 0x{ph.refresh_frame_flags:02x}, cdef {HR.cdef_on(th0)} sr {th0.use_superres} "
                           f"lr {[t for t in th0.FrameRestorationType[:th0.NumPlanes]]}")
-            model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols)
+            model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols, sb128=bool(int(os.environ.get("SB128", "0"))), fbx=int(os.environ.get("FBX", "9")), fby=int(os.environ.get("FBY", "9")))
             if model_only and not frames_sel:
                 dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc): model only")
             # ---- the model decodes the frame (the RTL follows tile by tile unless model_only)
@@ -301,7 +302,9 @@ async def dec_host_inter_vs_model(dut):
                     await TH.run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats, rows=rows)
             # ---- the in-loop filters: the sequencer runs them, the model follows (LF in place: frame["planes"] = deblocked)
             pre = [[row[:] for row in p_] for p_ in frame["planes"]] if not model_only else None
+            t_mf = time.monotonic()                       # pure-Python LF/CDEF/SR/LR: minutes at 1080p, hours with LR on every plane
             planes = TH.model_filters(th0, decs, frame["planes"])
+            dut._log.info(f"{tag}: model filters done in {time.monotonic() - t_mf:.0f} s (simulated time stood still)")
             layout = None
             if not model_only:
                 await TH.pipe_finish(ax, tag)
