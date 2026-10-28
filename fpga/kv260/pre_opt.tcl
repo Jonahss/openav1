@@ -7,7 +7,7 @@ set c2 [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *clkgen/clk_out2
 # (the launching cells: the UltraRAMs and the XPM's column-select registers, all loaded by the read)
 # (the launching cells: the UltraRAMs and the output-mux select registers of every frame-memory ring, all loaded at E_b)
 set fmregs [get_cells -quiet -hier -filter {(NAME =~ *u_fb*/g_uram[*].u || NAME =~ *u_fb*/*_sel_r_reg*) && IS_SEQUENTIAL}]
-if {[llength $fmregs]} {
+if {0 && [llength $fmregs]} {   # read data registered at E_a since 2026-10-27: single-cycle paths, no exception
     set_multicycle_path -setup 2 -from $fmregs -to $c2
     set_multicycle_path -hold 1 -from $fmregs -to $c2
 }
