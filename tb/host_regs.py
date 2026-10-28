@@ -691,8 +691,14 @@ class HostDecoder:
             # the model alone and its picture uploaded into a pool buffer, so the frames after it still run on the card
             # with the right references (the twin, tb/test_dec_host_inter.py, does the same: model_only).
             model_only = not self.window_ok(hdr0, n_tile_cols, **{k: v for k, v in getattr(self, "geom", {}).items() if k in ("fbx", "fby")})
+            why = "outside the window build's limits" if model_only else None
+            if not model_only and not ph.FrameIsIntra:
+                # a reference the card never got (a picture too big for a pool buffer, below) keeps the frame off the card too
+                missing = [ph.ref_frame_idx[i] for i in range(7) if ph.ref_frame_idx[i] not in store or not store[ph.ref_frame_idx[i]].get("mem")]
+                if missing:
+                    model_only, why = True, f"reference slot {missing[0]} holds no card picture"
             if model_only and write is None:
-                raise HostError(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
+                raise HostError(f"{tag}: {why} (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
             t = {}
             t0 = time.monotonic()
             # the flush target: a frame buffer no live reference slot holds
@@ -702,17 +708,16 @@ class HostDecoder:
                 raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
             dseq, layout, total = dma_regs(hdr0, target, True)
             self.last_target = target                    # where this frame's picture lands (tools/kv260/decode.py --show)
-            if total > stride:
+            # A model-decoded picture bigger than a pool buffer (an 8K-class frame) stays on the host: no card frame can
+            # take a picture that size as a reference anyway, and a frame that still names it goes to the model as well.
+            host_only = model_only and total > stride
+            if total > stride and not model_only:
                 raise HostError(f"{tag}: a {total}-byte picture does not fit a {stride}-byte frame buffer (pool {pool} in {size} bytes)")
             if not model_only:
               self.reset()
             if not model_only and not ph.FrameIsIntra:
                 self.write_seq(seg_map_seq(ctx.prev_segment_ids, hdr0.MiRows, hdr0.MiCols))
                 self.write_seq(motion_field_seq(ctx.motion_field, hdr0.MiRows, hdr0.MiCols))
-                for i in range(7):
-                    slot = ph.ref_frame_idx[i]
-                    if slot not in store or not store[slot].get("mem"):
-                        raise HostError(f"{tag}: reference {i + 1} points at slot {slot}, which holds no decoded picture")
                 self.write_seq(ref_seq(ph, {s_: dict(planes=e["mem"], upscaled_width=e["upscaled_width"], frame_height=e["frame_height"])
                                            for s_, e in store.items() if e.get("mem")}, hdr0.BitDepth > 8))
             if not model_only:
@@ -761,9 +766,9 @@ class HostDecoder:
                 mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
             seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
             if model_only:
-                mem_at = self.upload_picture(write, target - base, target, hdr0, mp, stride, tag)
+                mem_at = None if host_only else self.upload_picture(write, target - base, target, hdr0, mp, stride, tag)
                 t["upload"] = time.monotonic() - t0
-                t["model_only"] = True
+                t["model_only"] = why + (" (picture bigger than a pool buffer, kept on the host)" if host_only else "")
                 self.stats["model_only"] = self.stats.get("model_only", 0) + 1
             else:
                 mem_at = [(b, st) for b, st, _, _ in layout]

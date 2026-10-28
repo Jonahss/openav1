@@ -267,7 +267,7 @@ def main():
                     f"tiles {t['tiles']:.2f}s, lf {t['lf']:.2f}s, read-back {t['read']:.2f}s")
             if t.get("model_only"):
                 # the image could not take this frame: the model decoded it and the card got its picture as a reference
-                line = f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}: model only (outside the window build's limits)"
+                line = f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}: model only ({t['model_only']})"
                 if fi in ref_frames:
                     lo, hi = ref_frames[fi]
                     mbad = compare(ref[lo:hi], hdr, t["model_planes"])
