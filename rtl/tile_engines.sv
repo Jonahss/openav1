@@ -77,8 +77,6 @@ module tile_engines
     input  logic [2:0]        q_slot_r,
     input  logic [9:0]        q_addr,
     output logic signed [20:0] q_data,
-    output logic              pal_hold,
-    input  logic              blk_ack,
     input  logic              pm_plane,
     input  logic [5:0]        pm_x, pm_y,
     output logic [2:0]        pm_idx,
@@ -227,12 +225,16 @@ module tile_engines
     assign tx_inflight = h_infl[cur];
     always_comb begin
         h_pop = '0; h_pop[cur] = ev_pop && ev_valid;
-        e_blk_ack = '0; e_blk_ack[cur] = blk_ack;
+        // a held palette block (its colour map lives in the syntax stage) is released once ITS engine's queue has
+        // drained and reconstruction is idle (the pop's busy may follow a cycle later). dec_top's old engine-blind
+        // "queue drained" (!ev_valid) also held while the head was a next-row superblock start kept back from
+        // reconstruction (new_row): the ack then let the engine decode on, and its next palette block overwrote the
+        // map before the held block was painted (test7218 frame 10 / test8334 frame 3, column 0, 2026-10-28)
+        for (int e = 0; e < TE; e++) e_blk_ack[e] = e_pal_hold[e] && !h_valid[e] && !rc_busy && !pop_q;
     end
     assign q_data   = e_q_data[cur];
     assign rc_col_start = hdr_e[cur].mi_col_start;
     assign rc_col_end   = hdr_e[cur].mi_col_end;
-    assign pal_hold = e_pal_hold[cur];
     assign pm_idx   = e_pm_idx[cur];
     assign blk_done = e_blk_done[cur];
     assign blk_rec  = e_blk_rec[cur];

@@ -124,7 +124,7 @@ module dec_top
     output logic              h_ok,                // the host read sampled at the last edge was served (the UltraRAM shares a slot)
     output logic [1:0]        final_buf            // the buffer holding the final picture of this frame (2 with LR, 1 with CDEF, else 0)
 );
-    logic ts_done, tx_ack, pal_hold, pm_plane, blk_ack;
+    logic ts_done, tx_ack, pm_plane;
     logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
     logic ts_unsup;                                 // tile_syntax's; the window build adds its own limits below
     // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
@@ -139,18 +139,17 @@ module dec_top
                    .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
                    .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                    .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight, .rc_busy, .rc_col_start, .rc_col_end,
-                   .q_slot_r, .q_addr, .q_data, .pal_hold, .blk_ack, .pm_plane, .pm_x, .pm_y, .pm_idx,
+                   .q_slot_r, .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx,
                    .lr_done, .lr_rec, .blk_done, .blk_rec, .tx_done, .tx_rec, .tx_ack);
     // event queue (inside tile_engines, one per engine): the syntax decoder runs ahead of reconstruction; a palette
-    // block is released (blk_ack) only once reconstruction has drained the queue, because its colour map lives in the
-    // syntax stage
+    // block is released (blk_ack, per engine inside tile_engines) only once its engine's queue has drained and
+    // reconstruction is idle, because its colour map lives in the syntax stage
     logic ev_valid_rc;                              // ev_valid as the reconstruction stage sees it (held by the window)
     logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
     logic rc_busy, cdef_en, sr_sub;
     logic [MIW-1:0] cd_rd_row, cd_rd_col; logic [SBW-1:0] cdr_row64, cdr_col64; logic [3:0] cdr_val; mi_lf_t cd_rd_info;
     logic [11:0] lf_rdata, cd_rdata, lr0_rdata, sr0_rdata, lr1_rdata, sr1_rdata; logic [47:0] lf_rdata4, cd_rdata4;
-    assign blk_ack = pal_hold && !ev_valid && !rc_busy;
 
     logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
     logic fb2_we; logic [1:0] fb2_plane; logic [FBX-1:0] fb2_x; logic [FBY-1:0] fb2_y; logic [11:0] fb2_wdata;
