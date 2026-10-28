@@ -202,6 +202,17 @@ module tile_engines
         if (tile_done) begin $fdisplay(te_fd, "t=%0t tile_done", $time); $fflush(te_fd); end
         if (ev_valid && ev_pop && ev_kind == 2'd2) begin $fdisplay(te_fd, "t=%0t pop SB row %0d col %0d from engine %0d", $time, ev_sb_r, ev_sb_c, cur); $fflush(te_fd); end
     end
+    // heartbeat every 2^18 cycles while a tile row is in progress: the arbiter's view, for a twin that stalls silently
+    int te_hb;
+    always_ff @(posedge clk) begin
+        te_hb <= (rst || tile_start) ? 0 : te_hb + 1;
+        if (tile_busy && te_hb[17:0] == 18'd0) begin
+            $fdisplay(te_fd, "t=%0t hb: cur %0d mask %b h_valid %b head kind %0d sb_r %0d sb_c %0d | cur_row %0d row_valid %0d new_row %0d exhausted %b done_lvl %b | rc_busy %0d infl %0d pop_q %0d found %0d nxt %0d wrap %0d advance %0d | ev_valid %0d ev_pop %0d e_busy %b in_ready %b in_valid %b",
+                      $time, cur, mask, h_valid, h_kind[cur], h_sb_r[cur], h_sb_c[cur], cur_row, row_valid, new_row, exhausted, done_lvl,
+                      rc_busy, h_infl[cur], pop_q, found, nxt, wrap, advance, ev_valid, ev_pop, e_busy, in_ready, in_valid);
+            $fflush(te_fd);
+        end
+    end
 `endif
     // the head presented to reconstruction: never the next row's superblock start of an engine still waiting its turn
     assign ev_valid = h_valid[cur] && !(TE > 1 && (new_row || exhausted[cur]));
