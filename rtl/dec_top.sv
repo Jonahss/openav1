@@ -357,8 +357,10 @@ module dec_top
     assign h_rdata4 = (h_buf == 2'd3) ? h_rdata43 : (h_buf == 2'd2) ? h_rdata42 : (h_buf == 2'd1) ? h_rdata41 : h_rdata40;
 
     // ================================================================ frame sequencer (pipe_en): stages per superblock row
-    // Row r of the frame is decoded once every tile column has reconstructed past it (row_cnt[r] == n_tile_cols); a
-    // tile passes a row when its reconstruction pops the first superblock of the next row, or at tile_done.
+    // Row r of the frame is decoded once the reconstruction stream has passed it (row_cnt[r] != 0): the stream pops the
+    // first superblock of the next row, or tile_done. The tile engines (tile_engines.sv) merge every tile column of a
+    // tile row into one raster-ordered stream, so a row is passed once however many columns the frame has (a frame
+    // with more columns than engines is refused: win_unsup); a per-column count (== n_tile_cols) would wait forever.
     // Rules (see notes/projects/open-av1-decoder-throughput.md, step 7): LF(r) after row r+1 is decoded [vertical
     // edges of row r change its last line, which row r+1 predicts from]; CDEF(r) after LF(r+1) [window reads 2 lines
     // into row r+1, and LF(r+1)'s boundary edge changes row r's last lines]; SR(r) after CDEF(r+1) [CDEF reads row r's
@@ -498,8 +500,8 @@ module dec_top
             if (flush_done) flushed_cnt <= flushed_cnt + SBW'(1);
         end
     end
-    function automatic logic row_dec(input logic [SBW-1:0] r);   // row r decoded by every tile column
-        row_dec = (r >= n_rows) || (row_cnt[(FBY - 6)'(r)] >= 8'(n_tile_cols));
+    function automatic logic row_dec(input logic [SBW-1:0] r);   // row r reconstructed (every tile column: one merged stream)
+        row_dec = (r >= n_rows) || (row_cnt[(FBY - 6)'(r)] != 8'd0);
     endfunction
     // stage ranges
     logic [PXW-1:0] sb_px;                                   // luma rows per superblock row
