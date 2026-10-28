@@ -494,6 +494,18 @@ module dec_top
         if (hold_lr && lr_en && !lr_pend && !lr_busy) $display("[win] t=%0t hold LR stripe %0d (fb2 free %0d)", $time, lr_next, fb2_free);
         if (hold_sr && sr_en && !sr_pend && !sr_busy) $display("[win] t=%0t hold SR row %0d (fb0s free %0d)", $time, sr_next, fbs_free);
     end
+    // heartbeat (simulation only): the sequencer's state every 2^18 cycles while a frame is active, so a stalled twin
+    // shows which stage is waiting for what (and whether simulated time still advances at all)
+    int trace_hb;
+    always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin
+        trace_hb <= frame_start ? 0 : trace_hb + 1;
+        if (seq_active && trace_hb[17:0] == 18'd0)
+            $display("[win] t=%0t hb: tile_busy %0d rc_busy %0d ev valid/kind/pop %0d/%0d/%0d sb_r %0d hold rc/cd/lr/sr %0d%0d%0d%0d | lf %0d pend %0d | cd %0d pend %0d busy %0d | sr %0d pend %0d | lr %0d pend %0d busy %0d | rel %0d/%0d flushed %0d free fb0/1/2/s %0d/%0d/%0d/%0d | row_cnt[n-2..n-1] %0d %0d",
+                     $time, tile_busy, rc_busy, ev_valid, ev_kind, ev_pop, sb_pop_row, hold_rc, hold_cd, hold_lr, hold_sr,
+                     lf_next, lf_pend, cd_next, cd_pend, cdef_busy, sr_next, sr_pend, lr_next, lr_pend, lr_busy,
+                     rel_next, rel_upto, flushed_cnt, fb0_free, fb1_free, fb2_free, fbs_free,
+                     row_cnt[(FBY - 6)'(n_rows - SBW'(2))], row_cnt[(FBY - 6)'(n_rows - SBW'(1))]);
+    end
 `endif
     always_ff @(posedge clk) begin
         row_final <= 1'b0;

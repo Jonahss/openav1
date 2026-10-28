@@ -121,8 +121,16 @@ module frame_mem_uram #(
     assign a_sel = (NU > 1) ? SW'(a_addr >> 12) : '0;
     assign b_sel = (NU > 1) ? SW'(b_addr >> 12) : '0;
     always_ff @(posedge clk2x) if (!phase) begin a_sel_r <= a_sel; b_sel_r <= b_sel; end   // the read's URAM, held through E_a
-    assign a_q = a_dout[a_sel_r];
-    assign b_q = b_dout[b_sel_r];
+    // The read data is captured at E_a, the edge of the write: the URAMs' DOUT is disturbed by a write on the same port
+    // (two 50 MHz images decoded wrongly with DOUT feeding the clk domain directly, under a 2-cycle exception that
+    // let the timer ignore everything launched at E_a; the exception-free 40 MHz image was exact). A register loaded
+    // at E_a samples DOUT before the write can touch it (DOUT moves a clock-to-out after the edge) and then holds for
+    // a whole clk cycle, so every path from the frame memory into the clk domain is an ordinary one-clk2x-cycle path:
+    // no exception on the read side (sys.xdc keeps the clk -> clk2x one for the requests captured at E_b).
+    logic [71:0] a_q_r, b_q_r;
+    always_ff @(posedge clk2x) if (phase) begin a_q_r <= a_dout[a_sel_r]; b_q_r <= b_dout[b_sel_r]; end
+    assign a_q = a_q_r;
+    assign b_q = b_q_r;
     for (genvar k = 0; k < NU; k++) begin : g_uram
         URAM288 #(
             .CASCADE_ORDER_A("NONE"), .CASCADE_ORDER_B("NONE"), .OREG_A("FALSE"), .OREG_B("FALSE"), .REG_CAS_A("FALSE"), .REG_CAS_B("FALSE"),

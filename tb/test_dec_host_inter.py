@@ -12,6 +12,7 @@ decoded by the model only; a reference the RTL did not produce is loaded into th
 Env: TS_IVF=a.obu[,b.obu] (required), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_PIPE / TS_WIN / TS_DMA are 1.
 """
 import os
+import time
 from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
@@ -308,7 +309,9 @@ async def dec_host_inter_vs_model(dut):
                         pending = []
             # ---- the in-loop filters: the sequencer runs them, the model follows (LF in place: frame["planes"] = deblocked)
             pre = [[row[:] for row in p_] for p_ in frame["planes"]] if not model_only else None
+            t_mf = time.monotonic()                       # pure-Python LF/CDEF/SR/LR: minutes at 1080p, hours with LR on every plane
             planes = TH.model_filters(th0, decs, frame["planes"])
+            dut._log.info(f"{tag}: model filters done in {time.monotonic() - t_mf:.0f} s (simulated time stood still)")
             layout = None
             if not model_only:
                 await TH.pipe_finish(ax, tag)
