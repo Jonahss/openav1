@@ -632,12 +632,15 @@ class HostDecoder:
         8-bit, 16-bit little-endian otherwise), rows on 8-byte strides, planes one after the other. Returns the
         slot-table geometry [(plane base, stride)]."""
         bps = 1 if hdr.BitDepth == 8 else 2
+        dims = [(len(planes[p][0]), len(planes[p])) for p in range(hdr.NumPlanes)]
+        if sum(((w * bps + 7) & ~7) * h for w, h in dims) > budget:
+            # too big for a pool buffer: the picture stays on the host (the caller marks the slot mem=None)
+            sys.stderr.write(f"{tag}: a model-decoded picture (planes {dims}, bd{hdr.BitDepth}) does not fit a {budget}-byte frame buffer; kept on the host\n")
+            return None
         mem, pos = [], 0
         for p in range(hdr.NumPlanes):
-            w, h = len(planes[p][0]), len(planes[p])
+            w, h = dims[p]
             stride = (w * bps + 7) & ~7
-            if pos + stride * h > budget:
-                raise HostError(f"{tag}: a model-decoded {w}x{h} picture overruns its {budget}-byte frame buffer")
             buf = bytearray(stride * h)
             for y, row in enumerate(planes[p]):
                 if bps == 1:
@@ -768,7 +771,7 @@ class HostDecoder:
             if model_only:
                 mem_at = None if host_only else self.upload_picture(write, target - base, target, hdr0, mp, stride, tag)
                 t["upload"] = time.monotonic() - t0
-                t["model_only"] = why + (" (picture bigger than a pool buffer, kept on the host)" if host_only else "")
+                t["model_only"] = why + (" (picture bigger than a pool buffer, kept on the host)" if mem_at is None else "")
                 self.stats["model_only"] = self.stats.get("model_only", 0) + 1
             else:
                 mem_at = [(b, st) for b, st, _, _ in layout]
