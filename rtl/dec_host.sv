@@ -339,8 +339,6 @@ module dec_host
     logic [39:0]    fl_addr [3];                             // next row's first address per plane
     logic [15:0]    fl_y [3];                                // next row's first line per plane
     logic [7:0]     fl_rows;                                 // rows flushed since the last frame start
-    logic [15:0]    row_lines;                               // lines of plane d_plane in one released superblock row
-    assign row_lines = (d_plane == 2'd0) ? ((SB128 != 0 && hdr.sb128) ? 16'd128 : 16'd64) : ((SB128 != 0 && hdr.sb128) ? 16'd64 : 16'd32);
     logic           fl_auto;
     assign fl_auto = dma_cfg[8];
     assign flush_rd = dma_busy && fl_run;
@@ -360,6 +358,8 @@ module dec_host
     typedef enum logic [3:0] {D_IDLE, D_PLANE, D_ROW, D_BURST, D_AW, D_F0, D_F1, D_F2, D_W, D_B, D_NEXT} dstate_t;
     dstate_t        ds;
     logic [1:0]     d_plane;
+    logic [15:0]    row_lines;                               // lines of plane d_plane in one released superblock row
+    assign row_lines = (d_plane == 2'd0) ? ((SB128 != 0 && hdr.sb128) ? 16'd128 : 16'd64) : ((SB128 != 0 && hdr.sb128) ? 16'd64 : 16'd32);
     logic [FBY-1:0] d_y;
     logic [FBX-1:0] d_x;                                     // first sample of the beat being built
     logic [39:0]    d_row_addr, d_addr;                      // this row's first byte; the next beat's address
