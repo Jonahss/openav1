@@ -11,13 +11,4 @@ if {0 && [llength $fmregs]} {   # read data registered at E_a since 2026-10-27: 
     set_multicycle_path -setup 2 -from $fmregs -to $c2
     set_multicycle_path -hold 1 -from $fmregs -to $c2
 }
-# the phase generator's alignment path (rtl/phase_gen.sv): a clk register sampled by a clk2x register at the very
-# next clk2x edge, i.e. one clk2x period, unlike every other clk -> clk2x path (sys.xdc)
-set rq [get_cells -quiet -hier -filter {NAME =~ *pg/*rst_q_reg*}]
-set ph [get_cells -quiet -hier -filter {NAME =~ *pg/*phase_reg*}]
-if {[llength $rq] && [llength $ph]} {
-    set_multicycle_path -setup 1 -from $rq -to $ph
-    set_multicycle_path -hold 0 -from $rq -to $ph
-} else {
-    puts "CRITICAL WARNING: phase_gen registers not found; the clk -> clk2x multicycle applies to the alignment path"
-}
+# (the phase generator samples clk on the falling clk2x edge since 2026-10-27: no alignment path to except)
