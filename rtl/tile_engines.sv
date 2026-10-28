@@ -198,7 +198,7 @@ module tile_engines
     int te_fd;
     initial te_fd = $fopen("te_trace.txt", "w");
     always_ff @(posedge clk) begin
-        if (tile_start) begin $fdisplay(te_fd, "t=%0t tile_start mask %b", $time, mask); $fflush(te_fd); end
+        if (tile_start) begin $fdisplay(te_fd, "t=%0t tile_start mask %b hdr rows %0d..%0d cols %0d..%0d | engine cols %0d..%0d / %0d..%0d", $time, mask, hdr.mi_row_start, hdr.mi_row_end, hdr.mi_col_start, hdr.mi_col_end, col_start[0 +: MIW], col_end[0 +: MIW], col_start[(TE > 1 ? MIW : 0) +: MIW], col_end[(TE > 1 ? MIW : 0) +: MIW]); $fflush(te_fd); end
         if (advance) begin $fdisplay(te_fd, "t=%0t advance cur %0d -> %0d wrap %0d (new_row %0d exhausted %b h_valid %b done_lvl %b)", $time, cur, nxt, wrap, new_row, exhausted, h_valid, done_lvl); $fflush(te_fd); end
         for (int e = 0; e < TE; e++) if (e_done[e]) begin $fdisplay(te_fd, "t=%0t engine %0d done (queue valid %0d)", $time, e, h_valid[e]); $fflush(te_fd); end
         if (tile_done) begin $fdisplay(te_fd, "t=%0t tile_done", $time); $fflush(te_fd); end

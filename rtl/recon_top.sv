@@ -1434,6 +1434,8 @@ module recon_top
     int rc_hb;
     always_ff @(posedge clk) begin
         rc_hb <= rst ? 0 : rc_hb + 1;
+        if (sb_start)
+            $display("[rc] t=%0t sb_start (%0d,%0d) hdr cols %0d..%0d rows %0d..%0d", $time, ev_sb_r, ev_sb_c, hdr.mi_col_start, hdr.mi_col_end, hdr.mi_row_start, hdr.mi_row_end);
         if (busy && rc_hb[17:0] == 18'd0)
             $display("[rc] t=%0t hb: rs %0d bst %0d blk_ready %0d mi_blk_busy %0d mi_tx_busy %0d | sb (%0d,%0d) hdr cols %0d..%0d rows %0d..%0d sb128 %0d | ev valid %0d kind %0d",
                      $time, rs, bst, blk_ready, mi_blk_busy, mi_tx_busy, l_sb_r, l_sb_c, hdr.mi_col_start, hdr.mi_col_end, hdr.mi_row_start, hdr.mi_row_end, hdr.sb128, ev_valid, ev_kind);
