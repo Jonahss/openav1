@@ -199,8 +199,8 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
             cocotb.log.info(f"{tag}: done poll read {reads}: status 0x{st:08x}")
         if st & (ST_TILE_DONE | ST_UNSUP):
             break
-        assert reads < 40000, f"{tag}: no tile done after {reads} status reads (last 0x{st:08x})"
-        await ClockCycles(ax.clk, 16)
+        assert reads < 2_000_000, f"{tag}: no tile done after {reads} status reads (last 0x{st:08x})"   # ~5 s of simulated time: LR-heavy tall frames take > 8 ms after the last byte
+        await ClockCycles(ax.clk, 256)
     cocotb.log.info(f"{tag}: done poll finished after {reads} reads: status 0x{st:08x}")
     await ax.write(HR.R_TILE_ENG, 0)
     assert not (st & ST_UNSUP), f"{tag}: RTL flagged unsupported syntax"
