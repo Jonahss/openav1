@@ -165,6 +165,8 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
         for e, (_, _, data) in enumerate(tiles):
             if pos[e] >= len(data):
                 continue
+            if loops <= 3:
+                cocotb.log.info(f"{tag}: loop {loops} reading engine {e}'s FIFO status")
             fst = await ax.read(HR.R_TILE_FIFO + 4 * e, record=False)
             free = fst >> 16
             if loops <= 3 or loops % 200 == 0:

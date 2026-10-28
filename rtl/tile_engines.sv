@@ -189,12 +189,15 @@ module tile_engines
         end
     end
 `ifndef SYNTHESIS
-    // +vis: trace the arbiter (tile_start, advances, engine done) on stdout
-    always_ff @(posedge clk) begin                            // (temporary: unconditional while the TE=2 hang is chased)
-        if (tile_start) $display("[te] t=%0t tile_start mask %b", $time, mask);
-        if (advance) $display("[te] t=%0t advance cur %0d -> %0d wrap %0d (new_row %0d exhausted %b h_valid %b done_lvl %b)", $time, cur, nxt, wrap, new_row, exhausted, h_valid, done_lvl);
-        for (int e = 0; e < TE; e++) if (e_done[e]) $display("[te] t=%0t engine %0d done (queue valid %0d)", $time, e, h_valid[e]);
-        if (tile_done) $display("[te] t=%0t tile_done", $time);
+    // the arbiter's trace, flushed line by line into te_trace.txt (stdout is lost when a run is killed)
+    int te_fd;
+    initial te_fd = $fopen("te_trace.txt", "w");
+    always_ff @(posedge clk) begin
+        if (tile_start) begin $fdisplay(te_fd, "t=%0t tile_start mask %b", $time, mask); $fflush(te_fd); end
+        if (advance) begin $fdisplay(te_fd, "t=%0t advance cur %0d -> %0d wrap %0d (new_row %0d exhausted %b h_valid %b done_lvl %b)", $time, cur, nxt, wrap, new_row, exhausted, h_valid, done_lvl); $fflush(te_fd); end
+        for (int e = 0; e < TE; e++) if (e_done[e]) begin $fdisplay(te_fd, "t=%0t engine %0d done (queue valid %0d)", $time, e, h_valid[e]); $fflush(te_fd); end
+        if (tile_done) begin $fdisplay(te_fd, "t=%0t tile_done", $time); $fflush(te_fd); end
+        if (ev_valid && ev_pop && ev_kind == 2'd2) begin $fdisplay(te_fd, "t=%0t pop SB row %0d col %0d from engine %0d", $time, ev_sb_r, ev_sb_c, cur); $fflush(te_fd); end
     end
 `endif
     // the head presented to reconstruction: never the next row's superblock start of an engine still waiting its turn
