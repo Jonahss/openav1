@@ -496,7 +496,7 @@ class HostDecoder:
                 pairs += [(R_DEF + 4 * k, w) for k, w in enumerate(words(row, 8))]
                 pairs.append((R_DEF_ADDR, i))
             self.write_seq(pairs)
-        ctrl0 = self.rd(R_CTRL) & ~CTRL_ENG_MASK
+        ctrl0 = self.rd(R_CTRL) & ~(CTRL_ENG_MASK | CTRL_EOS)
         self.wr(R_CTRL, ctrl0)
         self.wr(R_START, START_TILE)
         pos = [0] * len(tiles)

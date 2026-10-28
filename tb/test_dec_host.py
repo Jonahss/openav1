@@ -152,7 +152,7 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
     for i, row in enumerate(M.default_rows(th0.base_q_idx) if rows is None else rows):
         await write_wide(ax, R_DEF, row, 8)
         await ax.write(R_DEF_ADDR, i)
-    ctrl0 = (await ax.read(R_CTRL, record=False)) & ~HR.CTRL_ENG_MASK
+    ctrl0 = (await ax.read(R_CTRL, record=False)) & ~(HR.CTRL_ENG_MASK | CTRL_EOS)   # the previous tile row's EOS must not ride along
     await ax.write(R_CTRL, ctrl0)
     await ax.write(R_START, START_TILE)
     cocotb.log.info(f"{tag}: {len(tiles)} engines started, cols {[(th.MiColStart, th.MiColEnd) for th, _, _ in tiles]}, bytes {[len(d) for _, _, d in tiles]}, ctrl 0x{ctrl0:x}")
