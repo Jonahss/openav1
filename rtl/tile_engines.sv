@@ -72,6 +72,7 @@ module tile_engines
     input  logic              ev_pop,
     output logic [3:0]        tx_inflight,
     input  logic              rc_busy,        // reconstruction busy: engines are switched only between blocks
+    output logic [MIW-1:0]    rc_col_start, rc_col_end,   // tile column bounds of the engine feeding reconstruction (its is_inside / superblock clip)
     // reconstruction's reads into the current engine
     input  logic [2:0]        q_slot_r,
     input  logic [9:0]        q_addr,
@@ -169,7 +170,9 @@ module tile_engines
             if (!found && mask[c] && !exhausted[c]) begin found = 1'b1; nxt = EW'(c); wrap = (c <= int'(cur)); end
         end
     end
-    assign advance = (TE > 1) && (new_row || (exhausted[cur] && !all_done)) && !rc_busy && (h_infl[cur] == 4'd0) && found;
+    logic pop_q;                                              // a pop last cycle: reconstruction's busy may follow it a cycle later
+    always_ff @(posedge clk) pop_q <= !rst && ev_valid && ev_pop;
+    assign advance = (TE > 1) && (new_row || (exhausted[cur] && !all_done)) && !rc_busy && !pop_q && (h_infl[cur] == 4'd0) && found;
     always_ff @(posedge clk) begin
         if (rst) begin cur <= '0; done_lvl <= '0; row_valid <= 1'b0; cur_row <= '0; end
         else begin
@@ -213,6 +216,8 @@ module tile_engines
         e_blk_ack = '0; e_blk_ack[cur] = blk_ack;
     end
     assign q_data   = e_q_data[cur];
+    assign rc_col_start = hdr_e[cur].mi_col_start;
+    assign rc_col_end   = hdr_e[cur].mi_col_end;
     assign pal_hold = e_pal_hold[cur];
     assign pm_idx   = e_pm_idx[cur];
     assign blk_done = e_blk_done[cur];

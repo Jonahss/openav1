@@ -138,7 +138,7 @@ module dec_top
                    .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_sel, .rb_data,
                    .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
                    .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
-                   .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight, .rc_busy,
+                   .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight, .rc_busy, .rc_col_start, .rc_col_end,
                    .q_slot_r, .q_addr, .q_data, .pal_hold, .blk_ack, .pm_plane, .pm_x, .pm_y, .pm_idx,
                    .lr_done, .lr_rec, .blk_done, .blk_rec, .tx_done, .tx_rec, .tx_ack);
     // event queue (inside tile_engines, one per engine): the syntax decoder runs ahead of reconstruction; a palette
@@ -159,7 +159,13 @@ module dec_top
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [SBW-1:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
-    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER)) u_rc (.clk, .rst, .hdr, .rh,
+    // reconstruction's header: the frame's, with the tile column bounds of the engine whose block it is working on
+    // (is_inside for neighbour availability, the superblock clip at the tile's right edge); the arbiter switches
+    // engines only while reconstruction is idle
+    logic [MIW-1:0] rc_col_start, rc_col_end;
+    hdr_t hdr_rc;
+    always_comb begin hdr_rc = hdr; hdr_rc.mi_col_start = rc_col_start; hdr_rc.mi_col_end = rc_col_end; end
+    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
                                             .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
