@@ -1429,6 +1429,16 @@ module recon_top
         if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = mc_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
+`ifndef SYNTHESIS
+    // heartbeat (simulation only): where reconstruction stands every 2^18 cycles while busy, for a twin that stalls silently
+    int rc_hb;
+    always_ff @(posedge clk) begin
+        rc_hb <= rst ? 0 : rc_hb + 1;
+        if (busy && rc_hb[17:0] == 18'd0)
+            $display("[rc] t=%0t hb: rs %0d bst %0d blk_ready %0d mi_blk_busy %0d mi_tx_busy %0d | sb (%0d,%0d) hdr cols %0d..%0d rows %0d..%0d sb128 %0d | ev valid %0d kind %0d",
+                     $time, rs, bst, blk_ready, mi_blk_busy, mi_tx_busy, l_sb_r, l_sb_c, hdr.mi_col_start, hdr.mi_col_end, hdr.mi_row_start, hdr.mi_row_end, hdr.sb128, ev_valid, ev_kind);
+    end
+`endif
     assign mi_tx_plane = t.plane; assign mi_tx_sz = t.txsz;
     assign mi_tx_row = MIW'(t.y >> 2); assign mi_tx_col = MIW'(t.x >> 2);          // plane 4x4 units
     assign mi_tx_w4 = step_x; assign mi_tx_h4 = step_y;
