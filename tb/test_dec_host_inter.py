@@ -11,6 +11,7 @@ cannot take (sb128, 4:4:4 / 4:2:2, several tile columns, intra block copy) and f
 decoded by the model only; a reference the RTL did not produce is loaded into the AXI memory at a slot address.
 Env: TS_IVF=a.obu[,b.obu] (required), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_PIPE / TS_WIN / TS_DMA are 1.
 """
+import json
 import os
 import time
 from pathlib import Path
@@ -82,6 +83,17 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, debloc
     if bad:
         st2 = await ax.read(R_DMA_STATUS, record=False)
         ax.dut._log.info(f"{tag}: DMA_STATUS 0x{st2:08x} (rows flushed {st2 >> 16 & 0xFF}), {len(bad)} samples differ")
+        # the pictures themselves, for a look offline (tools/mismatch.py): the flush, the model's final picture and, when
+        # the caller has them, its pre-filter and deblocked pictures, cropped to the flush
+        dpath = os.path.join(os.environ.get("TS_TEST_DIR") or ".", "mismatch_" + "".join(c if c.isalnum() else "_" for c in tag) + ".json")
+        def crop(pic):
+            return None if pic is None else [[list(map(int, pic[p_][y_][:layout[p_][2]])) for y_ in range(min(layout[p_][3], len(pic[p_])))]
+                                             for p_ in range(hdr.NumPlanes)]
+        with open(dpath, "w") as fh:
+            json.dump({"tag": tag, "wh": [[int(layout[p_][2]), int(layout[p_][3])] for p_ in range(hdr.NumPlanes)],
+                       "rtl": [[list(map(int, r_)) for r_ in got[p_]] for p_ in range(hdr.NumPlanes)], "model": crop(planes),
+                       "pre": crop(pre), "deblocked": crop(deblocked), "bad": [list(map(int, b_)) for b_ in bad]}, fh)
+        ax.dut._log.info(f"{tag}: mismatch dump {dpath}")
         # where: per (plane, superblock row, line within the row) counts, and what every frame buffer holds at the first ones
         hist = {}
         for plane, y, x, _, _ in bad:
@@ -254,7 +266,7 @@ async def dec_host_inter_vs_model(dut):
             dut._log.info(f"{tag}: {th0.FrameWidth}x{th0.FrameHeight} (upscaled {th0.UpscaledWidth}) bd{th0.BitDepth} {'intra' if ph.FrameIsIntra else 'inter'}, "
                           f"refs {list(ph.ref_frame_idx) if not ph.FrameIsIntra else []}, refresh 0x{ph.refresh_frame_flags:02x}, cdef {HR.cdef_on(th0)} sr {th0.use_superres} "
                           f"lr {[t for t in th0.FrameRestorationType[:th0.NumPlanes]]}")
-            model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols, sb128=bool(int(os.environ.get("SB128", "0"))), fbx=int(os.environ.get("FBX", "9")), fby=int(os.environ.get("FBY", "9")))
+            model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols, sb128=bool(int(os.environ.get("SB128", "0"))), fbx=int(os.environ.get("FBX", "9")), fby=int(os.environ.get("FBY", "9")), te=int(os.environ.get("TE", "1")))
             if model_only and not frames_sel:
                 dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc): model only")
             # ---- the model decodes the frame (the RTL follows tile by tile unless model_only)
@@ -292,6 +304,7 @@ async def dec_host_inter_vs_model(dut):
                     pass                                     # intra frames read neither band
                 flush_base = FLUSH_BASE + fi_global * FLUSH_STRIDE
                 await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False)
+            pending = []                                      # the tiles of a tile row go to the engines together
             for k, ti in enumerate(tile_idx):
                 th, data = d.tiles[ti]
                 dec = TD.RecFrame(th, data, frame, ctx=ctx)
@@ -299,7 +312,13 @@ async def dec_host_inter_vs_model(dut):
                 decs.append(dec)
                 summaries.append(sm.TileSummary(dec, keep_cdf=(k == ph.context_update_tile_id)))
                 if not model_only:
-                    await TH.run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats, rows=rows)
+                    if pending and th.MiRowStart != pending[0][0].MiRowStart:
+                        await TH.run_tile_row(ax, pending, f"{tag} tile row {pending[0][0].MiRowStart}", stats, rows=rows)
+                        pending = []
+                    pending.append((th, dec, data))
+                    if k == len(tile_idx) - 1:
+                        await TH.run_tile_row(ax, pending, f"{tag} tile row {pending[0][0].MiRowStart}", stats, rows=rows)
+                        pending = []
             # ---- the in-loop filters: the sequencer runs them, the model follows (LF in place: frame["planes"] = deblocked)
             pre = [[row[:] for row in p_] for p_ in frame["planes"]] if not model_only else None
             t_mf = time.monotonic()                       # pure-Python LF/CDEF/SR/LR: minutes at 1080p, hours with LR on every plane

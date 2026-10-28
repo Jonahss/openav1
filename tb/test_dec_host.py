@@ -134,6 +134,85 @@ async def run_tile(ax, th, dec, data, tag, stats, rows=None):
     stats["bytes"] += len(data)
 
 
+async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
+    """The tiles of one tile row ([(th, dec, data), ...] in column order) through the tile engines at once
+    (rtl/tile_engines.sv, HostDecoder.run_tile_row): headers once, each engine's columns and the engine mask, the
+    CDF rows broadcast, one start, the bytes round-robin in chunks so no engine starves, end of stream, tile done."""
+    if len(tiles) == 1:
+        th, dec, data = tiles[0]
+        await run_tile(ax, th, dec, data, tag, stats, rows=rows)
+        return
+    th0, dec0, _ = tiles[0]
+    await write_wide(ax, R_HDR, TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th0, dec0, 0)), HDR_WORDS)
+    await write_wide(ax, R_RH, TT.pack(TD.REC_FIELDS, TD.rec_vals(th0)), RH_WORDS)
+    await write_wide(ax, HR.R_IH, TT.pack(HR.IHDR_FIELDS, HR.ihdr_vals(th0)), HR.IH_WORDS)
+    for e, (th, _, _) in enumerate(tiles):
+        await ax.write(HR.R_TILE_COL + 4 * e, (th.MiColEnd << 16) | th.MiColStart)
+    await ax.write(HR.R_TILE_ENG, (1 << len(tiles)) - 1)
+    for i, row in enumerate(M.default_rows(th0.base_q_idx) if rows is None else rows):
+        await write_wide(ax, R_DEF, row, 8)
+        await ax.write(R_DEF_ADDR, i)
+    ctrl0 = (await ax.read(R_CTRL, record=False)) & ~(HR.CTRL_ENG_MASK | CTRL_EOS)   # the previous tile row's EOS must not ride along
+    await ax.write(R_CTRL, ctrl0)
+    await ax.write(R_START, START_TILE)
+    cocotb.log.info(f"{tag}: {len(tiles)} engines started, cols {[(th.MiColStart, th.MiColEnd) for th, _, _ in tiles]}, bytes {[len(d) for _, _, d in tiles]}, ctrl 0x{ctrl0:x}")
+    pos = [0] * len(tiles)
+    idle = 0
+    loops = 0
+    while any(pos[e] < len(d) for e, (_, _, d) in enumerate(tiles)):
+        progressed = False
+        loops += 1
+        for e, (_, _, data) in enumerate(tiles):
+            if pos[e] >= len(data):
+                continue
+            if loops <= 3:
+                cocotb.log.info(f"{tag}: loop {loops} reading engine {e}'s FIFO status")
+            fst = await ax.read(HR.R_TILE_FIFO + 4 * e, record=False)
+            free = fst >> 16
+            if loops <= 3 or loops % 200 == 0:
+                cocotb.log.info(f"{tag}: loop {loops} engine {e} fifo 0x{fst:08x} pos {pos} status 0x{await ax.read(R_STATUS, record=False):08x}")
+            if free == 0:
+                continue
+            await ax.write(R_CTRL, ctrl0 | (e << HR.CTRL_ENG_SHIFT))
+            # every push is one FIFO word, a tail byte included: the budget counts pushes, not bytes (the single-engine
+            # loop's 2026-10-15 lesson; this loop budgeted free * 4 bytes, and test5413 frame 0's 3-byte tail into one
+            # free word overflowed engine 0's FIFO, 2026-10-28)
+            q = pos[e]
+            for _ in range(min(free, chunk // 4)):
+                if q >= len(data):
+                    break
+                c = data[q:q + 4]
+                if len(c) == 4:
+                    await ax.write(R_DATA4, int.from_bytes(c, "little")); q += 4
+                else:
+                    await ax.write(R_DATA1, c[0]); q += 1
+            pos[e] = q
+            progressed = True
+        if not progressed:
+            idle += 1
+            assert idle < 100_000, f"{tag}: no engine FIFO freed a word"
+            await ClockCycles(ax.clk, 64)
+    await ax.write(R_CTRL, ctrl0 | CTRL_EOS)
+    cocotb.log.info(f"{tag}: all bytes pushed ({loops} loops), EOS set, status 0x{await ax.read(R_STATUS, record=False):08x}")
+    # the done poll with a running log of STATUS (debugging the two-engine rows: the plain poll never returned)
+    reads = 0
+    while True:
+        st = await ax.read(R_STATUS, record=False)
+        reads += 1
+        if reads <= 5 or reads % 2000 == 0:
+            cocotb.log.info(f"{tag}: done poll read {reads}: status 0x{st:08x}")
+        if st & (ST_TILE_DONE | ST_UNSUP):
+            break
+        assert reads < 2_000_000, f"{tag}: no tile done after {reads} status reads (last 0x{st:08x})"   # ~5 s of simulated time: LR-heavy tall frames take > 8 ms after the last byte
+        await ClockCycles(ax.clk, 256)
+    cocotb.log.info(f"{tag}: done poll finished after {reads} reads: status 0x{st:08x}")
+    await ax.write(HR.R_TILE_ENG, 0)
+    assert not (st & ST_UNSUP), f"{tag}: RTL flagged unsupported syntax"
+    assert not (st & (1 << 14)), f"{tag}: a tile FIFO dropped a push (overflow or a split write)"
+    stats["tiles"] += len(tiles)
+    stats["bytes"] += sum(len(d) for _, _, d in tiles)
+
+
 async def check_cdf_readback(ax, dec, tag, stats, rows=None):
     """DEF_ADDR bit 31: the working store's rows after the tile must be the model's adapted CDFs (counters too)."""
     want = M.rows_of(dec.cdf)

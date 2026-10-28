@@ -140,9 +140,10 @@ set host [create_bd_cell -type module -reference dec_host_v host]
 set fbx $::env(U200_FBX); set fby $::env(U200_FBY); set win $::env(U200_WIN); set inter $::env(U200_INTER)
 set win1 $::env(U200_WIN1); set win2 $::env(U200_WIN2)
 set sb128 [expr {[info exists ::env(U200_SB128)] ? $::env(U200_SB128) : 0}]
+set te [expr {[info exists ::env(U200_TE)] ? $::env(U200_TE) : 1}]
 set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win \
-                         CONFIG.FRAME_WIN1 $win1 CONFIG.FRAME_WIN2 $win2 CONFIG.INTER $inter CONFIG.SB128 $sb128] $host
-puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win fb1 $win1 fb2 $win2 INTER $inter SB128 $sb128"
+                         CONFIG.FRAME_WIN1 $win1 CONFIG.FRAME_WIN2 $win2 CONFIG.INTER $inter CONFIG.SB128 $sb128 CONFIG.TE $te] $host
+puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win fb1 $win1 fb2 $win2 INTER $inter SB128 $sb128 TE $te"
 set pg [create_bd_cell -type module -reference phase_gen_v pg]
 connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins host/clk] [get_bd_pins pg/clk]
 connect_bd_net [get_bd_pins clkgen/clk_out2] [get_bd_pins host/clk2x] [get_bd_pins pg/clk2x]

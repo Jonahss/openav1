@@ -5,7 +5,7 @@
 // decoder clock; the PS side's own clock domain crossing is in its interconnect). Register map (byte offsets,
 // 32-bit words; the words of a wide field are little-endian: word 0 = bits 31:0):
 //   0x000 ID        R   32'hA71D_0001
-//   0x004 CFG       R   {8'd0, FBX[7:0], FBY[7:0], ITX_LANES[3:0], 2'd0, SB128, FRAME_URAM}
+//   0x004 CFG       R   {4'd0, TE[3:0], FBX[7:0], FBY[7:0], ITX_LANES[3:0], 2'd0, SB128, FRAME_URAM}
 //   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 1 pipe_en, 2 lr_from_deblocked, 3 sr_buf,
 //                       [5:4] h_buf (the host port's frame buffer: 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
 //                       in the RING build; a row flush reads dec_top's final_buf instead), 8 eos (no more bytes for
@@ -18,7 +18,11 @@
 //                       push with a partial write strobe (sticky until rst), 15 fifo empty (and no byte pending),
 //                       [31:16] free FIFO words
 //   0x014 PERF_SYN  R   perf_syn_stall       0x018 PERF_REC  R   perf_rec_idle
-//   0x01C DATA1     W   push one tile byte [7:0]        0x020 DATA4  W  push four bytes, [7:0] first
+//   0x01C DATA1     W   push one tile byte [7:0]        0x020 DATA4  W  push four bytes, [7:0] first (into the FIFO of
+//                       engine CTRL[25:24]; STATUS bits 13 / 14 and [31:16] describe that engine's FIFO; CDF read-back too)
+//   0x038 TILE_ENG  RW  engines of the tile row [TE-1:0] (0: engine 0 with the header's columns); START.tile starts them all
+//   0x060 + 4e      RW  engine e MiColStart [12:0] / MiColEnd [28:16] (TE > 1 and TILE_ENG != 0)
+//   0x070 + 4e      R   engine e FIFO: free words [31:16], in_ready [1], empty [0]
 //                       (a push into a full FIFO, or one whose write strobe is not the whole word, is dropped
 //                       and sets STATUS bit 14: poll the free count; make each push one 32-bit bus transfer)
 //   0x024 HADDR     RW  host read address {2'd0, plane[1:0], y[13:0], x[13:0]}: a write fetches the four samples at
@@ -74,7 +78,8 @@ module dec_host
     parameter int FRAME_WIN2 = -1,
     parameter int FIFO_LW = 10,              // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
     parameter int INTER = 1,                 // 0: the intra-only decoder (dec_top INTER)
-    parameter int SB128 = 0                  // 1: the window build takes 128x128 superblocks (dec_top SB128; CFG bit 1)
+    parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks (dec_top SB128; CFG bit 1)
+    parameter int TE = 1                     // tile engines (dec_top TE; CFG[27:24]): the tile columns of a tile row decoded at once
 ) (
     input  logic        clk,
     input  logic        clk2x,
@@ -161,8 +166,12 @@ module dec_host
         hdr = hdr_t'(hdr_f[HDR_W-1:0]); rh = rec_hdr_t'(rh_f[RH_W-1:0]); lh = lf_hdr_t'(lh_f[LH_W-1:0]); ch = cdef_hdr_t'(ch_f[CH_W-1:0]);
         ihdr = ihdr_t'(ih_f[IH_W-1:0]);
     end
-    logic [7:0]        in_data;
-    logic              in_valid, in_ready, in_eos;
+    logic [TE*8-1:0]   in_data;
+    logic [TE-1:0]     in_valid, in_ready, in_eos;
+    localparam int EW = $clog2(TE > 1 ? TE : 2);
+    logic [EW-1:0]     eng_sel;                                // CTRL[25:24]: the engine DATA1 / DATA4 push to, the CDF read back, STATUS's FIFO
+    logic [TE-1:0]     eng_mask_r;
+    logic [TE*MIW-1:0] col_start_r, col_end_r;
     logic              def_we;
     logic [CDF_AW-1:0] def_addr;
     logic              rb_en, rb_l1;                 // cdf read-back: request pulse, row-in cycle
@@ -199,17 +208,17 @@ module dec_host
     logic [15:0]    rs_xs [8], rs_ys [8];                    // 7.11.3.3 scale factors per slot (for the current frame)
     logic [20:0]    ref_slot_r;
     logic [31:0]    ref_cfg_r;
-    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128)) u_dec (
+    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
-        .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_data,
+        .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_sel(eng_sel), .rb_data,
         .mf_we, .mf_wref(mf_addr_r[26:24]), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
         .mf_wrow(signed'(mf_wd[31:16])), .mf_wcol(signed'(mf_wd[15:0])),
         .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),
         .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
-        .tile_start(start[0]), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
+        .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
         .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done, .frame_done_lvl,
         .row_final, .row_final_idx, .flush_done,
         .lf_start(start[2]), .lf_busy, .lf_done,
@@ -238,44 +247,56 @@ module dec_host
         end
     end
 
-    // ---------------------------------------------------------------- tile-byte FIFO (words of 1..4 bytes)
+    // ---------------------------------------------------------------- tile-byte FIFOs (words of 1..4 bytes), one per engine
     localparam int FD = 1 << FIFO_LW;
-    logic [33:0]        fmem [0:FD-1];                       // {count-1, bytes}
-    logic [FIFO_LW:0]   wptr, rptr;
-    logic               f_empty, f_full;
-    logic [FIFO_LW:0]   f_free;
-    assign f_empty = (wptr == rptr);
-    assign f_full  = (wptr[FIFO_LW-1:0] == rptr[FIFO_LW-1:0]) && (wptr[FIFO_LW] != rptr[FIFO_LW]);
-    assign f_free  = (FIFO_LW + 1)'(FD) - (wptr - rptr);
     logic               push;
     logic [33:0]        push_d;
-    logic               f_ovf, f_badw;                       // overflow / partial-strobe push: both STATUS bit 14
-    logic               ow_valid;                            // the word being handed out byte by byte
-    logic [31:0]        ow;
-    logic [1:0]         ow_n, ow_i;
-    logic               take, ow_done, fetch;
-    assign take    = ow_valid && in_ready;
-    assign ow_done = take && (ow_i == ow_n);
-    assign fetch   = !f_empty && (!ow_valid || ow_done);
-    // A tile start empties the FIFO: the arithmetic decoder leaves a tile's trailing bytes unread, and the next tile of
+    logic               f_ovf, f_badw;                       // overflow (any engine) / partial-strobe push: both STATUS bit 14
+    logic [TE-1:0]      f_ovf_e, f_empty_e;
+    logic [FIFO_LW:0]   f_free_e [TE];
+    assign eng_sel = (TE > 1) ? ctrl[24 +: EW] : '0;
+    // A tile start empties the FIFOs: the arithmetic decoder leaves a tile's trailing bytes unread, and the next tile of
     // the same frame must not see them (2026-10-24: test47's third tile decoded from the second tile's tail; every
     // earlier stream through dec_host had one tile per frame). Software pushes a tile's bytes after its START.
-    always_ff @(posedge clk) begin
-        if (rst || start[0]) begin wptr <= '0; rptr <= '0; ow_valid <= 1'b0; f_ovf <= 1'b0; ow_i <= 2'd0; end
-        else begin
-            if (push) begin
-                if (f_full) f_ovf <= 1'b1;
-                else begin fmem[wptr[FIFO_LW-1:0]] <= push_d; wptr <= wptr + 1'b1; end
+    for (genvar e = 0; e < TE; e++) begin : g_fifo
+        logic [33:0]        fmem [0:FD-1];                   // {count-1, bytes}
+        logic [FIFO_LW:0]   wptr, rptr;
+        logic               f_empty, f_full;
+        logic               ow_valid;                        // the word being handed out byte by byte
+        logic [31:0]        ow;
+        logic [1:0]         ow_n, ow_i;
+        logic               take, ow_done, fetch, push_e;
+        assign push_e  = push && (eng_sel == EW'(e));
+        assign f_empty = (wptr == rptr);
+        assign f_full  = (wptr[FIFO_LW-1:0] == rptr[FIFO_LW-1:0]) && (wptr[FIFO_LW] != rptr[FIFO_LW]);
+        assign f_free_e[e] = (FIFO_LW + 1)'(FD) - (wptr - rptr);
+        assign f_empty_e[e] = !ow_valid && f_empty;
+        assign take    = ow_valid && in_ready[e];
+        assign ow_done = take && (ow_i == ow_n);
+        assign fetch   = !f_empty && (!ow_valid || ow_done);
+        always_ff @(posedge clk) begin
+            if (rst || start[0]) begin wptr <= '0; rptr <= '0; ow_valid <= 1'b0; f_ovf_e[e] <= 1'b0; ow_i <= 2'd0; end
+            else begin
+                if (push_e) begin
+                    if (f_full) f_ovf_e[e] <= 1'b1;
+                    else begin fmem[wptr[FIFO_LW-1:0]] <= push_d; wptr <= wptr + 1'b1; end
+                end
+                if (fetch) begin
+                    {ow_n, ow} <= fmem[rptr[FIFO_LW-1:0]]; rptr <= rptr + 1'b1; ow_valid <= 1'b1; ow_i <= 2'd0;
+                end else if (ow_done) ow_valid <= 1'b0;
+                else if (take) ow_i <= ow_i + 1'b1;
             end
-            if (fetch) begin
-                {ow_n, ow} <= fmem[rptr[FIFO_LW-1:0]]; rptr <= rptr + 1'b1; ow_valid <= 1'b1; ow_i <= 2'd0;
-            end else if (ow_done) ow_valid <= 1'b0;
-            else if (take) ow_i <= ow_i + 1'b1;
         end
+        assign in_valid[e] = ow_valid;
+        assign in_data[e * 8 +: 8] = ow[8 * ow_i +: 8];
+        assign in_eos[e]   = ctrl[8] && !ow_valid && f_empty;
     end
-    assign in_valid = ow_valid;
-    assign in_data  = ow[8 * ow_i +: 8];
-    assign in_eos   = ctrl[8] && !ow_valid && f_empty;
+    assign f_ovf = |f_ovf_e;
+    logic [FIFO_LW:0]   f_free;                              // the selected engine's, for STATUS
+    logic               f_empty_sel, in_ready_sel;
+    assign f_free = f_free_e[eng_sel];
+    assign f_empty_sel = f_empty_e[eng_sel];
+    assign in_ready_sel = in_ready[eng_sel];
 
     // ---------------------------------------------------------------- picture read-back prefetch
     // After an HADDR write, and after a packed read advanced the address, the four samples at x .. x+3 of the
@@ -485,7 +506,7 @@ module dec_host
     always_ff @(posedge clk) begin
         if (!aresetn) begin
             aw_v <= 1'b0; w_v <= 1'b0; ar_v <= 1'b0; s_axi_bvalid <= 1'b0; s_axi_rvalid <= 1'b0;
-            ctrl <= 32'd0; haddr <= 32'd0; def_addr_r <= '0;
+            ctrl <= 32'd0; haddr <= 32'd0; def_addr_r <= '0; eng_mask_r <= '0; col_start_r <= '0; col_end_r <= '0;
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
             for (int i = 0; i < 64; i++) ih_w[i] <= '0;
@@ -514,6 +535,14 @@ module dec_host
                     10'h008: begin if (w_s == 4'hF) begin push <= 1'b1; push_d <= {2'd3, w_d}; end else f_badw <= 1'b1; end
                     10'h009: begin haddr <= strb(haddr, w_d, w_s); h_fetch <= 1'b1; end
                     10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; if (w_d[31]) rb_en <= 1'b1; else def_we <= 1'b1; end
+                    10'h00E: eng_mask_r <= w_d[TE-1:0];
+                    default: ;
+                endcase
+                if (TE > 1 && int'(wi) >= 24 && int'(wi) < 24 + TE) begin                   // 0x060 + 4e: engine e's columns
+                    col_start_r[(int'(wi) - 24) * MIW +: MIW] <= w_d[MIW-1:0];
+                    col_end_r[(int'(wi) - 24) * MIW +: MIW] <= w_d[16 +: MIW];
+                end
+                case (wi)
                     10'h060: dma_cfg <= strb(dma_cfg, w_d, w_s);                                              // 0x180
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
                     // 0x300 .. 0x310: the inter frame bands (motion field, previous segment ids); no-ops at INTER = 0
@@ -559,11 +588,17 @@ module dec_host
             if (s_axi_rvalid && s_axi_rready) s_axi_rvalid <= 1'b0;
             if (do_read) begin
                 ar_v <= 1'b0; s_axi_rvalid <= 1'b1;
+                if (TE > 1 && int'(ri) >= 24 && int'(ri) < 24 + TE)                          // 0x060 + 4e: engine e's columns
+                    s_axi_rdata <= {3'd0, col_end_r[(int'(ri) - 24) * MIW +: MIW], 3'd0, col_start_r[(int'(ri) - 24) * MIW +: MIW]};
+                else if (int'(ri) >= 28 && int'(ri) < 28 + TE)                                 // 0x070 + 4e: engine e's FIFO
+                    s_axi_rdata <= {16'(f_free_e[EW'(int'(ri) - 28)]), 14'd0, in_ready[EW'(int'(ri) - 28)], f_empty_e[EW'(int'(ri) - 28)]};
+                else
                 case (ri)
                     10'h000: s_axi_rdata <= 32'hA71D_0001;
-                    10'h001: s_axi_rdata <= {8'd0, 8'(FBX), 8'(FBY), 4'(ITX_LANES), 2'd0, 1'(SB128), 1'(FRAME_URAM)};
+                    10'h00E: s_axi_rdata <= 32'(eng_mask_r);
+                    10'h001: s_axi_rdata <= {4'd0, 4'(TE), 8'(FBX), 8'(FBY), 4'(ITX_LANES), 2'd0, 1'(SB128), 1'(FRAME_URAM)};
                     10'h002: s_axi_rdata <= ctrl;
-                    10'h004: s_axi_rdata <= {16'(f_free), !ow_valid && f_empty, f_ovf || f_badw, in_ready, lr_done_s, lr_busy, sr_done_s, sr_busy,
+                    10'h004: s_axi_rdata <= {16'(f_free), f_empty_sel, f_ovf || f_badw, in_ready_sel, lr_done_s, lr_busy, sr_done_s, sr_busy,
                                              cdef_done_s, cdef_busy, lf_done_s, lf_busy, frame_done_lvl, frame_busy, unsupported, tile_done_lvl, tile_busy};
                     10'h005: s_axi_rdata <= perf_syn_stall;
                     10'h006: s_axi_rdata <= perf_rec_idle;

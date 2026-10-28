@@ -222,13 +222,13 @@ module tile_syntax
         logic        has_rows;
         logic        has_cols;
     } node_t;
-    node_t stack [0:7];
+    node_t qstack [0:7];
     logic [3:0] sp;
     logic [2:0] spi, spp;                      // index of top, of parent
     assign spi = 3'(sp - 4'd1);
     assign spp = 3'(sp - 4'd2);
     node_t top;
-    assign top = stack[spi];
+    assign top = qstack[spi];
 
     typedef enum logic [4:0] {T_IDLE, T_INIT, T_SB, T_LR_W, T_SB_ROW_END, T_PUSH_ROOT, T_NODE, T_NB_W, T_PART_W, T_PEEK_W, T_BOOL_W, T_CHILD, T_BLK_W, T_DONE} t_t;
     t_t st;
@@ -385,7 +385,7 @@ module tile_syntax
                 sb_start <= 1'b1;
                 if (sb_c == hdr.mi_col_start) mvm_clr <= 1'b1;          // new superblock row: its motion-info rows are unwritten
                 sp <= 4'd1;
-                stack[0].r <= sb_r; stack[0].c <= sb_c; stack[0].bs <= sb_size_bsize(hdr.sb128); stack[0].child <= 3'd0;
+                qstack[0].r <= sb_r; qstack[0].c <= sb_c; qstack[0].bs <= sb_size_bsize(hdr.sb128); qstack[0].child <= 3'd0;
                 lr_start <= 1'b1; lr_active <= 1'b1;
                 st <= T_LR_W;
             end
@@ -395,13 +395,13 @@ module tile_syntax
                 if (top.r >= hdr.mi_rows || top.c >= hdr.mi_cols) begin
                     // nothing here: pop, parent advances to its next child
                     sp <= sp - 4'd1;
-                    if (sp != 4'd1) stack[spp].child <= stack[spp].child + 3'd1;
+                    if (sp != 4'd1) qstack[spp].child <= qstack[spp].child + 3'd1;
                     st <= (sp == 4'd1) ? T_SB_ROW_END : T_CHILD;
                 end else begin
-                    stack[spi].has_rows <= (top.r + MIW'(half4)) < hdr.mi_rows;
-                    stack[spi].has_cols <= (top.c + MIW'(half4)) < hdr.mi_cols;
-                    stack[spi].child <= 3'd0;
-                    if (top.bs < BLOCK_8X8) begin stack[spi].part <= P_NONE; st <= T_CHILD; end
+                    qstack[spi].has_rows <= (top.r + MIW'(half4)) < hdr.mi_rows;
+                    qstack[spi].has_cols <= (top.c + MIW'(half4)) < hdr.mi_cols;
+                    qstack[spi].child <= 3'd0;
+                    if (top.bs < BLOCK_8X8) begin qstack[spi].part <= P_NONE; st <= T_CHILD; end
                     else begin nb_req_p <= 1'b1; st <= T_NB_W; end
                 end
             end
@@ -409,12 +409,12 @@ module tile_syntax
                 if (top.has_rows && top.has_cols) begin p_go_sym <= 1'b1; st <= T_PART_W; end
                 else if (top.has_cols) begin want_horz <= 1'b1; p_go_peek <= 1'b1; st <= T_PEEK_W; end
                 else if (top.has_rows) begin want_horz <= 1'b0; p_go_peek <= 1'b1; st <= T_PEEK_W; end
-                else begin stack[spi].part <= P_SPLIT; st <= T_CHILD; end
+                else begin qstack[spi].part <= P_SPLIT; st <= T_CHILD; end
             end
-            T_PART_W: if (k_done) begin stack[spi].part <= k_sym; st <= T_CHILD; end
+            T_PART_W: if (k_done) begin qstack[spi].part <= k_sym; st <= T_CHILD; end
             T_PEEK_W: if (k_done) begin p_go_bool <= 1'b1; st <= T_BOOL_W; end    // k_row holds the row; k_f = psum
             T_BOOL_W: if (k_done) begin
-                stack[spi].part <= k_sym[0] ? P_SPLIT : (want_horz ? P_HORZ : P_VERT);
+                qstack[spi].part <= k_sym[0] ? P_SPLIT : (want_horz ? P_HORZ : P_VERT);
                 st <= T_CHILD;
             end
             // ---- next child of top
@@ -424,17 +424,17 @@ module tile_syntax
                     if (sp == 4'd1) st <= T_SB_ROW_END;
                     else begin
                         sp <= sp - 4'd1;
-                        stack[spp].child <= stack[spp].child + 3'd1;
+                        qstack[spp].child <= qstack[spp].child + 3'd1;
                         st <= T_CHILD;
                     end
                 end else if (child_is_blk) begin
                     b_r <= ch_r; b_c <= ch_c; b_bs <= ch_bs;
                     blk_active <= 1'b1; b_start <= 1'b1;
-                    stack[spi].child <= top.child + 3'd1;
+                    qstack[spi].child <= top.child + 3'd1;
                     st <= T_BLK_W;
                 end else begin
                     // push sub-partition (parent's child index advances when the child pops)
-                    stack[sp[2:0]].r <= ch_r; stack[sp[2:0]].c <= ch_c; stack[sp[2:0]].bs <= ch_bs; stack[sp[2:0]].child <= 3'd0;
+                    qstack[sp[2:0]].r <= ch_r; qstack[sp[2:0]].c <= ch_c; qstack[sp[2:0]].bs <= ch_bs; qstack[sp[2:0]].child <= 3'd0;
                     sp <= sp + 4'd1;
                     st <= T_NODE;
                 end
