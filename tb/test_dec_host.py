@@ -190,7 +190,18 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
             await ClockCycles(ax.clk, 64)
     await ax.write(R_CTRL, ctrl0 | CTRL_EOS)
     cocotb.log.info(f"{tag}: all bytes pushed ({loops} loops), EOS set, status 0x{await ax.read(R_STATUS, record=False):08x}")
-    st = await ax.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, 4_000_000, tag)
+    # the done poll with a running log of STATUS (debugging the two-engine rows: the plain poll never returned)
+    reads = 0
+    while True:
+        st = await ax.read(R_STATUS, record=False)
+        reads += 1
+        if reads <= 5 or reads % 2000 == 0:
+            cocotb.log.info(f"{tag}: done poll read {reads}: status 0x{st:08x}")
+        if st & (ST_TILE_DONE | ST_UNSUP):
+            break
+        assert reads < 40000, f"{tag}: no tile done after {reads} status reads (last 0x{st:08x})"
+        await ClockCycles(ax.clk, 16)
+    cocotb.log.info(f"{tag}: done poll finished after {reads} reads: status 0x{st:08x}")
     await ax.write(HR.R_TILE_ENG, 0)
     assert not (st & ST_UNSUP), f"{tag}: RTL flagged unsupported syntax"
     assert not (st & (1 << 14)), f"{tag}: a tile FIFO dropped a push (overflow or a split write)"
