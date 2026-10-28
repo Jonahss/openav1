@@ -30,7 +30,7 @@ import superres_model as srm                                 # noqa: E402
 import cdf_map as M                                          # noqa: E402
 import obu_parser as op                                      # noqa: E402
 import host_regs as HR                                       # noqa: E402
-from host_regs import (HostDecoder, R_ID, R_CTRL, R_CFG, R_DMA_STATUS, CTRL_RST, DMA_FLUSH_BUSY, DMA_ERR, dma_regs, unpack_dma)   # noqa: E402
+from host_regs import (HostDecoder, R_ID, R_CTRL, R_CFG, R_DMA_STATUS, CTRL_RST, DMA_FLUSH_BUSY, DMA_ERR, dma_regs, unpack_dma, plane_size)   # noqa: E402
 from axil import AxiLite                                     # noqa: E402
 from axi_mem import AxiMem                                   # noqa: E402
 
@@ -65,17 +65,18 @@ def block_at(blocks, hdr, plane, x, y):
     return "no block"
 
 
-async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, deblocked=None, blocks=None):
-    """After frame_done: wait for the row flush, then the memory image against the model's final picture."""
-    seq, layout, total = dma_regs(hdr, base, visible=True)
+async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, deblocked=None, blocks=None, visible=True):
+    """After frame_done: wait for the row flush, then the memory image against the model's final picture (the visible
+    picture; an intrabc frame's flush holds the whole decoded MI area, its own copy source, visible=False)."""
+    seq, layout, total = dma_regs(hdr, base, visible=visible)
     st = await ax.poll(R_DMA_STATUS, DMA_FLUSH_BUSY, 0, 40_000_000, tag)
     assert not (st & DMA_ERR), f"{tag}: DMA error flag (DMA_STATUS 0x{st:08x})"
     assert not mem.errors, f"{tag}: AXI protocol errors: {mem.errors[:4]}"
     got = unpack_dma(hdr, mem.read(base, total), layout)
     bad = []
     for plane in range(hdr.NumPlanes):
-        _, _, W, H = layout[plane]
-        assert len(planes[plane]) >= H and len(planes[plane][0]) >= W, f"{tag}: model picture {len(planes[plane][0])}x{len(planes[plane])} smaller than the flush {W}x{H}"
+        W, H = plane_size(hdr, plane, True)                              # compared: the visible picture
+        assert len(planes[plane]) >= H and len(planes[plane][0]) >= W, f"{tag}: model picture {len(planes[plane][0])}x{len(planes[plane])} smaller than the picture {W}x{H}"
         for y in range(H):
             if got[plane][y] != planes[plane][y][:W]:
                 bad += [(plane, y, x, got[plane][y][x], planes[plane][y][x]) for x in range(W) if got[plane][y][x] != planes[plane][y][x]]
@@ -268,7 +269,7 @@ async def dec_host_inter_vs_model(dut):
                           f"lr {[t for t in th0.FrameRestorationType[:th0.NumPlanes]]}")
             model_only = (frames_sel and fi not in frames_sel) or not HostDecoder.window_ok(th0, n_tile_cols, sb128=bool(int(os.environ.get("SB128", "0"))), fbx=int(os.environ.get("FBX", "9")), fby=int(os.environ.get("FBY", "9")), te=int(os.environ.get("TE", "1")))
             if model_only and not frames_sel:
-                dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc): model only")
+                dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns): model only")
             # ---- the model decodes the frame (the RTL follows tile by tile unless model_only)
             frame = {"refs": store}
             decs, summaries = [], []
@@ -303,7 +304,7 @@ async def dec_host_inter_vs_model(dut):
                 elif ctx.prev_segment_ids is not None or True:
                     pass                                     # intra frames read neither band
                 flush_base = FLUSH_BASE + fi_global * FLUSH_STRIDE
-                await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False)
+                await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False, visible=not th0.allow_intrabc)
             pending = []                                      # the tiles of a tile row go to the engines together
             for k, ti in enumerate(tile_idx):
                 th, data = d.tiles[ti]
@@ -328,7 +329,7 @@ async def dec_host_inter_vs_model(dut):
             if not model_only:
                 await TH.pipe_finish(ax, tag)
                 layout = await flush_compare(ax, mem, th0, flush_base, planes, tag, stats, pre=pre, deblocked=frame["planes"],
-                                             blocks=[b for dd in decs for b in dd.blocks])
+                                             blocks=[b for dd in decs for b in dd.blocks], visible=not th0.allow_intrabc)
                 fi_global += 1
                 stats["frames"] += 1
                 dut._log.info(f"{tag}: identical ({len(tile_idx)} tiles, {th0.UpscaledWidth}x{th0.FrameHeight} bd{th0.BitDepth}, "

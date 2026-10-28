@@ -35,11 +35,11 @@ WIN = os.environ.get("TS_WIN", "0") == "1"                           # window bu
 CORE = os.environ.get("TS_CORE", "0") == "1"                         # the core build: CDEF / LR nulled, so their recordings are skipped
 
 
-async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None, clear=True):
+async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None, clear=True, visible=True):
     """Pipelined frame under the frame sequencer; WIN: the flush target (base) programmed first. clear=False keeps the
     AXI memory's contents (inter streams: earlier frames' pictures are the references)."""
     if WIN:                                                  # the planes and auto-flush before the frame
-        seq, layout, total = dma_regs(hdr, base, visible=True)
+        seq, layout, total = dma_regs(hdr, base, visible=visible)        # intrabc frames flush the whole decoded (MI) area
         st = await ax.read(R_DMA_STATUS, record=False)
         ax.dut._log.info(f"pipe_start: DMA_STATUS 0x{st:08x} before the frame; {len(seq)} plane register writes")
         for a, v in seq:

@@ -208,6 +208,7 @@ module dec_host
     logic [15:0]    rs_xs [8], rs_ys [8];                    // 7.11.3.3 scale factors per slot (for the current frame)
     logic [20:0]    ref_slot_r;
     logic [31:0]    ref_cfg_r;
+    logic [215:0]   cur_planes;                              // the current picture's flush layout for intra block copy
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
@@ -215,7 +216,7 @@ module dec_host
         .mf_we, .mf_wref(mf_addr_r[26:24]), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
         .mf_wrow(signed'(mf_wd[31:16])), .mf_wcol(signed'(mf_wd[15:0])),
         .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),
-        .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]),
+        .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]), .cur_planes, .cur_fmt16(fmt16),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
@@ -353,6 +354,7 @@ module dec_host
     end
     logic [39:0]    dma_base [3];
     logic [31:0]    dma_stride [3];
+    always_comb for (int p = 0; p < 3; p++) cur_planes[72 * p +: 72] = {dma_stride[p], dma_base[p]};   // the picture being decoded: intra block copy
     logic [15:0]    dma_w [3], dma_h [3];
     logic [31:0]    dma_beats;
     typedef enum logic [3:0] {D_IDLE, D_PLANE, D_ROW, D_BURST, D_AW, D_F0, D_F1, D_F2, D_W, D_B, D_NEXT} dstate_t;

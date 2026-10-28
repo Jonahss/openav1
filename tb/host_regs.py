@@ -632,10 +632,10 @@ class HostDecoder:
 
     @staticmethod
     def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None, sb128=False, te=1):
-        """Whether a window build takes the frame: sb64, 4:2:0 or mono, one tile column, no intra block copy, and (when
+        """Whether a window build takes the frame: sb64, 4:2:0 or mono, at most TE tile columns, and (when
         the image's geometry is known: identify()) a picture no wider than 1 << FBX and no taller than 1 << FBY; sb128 builds (CFG bit 1) take 128x128 superblocks."""
         return (sb128 or not hdr.use_128x128_superblock) and (hdr.NumPlanes == 1 or (hdr.subsampling_x and hdr.subsampling_y)) \
-            and n_tile_cols <= max(1, te) and not hdr.allow_intrabc \
+            and n_tile_cols <= max(1, te) \
             and (fbx is None or hdr.UpscaledWidth <= (1 << fbx)) and (fby is None or hdr.FrameHeight <= (1 << fby))
 
     def frame_pipe_start(self, hdr, n_tile_cols):
@@ -789,7 +789,7 @@ class HostDecoder:
             target = next((base + k * stride for k in range(pool) if base + k * stride not in busy), None)
             if target is None:
                 raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
-            dseq, layout, total = dma_regs(hdr0, target, True)
+            dseq, layout, total = dma_regs(hdr0, target, not hdr0.allow_intrabc)   # an intrabc frame flushes its whole decoded (MI) area: its own copy source
             self.last_target = target                    # where this frame's picture lands (tools/kv260/decode.py --show)
             # A model-decoded picture bigger than a pool buffer (an 8K-class frame) stays on the host: no card frame can
             # take a picture that size as a reference anyway, and a frame that still names it goes to the model as well.
