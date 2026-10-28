@@ -11,6 +11,7 @@ cannot take (sb128, 4:4:4 / 4:2:2, several tile columns, intra block copy) and f
 decoded by the model only; a reference the RTL did not produce is loaded into the AXI memory at a slot address.
 Env: TS_IVF=a.obu[,b.obu] (required), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_PIPE / TS_WIN / TS_DMA are 1.
 """
+import json
 import os
 import time
 from pathlib import Path
@@ -82,6 +83,17 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, debloc
     if bad:
         st2 = await ax.read(R_DMA_STATUS, record=False)
         ax.dut._log.info(f"{tag}: DMA_STATUS 0x{st2:08x} (rows flushed {st2 >> 16 & 0xFF}), {len(bad)} samples differ")
+        # the pictures themselves, for a look offline (tools/mismatch.py): the flush, the model's final picture and, when
+        # the caller has them, its pre-filter and deblocked pictures, cropped to the flush
+        dpath = os.path.join(os.environ.get("TS_TEST_DIR") or ".", "mismatch_" + "".join(c if c.isalnum() else "_" for c in tag) + ".json")
+        def crop(pic):
+            return None if pic is None else [[list(map(int, pic[p_][y_][:layout[p_][2]])) for y_ in range(min(layout[p_][3], len(pic[p_])))]
+                                             for p_ in range(hdr.NumPlanes)]
+        with open(dpath, "w") as fh:
+            json.dump({"tag": tag, "wh": [[int(layout[p_][2]), int(layout[p_][3])] for p_ in range(hdr.NumPlanes)],
+                       "rtl": [[list(map(int, r_)) for r_ in got[p_]] for p_ in range(hdr.NumPlanes)], "model": crop(planes),
+                       "pre": crop(pre), "deblocked": crop(deblocked), "bad": [list(map(int, b_)) for b_ in bad]}, fh)
+        ax.dut._log.info(f"{tag}: mismatch dump {dpath}")
         # where: per (plane, superblock row, line within the row) counts, and what every frame buffer holds at the first ones
         hist = {}
         for plane, y, x, _, _ in bad:
