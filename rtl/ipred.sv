@@ -161,6 +161,7 @@ module ipred #(
     // the first S_PIX cycle with no bypass mux in the address path.
     logic [16:0] idx_i_r;
     logic [16:0] idx_j_r [4];
+    logic [5:0]    px, py;
     // The position after this one (the S_PIX / S_FI2 stepping: four lanes along the row, then the next row), used
     // both for the register updates and for the edge-read address lookahead below.
     logic        nx_row_end;
@@ -376,7 +377,6 @@ module ipred #(
         dc_both  = (dc_ratio == 3'd0) ? PW'(dc_x >> 1) : (dc_ratio == 3'd1) ? PW'(dc_q3) : PW'(dc_q5);
     end
 
-    logic [5:0]    px, py;
 
     // filter-intra: emitted pixels, one 4x2 patch (8 pixels) per entry, entry = (row>>1)*8 + (col>>2)
     (* ram_style = "distributed" *) logic [8*PW-1:0] fi_buf [0:127];   // one write, four lane reads: LUT RAM
