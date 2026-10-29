@@ -501,9 +501,9 @@ module dec_host
     assign s_axi_bresp   = 2'b00;
     assign s_axi_rresp   = 2'b00;
     assign do_write = aw_v && w_v && !s_axi_bvalid;
+    logic [9:0] wi, ri;                                      // word index
     assign h_data_read = (ri == 10'h00A) || (ri == 10'h00C) || (ri == 10'h00D);
     assign do_read  = ar_v && !(h_data_read && !(hbuf_ok && !dma_busy)) && !(rb_en || rb_l1);
-    logic [9:0] wi, ri;                                      // word index
     assign wi = aw_a[11:2];
     assign ri = ar_a[11:2];
     function automatic logic [31:0] strb(input logic [31:0] old, input logic [31:0] nw, input logic [3:0] s);

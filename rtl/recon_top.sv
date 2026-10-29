@@ -884,6 +884,10 @@ module recon_top
 
     // OBMC read-modify-write pipeline: A = the prediction group and its mask values (the frame memory read is issued
     // from these registers), B = the blended group to write. One group per cycle.
+    logic [PXW-1:0] mb_bx, mb_by;                            // block-relative position of the output group (plane samples)
+    assign mb_bx = mc_px - mc_bx + PXW'(mc_out_x);
+    assign mb_by = mc_py - mc_by + PXW'(mc_out_y);
+    logic [6:0]  mb_wm [4];                                  // the mask values of the A group's lanes, from the banks
     always_ff @(posedge clk) begin
         ob_rd_v <= 1'b0; ob_rd2_v <= 1'b0; ob_wr_v <= 1'b0;
         if (!rst) begin
@@ -925,9 +929,6 @@ module recon_top
     // the mask of its group in the same cycle (luma: one value per lane; 4:2:0 chroma: the four luma values of each
     // lane's 2x2 -> both row-parity banks, two column words per x bank; 4:2:2: the two of its row) and, for DIFFWTD
     // luma, writes the mask it computes from the pair. The data lands with the A stage, which blends; B writes.
-    logic [PXW-1:0] mb_bx, mb_by;                            // block-relative position of the output group (plane samples)
-    assign mb_bx = mc_px - mc_bx + PXW'(mc_out_x);
-    assign mb_by = mc_py - mc_by + PXW'(mc_out_y);
     logic [6:0] mb_dm [4];                                   // DIFFWTD luma: the mask of the current group
     logic [6:0] wv [4];                                      // the wedge fill's four master values
     always_comb begin
@@ -969,7 +970,6 @@ module recon_top
     end
     // the masked blend pipeline: A (the mask data of the group lands, blend), B (write)
     logic        mb_a_sub, mb_a_sy, mb_a_p;                  // the A group's plane kind: subsampled, 4:2:0, row parity
-    logic [6:0]  mb_wm [4];                                  // the mask values of the A group's lanes, from the banks
     logic [8:0] mb_sum4 [4], mb_sum2 [4];                    // the 4:2:0 / 4:2:2 luma sums of each lane's group
     always_comb begin
         int hi;
