@@ -364,10 +364,12 @@ module dec_top
     assign h_rdata4 = (h_buf == 2'd3) ? h_rdata43 : (h_buf == 2'd2) ? h_rdata42 : (h_buf == 2'd1) ? h_rdata41 : h_rdata40;
 
     // ================================================================ frame sequencer (pipe_en): stages per superblock row
-    // Row r of the frame is decoded once the reconstruction stream has passed it (row_cnt[r] != 0): the stream pops the
-    // first superblock of the next row, or tile_done. The tile engines (tile_engines.sv) merge every tile column of a
-    // tile row into one raster-ordered stream, so a row is passed once however many columns the frame has (a frame
-    // with more columns than engines is refused: win_unsup); a per-column count (== n_tile_cols) would wait forever.
+    // Row r of the frame is decoded once every tile column has reconstructed past it (row_cnt[r] >= n_tile_cols): a pass of
+    // the reconstruction stream (the first superblock of the next row popped, or tile_done) counts for the engines of
+    // the tile row (n_pass): the tile engines merge the columns they run at once into one raster-ordered stream, so a
+    // row of a two-engine tile row passes once and counts twice, while tiles fed one at a time (run_tile) pass it once
+    // per column (2026-10-28: counting one pass per row started LF on a row whose other column was still undecoded,
+    // seed 9 of the dec_host pipe suite: the tile edge deblocked against stale samples).
     // Rules (see notes/projects/open-av1-decoder-throughput.md, step 7): LF(r) after row r+1 is decoded [vertical
     // edges of row r change its last line, which row r+1 predicts from]; CDEF(r) after LF(r+1) [window reads 2 lines
     // into row r+1, and LF(r+1)'s boundary edge changes row r's last lines]; SR(r) after CDEF(r+1) [CDEF reads row r's
@@ -377,6 +379,8 @@ module dec_top
     logic [4:0]  sb_shift;                                // log2(mi rows per superblock row)
     logic [SBW-1:0]  n_rows, n_stripes;
     logic [7:0]  row_cnt [0:NSBR-1];
+    logic [7:0]  n_pass;                                    // tile columns a pass of the reconstruction stream stands for: the
+    assign n_pass = (eng_mask == '0) ? 8'd1 : 8'($countones(eng_mask));   // engines of the tile row (one, when tiles come one at a time)
     logic        lr_en, seq_active, rows_seen;
     // frame geometry and stage enables follow the live header (the host loads it with the first tile, after frame_start)
     assign n_rows = SBW'((hdr.mi_rows + (MIW'(1) << sb_shift) - MIW'(1)) >> sb_shift);
@@ -520,7 +524,7 @@ module dec_top
         end
     end
     function automatic logic row_dec(input logic [SBW-1:0] r);   // row r reconstructed (every tile column: one merged stream)
-        row_dec = (r >= n_rows) || (row_cnt[(FBY - 6)'(r)] != 8'd0);
+        row_dec = (r >= n_rows) || (row_cnt[(FBY - 6)'(r)] >= 8'(n_tile_cols));
     endfunction
     // stage ranges
     logic [PXW-1:0] sb_px;                                   // luma rows per superblock row
@@ -574,10 +578,10 @@ module dec_top
             if (sb_pop) rows_seen <= 1'b1;
             // row completion per tile
             if (sb_pop) begin
-                if (tile_row_valid && sb_pop_row != tile_row_prev) row_cnt[(FBY - 6)'(tile_row_prev)] <= row_cnt[(FBY - 6)'(tile_row_prev)] + 8'd1;
+                if (tile_row_valid && sb_pop_row != tile_row_prev) row_cnt[(FBY - 6)'(tile_row_prev)] <= row_cnt[(FBY - 6)'(tile_row_prev)] + n_pass;
                 tile_row_prev <= sb_pop_row; tile_row_valid <= 1'b1;
             end
-            if (tile_done && tile_row_valid) begin row_cnt[(FBY - 6)'(tile_row_prev)] <= row_cnt[(FBY - 6)'(tile_row_prev)] + 8'd1; tile_row_valid <= 1'b0; end
+            if (tile_done && tile_row_valid) begin row_cnt[(FBY - 6)'(tile_row_prev)] <= row_cnt[(FBY - 6)'(tile_row_prev)] + n_pass; tile_row_valid <= 1'b0; end
             // stage starts
             if (!lf_pend && !lf_busy && lf_ok) begin lf_go <= 1'b1; lf_pend <= 1'b1; end
             if (lf_pend && lf_done) begin lf_pend <= 1'b0; lf_next <= lf_next + SBW'(1); end
