@@ -473,43 +473,6 @@ module dec_top
                                                                  // CDEF(r-2), LR(r-3) and the hold slot would deadlock (2026-10-24, WIN 3 + CDEF + LR)
     end
     assign unsupported = ts_unsup || win_unsup || mc_unsup;        // mc_unsup: an inter feature beyond stage 2a
-`ifndef SYNTHESIS
-    time trace_last_rc_w;                                                           // window trace (simulation only)
-    int  trace_lf_w;
-    always_ff @(posedge clk) if (fb0_we[0]) trace_last_rc_w <= $time;
-    always_ff @(posedge clk) if (lf_go) trace_lf_w <= 0; else if (fb0_we[1]) trace_lf_w <= trace_lf_w + 1;
-    always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin                      // window trace (simulation only)
-        if (lf_pend && lf_done) $display("[win] t=%0t LF done row %0d (n_rows %0d) rel_upto->%0d", $time, lf_next, n_rows, (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next);
-        if (row_final) $display("[win] t=%0t row_final %0d", $time, row_final_idx);
-        if (flush_done) $display("[win] t=%0t flush_done (flushed_cnt -> %0d)", $time, flushed_cnt + 1);
-        if (frame_done) $display("[win] t=%0t frame_done rel_next %0d rel_upto %0d", $time, rel_next, rel_upto);
-        if (frame_start) $display("[win] t=%0t frame_start cdef_en %0d sr_en %0d lr_en %0d final_buf %0d n_rows %0d n_stripes %0d", $time, cdef_en, sr_en, lr_en, final_buf, n_rows, n_stripes);
-        if (cd_pend && cdef_done) $display("[win] t=%0t CDEF done row %0d", $time, cd_next);
-        if (lf_go) $display("[win] t=%0t LF start row %0d MI rows %0d..%0d (hdr.mi_rows %0d, tile_busy %0d rc_busy %0d row_cnt %0d/%0d/%0d, last recon fb0 write t=%0t)", $time, lf_next,
-                            lf_row_first, lf_row_last, hdr.mi_rows, tile_busy, rc_busy, row_cnt[0], row_cnt[1], row_cnt[2], trace_last_rc_w);
-        if (lf_pend && lf_done) $display("[win] t=%0t LF wrote %0d words this row", $time, trace_lf_w);
-        if (tile_done) $display("[win] t=%0t tile_done (rc_busy %0d, last recon fb0 write t=%0t)", $time, rc_busy, trace_last_rc_w);
-        if (sb_pop) $display("[win] t=%0t sb_pop row %0d (prev %0d valid %0d)", $time, sb_pop_row, tile_row_prev, tile_row_valid);
-        if (sr_pend && sr_done) $display("[win] t=%0t SR done row %0d sub %0d", $time, sr_next, sr_sub);
-        if (lr_pend && lr_done_o) $display("[win] t=%0t LR done stripe %0d (n_stripes %0d)", $time, lr_next, n_stripes);
-        if (hold_rc && !rc_busy && ev_pop) $display("[win] t=%0t hold row %0d (fb0 free %0d, flushed %0d)", $time, sb_pop_row, fb0_free, flushed_cnt);
-        if (hold_cd && cdef_en && !cd_pend && !cdef_busy) $display("[win] t=%0t hold CDEF row %0d (fb1 free %0d)", $time, cd_next, fb1_free);
-        if (hold_lr && lr_en && !lr_pend && !lr_busy) $display("[win] t=%0t hold LR stripe %0d (fb2 free %0d)", $time, lr_next, fb2_free);
-        if (hold_sr && sr_en && !sr_pend && !sr_busy) $display("[win] t=%0t hold SR row %0d (fb0s free %0d)", $time, sr_next, fbs_free);
-    end
-    // heartbeat (simulation only): the sequencer's state every 2^18 cycles while a frame is active, so a stalled twin
-    // shows which stage is waiting for what (and whether simulated time still advances at all)
-    int trace_hb;
-    always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin
-        trace_hb <= frame_start ? 0 : trace_hb + 1;
-        if (seq_active && trace_hb[17:0] == 18'd0)
-            $display("[win] t=%0t hb: tile_busy %0d rc_busy %0d ev valid/kind/pop %0d/%0d/%0d sb_r %0d hold rc/cd/lr/sr %0d%0d%0d%0d | lf %0d pend %0d | cd %0d pend %0d busy %0d | sr %0d pend %0d | lr %0d pend %0d busy %0d | rel %0d/%0d flushed %0d free fb0/1/2/s %0d/%0d/%0d/%0d | row_cnt[n-2..n-1] %0d %0d",
-                     $time, tile_busy, rc_busy, ev_valid, ev_kind, ev_pop, sb_pop_row, hold_rc, hold_cd, hold_lr, hold_sr,
-                     lf_next, lf_pend, cd_next, cd_pend, cdef_busy, sr_next, sr_pend, lr_next, lr_pend, lr_busy,
-                     rel_next, rel_upto, flushed_cnt, fb0_free, fb1_free, fb2_free, fbs_free,
-                     row_cnt[(FBY - 6)'(n_rows - SBW'(2))], row_cnt[(FBY - 6)'(n_rows - SBW'(1))]);
-    end
-`endif
     always_ff @(posedge clk) begin
         row_final <= 1'b0;
         if (rst || frame_start) begin
@@ -641,6 +604,43 @@ module dec_top
             if (frame_done)
                 $fwrite(vis_fd, "E %0d\n", vis_cyc);
         end
+    end
+`endif
+`ifndef SYNTHESIS
+    time trace_last_rc_w;                                                           // window trace (simulation only)
+    int  trace_lf_w;
+    always_ff @(posedge clk) if (fb0_we[0]) trace_last_rc_w <= $time;
+    always_ff @(posedge clk) if (lf_go) trace_lf_w <= 0; else if (fb0_we[1]) trace_lf_w <= trace_lf_w + 1;
+    always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin                      // window trace (simulation only)
+        if (lf_pend && lf_done) $display("[win] t=%0t LF done row %0d (n_rows %0d) rel_upto->%0d", $time, lf_next, n_rows, (lf_next + SBW'(1) >= n_rows) ? n_rows : lf_next);
+        if (row_final) $display("[win] t=%0t row_final %0d", $time, row_final_idx);
+        if (flush_done) $display("[win] t=%0t flush_done (flushed_cnt -> %0d)", $time, flushed_cnt + 1);
+        if (frame_done) $display("[win] t=%0t frame_done rel_next %0d rel_upto %0d", $time, rel_next, rel_upto);
+        if (frame_start) $display("[win] t=%0t frame_start cdef_en %0d sr_en %0d lr_en %0d final_buf %0d n_rows %0d n_stripes %0d", $time, cdef_en, sr_en, lr_en, final_buf, n_rows, n_stripes);
+        if (cd_pend && cdef_done) $display("[win] t=%0t CDEF done row %0d", $time, cd_next);
+        if (lf_go) $display("[win] t=%0t LF start row %0d MI rows %0d..%0d (hdr.mi_rows %0d, tile_busy %0d rc_busy %0d row_cnt %0d/%0d/%0d, last recon fb0 write t=%0t)", $time, lf_next,
+                            lf_row_first, lf_row_last, hdr.mi_rows, tile_busy, rc_busy, row_cnt[0], row_cnt[1], row_cnt[2], trace_last_rc_w);
+        if (lf_pend && lf_done) $display("[win] t=%0t LF wrote %0d words this row", $time, trace_lf_w);
+        if (tile_done) $display("[win] t=%0t tile_done (rc_busy %0d, last recon fb0 write t=%0t)", $time, rc_busy, trace_last_rc_w);
+        if (sb_pop) $display("[win] t=%0t sb_pop row %0d (prev %0d valid %0d)", $time, sb_pop_row, tile_row_prev, tile_row_valid);
+        if (sr_pend && sr_done) $display("[win] t=%0t SR done row %0d sub %0d", $time, sr_next, sr_sub);
+        if (lr_pend && lr_done_o) $display("[win] t=%0t LR done stripe %0d (n_stripes %0d)", $time, lr_next, n_stripes);
+        if (hold_rc && !rc_busy && ev_pop) $display("[win] t=%0t hold row %0d (fb0 free %0d, flushed %0d)", $time, sb_pop_row, fb0_free, flushed_cnt);
+        if (hold_cd && cdef_en && !cd_pend && !cdef_busy) $display("[win] t=%0t hold CDEF row %0d (fb1 free %0d)", $time, cd_next, fb1_free);
+        if (hold_lr && lr_en && !lr_pend && !lr_busy) $display("[win] t=%0t hold LR stripe %0d (fb2 free %0d)", $time, lr_next, fb2_free);
+        if (hold_sr && sr_en && !sr_pend && !sr_busy) $display("[win] t=%0t hold SR row %0d (fb0s free %0d)", $time, sr_next, fbs_free);
+    end
+    // heartbeat (simulation only): the sequencer's state every 2^18 cycles while a frame is active, so a stalled twin
+    // shows which stage is waiting for what (and whether simulated time still advances at all)
+    int trace_hb;
+    always_ff @(posedge clk) if (FRAME_WIN > 0 && !rst) begin
+        trace_hb <= frame_start ? 0 : trace_hb + 1;
+        if (seq_active && trace_hb[17:0] == 18'd0)
+            $display("[win] t=%0t hb: tile_busy %0d rc_busy %0d ev valid/kind/pop %0d/%0d/%0d sb_r %0d hold rc/cd/lr/sr %0d%0d%0d%0d | lf %0d pend %0d | cd %0d pend %0d busy %0d | sr %0d pend %0d | lr %0d pend %0d busy %0d | rel %0d/%0d flushed %0d free fb0/1/2/s %0d/%0d/%0d/%0d | row_cnt[n-2..n-1] %0d %0d",
+                     $time, tile_busy, rc_busy, ev_valid, ev_kind, ev_pop, sb_pop_row, hold_rc, hold_cd, hold_lr, hold_sr,
+                     lf_next, lf_pend, cd_next, cd_pend, cdef_busy, sr_next, sr_pend, lr_next, lr_pend, lr_busy,
+                     rel_next, rel_upto, flushed_cnt, fb0_free, fb1_free, fb2_free, fbs_free,
+                     row_cnt[(FBY - 6)'(n_rows - SBW'(2))], row_cnt[(FBY - 6)'(n_rows - SBW'(1))]);
     end
 `endif
 endmodule
