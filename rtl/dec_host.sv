@@ -511,6 +511,8 @@ module dec_host
         for (int b = 0; b < 4; b++) r[8*b +: 8] = s[b] ? nw[8*b +: 8] : old[8*b +: 8];
         return r;
     endfunction
+    logic [31:0] ctrl_nx;                                   // CTRL as this write leaves it (Vivado: no select on a function call)
+    assign ctrl_nx = strb(ctrl, w_d, w_s);
     always_ff @(posedge clk) begin
         if (!aresetn) begin
             aw_v <= 1'b0; w_v <= 1'b0; ar_v <= 1'b0; s_axi_bvalid <= 1'b0; s_axi_rvalid <= 1'b0;
@@ -537,7 +539,7 @@ module dec_host
                 case (wi)
                     10'h002: begin
                         ctrl <= strb(ctrl, w_d, w_s);
-                        if (w_s[1] && w_d[8]) eos_e[(TE > 1) ? strb(ctrl, w_d, w_s)[24 +: EW] : '0] <= 1'b1;
+                        if (w_s[1] && w_d[8]) eos_e[(TE > 1) ? ctrl_nx[24 +: EW] : '0] <= 1'b1;
                     end
                     10'h003: start <= w_d[5:0];
                     // a push must be one whole transfer: a narrow or split write (a byte-wise memcpy on the PS,
