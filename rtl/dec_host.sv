@@ -5,7 +5,9 @@
 // decoder clock; the PS side's own clock domain crossing is in its interconnect). Register map (byte offsets,
 // 32-bit words; the words of a wide field are little-endian: word 0 = bits 31:0):
 //   0x000 ID        R   32'hA71D_0001
-//   0x004 CFG       R   {4'd0, TE[3:0], FBX[7:0], FBY[7:0], ITX_LANES[3:0], 2'd0, SB128, FRAME_URAM}
+//   0x004 CFG       R   {4'd0, TE[3:0], FBX[7:0], FBY[7:0], ITX_LANES[3:0], 1'd0, EOS_PER_ENGINE, SB128, FRAME_URAM}
+//                       (bit 2: a CTRL write with bit 8 ends the stream of the engine CTRL[27:24] selects, as soon as that
+//                       engine's bytes are in; images without it end every engine's stream with one write at the end)
 //   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 1 pipe_en, 2 lr_from_deblocked, 3 sr_buf,
 //                       [5:4] h_buf (the host port's frame buffer: 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
 //                       in the RING build; a row flush reads dec_top's final_buf instead), 8 eos (no more bytes for
@@ -254,6 +256,10 @@ module dec_host
     logic [33:0]        push_d;
     logic               f_ovf, f_badw;                       // overflow (any engine) / partial-strobe push: both STATUS bit 14
     logic [TE-1:0]      f_ovf_e, f_empty_e;
+    logic [TE-1:0]      eos_e;                               // end of stream per engine: set by a CTRL write with bit 8 for the
+                                                             // engine it selects, cleared by a tile start (2026-10-28: one global
+                                                             // bit set after every engine's bytes deadlocked a two-engine row whose
+                                                             // first engine needed it to finish while the second held a palette block)
     logic [FIFO_LW:0]   f_free_e [TE];
     assign eng_sel = (TE > 1) ? ctrl[24 +: EW] : '0;
     // A tile start empties the FIFOs: the arithmetic decoder leaves a tile's trailing bytes unread, and the next tile of
@@ -290,7 +296,7 @@ module dec_host
         end
         assign in_valid[e] = ow_valid;
         assign in_data[e * 8 +: 8] = ow[8 * ow_i +: 8];
-        assign in_eos[e]   = ctrl[8] && !ow_valid && f_empty;
+        assign in_eos[e]   = eos_e[e] && !ow_valid && f_empty;
     end
     assign f_ovf = |f_ovf_e;
     logic [FIFO_LW:0]   f_free;                              // the selected engine's, for STATUS
@@ -508,7 +514,7 @@ module dec_host
     always_ff @(posedge clk) begin
         if (!aresetn) begin
             aw_v <= 1'b0; w_v <= 1'b0; ar_v <= 1'b0; s_axi_bvalid <= 1'b0; s_axi_rvalid <= 1'b0;
-            ctrl <= 32'd0; haddr <= 32'd0; def_addr_r <= '0; eng_mask_r <= '0; col_start_r <= '0; col_end_r <= '0;
+            ctrl <= 32'd0; eos_e <= '0; haddr <= 32'd0; def_addr_r <= '0; eng_mask_r <= '0; col_start_r <= '0; col_end_r <= '0;
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
             for (int i = 0; i < 64; i++) ih_w[i] <= '0;
@@ -529,7 +535,10 @@ module dec_host
             if (do_write) begin
                 aw_v <= 1'b0; w_v <= 1'b0; s_axi_bvalid <= 1'b1;
                 case (wi)
-                    10'h002: ctrl <= strb(ctrl, w_d, w_s);
+                    10'h002: begin
+                        ctrl <= strb(ctrl, w_d, w_s);
+                        if (w_s[1] && w_d[8]) eos_e[(TE > 1) ? strb(ctrl, w_d, w_s)[24 +: EW] : '0] <= 1'b1;
+                    end
                     10'h003: start <= w_d[5:0];
                     // a push must be one whole transfer: a narrow or split write (a byte-wise memcpy on the PS,
                     // first board run) is dropped and flagged like an overflow
@@ -585,7 +594,7 @@ module dec_host
                 endcase
             end
             // a tile start ends the previous tile's end-of-stream
-            if (start[0]) ctrl[8] <= 1'b0;
+            if (start[0]) begin ctrl[8] <= 1'b0; eos_e <= '0; end
             if (s_axi_arvalid && s_axi_arready) begin ar_a <= s_axi_araddr; ar_v <= 1'b1; end
             if (s_axi_rvalid && s_axi_rready) s_axi_rvalid <= 1'b0;
             if (do_read) begin
@@ -598,7 +607,7 @@ module dec_host
                 case (ri)
                     10'h000: s_axi_rdata <= 32'hA71D_0001;
                     10'h00E: s_axi_rdata <= 32'(eng_mask_r);
-                    10'h001: s_axi_rdata <= {4'd0, 4'(TE), 8'(FBX), 8'(FBY), 4'(ITX_LANES), 2'd0, 1'(SB128), 1'(FRAME_URAM)};
+                    10'h001: s_axi_rdata <= {4'd0, 4'(TE), 8'(FBX), 8'(FBY), 4'(ITX_LANES), 1'd0, 1'b1, 1'(SB128), 1'(FRAME_URAM)};   // bit 2: EOS per engine
                     10'h002: s_axi_rdata <= ctrl;
                     10'h004: s_axi_rdata <= {16'(f_free), f_empty_sel, f_ovf || f_badw, in_ready_sel, lr_done_s, lr_busy, sr_done_s, sr_busy,
                                              cdef_done_s, cdef_busy, lf_done_s, lf_busy, frame_done_lvl, frame_busy, unsupported, tile_done_lvl, tile_busy};

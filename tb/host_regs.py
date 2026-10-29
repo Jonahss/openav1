@@ -409,7 +409,7 @@ class HostDecoder:
         if ident != ID_VALUE:
             raise HostError(f"ID register reads 0x{ident:08x}, expected 0x{ID_VALUE:08x}: no decoder at this address?")
         cfg = self.rd(R_CFG)
-        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1, sb128=bool(cfg >> 1 & 1),
+        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1, sb128=bool(cfg >> 1 & 1), eos_per_engine=bool(cfg >> 2 & 1),
                          te=max(1, cfg >> 24 & 0xF))
         return self.geom
 
@@ -534,9 +534,15 @@ class HostDecoder:
                             self.wr(R_DATA1, c[0]); q += 1
                 pos[e] = end
                 progressed = True
+                if end >= len(data) and getattr(self, "geom", {}).get("eos_per_engine"):   # this engine's stream ends now
+                    self.wr(R_CTRL, ctrl0 | (e << CTRL_ENG_SHIFT) | CTRL_EOS)
             if not progressed and time.monotonic() - t0 > self.poll_timeout:
                 raise HostError(f"{tag}: no engine FIFO freed a word")
-        self.wr(R_CTRL, ctrl0 | CTRL_EOS)
+        if getattr(self, "geom", {}).get("eos_per_engine"):
+            for e in range(len(tiles)):
+                self.wr(R_CTRL, ctrl0 | (e << CTRL_ENG_SHIFT) | CTRL_EOS)   # (already out with each engine's last bytes)
+        else:
+            self.wr(R_CTRL, ctrl0 | CTRL_EOS)                             # older images: one global end of stream
         st = self.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, f"{tag}: tile row done")
         self.wr(R_TILE_ENG, 0)
         if st & ST_UNSUP:

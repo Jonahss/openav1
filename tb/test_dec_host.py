@@ -188,11 +188,14 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
                     await ax.write(R_DATA1, c[0]); q += 1
             pos[e] = q
             progressed = True
+            if q >= len(data):                                       # this engine's stream ends now (EOS per engine, CFG bit 2)
+                await ax.write(R_CTRL, ctrl0 | (e << HR.CTRL_ENG_SHIFT) | CTRL_EOS)
         if not progressed:
             idle += 1
             assert idle < 100_000, f"{tag}: no engine FIFO freed a word"
             await ClockCycles(ax.clk, 64)
-    await ax.write(R_CTRL, ctrl0 | CTRL_EOS)
+    for e in range(len(tiles)):                                      # (every engine's EOS went out with its last bytes; an empty tile's here)
+        await ax.write(R_CTRL, ctrl0 | (e << HR.CTRL_ENG_SHIFT) | CTRL_EOS)
     cocotb.log.info(f"{tag}: all bytes pushed ({loops} loops), EOS set, status 0x{await ax.read(R_STATUS, record=False):08x}")
     # the done poll with a running log of STATUS (debugging the two-engine rows: the plain poll never returned)
     reads = 0
