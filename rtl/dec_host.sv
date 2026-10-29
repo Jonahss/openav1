@@ -261,7 +261,9 @@ module dec_host
                                                              // engine it selects, cleared by a tile start (2026-10-28: one global
                                                              // bit set after every engine's bytes deadlocked a two-engine row whose
                                                              // first engine needed it to finish while the second held a palette block)
-    logic [FIFO_LW:0]   f_free_e [TE];
+    logic [TE-1:0][FIFO_LW:0] f_free_e;                   // packed: the register read mux indexes it by engine (an unpacked
+                                                             // array driven per element from the generate loop came out of Vivado
+                                                             // returning engine 0's count for every engine; gate te2a/te2b 2026-10-29)
     assign eng_sel = (TE > 1) ? ctrl[24 +: EW] : '0;
     // A tile start empties the FIFOs: the arithmetic decoder leaves a tile's trailing bytes unread, and the next tile of
     // the same frame must not see them (2026-10-24: test47's third tile decoded from the second tile's tail; every
