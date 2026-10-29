@@ -214,6 +214,17 @@ module tile_engines
             $fflush(te_fd);
         end
     end
+    // each engine's own heartbeat on the same beat: its syntax state machines, its event queue fill and its byte
+    // interface, for a twin that stalls with both engines busy (2026-10-28: test10299 frame 1, engine 0 hungry with all
+    // its bytes pushed, engine 1's FIFO full and its queue unserved)
+    for (genvar e = 0; e < TE; e++) begin : g_ehb
+        always_ff @(posedge clk)
+            if (te_active && te_hb[17:0] == 18'd0) begin
+                $fdisplay(te_fd, "t=%0t e%0d: ts_st %0d blk_st %0d q_count %0d busy %0d in_ready %0d in_valid %0d in_eos %0d done %0d pal_hold %0d",
+                          $time, e, g_e[e].u_ts.st, g_e[e].u_ts.u_blk.st, g_e[e].u_q.count, e_busy[e], e_in_ready[e], in_valid[e], in_eos[e], e_done[e], e_pal_hold[e]);
+                $fflush(te_fd);
+            end
+    end
 `endif
     // the head presented to reconstruction: never the next row's superblock start of an engine still waiting its turn
     assign ev_valid = h_valid[cur] && !(TE > 1 && (new_row || exhausted[cur]));
