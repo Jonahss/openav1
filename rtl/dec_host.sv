@@ -211,6 +211,7 @@ module dec_host
     logic [20:0]    ref_slot_r;
     logic [31:0]    ref_cfg_r;
     logic [215:0]   cur_planes;                              // the current picture's flush layout for intra block copy
+    logic           fmt16;                                  // DMA_CFG bit 0, declared ahead of the core instance that takes it (cur_fmt16)
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
@@ -374,7 +375,6 @@ module dec_host
     logic [15:0]    d_row_beats;                             // beats still to write in this row
     logic [4:0]     d_len, d_cnt;                            // burst beats, beats done in it
     logic [47:0]    d_g0, d_g1;                              // the two sample groups of the beat
-    logic           fmt16;
     logic [1:0]     n_planes;
     assign fmt16 = dma_cfg[0];
     assign n_planes = dma_cfg[5:4];
