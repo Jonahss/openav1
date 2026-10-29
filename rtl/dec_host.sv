@@ -253,7 +253,9 @@ module dec_host
     logic [33:0]        push_d;
     logic               f_ovf, f_badw;                       // overflow (any engine) / partial-strobe push: both STATUS bit 14
     logic [TE-1:0]      f_ovf_e, f_empty_e;
-    logic [FIFO_LW:0]   f_free_e [TE];
+    logic [TE-1:0][FIFO_LW:0] f_free_e;                   // packed: the register read mux indexes it by engine (an unpacked
+                                                             // array driven per element from the generate loop came out of Vivado
+                                                             // returning engine 0's count for every engine; gate te2a/te2b 2026-10-29)
     assign eng_sel = (TE > 1) ? ctrl[24 +: EW] : '0;
     // A tile start empties the FIFOs: the arithmetic decoder leaves a tile's trailing bytes unread, and the next tile of
     // the same frame must not see them (2026-10-24: test47's third tile decoded from the second tile's tail; every
