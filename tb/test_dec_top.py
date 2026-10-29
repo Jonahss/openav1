@@ -154,7 +154,7 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0, rows=N
                 rtl_pal[(got["r"], got["c"])] = ([(got["col_y"] >> (12 * k)) & 0xFFF for k in range(got["pal_y"])],
                                                  [(got["col_u"] >> (12 * k)) & 0xFFF for k in range(got["pal_uv"])],
                                                  [(got["col_v"] >> (12 * k)) & 0xFFF for k in range(got["pal_uv"])])
-        if int(dut.tx_done.value) and int(dut.u_q.tx_ack.value):
+        if int(dut.tx_done.value) and int(dut.u_ts.g_e[0].u_q.tx_ack.value):   # engine 0's event queue (tile_engines since the tiles merge)
             txb += 1
             idle = 0
             if os.environ.get("TS_PERF"):                  # transform size x type histogram (what the profile's ITX_W state ran)
