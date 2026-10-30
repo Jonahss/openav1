@@ -307,7 +307,7 @@ async def dec_host_inter_vs_model(dut):
                 # the frame-state sideband areas (docs/frame-state.md) in the frame's own region, past any picture
                 fs_seq, fsL = HR.fs_regs(th0, flush_base + 0x1800_0000)
                 await write_seq(ax, fs_seq)
-                                await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False, visible=not th0.allow_intrabc)
+                await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False, visible=not th0.allow_intrabc)
             pending = []                                      # the tiles of a tile row go to the engines together
             for k, ti in enumerate(tile_idx):
                 th, data = d.tiles[ti]
