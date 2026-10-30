@@ -144,15 +144,18 @@ module frame_state_w
     assign fs_buf = cur.row[0];
     logic           dma_buf;                                 // the buffer the DMA is reading
     logic [MIW-1:0] c_lo, c_hi;                              // seg word's covered column range
+    logic [MIW-1:0] s_line, m_line;                          // the 4x4 / 8x8 line within the superblock row's buffer
+    assign s_line = s_row - MIW'(cur.row << sb_shift);
+    assign m_line = (m_row - MIW'(cur.row << sb_shift)) >> 1;
     always_comb begin
         c_lo = (MIW'({s_wc, 4'd0}) <= f_c) ? f_c : MIW'({s_wc, 4'd0});
         c_hi = (MIW'({s_wc, 4'd0}) + MIW'(16) < c_end) ? MIW'({s_wc, 4'd0}) + MIW'(16) : c_end;
         sg_be = '0;
         for (int k = 0; k < 16; k++) sg_be[k] = (MIW'({s_wc, 4'd0}) + MIW'(k) >= c_lo) && (MIW'({s_wc, 4'd0}) + MIW'(k) < c_hi);
         sg_wd = {16{5'd0, cur.seg}};
-        sg_wa = SGAW'({fs_buf, s_row[SEGL-1:0], s_wc});
+        sg_wa = SGAW'({fs_buf, s_line[SEGL-1:0], s_wc});
         sg_we = (fs == F_SEG);
-        mv_wa = MVAW'({fs_buf, m_row[MVL:1], m_col[MVB+1:2]});   // 8x8 unit (m_row >> 1, m_col >> 1); two units per word
+        mv_wa = MVAW'({fs_buf, m_line[MVL-1:0], m_col[MVB+1:2]});   // 8x8 unit (line within the row, m_col >> 1); two units per word
         mv_be = m_col[1] ? 8'hF0 : 8'h0F;
         mv_wd = {2{3'd0, cur.mv}};
         mv_we = (fs == F_MV);
