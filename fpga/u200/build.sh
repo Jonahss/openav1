@@ -19,6 +19,8 @@
 #   U200_BOARD_REPO=~/vivado-dl/boards   directory holding au200/<ver>/ (AMD's au200_board_files zip, unpacked)
 #   U200_STRATEGY=        an implementation strategy for a timing-tight build (Performance_ExtraTimingOpt closed the
 #                         decoder at 100 MHz on 2026-10-23; 80 MHz closes under the default strategy)
+#   U200_THREADS=8        general.maxThreads (16 helps synthesis; place/route stay at 8)
+#   U200_INCR=<routed.dcp> incremental implementation from an earlier build of the same configuration
 #   U200_PBLOCK=0         1: keep XDMA in the PCIe clock regions (fpga/u200/pcie_pblock.xdc), for the 100 MHz builds
 #                         whose only misses were the PCIe core's 500 MHz paths into the hard block
 # Output in ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/u200-<tag>/: the Vivado project (proj/), impl_*.rpt, and
