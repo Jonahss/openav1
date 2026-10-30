@@ -419,6 +419,14 @@ class HostDecoder:
             out[i] = v & ((1 << M.ROW_BITS) - 1)
         return out
 
+    def read_cdf_rows_engine(self, e):
+        """Every CDF row of tile engine e's working store (between tile rows), as a list by address (card-state path)."""
+        ctrl0 = self.rd(R_CTRL)
+        self.wr(R_CTRL, (ctrl0 & ~CTRL_ENG_MASK) | (e << CTRL_ENG_SHIFT))
+        rows = self.read_cdf_rows()
+        self.wr(R_CTRL, ctrl0)
+        return [rows[i] for i in range(M.ROWS)]
+
     def write_seq(self, pairs):
         """(address, value) pairs in order, or a prebuilt (addrs, vals) pair of arrays for the fast backend."""
         if self.fast is not None:
@@ -792,14 +800,17 @@ class HostDecoder:
             pos += stride * h
         return mem
 
-    def decode_frames_inter(self, dec, dma, name="stream", pool=8, want_planes=True, model_planes=False):
+    def decode_frames_inter(self, dec, dma, name="stream", pool=8, want_planes=True, model_planes=False, card_state=False):
         """Inter streams on a RING build (docs/picture-memory.md step A; tb/test_dec_host_inter.py is the simulation
         twin): every frame pipelined under the sequencer with CDEF / super-res / LR, flushed into one of `pool`
         frame buffers carved from dma = (base, size, read(offset, n)); the references of later frames are those
         flushed pictures (the slot table points at them). The frame sequence (inherited CDFs, segmentation map,
         motion field) comes from the model, which decodes every frame alongside the RTL (tools/xcheck_frame.py's
         pieces: seconds a frame; the hardware save / project engines are the throughput phase's). Yields
-        (fi, hdr, planes, model planes or None, timings); planes is the flushed picture (None with want_planes=False)."""
+        (fi, hdr, planes, model planes or None, timings); planes is the flushed picture (None with want_planes=False).
+        card_state (docs/frame-state.md, stage A): no model at all; the frame-to-frame state comes back from the card
+        (the MV / segment-id sideband areas written next to each picture, the CDF rows read back after the context
+        tile) and the host only projects the motion field and keeps the slot table. Every frame must fit the image."""
         import recon_model as rm
         import seq_model as sm
         import lf_model as lfm
@@ -810,7 +821,7 @@ class HostDecoder:
         base, size, read = dma[:3]
         write = dma[3] if len(dma) > 3 else None            # (offset, bytes): needed to hand the card a model-decoded reference
         stride = (size // pool) & ~0xFFF
-        seq = sm.SequenceState()
+        seq = sm.CardSequenceState() if card_state else sm.SequenceState()
         store = {}                                       # slot -> dict(planes (model), upscaled_width, frame_height, mem=[(base, stride)...])
         hdr_iter = iter(dec.frame_headers)
         for fi, tile_idx in enumerate(dec.frames):
@@ -826,7 +837,11 @@ class HostDecoder:
                 break
             if ph is None or ph.show_existing_frame:
                 raise HostError(f"{tag}: no parsed frame header")
-            ctx = seq.start_frame(ph)
+            rows_start = None
+            if card_state:
+                ctx, rows_start = seq.start_frame(ph)
+            else:
+                ctx = seq.start_frame(ph)
             hdr0 = dec.tiles[tile_idx[0]][0]
             n_tile_cols = len({dec.tiles[ti][0].MiColStart for ti in tile_idx})
             # A frame the image cannot take (sb128 / non-4:2:0 / several tile columns / intrabc / too large) is decoded by
@@ -841,6 +856,8 @@ class HostDecoder:
                     model_only, why = True, f"reference slot {missing[0]} holds no card picture"
             if model_only and write is None:
                 raise HostError(f"{tag}: {why} (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
+            if model_only and card_state:
+                raise HostError(f"{tag}: {why}: the card-state path (stage A) needs every frame on the card")
             t = {}
             t0 = time.monotonic()
             # the flush target: a frame buffer no live reference slot holds
@@ -862,6 +879,13 @@ class HostDecoder:
                 self.write_seq(motion_field_seq(ctx.motion_field, hdr0.MiRows, hdr0.MiCols))
                 self.write_seq(ref_seq(ph, {s_: dict(planes=e["mem"], upscaled_width=e["upscaled_width"], frame_height=e["frame_height"])
                                            for s_, e in store.items() if e.get("mem")}, hdr0.BitDepth > 8))
+            fsL = None
+            if card_state:
+                # the frame-state sideband areas follow the picture in the same frame buffer
+                fs_seq, fsL = fs_regs(hdr0, target + ((total + 4095) & ~4095))
+                if (fsL["mv_base"] - target) + fsL["total"] > stride:
+                    raise HostError(f"{tag}: picture + frame state ({total} + {fsL['total']} bytes) do not fit a {stride}-byte frame buffer")
+                dseq = dseq + fs_seq
             if not model_only:
                 self.write_seq([(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in dseq])
                 self.frame_pipe_start(hdr0, n_tile_cols)
@@ -869,29 +893,37 @@ class HostDecoder:
             t0 = time.monotonic()
             # the model decodes each tile first (the RTL needs the same CDF rows; the sequence state needs the tile's summary)
             frame = {"refs": store}
-            rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None
+            rows = rows_start if card_state else (M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None)
             summaries = []
-            state = xf.FrameState(hdr0)
+            state = None if card_state else xf.FrameState(hdr0)
+            rows_saved = None                            # card_state: the context tile's final CDF rows, read back after its tile row
             # the tiles of a tile row go to the engines together (run_tile_row; one tile = run_tile)
-            pending, pending_dec = [], None
+            pending, pending_dec, pending_k = [], None, []
             for k, ti in enumerate(tile_idx):
                 th, data = dec.tiles[ti]
-                mdec = rm.FrameRecon(th, data, frame, ctx=ctx)
-                mdec.decode_tile()
-                state.add(mdec)
-                summaries.append(sm.TileSummary(mdec, keep_cdf=(k == ph.context_update_tile_id)))
-                t["model"] = t.get("model", 0) + time.monotonic() - t0
-                t0 = time.monotonic()
+                if not card_state:
+                    mdec = rm.FrameRecon(th, data, frame, ctx=ctx)
+                    mdec.decode_tile()
+                    state.add(mdec)
+                    summaries.append(sm.TileSummary(mdec, keep_cdf=(k == ph.context_update_tile_id)))
+                    t["model"] = t.get("model", 0) + time.monotonic() - t0
+                    t0 = time.monotonic()
+                else:
+                    mdec = None
                 if not model_only:
                     if pending and th.MiRowStart != pending[0][0].MiRowStart:
                         self.run_tile_row(pending, f"{tag} tile row {pending[0][0].MiRowStart}", dec=pending_dec, rows=rows)
-                        pending, pending_dec = [], None
-                    pending.append((th, data))
+                        if card_state and ph.context_update_tile_id in pending_k:
+                            rows_saved = self.read_cdf_rows_engine(pending_k.index(ph.context_update_tile_id))
+                        pending, pending_dec, pending_k = [], None, []
+                    pending.append((th, data)); pending_k.append(k)
                     if pending_dec is None:
                         pending_dec = mdec
                     if k == len(tile_idx) - 1:
                         self.run_tile_row(pending, f"{tag} tile row {pending[0][0].MiRowStart}", dec=pending_dec, rows=rows)
-                        pending, pending_dec = [], None
+                        if card_state and ph.context_update_tile_id in pending_k:
+                            rows_saved = self.read_cdf_rows_engine(pending_k.index(ph.context_update_tile_id))
+                        pending, pending_dec, pending_k = [], None, []
                 t["tiles"] = t.get("tiles", 0) + time.monotonic() - t0
                 t0 = time.monotonic()
                 del mdec
@@ -905,18 +937,35 @@ class HostDecoder:
                 self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             t["read"] = time.monotonic() - t0
             t0 = time.monotonic()
-            # the model's final picture: the reference store (and, if asked, the comparison)
-            mp = frame["planes"]
-            lfm.LoopFilter(hdr0, state, mp).apply()
-            deblocked = mp
-            if cdef_on(hdr0):
-                mp = cdm.Cdef(hdr0, state, mp).apply()
-            if hdr0.use_superres:
-                deblocked = srm.upscale(hdr0, deblocked)
-                mp = srm.upscale(hdr0, mp) if mp is not deblocked else deblocked
-            if any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
-                mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
-            seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+            if card_state:
+                # the frame's state from the card: the sideband areas (once the sideband DMA is idle) and the CDF rows
+                t_fs = time.monotonic()
+                while self.rd(R_FS_STATUS) & 1:
+                    if time.monotonic() - t_fs > self.poll_timeout:
+                        raise HostError(f"{tag}: the frame-state sideband DMA never went idle (FS_STATUS 0x{self.rd(R_FS_STATUS):08x})")
+                refs8, mvs8 = fs_unpack_mv(hdr0, read(fsL["mv_base"] - base, fsL["mv_bytes"]), fsL["mv_rowb"])
+                seg_ids = fs_unpack_seg(hdr0, read(fsL["seg_base"] - base, fsL["seg_bytes"]), fsL["seg_rowb"])
+                if getattr(ph, "disable_frame_end_update_cdf", 0) or rows_saved is None:
+                    import tile_model as tm
+                    rows_end = rows_start if rows_start is not None else M.rows_of(tm.make_cdfs(hdr0.base_q_idx))
+                else:
+                    rows_end = rows_saved
+                seq.end_frame_card(ph, refs8, mvs8, seg_ids, rows_end)
+                mp = None
+                t["state"] = time.monotonic() - t_fs
+            else:
+                # the model's final picture: the reference store (and, if asked, the comparison)
+                mp = frame["planes"]
+                lfm.LoopFilter(hdr0, state, mp).apply()
+                deblocked = mp
+                if cdef_on(hdr0):
+                    mp = cdm.Cdef(hdr0, state, mp).apply()
+                if hdr0.use_superres:
+                    deblocked = srm.upscale(hdr0, deblocked)
+                    mp = srm.upscale(hdr0, mp) if mp is not deblocked else deblocked
+                if any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
+                    mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
+                seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
             if model_only:
                 mem_at = None if host_only else self.upload_picture(write, target - base, target, hdr0, mp, stride, tag)
                 t["upload"] = time.monotonic() - t0

@@ -254,7 +254,7 @@ def main():
 
     def frames():
         if args.inter:
-            for fi, hdr, planes, mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read, stage.write), name=Path(args.stream).name,
+            for fi, hdr, planes, mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read, stage.write), name=Path(args.stream).name, card_state=args.card_state,
                                                                    pool=args.pool, want_planes=bool(out or ref)):
                 t["lf"] = t.get("filters", 0.0)
                 t["tiles"] = t.get("tiles", 0.0) + t.get("model", 0.0) + t.get("setup", 0.0)

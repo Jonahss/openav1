@@ -63,6 +63,7 @@ class TileSummary:
 class Slot:
     def __init__(self):
         self.cdfs = None
+        self.rows = None            # CardSequenceState: the slot's CDF rows as the card keeps them (246-bit ints, by address)
         self.mvs = None             # MfMvs [row][col] -> [row, col] (7.19)
         self.ref_frames = None      # MfRefFrames [row][col]
         self.segment_ids = None
@@ -238,3 +239,50 @@ class SequenceState:
             src = self.slots[h.frame_to_show_map_idx]
             for i in range(NUM_REF_FRAMES):
                 self.slots[i] = src                     # slots are never mutated after end_frame builds them: share
+
+
+class CardSequenceState(SequenceState):
+    """The frame-to-frame state as the card produces it (docs/frame-state.md, stage A): per slot the MV sideband
+    (one {ref, mv} per 8x8 unit, the 7.19 rule applied on the card), the segment-id area and the CDF rows read back
+    from the card's store. No tile is decoded on the host: the projection (7.9) runs here on the card's words, the
+    rest of SequenceState applies unchanged (Slot.ref_frames / mvs hold the card's words at the odd 4x4 positions)."""
+    def start_frame(self, h):
+        """-> (FrameCtx without CDFs, the frame's starting CDF rows or None for the base_q_idx defaults)."""
+        rows = prev_seg = None
+        if h.primary_ref_frame != PRIMARY_REF_NONE:
+            slot = self.slots[h.ref_frame_idx[h.primary_ref_frame]]
+            assert slot.rows is not None, "primary_ref_frame points at a slot no frame has filled"
+            rows = [r & ((1 << 240) - 1) for r in slot.rows]       # load_cdfs: the adaptation counter [245:240] zeroed
+            if h.segmentation_enabled and slot.mi_rows == h.MiRows and slot.mi_cols == h.MiCols and slot.segment_ids is not None:
+                prev_seg = slot.segment_ids
+        motion_field = self.motion_field_estimation(h) if (not h.FrameIsIntra and h.use_ref_frame_mvs) else None
+        return tm.FrameCtx(cdfs=None, prev_segment_ids=prev_seg, motion_field=motion_field), rows
+
+    def end_frame_card(self, h, refs8, mvs8, seg_ids, rows):
+        """refs8 / mvs8: the card's MV sideband (host_regs.fs_unpack_mv); seg_ids: its segment-id area (fs_unpack_seg);
+        rows: the CDF rows to save (the context tile's final rows, or the frame's starting rows when
+        disable_frame_end_update_cdf). 7.19 / 7.20 bookkeeping as SequenceState.end_frame."""
+        R, Cc = h.MiRows, h.MiCols
+        ref_frames = [[NONE] * Cc for _ in range(R)]
+        mvs = [[ZERO_MV] * Cc for _ in range(R)]
+        for y8 in range(R >> 1):
+            rr, mm = refs8[y8], mvs8[y8]
+            for x8 in range(Cc >> 1):
+                if rr[x8]:
+                    ref_frames[2 * y8 + 1][2 * x8 + 1] = rr[x8]
+                    mvs[2 * y8 + 1][2 * x8 + 1] = tuple(mm[x8])
+        if h.segmentation_enabled and not h.segmentation_update_map:
+            prev = self.slots[h.ref_frame_idx[h.primary_ref_frame]].segment_ids if h.primary_ref_frame != PRIMARY_REF_NONE else None
+            seg = prev if prev is not None else [[0] * Cc for _ in range(R)]
+        else:
+            seg = seg_ids
+        for i in range(NUM_REF_FRAMES):
+            if (h.refresh_frame_flags >> i) & 1:
+                s = Slot()
+                s.rows = rows
+                s.mvs, s.ref_frames, s.segment_ids = mvs, ref_frames, seg
+                s.mi_rows, s.mi_cols = R, Cc
+                s.frame_type = h.frame_type
+                s.order_hint = h.order_hint
+                s.saved_order_hints = list(h.OrderHints)
+                self.slots[i] = s
