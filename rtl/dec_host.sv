@@ -606,7 +606,10 @@ module dec_host
                 if (TE > 1 && int'(ri) >= 24 && int'(ri) < 24 + TE)                          // 0x060 + 4e: engine e's columns
                     s_axi_rdata <= {3'd0, col_end_r[(int'(ri) - 24) * MIW +: MIW], 3'd0, col_start_r[(int'(ri) - 24) * MIW +: MIW]};
                 else if (int'(ri) >= 28 && int'(ri) < 28 + TE)                                 // 0x070 + 4e: engine e's FIFO
-                    s_axi_rdata <= {16'(f_free_e[EW'(int'(ri) - 28)]), 14'd0, in_ready[EW'(int'(ri) - 28)], f_empty_e[EW'(int'(ri) - 28)]};
+                    for (int e = 0; e < TE; e++)                                                   // constant indices: Vivado's netlist
+                        if (int'(ri) == 28 + e)                                                    // fed engine 0's count to every
+                            s_axi_rdata <= {16'(f_free_e[e]), 14'd0, in_ready[e], f_empty_e[e]};     // engine's read through a computed
+                                                                                                   // index (gate te2a..te2c 2026-10-29)
                 else
                 case (ri)
                     10'h000: s_axi_rdata <= 32'hA71D_0001;
