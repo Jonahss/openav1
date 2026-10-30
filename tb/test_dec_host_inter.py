@@ -303,6 +303,9 @@ async def dec_host_inter_vs_model(dut):
                 elif ctx.prev_segment_ids is not None or True:
                     pass                                     # intra frames read neither band
                 flush_base = FLUSH_BASE + fi_global * FLUSH_STRIDE
+                # the frame-state sideband areas (docs/frame-state.md) in the frame's own region, past any picture
+                fs_seq, fsL = HR.fs_regs(th0, flush_base + 0x1800_0000)
+                await write_seq(ax, fs_seq)
                 await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False)
             pending = []                                      # the tiles of a tile row go to the engines together
             for k, ti in enumerate(tile_idx):
@@ -337,6 +340,31 @@ async def dec_host_inter_vs_model(dut):
                 stats["model_only"] += 1
             # ---- the frame becomes a reference (model picture + where the flush put it)
             seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+            if not model_only and ph.refresh_frame_flags:
+                # the card's frame-state sideband against the model's saved motion field and segmentation map (7.19 / 7.20)
+                for _ in range(2000):
+                    if not (await ax.read(HR.R_FS_STATUS)) & 1:
+                        break
+                    await ClockCycles(dut.clk, 50)
+                else:
+                    raise AssertionError(f"{tag}: the frame-state sideband DMA never went idle")
+                saved = seq.slots[next(i for i in range(8) if (ph.refresh_frame_flags >> i) & 1)]
+                c_refs, c_mvs = HR.fs_unpack_mv(th0, mem.read(fsL["mv_base"], fsL["mv_bytes"]), fsL["mv_rowb"])
+                bad = []
+                for y8 in range(th0.MiRows >> 1):
+                    for x8 in range(th0.MiCols >> 1):
+                        mr = saved.ref_frames[2 * y8 + 1][2 * x8 + 1]
+                        mm = saved.mvs[2 * y8 + 1][2 * x8 + 1] if mr > 0 else (0, 0)
+                        cr, cm = c_refs[y8][x8], c_mvs[y8][x8]
+                        if (cr != (mr if mr > 0 else 0)) or (cr and tuple(cm) != tuple(mm)):
+                            bad.append((y8, x8, (cr, cm), (mr, mm)))
+                assert not bad, f"{tag}: {len(bad)} MV sideband cells differ (y8, x8, card, model): {bad[:6]}"
+                if not (getattr(ph, "segmentation_enabled", 0) and not getattr(ph, "segmentation_update_map", 1)):
+                    c_seg = HR.fs_unpack_seg(th0, mem.read(fsL["seg_base"], fsL["seg_bytes"]), fsL["seg_rowb"])
+                    badseg = [(r, c, c_seg[r][c], saved.segment_ids[r][c]) for r in range(th0.MiRows) for c in range(th0.MiCols)
+                              if c_seg[r][c] != saved.segment_ids[r][c]]
+                    assert not badseg, f"{tag}: {len(badseg)} segment-id sideband cells differ (row, col, card, model): {badseg[:6]}"
+                stats["fs_frames"] = stats.get("fs_frames", 0) + 1
             planes_ref = TI.ref_planes_of(th0, planes)
             entry = store_entry(th0, ph, planes_ref, None if os.environ.get("TS_REFS_FROM_MODEL") == "1" else layout, fi)
             for i in range(8):

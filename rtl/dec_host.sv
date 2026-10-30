@@ -59,6 +59,12 @@
 //   0x188 DMA_STATUS R  bit 0 busy, 1 done (sticky, cleared by a start), 2 error (a BRESP other than OKAY, sticky),
 //                       3 flush busy (rows queued or being written), [23:16] rows flushed since the last frame start
 //   0x18C DMA_BEATS  R  64-bit beats written by the last run
+//   Frame-state sideband (rtl/frame_state_w.sv, docs/frame-state.md; INTER window builds): per finished superblock row
+//   the card writes its MV words (8x8 units, 2 per beat) and segment ids (4x4 units, one byte each) to DDR:
+//   0x1C0 FS_CFG     RW  bit 0 enable (rows are dropped when clear)
+//   0x1C4 FS_MV_LO / 0x1C8 FS_MV_HI    RW  MV area base (40-bit); 0x1CC FS_MV_ROWB  RW  bytes per 8x8 line (multiple of 8)
+//   0x1D0 FS_SEG_LO / 0x1D4 FS_SEG_HI  RW  segment-id area base;  0x1D8 FS_SEG_ROWB RW  bytes per 4x4 line (multiple of 8)
+//   0x1DC FS_STATUS  R   bit 0 busy, bit 1 error (BRESP), [23:16] rows written since the frame start
 //   0x190 + 0x10 p  plane p (0..2): +0 BASE_LO (bits 31:0), +4 BASE_HI (bits 39:32), +8 STRIDE (bytes),
 //                       +C SIZE {height[31:16], width[15:0]} in samples. Base and stride are multiples of 8 (the
 //                       driver rounds the stride up); a row goes out as 64-bit beats, the last with the byte strobes
@@ -208,6 +214,19 @@ module dec_host
     logic [15:0]    rs_xs [8], rs_ys [8];                    // 7.11.3.3 scale factors per slot (for the current frame)
     logic [20:0]    ref_slot_r;
     logic [31:0]    ref_cfg_r;
+    // frame-state sideband DMA (declared ahead of the dec_top instance)
+    logic           fs_row_ready, fs_done, fs_rd_sel, fs_rd_buf;
+    logic [SBW-1:0] fs_row_idx;
+    logic [12:0]    fs_rd_addr;
+    logic [63:0]    fs_rd_data;
+    logic [31:0]    fs_cfg;
+    logic [39:0]    fs_mv_base, fs_seg_base;
+    logic [15:0]    fs_mv_rowb, fs_seg_rowb;
+    logic           fs_active, fs_err;
+    logic [7:0]     fs_rows;
+    logic [39:0]    fs_addr;
+    logic [4:0]     fs_len, fs_cnt;
+    logic           fs_awvalid, fs_wvalid, fs_bready, fs_wlast;
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
@@ -221,6 +240,7 @@ module dec_host
         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
         .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done, .frame_done_lvl,
         .row_final, .row_final_idx, .flush_done,
+        .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_addr, .fs_rd_buf, .fs_rd_data,
         .lf_start(start[2]), .lf_busy, .lf_done,
         .cdef_start(start[3]), .cdef_busy, .cdef_done,
         .sr_start(start[4]), .sr_buf(ctrl[3]), .sr_busy, .sr_done,
@@ -390,19 +410,20 @@ module dec_host
     assign h_plane_m = dma_busy ? d_plane : haddr[29:28];
     assign h_y_m     = dma_busy ? d_y : haddr[14 +: FBY];
     assign h_x_m     = dma_busy ? ((ds == D_F1) ? d_x + FBX'(4) : d_x) : hx_q;
-    assign m_axi_awaddr  = d_addr;
-    assign m_axi_awlen   = 8'(d_len - 5'd1);
+    assign m_axi_awaddr  = fs_active ? fs_addr : d_addr;
+    assign m_axi_awlen   = fs_active ? 8'(fs_len - 5'd1) : 8'(d_len - 5'd1);
     assign m_axi_awsize  = 3'b011;                           // 8 bytes
     assign m_axi_awburst = 2'b01;                            // INCR
     assign m_axi_awcache = 4'b0011;                          // normal, non-cacheable, bufferable
     assign m_axi_awprot  = 3'b000;
-    assign m_axi_awvalid = (ds == D_AW);
-    assign m_axi_wdata   = fmt16 ? {4'd0, d_g0[47:36], 4'd0, d_g0[35:24], 4'd0, d_g0[23:12], 4'd0, d_g0[11:0]}
+    assign m_axi_awvalid = fs_active ? fs_awvalid : (ds == D_AW);
+    assign m_axi_wdata   = fs_active ? fs_rd_data
+                         : fmt16 ? {4'd0, d_g0[47:36], 4'd0, d_g0[35:24], 4'd0, d_g0[23:12], 4'd0, d_g0[11:0]}
                                  : {d_g1[43:36], d_g1[31:24], d_g1[19:12], d_g1[7:0], d_g0[43:36], d_g0[31:24], d_g0[19:12], d_g0[7:0]};
-    assign m_axi_wstrb   = beat_strb;
-    assign m_axi_wlast   = (d_cnt == d_len - 5'd1);
-    assign m_axi_wvalid  = (ds == D_W);
-    assign m_axi_bready  = (ds == D_B);
+    assign m_axi_wstrb   = fs_active ? 8'hFF : beat_strb;
+    assign m_axi_wlast   = fs_active ? fs_wlast : (d_cnt == d_len - 5'd1);
+    assign m_axi_wvalid  = fs_active ? fs_wvalid : (ds == D_W);
+    assign m_axi_bready  = fs_active ? fs_bready : (ds == D_B);
     // the read channels belong to ref_fetch (dec_top)
 
     always_ff @(posedge clk) begin
@@ -421,7 +442,8 @@ module dec_host
                 fl_rows <= '0;
             end
             case (ds)
-                D_IDLE: if (dma_start) begin
+                D_IDLE: if (fs_active || fs_go) ;              // the sideband engine owns the write channel
+                else if (dma_start) begin
                     dma_busy <= 1'b1; dma_done <= 1'b0; dma_err <= 1'b0; dma_beats <= '0; d_plane <= 2'd0; fl_run <= 1'b0; ds <= D_PLANE;
                 end else if (fl_auto && !fq_empty) begin     // a released superblock row: its lines of every plane
                     dma_busy <= 1'b1; dma_err <= 1'b0; d_plane <= 2'd0; fl_run <= 1'b1; fq_r <= fq_r + 1'b1; ds <= D_PLANE;
@@ -483,6 +505,83 @@ module dec_host
         end
     end
 
+    // ---------------------------------------------------------------- frame-state sideband DMA
+    // A finished superblock row (fs_row_ready from frame_state_w) is written as its 8x8 lines (MV words) then its 4x4
+    // lines (segment bytes), each line at the area's running cursor (rows arrive in order; a frame start rewinds the
+    // cursors to the bases). Lines of a partial last row are clipped to the frame. The engine takes the write channel
+    // between picture runs (fs_active) and answers fs_done when the row's buffer may be refilled.
+    typedef enum logic [2:0] {FS_IDLE, FS_SEL, FS_LINE, FS_AW, FS_RD, FS_W, FS_B, FS_DONE} fsstate_t;
+    fsstate_t       fss;
+    logic           fs_go, fs_pend, fs_sel;
+    logic [SBW-1:0] fs_row;
+    logic [39:0]    fs_mv_cur, fs_seg_cur;                   // the next line's address per area
+    logic [15:0]    fs_lines, fs_line;                       // lines of this row in the current area, the current line
+    logic [15:0]    fs_line_beats;                           // beats per line (rowb / 8)
+    logic [15:0]    fs_beats;                                // beats left in this line
+    logic [12:0]    fs_beat;                                 // beat index within the line (the read port's low bits)
+    logic [15:0]    fs_rows_total;                           // 8x8 or 4x4 lines of the frame in this area
+    logic [15:0]    fs_row_lines;                            // lines per superblock row in this area
+    logic [9:0]     fs_to4k;
+    assign fs_to4k = 10'((13'd4096 - 13'(fs_addr[11:0])) >> 3);
+    assign fs_go = (fss == FS_IDLE) && fs_pend && (ds == D_IDLE) && fs_cfg[0];
+    assign fs_rows_total = fs_sel ? 16'(hdr.mi_rows) : 16'(hdr.mi_rows >> 1);
+    assign fs_row_lines  = fs_sel ? ((SB128 != 0 && hdr.sb128) ? 16'd32 : 16'd16) : ((SB128 != 0 && hdr.sb128) ? 16'd16 : 16'd8);
+    assign fs_rd_sel = fs_sel;
+    assign fs_rd_buf = fs_row[0];
+    assign fs_rd_addr = fs_sel ? 13'({fs_line[4:0], fs_beat[7:0]}) : 13'({fs_line[3:0], fs_beat[8:0]});
+    assign fs_awvalid = (fss == FS_AW);
+    assign fs_wvalid  = (fss == FS_W);
+    assign fs_bready  = (fss == FS_B);
+    assign fs_wlast   = (fs_cnt == fs_len - 5'd1);
+    always_ff @(posedge clk) begin
+        fs_done <= 1'b0;
+        if (!aresetn) begin
+            fss <= FS_IDLE; fs_pend <= 1'b0; fs_active <= 1'b0; fs_sel <= 1'b0; fs_row <= '0; fs_err <= 1'b0; fs_rows <= '0;
+            fs_mv_cur <= '0; fs_seg_cur <= '0; fs_lines <= '0; fs_line <= '0; fs_line_beats <= '0; fs_beats <= '0; fs_beat <= '0;
+            fs_addr <= '0; fs_len <= '0; fs_cnt <= '0;
+        end else begin
+            if (fs_row_ready) begin fs_pend <= 1'b1; fs_row <= fs_row_idx; end
+            if (start[1]) begin fs_mv_cur <= fs_mv_base; fs_seg_cur <= fs_seg_base; fs_rows <= '0; fs_err <= 1'b0; end
+            case (fss)
+                FS_IDLE: if (fs_pend && !fs_cfg[0]) begin fs_pend <= 1'b0; fs_done <= 1'b1; end   // disabled: drop the row
+                         else if (fs_go) begin fs_active <= 1'b1; fs_pend <= 1'b0; fs_sel <= 1'b0; fss <= FS_SEL; end
+                FS_SEL: begin                                // the lines of this row in area fs_sel (clipped to the frame)
+                    fs_line <= '0;
+                    fs_lines <= (16'(fs_row) * fs_row_lines + fs_row_lines <= fs_rows_total) ? fs_row_lines
+                              : (16'(fs_row) * fs_row_lines < fs_rows_total) ? fs_rows_total - 16'(fs_row) * fs_row_lines : 16'd0;
+                    fs_line_beats <= (fs_sel ? fs_seg_rowb : fs_mv_rowb) >> 3;
+                    fss <= FS_LINE;
+                end
+                FS_LINE: begin
+                    if (fs_line >= fs_lines || fs_line_beats == 16'd0) begin
+                        if (fs_sel) fss <= FS_DONE; else begin fs_sel <= 1'b1; fss <= FS_SEL; end
+                    end else begin
+                        fs_addr <= fs_sel ? fs_seg_cur : fs_mv_cur; fs_beats <= fs_line_beats; fs_beat <= '0; fss <= FS_AW;
+                        if (fs_sel) fs_seg_cur <= fs_seg_cur + 40'(fs_seg_rowb); else fs_mv_cur <= fs_mv_cur + 40'(fs_mv_rowb);
+                    end
+                end
+                FS_AW: begin                                 // a burst: up to 16 beats, not across 4 KB
+                    fs_len <= (fs_beats < 16'd16) ? ((fs_to4k < 10'(fs_beats)) ? 5'(fs_to4k) : 5'(fs_beats))
+                                                  : ((fs_to4k < 10'd16) ? 5'(fs_to4k) : 5'd16);
+                    fs_cnt <= '0;
+                    if (m_axi_awready) fss <= FS_RD;
+                end
+                FS_RD: fss <= FS_W;                          // the read port answers the beat's address a cycle later
+                FS_W: if (m_axi_wready) begin
+                    fs_addr <= fs_addr + 40'd8; fs_beat <= fs_beat + 13'd1; fs_beats <= fs_beats - 16'd1; fs_cnt <= fs_cnt + 5'd1;
+                    fss <= fs_wlast ? FS_B : FS_RD;
+                end
+                FS_B: if (m_axi_bvalid) begin
+                    if (m_axi_bresp[1]) fs_err <= 1'b1;
+                    if (fs_beats == 16'd0) begin fs_line <= fs_line + 16'd1; fss <= FS_LINE; end
+                    else fss <= FS_AW;
+                end
+                FS_DONE: begin fs_active <= 1'b0; fs_done <= 1'b1; fs_rows <= fs_rows + 8'd1; fss <= FS_IDLE; end
+                default: fss <= FS_IDLE;
+            endcase
+        end
+    end
+
     // ---------------------------------------------------------------- AXI4-Lite slave
     logic        aw_v, w_v, ar_v;
     logic [11:0] aw_a, ar_a;
@@ -515,6 +614,7 @@ module dec_host
             start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0; mf_we <= 1'b0; sp_we <= 1'b0;
             mf_addr_r <= '0; sp_addr_r <= '0; sp_d0 <= '0; sp_d1 <= '0; mf_wd <= '0;
             dma_cfg <= '0; dma_start <= 1'b0;
+            fs_cfg <= '0; fs_mv_base <= '0; fs_seg_base <= '0; fs_mv_rowb <= '0; fs_seg_rowb <= '0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
             for (int sl = 0; sl < 8; sl++) begin rs_w[sl] <= '0; rs_h[sl] <= '0; rs_xs[sl] <= 16'd16384; rs_ys[sl] <= 16'd16384; for (int pl = 0; pl < 3; pl++) begin rs_base[sl][pl] <= '0; rs_stride[sl][pl] <= '0; end end
             ref_slot_r <= '0; ref_cfg_r <= '0;
@@ -546,6 +646,13 @@ module dec_host
                 end
                 case (wi)
                     10'h060: dma_cfg <= strb(dma_cfg, w_d, w_s);                                              // 0x180
+                    10'h070: fs_cfg <= strb(fs_cfg, w_d, w_s);                                                // 0x1C0
+                    10'h071: fs_mv_base[31:0] <= strb(fs_mv_base[31:0], w_d, w_s);                            // 0x1C4
+                    10'h072: fs_mv_base[39:32] <= w_d[7:0];                                                   // 0x1C8
+                    10'h073: fs_mv_rowb <= w_d[15:0];                                                         // 0x1CC
+                    10'h074: fs_seg_base[31:0] <= strb(fs_seg_base[31:0], w_d, w_s);                          // 0x1D0
+                    10'h075: fs_seg_base[39:32] <= w_d[7:0];                                                  // 0x1D4
+                    10'h076: fs_seg_rowb <= w_d[15:0];                                                        // 0x1D8
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
                     // 0x300 .. 0x310: the inter frame bands (motion field, previous segment ids); no-ops at INTER = 0
                     10'h0C0: if (INTER != 0) mf_addr_r <= strb(mf_addr_r, w_d, w_s);                          // 0x300
@@ -611,6 +718,14 @@ module dec_host
                     10'h060: s_axi_rdata <= dma_cfg;
                     10'h062: s_axi_rdata <= {8'd0, fl_rows, 12'd0, (dma_busy && fl_run) || !fq_empty, dma_err, dma_done, dma_busy};
                     10'h063: s_axi_rdata <= dma_beats;
+                    10'h070: s_axi_rdata <= fs_cfg;
+                    10'h071: s_axi_rdata <= fs_mv_base[31:0];
+                    10'h072: s_axi_rdata <= {24'd0, fs_mv_base[39:32]};
+                    10'h073: s_axi_rdata <= {16'd0, fs_mv_rowb};
+                    10'h074: s_axi_rdata <= fs_seg_base[31:0];
+                    10'h075: s_axi_rdata <= {24'd0, fs_seg_base[39:32]};
+                    10'h076: s_axi_rdata <= {16'd0, fs_seg_rowb};
+                    10'h077: s_axi_rdata <= {8'd0, fs_rows, 14'd0, fs_err, fs_active || fs_pend};
                     10'h0C0: s_axi_rdata <= mf_addr_r;
                     10'h180: s_axi_rdata <= {11'd0, ref_slot_r};
                     10'h181: s_axi_rdata <= ref_cfg_r;

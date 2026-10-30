@@ -35,7 +35,8 @@ IHDR_FIELDS = [  # syn_pkg::ihdr_t order (MSB first)
     ("use_ref_frame_mvs", 1), ("enable_dual_filter", 1), ("enable_interintra_compound", 1), ("enable_masked_compound", 1),
     ("enable_jnt_comp", 1), ("enable_order_hint", 1), ("order_hint_bits", 4), ("order_hint", 8), ("order_hints", 56),
     ("ref_sign_bias", 7), ("ref_scaled", 7), ("gm_type", 14), ("gm_params", 1008), ("seg_ref_en", 8), ("seg_ref_data", 24),
-    ("seg_globalmv_en", 8), ("seg_update_map", 1), ("seg_temporal_update", 1)]
+    ("seg_globalmv_en", 8), ("seg_update_map", 1), ("seg_temporal_update", 1),
+    ("ref_dist_neg", 7)]
 LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
     ("frame_width", PXW), ("frame_height", PXW), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
     ("ref_deltas", 56), ("mode_deltas", 14), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
@@ -100,6 +101,15 @@ def ihdr_vals(th):
         sg |= int(bool(th.FeatureEnabled[s][7])) << s
     v.update(seg_ref_en=sr_en, seg_ref_data=sr_d, seg_globalmv_en=sg,
              seg_update_map=int(getattr(th, "segmentation_update_map", 1)), seg_temporal_update=int(getattr(th, "segmentation_temporal_update", 0)))
+    # 7.19: the frame-state writer saves a block's reference only when its relative distance to this frame is negative
+    dn = 0
+    if getattr(th, "enable_order_hint", 0):
+        m = 1 << (th.OrderHintBits - 1)
+        for i in range(7):
+            diff = th.OrderHints[i + 1] - th.order_hint
+            if (diff & (m - 1)) - (diff & m) < 0:
+                dn |= 1 << i
+    v.update(ref_dist_neg=dn)
     z.update(v)
     return z
 
@@ -182,6 +192,8 @@ R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 R_IH = 0x200                                 # ihdr_t, 64 words
 R_MF_ADDR, R_MF_DATA, R_SP_ADDR, R_SP_DATA0, R_SP_DATA1 = 0x300, 0x304, 0x308, 0x30C, 0x310   # inter frame bands
 R_SLOT, R_REF_SLOT, R_REF_CFG = 0x400, 0x600, 0x604        # reference slot table (0x40 per slot, 0x10 per plane), ref_frame_idx, fmt16
+R_FS_CFG, R_FS_MV_LO, R_FS_MV_HI, R_FS_MV_ROWB = 0x1C0, 0x1C4, 0x1C8, 0x1CC   # frame-state sideband (rtl/frame_state_w.sv)
+R_FS_SEG_LO, R_FS_SEG_HI, R_FS_SEG_ROWB, R_FS_STATUS = 0x1D0, 0x1D4, 0x1D8, 0x1DC
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
 START_TILE, START_FRAME, START_LF = 1, 2, 4
@@ -267,6 +279,53 @@ def dma_regs(hdr, base, visible=True):
         r = R_DMA_PLANE + 0x10 * p
         seq += [(r, b & 0xFFFFFFFF), (r + 4, b >> 32), (r + 8, stride), (r + 12, (H << 16) | W)]
     return seq, planes, total
+
+
+def fs_layout(hdr, base):
+    """The frame-state sideband areas of a frame at base (docs/frame-state.md): the MV words (one per 8x8 unit of the
+    MiRows >> 1 x MiCols >> 1 field, lines padded to 8 bytes) then the segment ids (one byte per 4x4 unit, lines padded
+    to 8 bytes). Returns dict(mv_base, mv_rowb, mv_bytes, seg_base, seg_rowb, seg_bytes, total)."""
+    w8, h8 = hdr.MiCols >> 1, hdr.MiRows >> 1
+    mv_rowb = (w8 * 4 + 7) & ~7
+    mv_bytes = mv_rowb * h8
+    seg_rowb = (hdr.MiCols + 7) & ~7
+    seg_bytes = seg_rowb * hdr.MiRows
+    seg_base = (base + mv_bytes + 4095) & ~4095
+    return dict(mv_base=base, mv_rowb=mv_rowb, mv_bytes=mv_bytes, seg_base=seg_base, seg_rowb=seg_rowb, seg_bytes=seg_bytes,
+                total=seg_base + seg_bytes - base)
+
+
+def fs_regs(hdr, base, enable=True):
+    """The register writes that point the sideband DMA at the areas of fs_layout(hdr, base)."""
+    L = fs_layout(hdr, base)
+    seq = [(R_FS_MV_LO, L["mv_base"] & 0xFFFFFFFF), (R_FS_MV_HI, L["mv_base"] >> 32), (R_FS_MV_ROWB, L["mv_rowb"]),
+           (R_FS_SEG_LO, L["seg_base"] & 0xFFFFFFFF), (R_FS_SEG_HI, L["seg_base"] >> 32), (R_FS_SEG_ROWB, L["seg_rowb"]),
+           (R_FS_CFG, int(enable))]
+    return seq, L
+
+
+def fs_unpack_mv(hdr, data, rowb):
+    """The MV area bytes -> (ref_frames, mvs) per 8x8 unit: ref 0 = none (spec NONE), else LAST_FRAME..ALTREF_FRAME;
+    mv = (row, col) in 1/8 samples."""
+    w8, h8 = hdr.MiCols >> 1, hdr.MiRows >> 1
+    refs, mvs = [], []
+    for y8 in range(h8):
+        rr, mm = [], []
+        for x8 in range(w8):
+            w = int.from_bytes(data[y8 * rowb + 4 * x8: y8 * rowb + 4 * x8 + 4], "little")
+            ref = w & 7
+            col = (w >> 3) & 0x1FFF
+            row = (w >> 16) & 0x1FFF
+            col -= 0x2000 if col & 0x1000 else 0
+            row -= 0x2000 if row & 0x1000 else 0
+            rr.append(ref); mm.append((row, col))
+        refs.append(rr); mvs.append(mm)
+    return refs, mvs
+
+
+def fs_unpack_seg(hdr, data, rowb):
+    """The segment-id area bytes -> SegmentIds[row][col] per 4x4 unit."""
+    return [list(data[r * rowb: r * rowb + hdr.MiCols]) for r in range(hdr.MiRows)]
 
 
 def unpack_dma(hdr, data, planes):
