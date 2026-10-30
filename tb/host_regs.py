@@ -476,7 +476,7 @@ class HostDecoder:
         if ident != ID_VALUE:
             raise HostError(f"ID register reads 0x{ident:08x}, expected 0x{ID_VALUE:08x}: no decoder at this address?")
         cfg = self.rd(R_CFG)
-        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1, sb128=bool(cfg >> 1 & 1),
+        self.geom = dict(fbx=cfg >> 16 & 0xFF, fby=cfg >> 8 & 0xFF, lanes=cfg >> 4 & 0xF, uram=cfg & 1, sb128=bool(cfg >> 1 & 1), eos_per_engine=bool(cfg >> 2 & 1),
                          te=max(1, cfg >> 24 & 0xF))
         return self.geom
 
@@ -601,9 +601,15 @@ class HostDecoder:
                             self.wr(R_DATA1, c[0]); q += 1
                 pos[e] = end
                 progressed = True
+                if end >= len(data) and getattr(self, "geom", {}).get("eos_per_engine"):   # this engine's stream ends now
+                    self.wr(R_CTRL, ctrl0 | (e << CTRL_ENG_SHIFT) | CTRL_EOS)
             if not progressed and time.monotonic() - t0 > self.poll_timeout:
                 raise HostError(f"{tag}: no engine FIFO freed a word")
-        self.wr(R_CTRL, ctrl0 | CTRL_EOS)
+        if getattr(self, "geom", {}).get("eos_per_engine"):
+            for e in range(len(tiles)):
+                self.wr(R_CTRL, ctrl0 | (e << CTRL_ENG_SHIFT) | CTRL_EOS)   # (already out with each engine's last bytes)
+        else:
+            self.wr(R_CTRL, ctrl0 | CTRL_EOS)                             # older images: one global end of stream
         st = self.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, f"{tag}: tile row done")
         self.wr(R_TILE_ENG, 0)
         if st & ST_UNSUP:
@@ -699,10 +705,10 @@ class HostDecoder:
 
     @staticmethod
     def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None, sb128=False, te=1):
-        """Whether a window build takes the frame: sb64, 4:2:0 or mono, one tile column, no intra block copy, and (when
+        """Whether a window build takes the frame: sb64, 4:2:0 or mono, at most TE tile columns, and (when
         the image's geometry is known: identify()) a picture no wider than 1 << FBX and no taller than 1 << FBY; sb128 builds (CFG bit 1) take 128x128 superblocks."""
         return (sb128 or not hdr.use_128x128_superblock) and (hdr.NumPlanes == 1 or (hdr.subsampling_x and hdr.subsampling_y)) \
-            and n_tile_cols <= max(1, te) and not hdr.allow_intrabc \
+            and n_tile_cols <= max(1, te) \
             and (fbx is None or hdr.UpscaledWidth <= (1 << fbx)) and (fby is None or hdr.FrameHeight <= (1 << fby))
 
     def frame_pipe_start(self, hdr, n_tile_cols):
@@ -865,7 +871,7 @@ class HostDecoder:
             target = next((base + k * stride for k in range(pool) if base + k * stride not in busy), None)
             if target is None:
                 raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
-            dseq, layout, total = dma_regs(hdr0, target, True)
+            dseq, layout, total = dma_regs(hdr0, target, not hdr0.allow_intrabc)   # an intrabc frame flushes its whole decoded (MI) area: its own copy source
             self.last_target = target                    # where this frame's picture lands (tools/kv260/decode.py --show)
             # A model-decoded picture bigger than a pool buffer (an 8K-class frame) stays on the host: no card frame can
             # take a picture that size as a reference anyway, and a frame that still names it goes to the model as well.

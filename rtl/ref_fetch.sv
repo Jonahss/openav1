@@ -27,6 +27,8 @@ module ref_fetch #(
     input  logic signed [16:0] req_y0,
     input  logic [6:0]    req_w,                // 2 .. 64
     input  logic [6:0]    req_h,
+    input  logic [6:0]    req_r_lo,             // patch rows [r_lo, r_hi) to produce; r_hi = 0: all h + 7 rows
+    input  logic [6:0]    req_r_hi,
     output logic          done,                 // 1-cycle pulse: the patch is complete
     output logic          err,                  // sticky: a read response other than OKAY
     // ---- AXI4 read master ----
@@ -141,11 +143,12 @@ module ref_fetch #(
                 nw = 5'((req_w + 7'd3) >> 2) + 5'd2;
                 q_lst <= req_lst; q_fmt16 <= req_fmt16; q_base <= req_base; q_stride <= req_stride;
                 q_lastx <= req_lastx; q_lasty <= req_lasty; q_x0 <= req_x0; q_y0 <= req_y0; q_h <= req_h;
-                q_nw <= nw; q_nrow <= req_h + 7'd7;
+                q_nw <= nw; q_nrow <= (req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi;
                 cx_lo <= clip_col(18'(req_x0) - 18'sd3, req_lastx);
                 cx_hi <= clip_col(18'(req_x0) - 18'sd3 + 18'(signed'({13'd0, nw})) * 18'sd4 - 18'sd1, req_lastx);
-                r <= 7'd0;
-                st <= F_ROW;
+                r <= req_r_lo;
+                if (req_r_lo < ((req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi)) st <= F_ROW;
+                else done <= 1'b1;                                            // nothing to produce
             end
             F_ROW: begin
                 logic signed [17:0] yy;

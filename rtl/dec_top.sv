@@ -57,6 +57,8 @@ module dec_top
     input  logic [255:0]      ref_dims,            // slot s: {frame height[15:0], upscaled width[15:0]} at [32s +: 32]
     input  logic [255:0]      ref_scales,          // slot s: {yScale[15:0], xScale[15:0]} (7.11.3.3, 16384 = unscaled) at [32s +: 32]
     input  logic              ref_fmt16,
+    input  logic [215:0]      cur_planes,          // the current picture's flush layout (dec_host DMA plane registers): intra block copy
+    input  logic              cur_fmt16,
     output logic [39:0]       m_axi_araddr,
     output logic [7:0]        m_axi_arlen,
     output logic [2:0]        m_axi_arsize,
@@ -172,7 +174,7 @@ module dec_top
     logic [MIW-1:0] rc_col_start, rc_col_end;
     hdr_t hdr_rc;
     always_comb begin hdr_rc = hdr; hdr_rc.mi_col_start = rc_col_start; hdr_rc.mi_col_end = rc_col_end; end
-    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
+    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER), .FRAME_WIN(FRAME_WIN)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
                                             .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
@@ -181,7 +183,7 @@ module dec_top
                                             .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata, .fb_rdata4,
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
                                             .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
-                                            .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .mc_unsup,
+                                            .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .cur_planes, .cur_fmt16, .mc_unsup,
                                             .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot,
                                             .m_axi_arvalid, .m_axi_arready, .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready);
 
@@ -481,7 +483,7 @@ module dec_top
     logic win_unsup;
     always_ff @(posedge clk) begin
         if (rst || frame_start) win_unsup <= 1'b0;
-        else if ((FRAME_WIN > 0) && tile_busy && ((hdr.sb128 && SB128 == 0) || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || hdr.allow_intrabc || !pipe_en
+        else if ((FRAME_WIN > 0) && tile_busy && ((hdr.sb128 && SB128 == 0) || (!hdr.mono && !(hdr.ssx && hdr.ssy)) || !pipe_en
                                                   || 32'(n_tile_cols) > TE)) win_unsup <= 1'b1;   // more tile columns than engines
         // (a core build asked for CDEF / LR is the host software's business: HostDecoder.check_core_build; an RTL flag here
         // broke the core build's lf-stage suites on 2026-10-24, whose frames carry CDEF headers the host never starts)
