@@ -2,7 +2,7 @@
 # Nightly regression (run from cron on the batch host): RTL syntax decoder on generated streams, the full decoder
 # on generated frames, and the corpus through the whole RTL pipeline compared with dav1d's pictures (model-free).
 # Writes logs/nightly-<date>.txt with one line per suite and exits non-zero on any failure.
-# Usage: tools/nightly.sh [tag]      (needs bootstrap.sh done and refout/ populated by tools/regress.sh once)
+# Usage: [NIGHTLY_ONLY=regex] tools/nightly.sh [tag]   (needs bootstrap.sh done and refout/ populated by tools/regress.sh once)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source env.sh
@@ -11,8 +11,9 @@ out="logs/nightly-$tag.txt"
 mkdir -p logs
 : > "$out"
 rc=0
-run() {  # name, env..., -- command
+run() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the suites whose name matches: reruns after a fix)
   local name="$1"; shift
+  [[ -n "${NIGHTLY_ONLY:-}" && ! "$name" =~ ${NIGHTLY_ONLY} ]] && return 0
   local t0=$(date +%s)
   local log="logs/nightly-$tag-$name.log"
   if env "$@" > "$log" 2>&1 && grep -q "OK:" "$log"; then
