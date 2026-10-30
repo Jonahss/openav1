@@ -35,9 +35,11 @@ module frame_state_w
     output logic          fs_row_ready,
     output logic [SBW-1:0] fs_row_idx,
     input  logic          fs_done,
-    // read port for the DMA (registered, 1 cycle): beat index within the row's buffer; sel 0 = MV, 1 = segment ids
+    // read port for the DMA (registered, 1 cycle): sel 0 = MV (8x8 lines, one 64-bit word per beat), 1 = segment ids
+    // (4x4 lines, two beats per 128-bit word); line within the row's buffer, beat within the line
     input  logic          fs_rd_sel,
-    input  logic [12:0]   fs_rd_addr,         // MV: {line[3:0], beat}; seg: {line[4:0], beat}
+    input  logic [4:0]    fs_rd_line,
+    input  logic [8:0]    fs_rd_beat,
     input  logic          fs_rd_buf,
     output logic [63:0]   fs_rd_data
 );
@@ -64,9 +66,9 @@ module frame_state_w
     end
     // DMA reads: MV beat = one 64-bit word; seg beat = half of a 128-bit word
     logic rd_sel_q, rd_half_q;
-    assign mv_ra = MVAW'({fs_rd_buf, fs_rd_addr[MVL+MVB-1:0]});
-    assign sg_ra = SGAW'({fs_rd_buf, fs_rd_addr[SEGL+SEGW:1]});
-    always_ff @(posedge clk) begin rd_sel_q <= fs_rd_sel; rd_half_q <= fs_rd_addr[0]; end
+    assign mv_ra = MVAW'({fs_rd_buf, fs_rd_line[MVL-1:0], fs_rd_beat[MVB-1:0]});
+    assign sg_ra = SGAW'({fs_rd_buf, fs_rd_line[SEGL-1:0], fs_rd_beat[SEGW:1]});
+    always_ff @(posedge clk) begin rd_sel_q <= fs_rd_sel; rd_half_q <= fs_rd_beat[0]; end
     assign fs_rd_data = rd_sel_q ? (rd_half_q ? sg_rd[127:64] : sg_rd[63:0]) : mv_rd;
 
     // ---------------------------------------------------------------- the block queue (row-end markers ride along)

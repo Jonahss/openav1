@@ -219,7 +219,8 @@ module dec_host
     // frame-state sideband DMA (declared ahead of the dec_top instance)
     logic           fs_row_ready, fs_done, fs_rd_sel, fs_rd_buf;
     logic [SBW-1:0] fs_row_idx;
-    logic [12:0]    fs_rd_addr;
+    logic [4:0]     fs_rd_line;
+    logic [8:0]     fs_rd_beat;
     logic [63:0]    fs_rd_data;
     logic [31:0]    fs_cfg;
     logic [39:0]    fs_mv_base, fs_seg_base;
@@ -244,7 +245,7 @@ module dec_host
         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
         .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done, .frame_done_lvl,
         .row_final, .row_final_idx, .flush_done,
-        .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_addr, .fs_rd_buf, .fs_rd_data,
+        .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_line, .fs_rd_beat, .fs_rd_buf, .fs_rd_data,
         .lf_start(start[2]), .lf_busy, .lf_done,
         .cdef_start(start[3]), .cdef_busy, .cdef_done,
         .sr_start(start[4]), .sr_buf(ctrl[3]), .sr_busy, .sr_done,
@@ -518,7 +519,7 @@ module dec_host
     // lines (segment bytes), each line at the area's running cursor (rows arrive in order; a frame start rewinds the
     // cursors to the bases). Lines of a partial last row are clipped to the frame. The engine takes the write channel
     // between picture runs (fs_active) and answers fs_done when the row's buffer may be refilled.
-    typedef enum logic [2:0] {FS_IDLE, FS_SEL, FS_LINE, FS_AW, FS_RD, FS_W, FS_B, FS_DONE} fsstate_t;
+    typedef enum logic [3:0] {FS_IDLE, FS_SEL, FS_LINE, FS_LEN, FS_AW, FS_RD, FS_W, FS_B, FS_DONE} fsstate_t;
     fsstate_t       fss;
     logic           fs_go, fs_pend, fs_sel;
     logic [SBW-1:0] fs_row;
@@ -526,7 +527,7 @@ module dec_host
     logic [15:0]    fs_lines, fs_line;                       // lines of this row in the current area, the current line
     logic [15:0]    fs_line_beats;                           // beats per line (rowb / 8)
     logic [15:0]    fs_beats;                                // beats left in this line
-    logic [12:0]    fs_beat;                                 // beat index within the line (the read port's low bits)
+    logic [12:0]    fs_beat;                                 // beat index within the line (the writer's read port)
     logic [15:0]    fs_rows_total;                           // 8x8 or 4x4 lines of the frame in this area
     logic [15:0]    fs_row_lines;                            // lines per superblock row in this area
     logic [9:0]     fs_to4k;
@@ -536,7 +537,8 @@ module dec_host
     assign fs_row_lines  = fs_sel ? ((SB128 != 0 && hdr.sb128) ? 16'd32 : 16'd16) : ((SB128 != 0 && hdr.sb128) ? 16'd16 : 16'd8);
     assign fs_rd_sel = fs_sel;
     assign fs_rd_buf = fs_row[0];
-    assign fs_rd_addr = fs_sel ? 13'({fs_line[4:0], fs_beat[7:0]}) : 13'({fs_line[3:0], fs_beat[8:0]});
+    assign fs_rd_line = fs_line[4:0];
+    assign fs_rd_beat = fs_beat[8:0];
     assign fs_awvalid = (fss == FS_AW);
     assign fs_wvalid  = (fss == FS_W);
     assign fs_bready  = (fss == FS_B);
@@ -564,16 +566,17 @@ module dec_host
                     if (fs_line >= fs_lines || fs_line_beats == 16'd0) begin
                         if (fs_sel) fss <= FS_DONE; else begin fs_sel <= 1'b1; fss <= FS_SEL; end
                     end else begin
-                        fs_addr <= fs_sel ? fs_seg_cur : fs_mv_cur; fs_beats <= fs_line_beats; fs_beat <= '0; fss <= FS_AW;
+                        fs_addr <= fs_sel ? fs_seg_cur : fs_mv_cur; fs_beats <= fs_line_beats; fs_beat <= '0; fss <= FS_LEN;
                         if (fs_sel) fs_seg_cur <= fs_seg_cur + 40'(fs_seg_rowb); else fs_mv_cur <= fs_mv_cur + 40'(fs_mv_rowb);
                     end
                 end
-                FS_AW: begin                                 // a burst: up to 16 beats, not across 4 KB
-                    fs_len <= (fs_beats < 16'd16) ? ((fs_to4k < 10'(fs_beats)) ? 5'(fs_to4k) : 5'(fs_beats))
+                FS_LEN: begin                                // the burst length before awvalid (awlen must be stable with it):
+                    fs_len <= (fs_beats < 16'd16) ? ((fs_to4k < 10'(fs_beats)) ? 5'(fs_to4k) : 5'(fs_beats))   // up to 16 beats, not across 4 KB
                                                   : ((fs_to4k < 10'd16) ? 5'(fs_to4k) : 5'd16);
                     fs_cnt <= '0;
-                    if (m_axi_awready) fss <= FS_RD;
+                    fss <= FS_AW;
                 end
+                FS_AW: if (m_axi_awready) fss <= FS_RD;
                 FS_RD: fss <= FS_W;                          // the read port answers the beat's address a cycle later
                 FS_W: if (m_axi_wready) begin
                     fs_addr <= fs_addr + 40'd8; fs_beat <= fs_beat + 13'd1; fs_beats <= fs_beats - 16'd1; fs_cnt <= fs_cnt + 5'd1;
@@ -582,7 +585,7 @@ module dec_host
                 FS_B: if (m_axi_bvalid) begin
                     if (m_axi_bresp[1]) fs_err <= 1'b1;
                     if (fs_beats == 16'd0) begin fs_line <= fs_line + 16'd1; fss <= FS_LINE; end
-                    else fss <= FS_AW;
+                    else fss <= FS_LEN;
                 end
                 FS_DONE: begin fs_active <= 1'b0; fs_done <= 1'b1; fs_rows <= fs_rows + 8'd1; fss <= FS_IDLE; end
                 default: fss <= FS_IDLE;

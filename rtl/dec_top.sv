@@ -99,7 +99,8 @@ module dec_top
     output logic [SBW-1:0]    fs_row_idx,
     input  logic              fs_done,
     input  logic              fs_rd_sel,
-    input  logic [12:0]       fs_rd_addr,
+    input  logic [4:0]        fs_rd_line,
+    input  logic [8:0]        fs_rd_beat,
     input  logic              fs_rd_buf,
     output logic [63:0]       fs_rd_data,
     // in-loop filters, run by software after all tiles of the frame (pipe_en = 0): deblocking (7.14)
@@ -473,7 +474,7 @@ module dec_top
     if (INTER != 0 && FRAME_WIN > 0) begin : g_fsw
         frame_state_w #(.FBX(FBX), .SB128(SB128)) u_fsw (.clk, .rst, .hdr, .ihdr, .frame_start, .tile_done,
             .ev_pop(ev_valid_rc && ev_pop), .ev_kind, .ev_blk, .fs_hold,
-            .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_addr, .fs_rd_buf, .fs_rd_data);
+            .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_line, .fs_rd_beat, .fs_rd_buf, .fs_rd_data);
     end else begin : g_nofsw
         assign fs_hold = 1'b0; assign fs_row_ready = 1'b0; assign fs_row_idx = '0; assign fs_rd_data = '0;
     end
