@@ -3,6 +3,7 @@
 transcript: the OBU parser runs on the PS, and tb/host_regs.py drives the decoder's register file over /dev/mem
 exactly as the simulation test does.
     sudo tools/kv260/decode.py streams/synth/natural_lf_only_8bit.ivf -o out.yuv [--ref refout/natural_lf_only_8bit.yuv]
+    python tools/kv260/decode.py clip.ivf --xdma 0 --inter --y4m clip.y4m      # the U200: a playable file (fpga/u200/stream_to_video.sh)
 Output is planar, visible size, 8-bit as bytes and >8-bit as 16-bit little-endian (dav1d's `-o x.yuv` layout), shown
 frames in output order; --ref compares every sample against such a file and reports the mismatches. --stage recon
 skips the loop filter (and then the picture is the reconstruction, not dav1d's). Exit status 0 when every frame
@@ -157,6 +158,8 @@ def main():
     ap.add_argument("stream", help=".ivf, .obu (Annex B) or raw OBU stream")
     ap.add_argument("-o", "--out", help="raw planar output (every shown frame, output order)")
     ap.add_argument("--ref", help="reference .yuv (dav1d -o layout, same frames) to compare against")
+    ap.add_argument("--y4m", help="write every shown frame as YUV4MPEG2 (constant picture size): ffplay x.y4m, or ffmpeg -i x.y4m out.mp4")
+    ap.add_argument("--fps", help="frame rate written into the .y4m header (default: the IVF header's rate/scale, else 30)")
     ap.add_argument("--base", type=lambda x: int(x, 0), default=0xA0000000)
     ap.add_argument("--stage", choices=("lf", "recon"), default="lf")
     ap.add_argument("--frames", type=int, help="stop after this many coded frames")
@@ -196,6 +199,15 @@ def main():
         d.feed_temporal_unit(data)
     shown = d.shown_frames()                     # coded-frame index of each output picture, in output order
     out = open(args.out, "wb") if args.out else None
+    y4m = open(args.y4m, "wb") if args.y4m else None
+    y4m_hdr = None                               # the first shown frame's (width, height, colour space) once written
+    fps = args.fps
+    if fps is None and args.stream.endswith(".ivf"):
+        rate, scale = int.from_bytes(data[16:20], "little"), int.from_bytes(data[20:24], "little")
+        fps = f"{rate}:{scale}" if rate and scale else None
+    fps = fps or "30"
+    if ":" not in fps:
+        fps = f"{fps}:1"
     ref = Path(args.ref).read_bytes() if args.ref else None
     ref_off = 0
     ref_frames = {}                              # coded frame -> reference byte range, in output order
@@ -287,12 +299,27 @@ def main():
             print(line, flush=True)
             if out is not None and fi in shown:
                 write_planes(out, hdr, planes)
+            if y4m is not None and fi in shown:
+                w, h = plane_size(hdr, 0)
+                cs = ("mono" if hdr.NumPlanes == 1 else "420jpeg" if hdr.subsampling_x and hdr.subsampling_y
+                      else "422" if hdr.subsampling_x else "444") + (f"p{hdr.BitDepth}" if hdr.BitDepth > 8 else "")
+                if cs == "monop10": cs = "mono10"
+                if y4m_hdr is None:
+                    y4m_hdr = (w, h, cs)
+                    y4m.write(f"YUV4MPEG2 W{w} H{h} F{fps} Ip A1:1 C{cs}\n".encode())
+                if (w, h, cs) != y4m_hdr:
+                    print(f"warning: frame {fi} is {w}x{h} {cs}, the .y4m is {y4m_hdr[0]}x{y4m_hdr[1]} {y4m_hdr[2]}: frame skipped")
+                else:
+                    y4m.write(b"FRAME\n")
+                    write_planes(y4m, hdr, planes)
     except HostError as e:
         print(f"error: {e}")
         sys.exit(2)
     finally:
         if out is not None:
             out.close()
+        if y4m is not None:
+            y4m.close()
     s = host.stats
     dt_all = time.monotonic() - t_all
     print(f"{s['frames']} frames, {s['tiles']} tiles, {s['bytes']} stream bytes, {s['pixels']} samples read back, "
