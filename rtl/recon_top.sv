@@ -25,7 +25,9 @@ module recon_top
                                              //    dispatched): the intra-only board build (the K26 does not hold inter)
     parameter int FBY = 9,
     parameter int ML2R = 8,                  // mode map capacity: log2(MI rows), log2(MI cols)
-    parameter int ML2C = 8
+    parameter int ML2C = 8,
+    parameter int FRAME_WIN = 0              // window build: superblock rows of the fb0 ring (0 = the whole picture); an intra
+                                             //    block copy source row still in the ring is read from fb0, an older one from DDR
 ) (
     input  logic        clk,
     input  logic        rst,
@@ -92,6 +94,8 @@ module recon_top
     input  logic [255:0] ref_dims,            // slot s: {frame height[15:0], upscaled width[15:0]} at [32s +: 32]
     input  logic [255:0] ref_scales,          // slot s: {yScale[15:0], xScale[15:0]} of 7.11.3.3 (REF_SCALE_SHIFT 14; 16384 = unscaled) at [32s +: 32]
     input  logic        ref_fmt16,            // reference samples are 16-bit LE (else one byte each)
+    input  logic [215:0] cur_planes,          // the current picture's flush layout, plane p: {stride[31:0], base[39:0]} at [72p +: 72]
+    input  logic        cur_fmt16,            //    (intra block copy sources the window has already flushed)
     output logic        mc_unsup,             // sticky: an inter block used a feature beyond stage 2a (masks, OBMC, warp, scaled references)
     output logic [39:0] m_axi_araddr,
     output logic [7:0]  m_axi_arlen,
@@ -232,6 +236,14 @@ module recon_top
     logic [15:0] mc_wsx, mc_wsy;                             // sx4 / sy4 of the strip
     logic        frame_scl;                                  // the frame references a scaled picture: 32 x 32 strips, 7.11.3.3 positions
     assign frame_scl = |ihdr.ref_scaled;
+    logic        mc_ibc;                                     // the block in the MC path is an intra block copy (the current picture
+                                             // is its reference: unscaled, BILINEAR, single list, no OBMC / masks / warps)
+    logic        mc_scl;                                     // scaled-reference handling applies (never to an intra block copy)
+    assign mc_scl = frame_scl && !mc_ibc;
+    // the ring loader (fb_fetch) and the split of an intra block copy patch between it and ref_fetch
+    logic        ff_req_valid, ff_req_ready, ff_done, ff_pend, rf_wait, ff_wait;
+    logic [6:0]  rf_r_lo, rf_r_hi, ff_r_lo, ff_r_hi;
+    logic        ff_fb_re; logic [1:0] ff_fb_plane; logic [FBX-1:0] ff_fb_x; logic [FBY-1:0] ff_fb_y;
     logic [6:0]  rf_w, rf_h;                                 // ref_fetch request: unit size in reference samples (strip size unscaled)
     logic signed [38:0] sc_bx, sc_by;                        // 7.11.3.3: origX * xScale, origY * yScale (strip 1 of 2)
     logic [11:0] sc_xs, sc_ys;                               // xStep / yStep
@@ -350,13 +362,22 @@ module recon_top
     logic        pw_we, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4; logic [47:0] pw_d4;
 
     generate if (INTER != 0) begin : g_inter
+    logic rf_pw_we, ff_pw_we, rf_pw_list, ff_pw_list; logic [6:0] rf_pw_row, ff_pw_row; logic [4:0] rf_pw_w4, ff_pw_w4; logic [47:0] rf_pw_d4, ff_pw_d4;
+    assign pw_we = rf_pw_we || ff_pw_we;
+    assign pw_list = ff_pw_we ? ff_pw_list : rf_pw_list; assign pw_row = ff_pw_we ? ff_pw_row : rf_pw_row;
+    assign pw_w4 = ff_pw_we ? ff_pw_w4 : rf_pw_w4; assign pw_d4 = ff_pw_we ? ff_pw_d4 : rf_pw_d4;
     ref_fetch #(.PW(12)) u_rf (.clk, .rst,
-        .req_valid(rf_req_valid), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(ref_fmt16), .req_base(rf_base),
+        .req_valid(rf_req_valid), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(mc_ibc ? cur_fmt16 : ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
-        .req_w(rf_w), .req_h(rf_h), .done(rf_done), .err(rf_err),
+        .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .done(rf_done), .err(rf_err),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
-        .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4));
+        .patch_we(rf_pw_we), .patch_list(rf_pw_list), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_d4(rf_pw_d4));
+    fb_fetch #(.PW(12), .FBX(FBX), .FBY(FBY)) u_ff (.clk, .rst,
+        .req_valid(ff_req_valid), .req_ready(ff_req_ready), .req_lst(rf_lst), .req_plane(mc_pl), .req_lastx(rf_lastx), .req_lasty(rf_lasty),
+        .req_x0(rf_x0), .req_y0(rf_y0), .req_w(rf_w), .req_r_lo(ff_r_lo), .req_r_hi(ff_r_hi), .done(ff_done),
+        .fb_re(ff_fb_re), .fb_plane(ff_fb_plane), .fb_x(ff_fb_x), .fb_y(ff_fb_y), .fb_rdata4,
+        .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
         .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
         .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
@@ -366,6 +387,7 @@ module recon_top
         .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
     end else begin : g_nointer
         assign rf_req_ready = 1'b1; assign rf_done = 1'b0; assign rf_err = 1'b0;
+        assign ff_req_ready = 1'b1; assign ff_done = 1'b0; assign ff_fb_re = 1'b0; assign ff_fb_plane = 2'd0; assign ff_fb_x = '0; assign ff_fb_y = '0;
         assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
         assign pw_we = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0;
@@ -486,29 +508,30 @@ module recon_top
         if (mc_done) mc_fin <= 1'b1;
         if (rst) begin
             bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0;
+            ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
             // motion compensation states (inter blocks): compiled out at INTER = 0
             case (bst)
                 // ---- inter prediction (stage 2a): see the declarations above
                 B_MC_INIT: if (rs == R_IDLE) begin
                     logic comp;
-                    comp = (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7);
-                    mc_comp <= comp;
+                    comp = !b.intrabc && (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7);
+                    mc_comp <= comp; mc_ibc <= b.intrabc;
                     mc_bmode <= (b.compound_type == 3'd4) ? 2'd3 : 2'd2;
                     dw_d0 <= dist_abs(ihdr, b.ref0); dw_d1 <= dist_abs(ihdr, b.ref1);   // mc_wt0 / mc_wt1 follow a cycle later
                     if (comp && b.compound_type == 3'd3) mc_unsup <= 1'b1;
                     // warp candidates (7.11.3.1): LOCALWARP (list 0), or GLOBALMV / GLOBAL_GLOBALMV with a non-translational
                     // gm_type and an unscaled reference; never with force_integer_mv. warp_setup settles the validity.
-                    w_cand[0] <= !ihdr.force_integer_mv && (b.motion_mode == 2'd2
+                    w_cand[0] <= !b.intrabc && !ihdr.force_integer_mv && (b.motion_mode == 2'd2
                                  || ((b.ymode == 5'd15 || b.ymode == 5'd23) && gm_type_of(ihdr, b.ref0) > 2'd1 && !ihdr.ref_scaled[int'(b.ref0) - 1]));
                     w_cand[1] <= !ihdr.force_integer_mv && comp
                                  && (b.ymode == 5'd15 || b.ymode == 5'd23) && gm_type_of(ihdr, b.ref1) > 2'd1 && !ihdr.ref_scaled[int'(b.ref1) - 1];
                     wl <= 1'b0; w_use[0] <= 1'b0; w_use[1] <= 1'b0;
                     mc_pl <= 2'd0; ob_active <= 1'b0; ob_done <= 1'b0; mb_active <= 1'b0;
-                    ii_active <= b.interintra; ii_wedge <= b.interintra && b.wedge_interintra;
+                    ii_active <= b.interintra && !b.intrabc; ii_wedge <= b.interintra && !b.intrabc && b.wedge_interintra;
                     ii_mode <= (b.interintra_mode == 2'd0) ? 4'd0 : (b.interintra_mode == 2'd1) ? 4'd1 : (b.interintra_mode == 2'd2) ? 4'd2 : 4'd9;
                     mc_post <= 4'd14 - ((hdr.bit_depth == 4'd12) ? 4'd5 : 4'd3) - 4'd7;        // compound: InterRound1 = 7
-                    if ((comp && (b.compound_type == 3'd0 || b.compound_type == 3'd1)) || (b.interintra && b.wedge_interintra)) begin
+                    if ((comp && (b.compound_type == 3'd0 || b.compound_type == 3'd1)) || (b.interintra && !b.intrabc && b.wedge_interintra)) begin
                         logic [10:0] cb;
                         logic [1:0] shape;
                         logic [7:0] bw, bh;
@@ -520,7 +543,7 @@ module recon_top
                         mk_xoff <= 6'(8'd32 - ((8'(cb[7:4]) * bw) >> 3)); mk_yoff <= 6'(8'd32 - ((8'(cb[3:0]) * bh) >> 3));
                         mk_inv <= (b.wedge_sign != wedge_flip(b.bsize, b.wedge_index));
                         mk_x <= 7'd0; mk_y <= 7'd0;
-                        after_wset <= ((comp && b.compound_type == 3'd0) || (b.interintra && b.wedge_interintra)) ? B_MC_MASK : B_MC_PL;
+                        after_wset <= ((comp && b.compound_type == 3'd0) || (b.interintra && !b.intrabc && b.wedge_interintra)) ? B_MC_MASK : B_MC_PL;
                     end else after_wset <= B_MC_PL;
                     bst <= B_MC_WSET;
                 end
@@ -556,7 +579,7 @@ module recon_top
                     mc_pw <= 8'(num4x4w(psz)) << 2; mc_ph <= 8'(num4x4h(psz)) << 2;
                     mc_bx <= PXW'((PXW'(b.c) >> sx) << 2); mc_by <= PXW'((PXW'(b.r) >> sy) << 2);
                     // chroma of a sub-8x8 luma block: per-luma-4x4 units from b.cmv unless someUseIntra
-                    cmv_units = (mc_pl != 2'd0) && ((bw4 == 6'd1 && hdr.ssx) || (bh4 == 6'd1 && hdr.ssy)) && !b.cmv_intra;
+                    cmv_units = (mc_pl != 2'd0) && ((bw4 == 6'd1 && hdr.ssx) || (bh4 == 6'd1 && hdr.ssy)) && !b.cmv_intra && !b.intrabc;
                     mc_cmv <= cmv_units;
                     if (cmv_units) begin
                         mc_uw <= (8'(num4x4w(b.bsize)) << 2) >> sx; mc_uh <= (8'(num4x4h(b.bsize)) << 2) >> sy;
@@ -566,7 +589,7 @@ module recon_top
                         mc_uc <= 2'd1; mc_ur <= 2'd1;
                     end
                     mc_ui <= 2'd0; mc_uj <= 2'd0;
-                    if (b.interintra) begin
+                    if (b.interintra && !b.intrabc) begin
                         ii_pl <= mc_pl; ii_x <= PXW'((PXW'(b.c) >> sx) << 2); ii_y <= PXW'((PXW'(b.r) >> sy) << 2);
                         ii_txsz <= max_tx_size_rect(psz);
                         ii_lsh <= ii_scale_shift(8'(num4x4w(psz)) << 2, 8'(num4x4h(psz)) << 2);
@@ -584,7 +607,7 @@ module recon_top
                         u_i0 <= u[73:72]; u_i1 <= u[75:74];
                     end else begin
                         u_ref0 <= b.ref0; u_ref1 <= b.ref1; u_mv0r <= 16'(b.mv_row); u_mv0c <= 16'(b.mv_col);
-                        u_mv1r <= 16'(b.mv1_row); u_mv1c <= 16'(b.mv1_col); u_i0 <= b.interp0; u_i1 <= b.interp1;
+                        u_mv1r <= 16'(b.mv1_row); u_mv1c <= 16'(b.mv1_col); u_i0 <= b.intrabc ? 2'd3 : b.interp0; u_i1 <= b.intrabc ? 2'd3 : b.interp1;
                     end
                     mc_ux <= mc_bx + PXW'(mc_uj) * PXW'(mc_uw); mc_uy <= mc_by + PXW'(mc_ui) * PXW'(mc_uh);
                     begin
@@ -592,8 +615,8 @@ module recon_top
                         // warp needs a plane block of at least 8 x 8 (sub-8x8 chroma units never warp)
                         uw = (w_use[0] || (mc_comp && w_use[1])) && !mc_cmv && mc_uw >= 8'd8 && mc_uh >= 8'd8;
                         unit_warp <= uw;
-                        mc_nsc <= uw ? 5'(mc_uw >> 3) : frame_scl ? 5'((mc_uw + 8'd31) >> 5) : 5'((mc_uw + 8'd63) >> 6);
-                        mc_nsr <= uw ? 5'(mc_uh >> 3) : frame_scl ? 5'((mc_uh + 8'd31) >> 5) : 5'((mc_uh + 8'd63) >> 6);
+                        mc_nsc <= uw ? 5'(mc_uw >> 3) : mc_scl ? 5'((mc_uw + 8'd31) >> 5) : 5'((mc_uw + 8'd63) >> 6);
+                        mc_nsr <= uw ? 5'(mc_uh >> 3) : mc_scl ? 5'((mc_uh + 8'd31) >> 5) : 5'((mc_uh + 8'd63) >> 6);
                     end
                     mc_sr <= 5'd0; mc_sc <= 5'd0; mc_l <= 1'b0;
                     bst <= B_MC_STRIP;
@@ -614,7 +637,7 @@ module recon_top
                     logic [2:0] ss;
                     logic [7:0] smax;
                     logic signed [21:0] srcx, srcy;
-                    ss = unit_warp ? 3'd3 : frame_scl ? 3'd5 : 3'd6;                  // strip size: 8, 32 or 64
+                    ss = unit_warp ? 3'd3 : mc_scl ? 3'd5 : 3'd6;                  // strip size: 8, 32 or 64
                     smax = 8'd1 << ss;
                     rem_w = mc_uw - (8'(mc_sc) << ss); rem_h = mc_uh - (8'(mc_sr) << ss);
                     sw = (rem_w > smax) ? 7'(smax) : 7'(rem_w); sh = (rem_h > smax) ? 7'(smax) : 7'(rem_h);
@@ -624,10 +647,17 @@ module recon_top
                     mvx2 = (20'(mc_l ? u_mv1c : u_mv0c) * 20'sd2) >>> mc_sx;
                     mvy2 = (20'(mc_l ? u_mv1r : u_mv0r) * 20'sd2) >>> mc_sy;
                     rref = mc_l ? u_ref1 : u_ref0;
-                    slot = ref_slot[3 * (int'(rref) - 1) +: 3];
+                    slot = (rref == 4'd0) ? 3'd0 : ref_slot[3 * (int'(rref) - 1) +: 3];
                     rf_base <= ref_planes[72 * (3 * int'(slot) + int'(mc_pl)) +: 40];
                     rf_stride <= ref_planes[72 * (3 * int'(slot) + int'(mc_pl)) + 40 +: 32];
                     dw = ref_dims[32 * int'(slot) +: 16]; dh = ref_dims[32 * int'(slot) + 16 +: 16];
+                    if (mc_ibc) begin
+                        // intra block copy (7.11.3.2, refIdx -1): the current picture's own flush layout; RefUpscaledWidth[-1]
+                        // = MiCols * MI_SIZE, the height likewise (the decoded area, not the visible picture)
+                        rf_base <= cur_planes[72 * int'(mc_pl) +: 40];
+                        rf_stride <= cur_planes[72 * int'(mc_pl) + 40 +: 32];
+                        dw = 16'(hdr.mi_cols) << 2; dh = 16'(hdr.mi_rows) << 2;
+                    end
                     rf_lastx <= ((dw + 16'(mc_sx)) >> mc_sx) - 16'd1; rf_lasty <= ((dh + 16'(mc_sy)) >> mc_sy) - 16'd1;
                     rf_lst <= mc_l;
                     mc_mode <= ob_active ? 3'd0 : mc_l ? (mb_active ? 3'd4 : 3'(mc_bmode)) : (mc_comp ? 3'd1 : 3'd0);
@@ -640,11 +670,30 @@ module recon_top
                         sc_by <= 39'(w_p[mc_l][4]) * 39'(srcx) + 39'(w_p[mc_l][5]) * 39'(srcy) + 39'(w_p[mc_l][1]);
                         sc_xs <= 12'd1024; sc_ys <= 12'd1024; mc_xf0 <= 10'd32; mc_yf0 <= 10'd32;
                         rf_w <= 7'd8; rf_h <= 7'd8;
-                    end else if (!frame_scl) begin
+                    end else if (!mc_scl) begin
                         mc_xf0 <= {mvx2[3:0], 6'b100000}; mc_yf0 <= {mvy2[3:0], 6'b100000}; sc_xs <= 12'd1024; sc_ys <= 12'd1024;
                         rf_x0 <= 17'(signed'({2'b0, px})) + 17'(mvx2 >>> 4);
                         rf_y0 <= 17'(signed'({2'b0, py})) + 17'(mvy2 >>> 4);
                         rf_w <= sw; rf_h <= sh;
+                        if (mc_ibc) begin
+                            // the patch rows [0, k) lie above the fb0 ring (flushed: DDR through ref_fetch), [k, h + 7) are still
+                            // in it (the ring loader). Row q of the ring is reused only once flushed, so every row is in one of
+                            // the two; the spec's 256-sample delay keeps the ring rows already reconstructed.
+                            logic [15:0] sbr, yb;
+                            logic signed [17:0] y0m3, kk;
+                            logic [6:0] nrow;
+                            sbr = 16'(b.r) >> (hdr.sb128 ? 5 : 4);                                 // this block's superblock row
+                            yb = (FRAME_WIN == 0 || sbr + 16'd1 <= 16'(FRAME_WIN)) ? 16'd0
+                               : 16'((sbr + 16'd1 - 16'(FRAME_WIN)) << (hdr.sb128 ? 7 : 6)) >> mc_sy;  // first line still in the ring
+                            y0m3 = 18'(signed'({1'b0, py})) + 18'(mvy2 >>> 4) - 18'sd3;
+                            nrow = sh + 7'd7;
+                            kk = 18'(signed'({2'b0, yb})) - y0m3;
+                            if (kk < 18'sd0) kk = 18'sd0;
+                            if (kk > 18'(signed'({11'd0, nrow}))) kk = 18'(signed'({11'd0, nrow}));
+                            rf_r_lo <= 7'd0; rf_r_hi <= 7'(kk); ff_r_lo <= 7'(kk); ff_r_hi <= nrow;
+                        end else begin
+                            rf_r_lo <= 7'd0; rf_r_hi <= 7'd0;                                       // all rows
+                        end
                     end else begin
                         // origX = (x << 4) + ((2 mv) >> subX) + 8 for the unit; baseX = origX * xScale - (8 << 14)
                         xsc = ref_scales[32 * int'(slot) +: 16]; ysc = ref_scales[32 * int'(slot) + 16 +: 16];
@@ -662,7 +711,7 @@ module recon_top
                         x4 = sc_bx >>> mc_sx; y4 = sc_by >>> mc_sy;
                         rf_x0 <= 17'(x4 >>> 16) - 17'sd4; rf_y0 <= 17'(y4 >>> 16) - 17'sd4;    // the patch starts at ix4 - 7
                         mc_wsx <= x4[15:0]; mc_wsy <= y4[15:0];
-                    end else if (frame_scl) begin
+                    end else if (mc_scl) begin
                         // startX = Round2Signed(baseX, 8) + 32, then the strip's offset in steps; the patch covers
                         // (((w - 1) xStep + 1023) >> 10) + 8 reference columns (rows likewise): ref_fetch's w + 7
                         logic signed [31:0] stx, sty;
@@ -677,12 +726,19 @@ module recon_top
                         cw = 19'(sc_sw - 7'd1) * 19'(sc_xs) + 19'd1023; ch = 19'(sc_sh - 7'd1) * 19'(sc_ys) + 19'd1023;
                         rf_w <= 7'(cw[18:10] + 9'd1); rf_h <= 7'(ch[18:10] + 9'd1);
                     end
-                    rf_req_valid <= 1'b1;
+                    rf_req_valid <= !mc_ibc || (rf_r_hi != 7'd0);
+                    rf_wait <= !mc_ibc || (rf_r_hi != 7'd0);
+                    ff_pend <= mc_ibc && (ff_r_lo != ff_r_hi); ff_wait <= mc_ibc && (ff_r_lo != ff_r_hi);
                     bst <= B_MC_FETCH;
                 end
                 B_MC_FETCH: begin
+                    // ref_fetch first, the ring loader after it (they share mc_filt's patch write port), the filter when both are in
                     if (rf_req_valid && rf_req_ready) rf_req_valid <= 1'b0;       // accepted
-                    if (rf_done) begin mc_start <= 1'b1; bst <= B_MC_FILT; end
+                    if (ff_req_valid && ff_req_ready) ff_req_valid <= 1'b0;
+                    if (rf_done) rf_wait <= 1'b0;
+                    if (ff_done) ff_wait <= 1'b0;
+                    if (ff_pend && !(rf_wait && !rf_done)) begin ff_req_valid <= 1'b1; ff_pend <= 1'b0; end
+                    if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done)) begin mc_start <= 1'b1; bst <= B_MC_FILT; end
                 end
                 B_MC_FILT: if ((mc_done || mc_fin) && !ob_rd_v && !ob_rd2_v && !ob_wr_v && !mb_a_v && !mb_b_v) begin   // the run finished and the blend pipelines drained
                     mc_fin <= 1'b0;
@@ -697,7 +753,7 @@ module recon_top
                     else bst <= B_MC_PLEND;
                 end
                 B_MC_PLEND: begin
-                    if (b.motion_mode == 2'd1 && !ob_done) begin ob_done <= 1'b1; ob_pass <= 1'b0; ob_k <= 3'd0; bst <= B_MC_OB; end
+                    if (b.motion_mode == 2'd1 && !b.intrabc && !ob_done) begin ob_done <= 1'b1; ob_pass <= 1'b0; ob_k <= 3'd0; bst <= B_MC_OB; end
                     else begin
                         ob_done <= 1'b0; ob_active <= 1'b0;
                         if (mc_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin mc_pl <= mc_pl + 2'd1; bst <= B_MC_PL; end
@@ -729,7 +785,7 @@ module recon_top
                         mc_uw <= pw; mc_uh <= ph;
                         u_ref0 <= e[14:11]; u_mv0r <= e[30:15]; u_mv0c <= e[46:31]; u_i0 <= e[48:47]; u_i1 <= e[50:49];
                         unit_warp <= 1'b0;                                           // OBMC neighbour predictions never warp
-                        mc_nsc <= frame_scl ? 5'((pw + 8'd31) >> 5) : 5'd1; mc_nsr <= frame_scl ? 5'((ph + 8'd31) >> 5) : 5'd1;
+                        mc_nsc <= mc_scl ? 5'((pw + 8'd31) >> 5) : 5'd1; mc_nsr <= mc_scl ? 5'((ph + 8'd31) >> 5) : 5'd1;
                         mc_sr <= 5'd0; mc_sc <= 5'd0; mc_l <= 1'b0;
                         bst <= B_MC_STRIP;
                     end
@@ -765,7 +821,7 @@ module recon_top
                 end else if (wr_i + 6'd1 < bh4) begin
                     wr_j <= 1'b0; wr_i <= wr_i + 6'd1; bst <= B_WR;
                 end else if (b.intrabc) begin
-                    bst <= B_IBC_INIT;
+                    bst <= (INTER != 0) ? B_MC_INIT : B_IBC_INIT;        // with inter built: through the MC path (patch loaders)
                 end else if (blk_inter) begin
                     bst <= B_MC_INIT;
                 end else begin
@@ -1405,7 +1461,9 @@ module recon_top
             end
             default: ;
         endcase
-        // intra block copy: the block FSM owns the frame-buffer ports while the transform FSM is idle
+        // intra block copy: the block FSM owns the frame-buffer ports while the transform FSM is idle (the ring loader's
+        // reads on the MC path, the sample reads of the intra-only build's own path)
+        if (INTER != 0 && ff_fb_re) begin fb_re = 1'b1; fb_plane = ff_fb_plane; fb_x = ff_fb_x; fb_y = ff_fb_y; end
         case (bst)
             B_IBC_R0: begin fb_re = 1'b1; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry0); end
             B_IBC_R1: begin fb_re = ib_fx[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry0); end
