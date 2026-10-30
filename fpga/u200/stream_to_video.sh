@@ -12,7 +12,8 @@ cd "$root"; source env.sh > /dev/null 2>&1 || true
 export PYTHONPATH=$root/tools:$root/tb:$root/tools/kv260
 y4m=${out%.*}.y4m
 echo "== $stream -> U200 (decode.py --xdma 0 --inter) -> $y4m"
-python tools/kv260/decode.py "$stream" --xdma 0 --inter --frames 100000 --y4m "$y4m" "$@"
+PY=$(command -v python || command -v python3)
+"$PY" tools/kv260/decode.py "$stream" --xdma 0 --inter --frames 100000 --y4m "$y4m" "$@"
 echo "== $y4m -> ffmpeg (libx264 crf 18) -> $out"
 ffmpeg -hide_banner -loglevel error -y -i "$y4m" -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p "$out"
 ls -la "$y4m" "$out"
