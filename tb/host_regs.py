@@ -196,6 +196,7 @@ R_FS_CFG, R_FS_MV_LO, R_FS_MV_HI, R_FS_MV_ROWB = 0x1C0, 0x1C4, 0x1C8, 0x1CC   # 
 R_FS_SEG_LO, R_FS_SEG_HI, R_FS_SEG_ROWB, R_FS_STATUS = 0x1D0, 0x1D4, 0x1D8, 0x1DC
 R_LD_CFG, R_LD_SEG_LO, R_LD_SEG_HI, R_LD_SEG_ROWB, R_LD_CDF_LO, R_LD_CDF_HI = 0x700, 0x704, 0x708, 0x70C, 0x710, 0x714   # stage B loader
 R_SV_CDF_LO, R_SV_CDF_HI, R_SV_ENG = 0x718, 0x71C, 0x720
+R_MF_NSRC, R_MF_DST0, R_MF_DST1, R_MF_SRC = 0x724, 0x728, 0x72C, 0x740     # the projection engine's table (0x20 per source)
 START_LOAD, START_SAVE = 1 << 6, 1 << 7
 FS_LD_BUSY, FS_LD_DONE, FS_LD_ERR, FS_SV_BUSY, FS_SV_DONE, FS_SV_ERR = 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7
 CDF_AREA_BYTES = M.ROWS * 32
@@ -309,16 +310,66 @@ def fs_regs(hdr, base, enable=True):
     return seq, L
 
 
-def ld_regs(seg=None, cdf_base=None, zero_seg=False):
+def ld_regs(seg=None, cdf_base=None, zero_seg=False, mf=None):
     """Stage B: the loader's registers. seg: (base, rowb) of the segment-id area to load, or None; zero_seg: write a zero
-    map instead; cdf_base: the CDF area to load (None: the host writes rows / defaults as before). Then START_LOAD."""
-    cfg = (1 if seg else 0) | (2 if cdf_base is not None else 0) | (4 if zero_seg else 0)
+    map instead; cdf_base: the CDF area to load (None: the host writes rows / defaults as before); mf: mf_table(...)
+    for the projection engine (None: the host writes the motion field). Then START_LOAD."""
+    cfg = (1 if seg else 0) | (2 if cdf_base is not None else 0) | (4 if zero_seg else 0) | (8 if mf is not None else 0)
     seq = [(R_LD_CFG, cfg)]
     if seg:
         seq += [(R_LD_SEG_LO, seg[0] & 0xFFFFFFFF), (R_LD_SEG_HI, seg[0] >> 32), (R_LD_SEG_ROWB, seg[1])]
     if cdf_base is not None:
         seq += [(R_LD_CDF_LO, cdf_base & 0xFFFFFFFF), (R_LD_CDF_HI, cdf_base >> 32)]
+    if mf is not None:
+        b = lambda v: v & 0xFF
+        dd = mf["dst"]
+        seq += [(R_MF_NSRC, len(mf["src"])), (R_MF_DST0, sum(b(dd[i]) << (8 * i) for i in range(4))), (R_MF_DST1, sum(b(dd[4 + i]) << (8 * i) for i in range(3)))]
+        for si, sdesc in enumerate(mf["src"]):
+            r = R_MF_SRC + 0x20 * si
+            off = sdesc["off"]
+            seq += [(r, sdesc["base"] & 0xFFFFFFFF), (r + 4, sdesc["base"] >> 32), (r + 8, sdesc["rowb"]),
+                    (r + 12, (int(sdesc["sign"] > 0) << 8) | b(sdesc["tocur"])),
+                    (r + 16, sum(b(off[i]) << (8 * i) for i in range(4))), (r + 20, sum(b(off[4 + i]) << (8 * i) for i in range(3)))]
     return seq
+
+
+def mf_table(h, slots, mv_area_of, rel):
+    """The projection engine's table for frame header h (spec 7.9's source selection, computed on the host from the order
+    hints): slots[i] has .mi_rows/.mi_cols/.frame_type/.saved_order_hints/.ref_frames (seq_model.Slot), mv_area_of(slot) ->
+    (base, rowb) of that slot's MV sideband or None, rel(a, b) = get_relative_dist. Returns dict(src=[...], dst=[7]) or
+    None when the frame uses no motion field."""
+    import seq_model as sm
+    if h.FrameIsIntra or not h.use_ref_frame_mvs:
+        return None
+    srcs = []
+
+    def project(src, sign):
+        slot = slots[h.ref_frame_idx[src - sm.LAST_FRAME]]
+        if slot.mi_rows != h.MiRows or slot.mi_cols != h.MiCols or slot.frame_type in (sm.INTRA_ONLY_FRAME, sm.KEY_FRAME) or slot.ref_frames is None:
+            return 0
+        area = mv_area_of(slot)
+        if area is None:
+            raise HostError("mf_table: a projecting source has no MV sideband area on the card")
+        tocur = rel(h.OrderHints[src], h.order_hint)
+        srcs.append(dict(base=area[0], rowb=area[1], sign=sign, tocur=tocur,
+                         off=[rel(h.OrderHints[src], slot.saved_order_hints[r]) for r in range(1, 8)]))
+        return 1
+    lastIdx = h.ref_frame_idx[0]
+    if slots[lastIdx].saved_order_hints[sm.ALTREF_FRAME] != h.OrderHints[sm.GOLDEN_FRAME]:
+        project(sm.LAST_FRAME, -1)
+    refStamp = 1                                  # MFMV_STACK_SIZE - 2
+    if rel(h.OrderHints[sm.BWDREF_FRAME], h.order_hint) > 0:
+        if project(sm.BWDREF_FRAME, 1):
+            refStamp -= 1
+    if rel(h.OrderHints[sm.ALTREF2_FRAME], h.order_hint) > 0:
+        if project(sm.ALTREF2_FRAME, 1):
+            refStamp -= 1
+    if rel(h.OrderHints[sm.ALTREF_FRAME], h.order_hint) > 0 and refStamp >= 0:
+        if project(sm.ALTREF_FRAME, 1):
+            refStamp -= 1
+    if refStamp >= 0:
+        project(sm.LAST2_FRAME, -1)
+    return dict(src=srcs, dst=[rel(h.order_hint, h.OrderHints[d]) for d in range(1, 8)])
 
 
 def sv_regs(cdf_base, engine):

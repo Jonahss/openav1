@@ -72,7 +72,13 @@
 //   Frame-state loader / CDF save (rtl/fs_load.sv, stage B): START bit 6 loads the segment map and / or the CDF rows from
 //   the reference slot's areas (before the frame's first tile); START bit 7 saves engine SV_ENG's CDF rows to SV_CDF
 //   (after the context tile's row, before the next tile row starts):
-//   0x700 LD_CFG     RW  bit 0 load the segment map, bit 1 load the CDF rows, bit 2 zero the segment map (PrevSegmentIds = 0)
+//   0x700 LD_CFG     RW  bit 0 load the segment map, bit 1 load the CDF rows, bit 2 zero the segment map (PrevSegmentIds = 0),
+//                       bit 3 project the motion field after the loads (rtl/mf_project.sv, spec 7.9) from the table below:
+//   0x724 MF_NSRC    RW  sources to project, 0..5, in the spec's order;  0x728 / 0x72C MF_DST  RW  refToDst for destinations
+//                       1..4 / 5..7 (signed bytes, destination d at byte (d - 1) % 4)
+//   0x740 + 0x20 s   source s (0..4): +0 BASE_LO, +4 BASE_HI (its MV sideband area), +8 ROWB (bytes per 8x8 line),
+//                       +C {sign[8] (1: dstSign = +1), refToCur[7:0] signed}, +10 OFF0 (refOffset of saved references
+//                       1..4, signed bytes), +14 OFF1 (references 5..7)
 //   0x704 LD_SEG_LO / 0x708 LD_SEG_HI  RW  segment-id area; 0x70C LD_SEG_ROWB RW bytes per 4x4 line
 //   0x710 LD_CDF_LO / 0x714 LD_CDF_HI  RW  CDF area to load (CDF_ROWS x 32 bytes)
 //   0x718 SV_CDF_LO / 0x71C SV_CDF_HI  RW  CDF area to save into;  0x720 SV_ENG RW the engine whose rows are saved
@@ -247,13 +253,22 @@ module dec_host
     logic           sv_busy, sv_done_s, sv_err, sv_rb_en, sv_rb_l1;
     logic [CDF_AW-1:0] sv_row;
     logic [255:0]   sv_data;
+    // the projection engine's table (rtl/mf_project.sv): 5 sources x (base, rowb, sign + refToCur, 7 refOffsets), 7 refToDst
+    logic [31:0]    mf_nsrc_r;
+    logic [199:0]   mf_src_base;
+    logic [79:0]    mf_src_rowb;
+    logic [4:0]     mf_src_sign;
+    logic [39:0]    mf_src_tocur;
+    logic [279:0]   mf_src_off;
+    logic [55:0]    mf_dst_dist;
     logic [215:0]   cur_planes;                              // the current picture's flush layout for intra block copy
     logic           fmt16;                                  // DMA_CFG bit 0, declared ahead of the core instance that takes it (cur_fmt16)
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
-        .ld_start(start[6]), .ld_cfg(ld_cfg_r[2:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
+        .ld_start(start[6]), .ld_cfg(ld_cfg_r[3:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
+        .mf_nsrc(mf_nsrc_r[2:0]), .mf_src_base, .mf_src_rowb, .mf_src_sign, .mf_src_tocur, .mf_src_off, .mf_dst_dist,
         .mf_we, .mf_wref(mf_addr_r[26:24]), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
         .mf_wrow(signed'(mf_wd[31:16])), .mf_wcol(signed'(mf_wd[15:0])),
         .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),
@@ -644,6 +659,8 @@ module dec_host
     assign s_axi_rresp   = 2'b00;
     assign do_write = aw_v && w_v && !s_axi_bvalid;
     logic [9:0] wi, ri;                                      // word index
+    logic [2:0] mfs;                                         // the projection source a 0x740 + 0x20 s write addresses
+    assign mfs = wi[5:3] - 3'd2;
     assign h_data_read = (ri == 10'h00A) || (ri == 10'h00C) || (ri == 10'h00D);
     assign do_read  = ar_v && !(h_data_read && !(hbuf_ok && !dma_busy)) && !(rb_en || rb_l1);
     assign wi = aw_a[11:2];
@@ -667,6 +684,7 @@ module dec_host
             dma_cfg <= '0; dma_start <= 1'b0;
             fs_cfg <= '0; fs_mv_base <= '0; fs_seg_base <= '0; fs_mv_rowb <= '0; fs_seg_rowb <= '0;
             ld_cfg_r <= '0; ld_seg_base <= '0; ld_seg_rowb <= '0; ld_cdf_base <= '0; sv_cdf_base <= '0; sv_eng <= '0;
+            mf_nsrc_r <= '0; mf_src_base <= '0; mf_src_rowb <= '0; mf_src_sign <= '0; mf_src_tocur <= '0; mf_src_off <= '0; mf_dst_dist <= '0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
             for (int sl = 0; sl < 8; sl++) begin rs_w[sl] <= '0; rs_h[sl] <= '0; rs_xs[sl] <= 16'd16384; rs_ys[sl] <= 16'd16384; for (int pl = 0; pl < 3; pl++) begin rs_base[sl][pl] <= '0; rs_stride[sl][pl] <= '0; end end
             ref_slot_r <= '0; ref_cfg_r <= '0;
@@ -717,6 +735,9 @@ module dec_host
                     10'h1C6: sv_cdf_base[31:0] <= strb(sv_cdf_base[31:0], w_d, w_s);                          // 0x718
                     10'h1C7: sv_cdf_base[39:32] <= w_d[7:0];                                                  // 0x71C
                     10'h1C8: sv_eng <= EW'(w_d);                                                              // 0x720
+                    10'h1C9: mf_nsrc_r <= strb(mf_nsrc_r, w_d, w_s);                                          // 0x724
+                    10'h1CA: mf_dst_dist[31:0] <= strb(mf_dst_dist[31:0], w_d, w_s);                          // 0x728
+                    10'h1CB: mf_dst_dist[55:32] <= w_d[23:0];                                                 // 0x72C
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
                     // 0x300 .. 0x310: the inter frame bands (motion field, previous segment ids); no-ops at INTER = 0
                     10'h0C0: if (INTER != 0) mf_addr_r <= strb(mf_addr_r, w_d, w_s);                          // 0x300
@@ -743,6 +764,17 @@ module dec_host
                                 endcase
                             end else if (wi[1:0] == 2'd0) begin rs_w[wi[6:4]] <= w_d[15:0]; rs_h[wi[6:4]] <= w_d[31:16]; end
                             else if (wi[1:0] == 2'd1) begin rs_xs[wi[6:4]] <= w_d[15:0]; rs_ys[wi[6:4]] <= w_d[31:16]; end
+                        end
+                        else if (wi[9:3] >= 7'h3A && wi[9:3] <= 7'h3E) begin                                   // 0x740..0x7DC: the projection sources
+                            case (wi[2:0])
+                                3'd0: mf_src_base[40 * mfs +: 32]       <= strb(mf_src_base[40 * mfs +: 32], w_d, w_s);
+                                3'd1: mf_src_base[40 * mfs + 32 +: 8]   <= w_d[7:0];
+                                3'd2: mf_src_rowb[16 * mfs +: 16]       <= w_d[15:0];
+                                3'd3: begin mf_src_sign[mfs] <= w_d[8]; mf_src_tocur[8 * mfs +: 8] <= w_d[7:0]; end
+                                3'd4: mf_src_off[56 * mfs +: 32]        <= strb(mf_src_off[56 * mfs +: 32], w_d, w_s);
+                                3'd5: mf_src_off[56 * mfs + 32 +: 24]   <= w_d[23:0];
+                                default: ;
+                            endcase
                         end
                         else if (wi[9:4] == 6'h06 && wi[3:2] != 2'd0) begin                                     // 0x190..0x1BC: planes 0..2
                             case (wi[1:0])
@@ -799,6 +831,9 @@ module dec_host
                     10'h1C6: s_axi_rdata <= sv_cdf_base[31:0];
                     10'h1C7: s_axi_rdata <= {24'd0, sv_cdf_base[39:32]};
                     10'h1C8: s_axi_rdata <= 32'(sv_eng);
+                    10'h1C9: s_axi_rdata <= mf_nsrc_r;
+                    10'h1CA: s_axi_rdata <= mf_dst_dist[31:0];
+                    10'h1CB: s_axi_rdata <= {8'd0, mf_dst_dist[55:32]};
                     10'h0C0: s_axi_rdata <= mf_addr_r;
                     10'h180: s_axi_rdata <= {11'd0, ref_slot_r};
                     10'h181: s_axi_rdata <= ref_cfg_r;

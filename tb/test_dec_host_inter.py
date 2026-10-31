@@ -301,12 +301,16 @@ async def dec_host_inter_vs_model(dut):
                     # stage B: the loader reads the primary slot's areas (written by the card in earlier frames)
                     prim = slot_areas.get(ph.ref_frame_idx[ph.primary_ref_frame]) if ph.primary_ref_frame != sm.PRIMARY_REF_NONE else None
                     seg_ld = prim["seg"] if (ctx.prev_segment_ids is not None and prim and prim.get("seg")) else None
+                    mf_tab = None
+                    if ctx.motion_field is not None and os.environ.get("TS_FSTATE_MF", "1") == "1":
+                        mf_tab = HR.mf_table(ph, seq.slots, lambda sl: slot_areas.get(getattr(sl, "slot_index", -1), {}).get("mv"),
+                                             lambda a, b: sm.SequenceState.relative_dist(ph, a, b))
                     cdf_ld = prim["cdf"] if (ctx.cdfs is not None and prim and prim.get("cdf") is not None) else None
                     if isinstance(cdf_ld, tuple):            # ("defaults", base_q_idx): the slot holds a frame's starting defaults, no area
                         cdf_ld = None
                     assert (ctx.prev_segment_ids is None) == (seg_ld is None), f"{tag}: the model has a previous segment map but no slot area holds one"
                     assert ctx.cdfs is None or cdf_ld is not None or (prim and isinstance(prim.get("cdf"), tuple)), f"{tag}: the model inherits CDFs but no slot area holds them"
-                    await write_seq(ax, HR.ld_regs(seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra)))
+                    await write_seq(ax, HR.ld_regs(seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra), mf=mf_tab))
                     await ax.write(R_START, HR.START_LOAD)
                     for _ in range(20000):
                         stv = await ax.read(HR.R_FS_STATUS)
@@ -322,7 +326,10 @@ async def dec_host_inter_vs_model(dut):
                     # the bands and the slot table before the frame; references the RTL never flushed go in at a slot address
                     if not fsb:
                         await write_seq(ax, HR.seg_map_seq(ctx.prev_segment_ids, th0.MiRows, th0.MiCols))
-                    await write_seq(ax, HR.motion_field_seq(ctx.motion_field, th0.MiRows, th0.MiCols))
+                    if not (fsb and mf_tab is not None):
+                        await write_seq(ax, HR.motion_field_seq(ctx.motion_field, th0.MiRows, th0.MiCols))
+                    elif mf_tab is not None:
+                        stats["mf_frames"] = stats.get("mf_frames", 0) + 1
                     ref_store = {}
                     for i in range(7):
                         slot = ph.ref_frame_idx[i]
@@ -388,6 +395,8 @@ async def dec_host_inter_vs_model(dut):
                 stats["model_only"] += 1
             # ---- the frame becomes a reference (model picture + where the flush put it)
             seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+            for i in range(8):                                # the slots know their index (the projection table looks areas up by it)
+                seq.slots[i].slot_index = i
             if not model_only and ph.refresh_frame_flags:
                 # the card's frame-state sideband against the model's saved motion field and segmentation map (7.19 / 7.20)
                 for _ in range(2000):
@@ -421,7 +430,7 @@ async def dec_host_inter_vs_model(dut):
                 primA = slot_areas.get(ph.ref_frame_idx[ph.primary_ref_frame]) if ph.primary_ref_frame != sm.PRIMARY_REF_NONE else None
                 seg_a = (primA["seg"] if primA else None) if (getattr(ph, "segmentation_enabled", 0) and not getattr(ph, "segmentation_update_map", 1)) else (fsL["seg_base"], fsL["seg_rowb"])
                 cdf_a = ((primA["cdf"] if primA else ("defaults", th0.base_q_idx)) if getattr(ph, "disable_frame_end_update_cdf", 0) else cdf_area)
-                areas = dict(seg=seg_a, cdf=cdf_a)
+                areas = dict(seg=seg_a, cdf=cdf_a, mv=(fsL["mv_base"], fsL["mv_rowb"]))
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
                     store[i] = entry

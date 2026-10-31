@@ -26,7 +26,7 @@ EXTRA = {"itx_lvl": ["itx_pair.sv"], "mc_filt": ["mc_tables_pkg.sv"], "warp_setu
          "dec_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "q_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                      "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mf_band.sv", "seg_band.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv", "tile_syntax.sv",
                      "itx_pair.sv", "itx_lvl.sv", "itx_row.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "mc_tables_pkg.sv", "mc_filt.sv", "fb_fetch.sv", "ref_fetch.sv", "warp_setup.sv", "frame_mem.sv", "frame_mem_w.sv", "frame_mem_uram.sv", "recon_top.sv",
-                     "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "frame_state_w.sv", "fs_load.sv", "rec_fifo.sv", "tile_engines.sv", "lf_top.sv", "cdef_top.sv", "lr_top.sv", "sr_top.sv"],
+                     "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "frame_state_w.sv", "fs_load.sv", "mf_project.sv", "rec_fifo.sv", "tile_engines.sv", "lf_top.sv", "cdef_top.sv", "lr_top.sv", "sr_top.sv"],
          "mv_stack_tb": ["blk_tables_pkg.sv", "syn_pkg.sv", "mv_mem.sv", "mf_band.sv", "mv_stack.sv"],
          "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lf_top.sv"],
          "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lr_top.sv"],
