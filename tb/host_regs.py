@@ -35,7 +35,8 @@ IHDR_FIELDS = [  # syn_pkg::ihdr_t order (MSB first)
     ("use_ref_frame_mvs", 1), ("enable_dual_filter", 1), ("enable_interintra_compound", 1), ("enable_masked_compound", 1),
     ("enable_jnt_comp", 1), ("enable_order_hint", 1), ("order_hint_bits", 4), ("order_hint", 8), ("order_hints", 56),
     ("ref_sign_bias", 7), ("ref_scaled", 7), ("gm_type", 14), ("gm_params", 1008), ("seg_ref_en", 8), ("seg_ref_data", 24),
-    ("seg_globalmv_en", 8), ("seg_update_map", 1), ("seg_temporal_update", 1)]
+    ("seg_globalmv_en", 8), ("seg_update_map", 1), ("seg_temporal_update", 1),
+    ("ref_dist_neg", 7)]
 LF_FIELDS = [  # syn_pkg::lf_hdr_t order (MSB first)
     ("frame_width", PXW), ("frame_height", PXW), ("level", 24), ("sharpness", 3), ("delta_enabled", 1),
     ("ref_deltas", 56), ("mode_deltas", 14), ("delta_lf_multi", 1), ("seg_lf_en", 32), ("seg_lf_data", 224)]
@@ -100,6 +101,15 @@ def ihdr_vals(th):
         sg |= int(bool(th.FeatureEnabled[s][7])) << s
     v.update(seg_ref_en=sr_en, seg_ref_data=sr_d, seg_globalmv_en=sg,
              seg_update_map=int(getattr(th, "segmentation_update_map", 1)), seg_temporal_update=int(getattr(th, "segmentation_temporal_update", 0)))
+    # 7.19: the frame-state writer saves a block's reference only when its relative distance to this frame is negative
+    dn = 0
+    if getattr(th, "enable_order_hint", 0):
+        m = 1 << (th.OrderHintBits - 1)
+        for i in range(7):
+            diff = th.OrderHints[i + 1] - th.order_hint
+            if (diff & (m - 1)) - (diff & m) < 0:
+                dn |= 1 << i
+    v.update(ref_dist_neg=dn)
     z.update(v)
     return z
 
@@ -182,6 +192,14 @@ R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 R_IH = 0x200                                 # ihdr_t, 64 words
 R_MF_ADDR, R_MF_DATA, R_SP_ADDR, R_SP_DATA0, R_SP_DATA1 = 0x300, 0x304, 0x308, 0x30C, 0x310   # inter frame bands
 R_SLOT, R_REF_SLOT, R_REF_CFG = 0x400, 0x600, 0x604        # reference slot table (0x40 per slot, 0x10 per plane), ref_frame_idx, fmt16
+R_FS_CFG, R_FS_MV_LO, R_FS_MV_HI, R_FS_MV_ROWB = 0x1C0, 0x1C4, 0x1C8, 0x1CC   # frame-state sideband (rtl/frame_state_w.sv)
+R_FS_SEG_LO, R_FS_SEG_HI, R_FS_SEG_ROWB, R_FS_STATUS = 0x1D0, 0x1D4, 0x1D8, 0x1DC
+R_LD_CFG, R_LD_SEG_LO, R_LD_SEG_HI, R_LD_SEG_ROWB, R_LD_CDF_LO, R_LD_CDF_HI = 0x700, 0x704, 0x708, 0x70C, 0x710, 0x714   # stage B loader
+R_SV_CDF_LO, R_SV_CDF_HI, R_SV_ENG = 0x718, 0x71C, 0x720
+R_MF_NSRC, R_MF_DST0, R_MF_DST1, R_MF_SRC = 0x724, 0x728, 0x72C, 0x740     # the projection engine's table (0x20 per source)
+START_LOAD, START_SAVE = 1 << 6, 1 << 7
+FS_LD_BUSY, FS_LD_DONE, FS_LD_ERR, FS_SV_BUSY, FS_SV_DONE, FS_SV_ERR = 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7
+CDF_AREA_BYTES = M.ROWS * 32
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
 START_TILE, START_FRAME, START_LF = 1, 2, 4
@@ -267,6 +285,121 @@ def dma_regs(hdr, base, visible=True):
         r = R_DMA_PLANE + 0x10 * p
         seq += [(r, b & 0xFFFFFFFF), (r + 4, b >> 32), (r + 8, stride), (r + 12, (H << 16) | W)]
     return seq, planes, total
+
+
+def fs_layout(hdr, base):
+    """The frame-state sideband areas of a frame at base (docs/frame-state.md): the MV words (one per 8x8 unit of the
+    MiRows >> 1 x MiCols >> 1 field, lines padded to 8 bytes) then the segment ids (one byte per 4x4 unit, lines padded
+    to 8 bytes). Returns dict(mv_base, mv_rowb, mv_bytes, seg_base, seg_rowb, seg_bytes, total)."""
+    w8, h8 = hdr.MiCols >> 1, hdr.MiRows >> 1
+    mv_rowb = (w8 * 4 + 7) & ~7
+    mv_bytes = mv_rowb * h8
+    seg_rowb = (hdr.MiCols + 7) & ~7
+    seg_bytes = seg_rowb * hdr.MiRows
+    seg_base = (base + mv_bytes + 4095) & ~4095
+    cdf_base = (seg_base + seg_bytes + 4095) & ~4095          # stage B: the frame's saved CDF rows (CDF_AREA_BYTES)
+    return dict(mv_base=base, mv_rowb=mv_rowb, mv_bytes=mv_bytes, seg_base=seg_base, seg_rowb=seg_rowb, seg_bytes=seg_bytes,
+                cdf_base=cdf_base, total=cdf_base + CDF_AREA_BYTES - base)
+
+
+def fs_regs(hdr, base, enable=True):
+    """The register writes that point the sideband DMA at the areas of fs_layout(hdr, base)."""
+    L = fs_layout(hdr, base)
+    seq = [(R_FS_MV_LO, L["mv_base"] & 0xFFFFFFFF), (R_FS_MV_HI, L["mv_base"] >> 32), (R_FS_MV_ROWB, L["mv_rowb"]),
+           (R_FS_SEG_LO, L["seg_base"] & 0xFFFFFFFF), (R_FS_SEG_HI, L["seg_base"] >> 32), (R_FS_SEG_ROWB, L["seg_rowb"]),
+           (R_FS_CFG, int(enable))]
+    return seq, L
+
+
+def ld_regs(seg=None, cdf_base=None, zero_seg=False, mf=None):
+    """Stage B: the loader's registers. seg: (base, rowb) of the segment-id area to load, or None; zero_seg: write a zero
+    map instead; cdf_base: the CDF area to load (None: the host writes rows / defaults as before); mf: mf_table(...)
+    for the projection engine (None: the host writes the motion field). Then START_LOAD."""
+    cfg = (1 if seg else 0) | (2 if cdf_base is not None else 0) | (4 if zero_seg else 0) | (8 if mf is not None else 0)
+    seq = [(R_LD_CFG, cfg)]
+    if seg:
+        seq += [(R_LD_SEG_LO, seg[0] & 0xFFFFFFFF), (R_LD_SEG_HI, seg[0] >> 32), (R_LD_SEG_ROWB, seg[1])]
+    if cdf_base is not None:
+        seq += [(R_LD_CDF_LO, cdf_base & 0xFFFFFFFF), (R_LD_CDF_HI, cdf_base >> 32)]
+    if mf is not None:
+        b = lambda v: v & 0xFF
+        dd = mf["dst"]
+        seq += [(R_MF_NSRC, len(mf["src"])), (R_MF_DST0, sum(b(dd[i]) << (8 * i) for i in range(4))), (R_MF_DST1, sum(b(dd[4 + i]) << (8 * i) for i in range(3)))]
+        for si, sdesc in enumerate(mf["src"]):
+            r = R_MF_SRC + 0x20 * si
+            off = sdesc["off"]
+            seq += [(r, sdesc["base"] & 0xFFFFFFFF), (r + 4, sdesc["base"] >> 32), (r + 8, sdesc["rowb"]),
+                    (r + 12, (int(sdesc["sign"] > 0) << 8) | b(sdesc["tocur"])),
+                    (r + 16, sum(b(off[i]) << (8 * i) for i in range(4))), (r + 20, sum(b(off[4 + i]) << (8 * i) for i in range(3)))]
+    return seq
+
+
+def mf_table(h, slots, mv_area_of, rel):
+    """The projection engine's table for frame header h (spec 7.9's source selection, computed on the host from the order
+    hints): slots[i] has .mi_rows/.mi_cols/.frame_type/.saved_order_hints/.ref_frames (seq_model.Slot), mv_area_of(slot) ->
+    (base, rowb) of that slot's MV sideband or None, rel(a, b) = get_relative_dist. Returns dict(src=[...], dst=[7]) or
+    None when the frame uses no motion field."""
+    import seq_model as sm
+    if h.FrameIsIntra or not h.use_ref_frame_mvs:
+        return None
+    srcs = []
+
+    def project(src, sign):
+        slot = slots[h.ref_frame_idx[src - sm.LAST_FRAME]]
+        if slot.mi_rows != h.MiRows or slot.mi_cols != h.MiCols or slot.frame_type in (sm.INTRA_ONLY_FRAME, sm.KEY_FRAME) or slot.ref_frames is None:
+            return 0
+        area = mv_area_of(slot)
+        if area is None:
+            raise HostError("mf_table: a projecting source has no MV sideband area on the card")
+        tocur = rel(h.OrderHints[src], h.order_hint)
+        srcs.append(dict(base=area[0], rowb=area[1], sign=sign, tocur=tocur,
+                         off=[rel(h.OrderHints[src], slot.saved_order_hints[r]) for r in range(1, 8)]))
+        return 1
+    lastIdx = h.ref_frame_idx[0]
+    if slots[lastIdx].saved_order_hints[sm.ALTREF_FRAME] != h.OrderHints[sm.GOLDEN_FRAME]:
+        project(sm.LAST_FRAME, -1)
+    refStamp = 1                                  # MFMV_STACK_SIZE - 2
+    if rel(h.OrderHints[sm.BWDREF_FRAME], h.order_hint) > 0:
+        if project(sm.BWDREF_FRAME, 1):
+            refStamp -= 1
+    if rel(h.OrderHints[sm.ALTREF2_FRAME], h.order_hint) > 0:
+        if project(sm.ALTREF2_FRAME, 1):
+            refStamp -= 1
+    if rel(h.OrderHints[sm.ALTREF_FRAME], h.order_hint) > 0 and refStamp >= 0:
+        if project(sm.ALTREF_FRAME, 1):
+            refStamp -= 1
+    if refStamp >= 0:
+        project(sm.LAST2_FRAME, -1)
+    return dict(src=srcs, dst=[rel(h.order_hint, h.OrderHints[d]) for d in range(1, 8)])
+
+
+def sv_regs(cdf_base, engine):
+    """Stage B: where engine `engine`'s CDF rows go on START_SAVE (CDF_AREA_BYTES at cdf_base)."""
+    return [(R_SV_CDF_LO, cdf_base & 0xFFFFFFFF), (R_SV_CDF_HI, cdf_base >> 32), (R_SV_ENG, engine)]
+
+
+def fs_unpack_mv(hdr, data, rowb):
+    """The MV area bytes -> (ref_frames, mvs) per 8x8 unit: ref 0 = none (spec NONE), else LAST_FRAME..ALTREF_FRAME;
+    mv = (row, col) in 1/8 samples."""
+    w8, h8 = hdr.MiCols >> 1, hdr.MiRows >> 1
+    refs, mvs = [], []
+    for y8 in range(h8):
+        rr, mm = [], []
+        for x8 in range(w8):
+            w = int.from_bytes(data[y8 * rowb + 4 * x8: y8 * rowb + 4 * x8 + 4], "little")
+            ref = w & 7
+            col = (w >> 3) & 0x1FFF
+            row = (w >> 16) & 0x1FFF
+            col -= 0x2000 if col & 0x1000 else 0
+            row -= 0x2000 if row & 0x1000 else 0
+            rr.append(ref); mm.append((row, col))
+        refs.append(rr); mvs.append(mm)
+    return refs, mvs
+
+
+def fs_unpack_seg(hdr, data, rowb):
+    """The segment-id area bytes -> SegmentIds[row][col] per 4x4 unit."""
+    return [list(data[r * rowb: r * rowb + hdr.MiCols]) for r in range(hdr.MiRows)]
 
 
 def unpack_dma(hdr, data, planes):
@@ -360,6 +493,36 @@ class HostDecoder:
             out[i] = v & ((1 << M.ROW_BITS) - 1)
         return out
 
+    def read_cdf_rows_engine(self, e):
+        """Every CDF row of tile engine e's working store (between tile rows), as a list by address (card-state path)."""
+        ctrl0 = self.rd(R_CTRL)
+        self.wr(R_CTRL, (ctrl0 & ~CTRL_ENG_MASK) | (e << CTRL_ENG_SHIFT))
+        rows = self.read_cdf_rows()
+        self.wr(R_CTRL, ctrl0)
+        return [rows[i] for i in range(M.ROWS)]
+
+    def frame_state_load(self, th, tag, seg=None, cdf_base=None, zero_seg=False, mf=None):
+        """Stage B (docs/frame-state.md): the card loads the frame's segment map and / or CDF rows from a reference slot's
+        areas and projects the motion field (rtl/fs_load.sv, rtl/mf_project.sv), before the frame's first tile. The frame
+        header goes first: the loader and the projection engine take mi_rows / mi_cols from it."""
+        seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th, None, 0)), HDR_WORDS))]
+        seq += [(R_IH + 4 * i, w) for i, w in enumerate(words(pack(IHDR_FIELDS, ihdr_vals(th)), IH_WORDS))]
+        seq += ld_regs(seg=seg, cdf_base=cdf_base, zero_seg=zero_seg, mf=mf)
+        seq.append((R_START, START_LOAD))
+        self.write_seq(seq)
+        st = self.poll(R_FS_STATUS, FS_LD_DONE, FS_LD_DONE, f"{tag}: frame-state load")
+        if st & FS_LD_ERR:
+            raise HostError(f"{tag}: the frame-state loader reported a read error (FS_STATUS 0x{st:08x})")
+        self.stats["ld_frames"] = self.stats.get("ld_frames", 0) + 1
+
+    def frame_state_save(self, cdf_base, engine, tag):
+        """Stage B: tile engine `engine`'s CDF rows (the context tile's, after its tile row) to cdf_base on the card."""
+        self.write_seq(sv_regs(cdf_base, engine) + [(R_START, START_SAVE)])
+        st = self.poll(R_FS_STATUS, FS_SV_DONE, FS_SV_DONE, f"{tag}: CDF save")
+        if st & FS_SV_ERR:
+            raise HostError(f"{tag}: the CDF save reported a write error (FS_STATUS 0x{st:08x})")
+        self.stats["sv_frames"] = self.stats.get("sv_frames", 0) + 1
+
     def write_seq(self, pairs):
         """(address, value) pairs in order, or a prebuilt (addrs, vals) pair of arrays for the fast backend."""
         if self.fast is not None:
@@ -428,6 +591,8 @@ class HostDecoder:
         self.write_seq(seq)
         if rows is None:
             self.write_seq(self.default_rows_seq(th.base_q_idx))
+        elif rows is False:
+            pass                                         # stage B: the card's loader wrote the rows (decode_frames_inter card_load)
         else:
             pairs = []
             for i, row in enumerate(rows):
@@ -490,6 +655,8 @@ class HostDecoder:
         self.write_seq(seq)
         if rows is None:
             self.write_seq(self.default_rows_seq(th0.base_q_idx))
+        elif rows is False:
+            pass                                         # stage B: the card's loader wrote the rows
         else:
             pairs = []
             for i, row in enumerate(rows):
@@ -658,8 +825,12 @@ class HostDecoder:
         self.wr(R_CTRL, 0)
 
     def flush_wait(self, tag):
-        """Window builds: after frame_done, until every released row has been written to DDR."""
+        """Window builds: after frame_done, until every released row has been written to DDR; a write error on any
+        of the frame's flushes (DMA_STATUS bit 2, sticky until the next frame start) is an error here."""
         self.poll(R_DMA_STATUS, DMA_FLUSH_BUSY, 0, f"{tag}: row flush")
+        st = self.rd(R_DMA_STATUS)
+        if st & DMA_ERR:
+            raise HostError(f"{tag}: a row flush reported a write error (DMA_STATUS 0x{st:08x})")
 
     def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False, want_planes=True, window=False):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
@@ -739,14 +910,20 @@ class HostDecoder:
             pos += stride * h
         return mem
 
-    def decode_frames_inter(self, dec, dma, name="stream", pool=8, want_planes=True, model_planes=False):
+    def decode_frames_inter(self, dec, dma, name="stream", pool=8, want_planes=True, model_planes=False, card_state=False, card_load=False):
         """Inter streams on a RING build (docs/picture-memory.md step A; tb/test_dec_host_inter.py is the simulation
         twin): every frame pipelined under the sequencer with CDEF / super-res / LR, flushed into one of `pool`
         frame buffers carved from dma = (base, size, read(offset, n)); the references of later frames are those
         flushed pictures (the slot table points at them). The frame sequence (inherited CDFs, segmentation map,
         motion field) comes from the model, which decodes every frame alongside the RTL (tools/xcheck_frame.py's
         pieces: seconds a frame; the hardware save / project engines are the throughput phase's). Yields
-        (fi, hdr, planes, model planes or None, timings); planes is the flushed picture (None with want_planes=False)."""
+        (fi, hdr, planes, model planes or None, timings); planes is the flushed picture (None with want_planes=False).
+        card_state (docs/frame-state.md, stage A): no model at all; the frame-to-frame state comes back from the card
+        (the MV / segment-id sideband areas written next to each picture, the CDF rows read back after the context
+        tile) and the host only projects the motion field and keeps the slot table. Every frame must fit the image.
+        card_load (stage B, implies card_state): the card also loads the next frame's segment map and CDF rows from
+        those areas itself, saves the context tile's CDF rows next to them and projects the motion field (rtl/fs_load.sv,
+        rtl/mf_project.sv); the host keeps only the slot table and where each slot's areas are."""
         import recon_model as rm
         import seq_model as sm
         import lf_model as lfm
@@ -757,7 +934,8 @@ class HostDecoder:
         base, size, read = dma[:3]
         write = dma[3] if len(dma) > 3 else None            # (offset, bytes): needed to hand the card a model-decoded reference
         stride = (size // pool) & ~0xFFF
-        seq = sm.SequenceState()
+        card_state = card_state or card_load
+        seq = sm.CardSequenceState() if card_state else sm.SequenceState()
         store = {}                                       # slot -> dict(planes (model), upscaled_width, frame_height, mem=[(base, stride)...])
         hdr_iter = iter(dec.frame_headers)
         for fi, tile_idx in enumerate(dec.frames):
@@ -773,7 +951,20 @@ class HostDecoder:
                 break
             if ph is None or ph.show_existing_frame:
                 raise HostError(f"{tag}: no parsed frame header")
-            ctx = seq.start_frame(ph)
+            rows_start = None
+            ld = mf_tab = None
+            if card_load:
+                ld = seq.start_frame_load(ph)            # the slot areas the card loads from (stage B)
+                ctx = None
+                if isinstance(ld["cdf"], tuple):         # the slot holds a frame's starting defaults, no area: the host writes them
+                    rows_start = M.default_rows(ld["cdf"][1])
+                elif ld["cdf"] is not None:
+                    rows_start = False                   # the loader writes them
+                mf_tab = mf_table(ph, seq.slots, lambda sl: getattr(sl, "areas", {}).get("mv"), lambda a, b: sm.SequenceState.relative_dist(ph, a, b))
+            elif card_state:
+                ctx, rows_start = seq.start_frame(ph)
+            else:
+                ctx = seq.start_frame(ph)
             hdr0 = dec.tiles[tile_idx[0]][0]
             n_tile_cols = len({dec.tiles[ti][0].MiColStart for ti in tile_idx})
             # A frame the image cannot take (sb128 / non-4:2:0 / several tile columns / intrabc / too large) is decoded by
@@ -788,6 +979,8 @@ class HostDecoder:
                     model_only, why = True, f"reference slot {missing[0]} holds no card picture"
             if model_only and write is None:
                 raise HostError(f"{tag}: {why} (sb128 / non-4:2:0 / tile columns / intrabc / wider than 1 << FBX or taller than 1 << FBY)")
+            if model_only and card_state:
+                raise HostError(f"{tag}: {why}: the card-state path (stage A) needs every frame on the card")
             t = {}
             t0 = time.monotonic()
             # the flush target: a frame buffer no live reference slot holds
@@ -805,10 +998,22 @@ class HostDecoder:
             if not model_only:
               self.reset()
             if not model_only and not ph.FrameIsIntra:
-                self.write_seq(seg_map_seq(ctx.prev_segment_ids, hdr0.MiRows, hdr0.MiCols))
-                self.write_seq(motion_field_seq(ctx.motion_field, hdr0.MiRows, hdr0.MiCols))
+                if not card_load:                        # stage B: the loader / the projection engine fill the bands
+                    self.write_seq(seg_map_seq(ctx.prev_segment_ids, hdr0.MiRows, hdr0.MiCols))
+                    self.write_seq(motion_field_seq(ctx.motion_field, hdr0.MiRows, hdr0.MiCols))
                 self.write_seq(ref_seq(ph, {s_: dict(planes=e["mem"], upscaled_width=e["upscaled_width"], frame_height=e["frame_height"])
                                            for s_, e in store.items() if e.get("mem")}, hdr0.BitDepth > 8))
+            fsL = None
+            if card_state:
+                # the frame-state sideband areas follow the picture in the same frame buffer
+                fs_seq, fsL = fs_regs(hdr0, target + ((total + 4095) & ~4095))
+                if (fsL["mv_base"] - target) + fsL["total"] > stride:
+                    raise HostError(f"{tag}: picture + frame state ({total} + {fsL['total']} bytes) do not fit a {stride}-byte frame buffer")
+                dseq = dseq + fs_seq
+            if card_load and not model_only:
+                # stage B: the card loads the segment map (or zeroes it) and the CDF rows, then projects the motion field
+                self.frame_state_load(hdr0, tag, seg=ld["seg"], cdf_base=None if isinstance(ld["cdf"], tuple) else ld["cdf"],
+                                      zero_seg=(ld["seg"] is None and not ph.FrameIsIntra), mf=mf_tab)
             if not model_only:
                 self.write_seq([(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in dseq])
                 self.frame_pipe_start(hdr0, n_tile_cols)
@@ -816,29 +1021,46 @@ class HostDecoder:
             t0 = time.monotonic()
             # the model decodes each tile first (the RTL needs the same CDF rows; the sequence state needs the tile's summary)
             frame = {"refs": store}
-            rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None
+            rows = rows_start if card_state else (M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None)
             summaries = []
-            state = xf.FrameState(hdr0)
+            state = None if card_state else xf.FrameState(hdr0)
+            rows_saved = None                            # card_state: the context tile's final CDF rows, read back after its tile row
+
+            def after_context_row(engine):
+                """The context tile's engine just finished its tile row: stage B saves its CDF rows on the card (unless the
+                frame-end update is disabled, when the slot keeps the rows the frame started with), stage A reads them back."""
+                if card_load:
+                    if not getattr(ph, "disable_frame_end_update_cdf", 0):
+                        self.frame_state_save(fsL["cdf_base"], engine, tag)
+                    return True
+                return self.read_cdf_rows_engine(engine)
             # the tiles of a tile row go to the engines together (run_tile_row; one tile = run_tile)
-            pending, pending_dec = [], None
+            pending, pending_dec, pending_k = [], None, []
             for k, ti in enumerate(tile_idx):
                 th, data = dec.tiles[ti]
-                mdec = rm.FrameRecon(th, data, frame, ctx=ctx)
-                mdec.decode_tile()
-                state.add(mdec)
-                summaries.append(sm.TileSummary(mdec, keep_cdf=(k == ph.context_update_tile_id)))
-                t["model"] = t.get("model", 0) + time.monotonic() - t0
-                t0 = time.monotonic()
+                if not card_state:
+                    mdec = rm.FrameRecon(th, data, frame, ctx=ctx)
+                    mdec.decode_tile()
+                    state.add(mdec)
+                    summaries.append(sm.TileSummary(mdec, keep_cdf=(k == ph.context_update_tile_id)))
+                    t["model"] = t.get("model", 0) + time.monotonic() - t0
+                    t0 = time.monotonic()
+                else:
+                    mdec = None
                 if not model_only:
                     if pending and th.MiRowStart != pending[0][0].MiRowStart:
                         self.run_tile_row(pending, f"{tag} tile row {pending[0][0].MiRowStart}", dec=pending_dec, rows=rows)
-                        pending, pending_dec = [], None
-                    pending.append((th, data))
+                        if card_state and ph.context_update_tile_id in pending_k:
+                            rows_saved = after_context_row(pending_k.index(ph.context_update_tile_id))
+                        pending, pending_dec, pending_k = [], None, []
+                    pending.append((th, data)); pending_k.append(k)
                     if pending_dec is None:
                         pending_dec = mdec
                     if k == len(tile_idx) - 1:
                         self.run_tile_row(pending, f"{tag} tile row {pending[0][0].MiRowStart}", dec=pending_dec, rows=rows)
-                        pending, pending_dec = [], None
+                        if card_state and ph.context_update_tile_id in pending_k:
+                            rows_saved = after_context_row(pending_k.index(ph.context_update_tile_id))
+                        pending, pending_dec, pending_k = [], None, []
                 t["tiles"] = t.get("tiles", 0) + time.monotonic() - t0
                 t0 = time.monotonic()
                 del mdec
@@ -852,18 +1074,55 @@ class HostDecoder:
                 self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             t["read"] = time.monotonic() - t0
             t0 = time.monotonic()
-            # the model's final picture: the reference store (and, if asked, the comparison)
-            mp = frame["planes"]
-            lfm.LoopFilter(hdr0, state, mp).apply()
-            deblocked = mp
-            if cdef_on(hdr0):
-                mp = cdm.Cdef(hdr0, state, mp).apply()
-            if hdr0.use_superres:
-                deblocked = srm.upscale(hdr0, deblocked)
-                mp = srm.upscale(hdr0, mp) if mp is not deblocked else deblocked
-            if any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
-                mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
-            seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
+            if card_load:
+                # stage B: the state stays on the card; the slot table records where (7.20's rules: a frame that kept the
+                # previous segment map verbatim or disabled the frame-end CDF update passes its primary slot's area on)
+                t_fs = time.monotonic()
+                self.poll(R_FS_STATUS, 1, 0, f"{tag}: frame-state sideband DMA idle")
+                dis = getattr(ph, "disable_frame_end_update_cdf", 0)
+                verbatim = getattr(ph, "segmentation_enabled", 0) and not getattr(ph, "segmentation_update_map", 1)
+                prim = ld["prim"]
+                seg_a = (prim["seg"] if prim else None) if verbatim else (fsL["seg_base"], fsL["seg_rowb"])
+                cdf_a = ((prim["cdf"] if prim else ("defaults", hdr0.base_q_idx)) if dis else fsL["cdf_base"])
+                seq.end_frame_load(ph, dict(seg=seg_a, cdf=cdf_a, mv=(fsL["mv_base"], fsL["mv_rowb"])))
+                mp = None
+                t["state"] = time.monotonic() - t_fs
+                t["fsb"] = dict(fsL, seg=("loaded" if ld["seg"] else "zeroed" if not ph.FrameIsIntra else "none"),
+                                cdf=("defaults" if rows_start is not False else "loaded"), mf_srcs=(len(mf_tab["src"]) if mf_tab else None), saved=not dis)
+                if mf_tab:
+                    self.stats["mf_srcs"] = self.stats.get("mf_srcs", 0) + len(mf_tab["src"])
+            elif card_state:
+                # the frame's state from the card: the sideband areas (once the sideband DMA is idle) and the CDF rows
+                t_fs = time.monotonic()
+                while self.rd(R_FS_STATUS) & 1:
+                    if time.monotonic() - t_fs > self.poll_timeout:
+                        raise HostError(f"{tag}: the frame-state sideband DMA never went idle (FS_STATUS 0x{self.rd(R_FS_STATUS):08x})")
+                refs8, mvs8 = fs_unpack_mv(hdr0, read(fsL["mv_base"] - base, fsL["mv_bytes"]), fsL["mv_rowb"])
+                seg_ids = fs_unpack_seg(hdr0, read(fsL["seg_base"] - base, fsL["seg_bytes"]), fsL["seg_rowb"])
+                if not getattr(ph, "disable_frame_end_update_cdf", 0) and rows_saved is None:
+                    raise HostError(f"{tag}: the frame updates its CDFs at the end, but the context tile ({ph.context_update_tile_id})'s rows were never read back from the card")
+                if getattr(ph, "disable_frame_end_update_cdf", 0):
+                    import tile_model as tm
+                    rows_end = rows_start if rows_start is not None else M.rows_of(tm.make_cdfs(hdr0.base_q_idx))
+                else:
+                    rows_end = rows_saved
+                seq.end_frame_card(ph, refs8, mvs8, seg_ids, rows_end)
+                mp = None
+                t["state"] = time.monotonic() - t_fs
+                t["fs"] = dict(fsL, cdf_rows=len(rows_end), refs=int(sum(1 for r in refs8 for v in r if v)))   # where the card put this frame's state
+            else:
+                # the model's final picture: the reference store (and, if asked, the comparison)
+                mp = frame["planes"]
+                lfm.LoopFilter(hdr0, state, mp).apply()
+                deblocked = mp
+                if cdef_on(hdr0):
+                    mp = cdm.Cdef(hdr0, state, mp).apply()
+                if hdr0.use_superres:
+                    deblocked = srm.upscale(hdr0, deblocked)
+                    mp = srm.upscale(hdr0, mp) if mp is not deblocked else deblocked
+                if any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
+                    mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
+                seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
             if model_only:
                 mem_at = None if host_only else self.upload_picture(write, target - base, target, hdr0, mp, stride, tag)
                 t["upload"] = time.monotonic() - t0

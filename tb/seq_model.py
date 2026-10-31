@@ -63,6 +63,8 @@ class TileSummary:
 class Slot:
     def __init__(self):
         self.cdfs = None
+        self.rows = None            # CardSequenceState: the slot's CDF rows as the card keeps them (246-bit ints, by address)
+        self.refs8 = self.mvs8 = None   # CardSequenceState: the card's MV sideband as numpy (h8 x w8; h8 x w8 x 2)
         self.mvs = None             # MfMvs [row][col] -> [row, col] (7.19)
         self.ref_frames = None      # MfRefFrames [row][col]
         self.segment_ids = None
@@ -238,3 +240,163 @@ class SequenceState:
             src = self.slots[h.frame_to_show_map_idx]
             for i in range(NUM_REF_FRAMES):
                 self.slots[i] = src                     # slots are never mutated after end_frame builds them: share
+
+
+def _project_np(h, mf, slot, src, dstSign, rel):
+    """SequenceState.project on numpy arrays: slot.refs8 (h8 x w8, 0 = none) and slot.mvs8 (h8 x w8 x 2) are the card's
+    MV sideband; mf is a (8, h8, w8, 2) int32 array (MV_INVALID = hole). Same arithmetic as the scalar version,
+    cells visited in raster order so a later cell's write wins at a shared target. Returns 0 / 1 as project does."""
+    import numpy as np
+    if slot.mi_rows != h.MiRows or slot.mi_cols != h.MiCols or slot.frame_type in (INTRA_ONLY_FRAME, KEY_FRAME):
+        return 0
+    if slot.refs8 is None:
+        return 0
+    w8, h8 = h.MiCols >> 1, h.MiRows >> 1
+    refs = slot.refs8[:h8, :w8]
+    mvs = slot.mvs8[:h8, :w8].astype(np.int64)
+    refToCur = rel(h.OrderHints[src], h.order_hint)
+    # refOffset per source reference (1 .. 7): relative_dist(OrderHints[src], saved_order_hints[srcRef])
+    refOffset_tab = np.array([0] + [rel(h.OrderHints[src], slot.saved_order_hints[r]) for r in range(1, 8)], dtype=np.int64)
+    refOffset = refOffset_tab[refs]
+    posValid = (refs > 0) & (abs(refToCur) <= tm.MAX_FRAME_DISTANCE) & (abs(refOffset) <= tm.MAX_FRAME_DISTANCE) & (refOffset > 0)
+    if not posValid.any():
+        return 1
+    div_mult = np.array(T.Div_Mult, dtype=np.int64)
+
+    def mv_projection(mv, numerator, denominator):            # mv: (..., 2); numerator scalar; denominator (...,)
+        clippedDenominator = np.minimum(tm.MAX_FRAME_DISTANCE, denominator)
+        clippedNumerator = int(tm.clip3(-tm.MAX_FRAME_DISTANCE, tm.MAX_FRAME_DISTANCE, numerator))
+        x = mv * clippedNumerator * div_mult[clippedDenominator][..., None]
+        scaled = np.where(x >= 0, (x + (1 << 13)) >> 14, -((-x + (1 << 13)) >> 14))
+        return np.clip(scaled, -(1 << 14) + 1, (1 << 14) - 1)
+
+    ys, xs = np.nonzero(posValid)
+    mv = mvs[ys, xs]
+    off = refOffset[ys, xs]
+    projMv = mv_projection(mv, refToCur * dstSign, off)
+
+    def project(v8, delta, max8, maxOff8):
+        base8 = (v8 >> 3) << 3
+        offset8 = np.where(delta >= 0, delta >> 6, -((-delta) >> 6))      # 3 + 1 + MI_SIZE_LOG2
+        v = v8 + dstSign * offset8
+        ok = (v >= 0) & (v < max8) & (v >= base8 - maxOff8) & (v < base8 + 8 + maxOff8)
+        return v, ok
+    PosY8, okY = project(ys, projMv[:, 0], h8, tm.MAX_OFFSET_HEIGHT)
+    PosX8, okX = project(xs, projMv[:, 1], w8, tm.MAX_OFFSET_WIDTH)
+    ok = okY & okX
+    if not ok.any():
+        return 1
+    PosY8, PosX8, mv, off = PosY8[ok], PosX8[ok], mv[ok], off[ok]
+    # raster order (ys, xs ascending) = the scalar loop's order: keep the LAST writer of each target
+    tgt = PosY8 * w8 + PosX8
+    _, last = np.unique(tgt[::-1], return_index=True)
+    keep = len(tgt) - 1 - last
+    PosY8, PosX8, mv, off = PosY8[keep], PosX8[keep], mv[keep], off[keep]
+    for dst in range(LAST_FRAME, ALTREF_FRAME + 1):
+        refToDst = rel(h.order_hint, h.OrderHints[dst])
+        mf[dst, PosY8, PosX8] = mv_projection(mv, refToDst, off)
+    return 1
+
+
+class CardSequenceState(SequenceState):
+    """The frame-to-frame state as the card produces it (docs/frame-state.md, stage A): per slot the MV sideband
+    (one {ref, mv} per 8x8 unit, the 7.19 rule applied on the card), the segment-id area and the CDF rows read back
+    from the card's store. No tile is decoded on the host: the projection (7.9) runs here on the card's words, the
+    rest of SequenceState applies unchanged (Slot.ref_frames / mvs hold the card's words at the odd 4x4 positions)."""
+    def start_frame(self, h):
+        """-> (FrameCtx without CDFs, the frame's starting CDF rows or None for the base_q_idx defaults)."""
+        rows = prev_seg = None
+        if h.primary_ref_frame != PRIMARY_REF_NONE:
+            slot = self.slots[h.ref_frame_idx[h.primary_ref_frame]]
+            assert slot.rows is not None, "primary_ref_frame points at a slot no frame has filled"
+            rows = [r & ((1 << 240) - 1) for r in slot.rows]       # load_cdfs: the adaptation counter [245:240] zeroed
+            if h.segmentation_enabled and slot.mi_rows == h.MiRows and slot.mi_cols == h.MiCols and slot.segment_ids is not None:
+                prev_seg = slot.segment_ids
+        motion_field = self.motion_field_estimation(h) if (not h.FrameIsIntra and h.use_ref_frame_mvs) else None
+        return tm.FrameCtx(cdfs=None, prev_segment_ids=prev_seg, motion_field=motion_field), rows
+
+    def motion_field_estimation(self, h):
+        """7.9 on the card's 8x8 words with numpy (_project_np); the result in the scalar layout motion_field_seq takes
+        (mf[ref][y8][x8] = [row, col] or MF_HOLE)."""
+        import numpy as np
+        w8, h8 = h.MiCols >> 1, h.MiRows >> 1
+        mf = np.full((8, h8, w8, 2), MV_INVALID, dtype=np.int32)
+        rel = lambda a, b: self.relative_dist(h, a, b)
+        lastIdx = h.ref_frame_idx[0]
+        if self.slots[lastIdx].saved_order_hints[ALTREF_FRAME] != h.OrderHints[GOLDEN_FRAME]:
+            _project_np(h, mf, self.slots[lastIdx], LAST_FRAME, -1, rel)
+        refStamp = tm.MFMV_STACK_SIZE - 2
+        for src, sign in ((BWDREF_FRAME, 1), (ALTREF2_FRAME, 1), (ALTREF_FRAME, 1)):
+            if src == ALTREF_FRAME and refStamp < 0:
+                continue
+            if rel(h.OrderHints[src], h.order_hint) > 0:
+                if _project_np(h, mf, self.slots[h.ref_frame_idx[src - LAST_FRAME]], src, sign, rel):
+                    refStamp -= 1
+        if refStamp >= 0:
+            _project_np(h, mf, self.slots[h.ref_frame_idx[LAST2_FRAME - LAST_FRAME]], LAST2_FRAME, -1, rel)
+        out = [None] * 8
+        for ref in range(1, 8):
+            a = mf[ref]
+            out[ref] = [[MF_HOLE if a[y, x, 0] == MV_INVALID else (int(a[y, x, 0]), int(a[y, x, 1])) for x in range(w8)] for y in range(h8)]
+        return out
+
+    # ---- stage B (docs/frame-state.md): the words stay on the card; the host keeps where they are
+    def start_frame_load(self, h):
+        """What the card's loader takes from the primary reference slot (load_cdfs / load_previous_segment_ids on the
+        card): dict(prim=that slot's areas or None, seg=(base, rowb) | None, cdf=base | ('defaults', base_q_idx))."""
+        prim = seg = cdf = None
+        if h.primary_ref_frame != PRIMARY_REF_NONE:
+            slot = self.slots[h.ref_frame_idx[h.primary_ref_frame]]
+            prim = getattr(slot, "areas", None)
+            assert prim is not None, "primary_ref_frame points at a slot no card frame has filled"
+            cdf = prim["cdf"]
+            if h.segmentation_enabled and slot.mi_rows == h.MiRows and slot.mi_cols == h.MiCols and prim["seg"] is not None:
+                seg = prim["seg"]
+        return dict(prim=prim, seg=seg, cdf=cdf)
+
+    def end_frame_load(self, h, areas):
+        """7.20 for the slots the frame refreshes: the header fields the projection table needs (mf_table) and where
+        the card keeps the frame's state, areas = dict(seg=(base, rowb) | None, cdf=base | ('defaults', q), mv=(base, rowb))."""
+        for i in range(NUM_REF_FRAMES):
+            if (h.refresh_frame_flags >> i) & 1:
+                s = Slot()
+                s.areas = areas
+                s.ref_frames = ()                        # mf_table: None would mean a slot without MV words
+                s.mi_rows, s.mi_cols = h.MiRows, h.MiCols
+                s.frame_type = h.frame_type
+                s.order_hint = h.order_hint
+                s.saved_order_hints = list(h.OrderHints)
+                self.slots[i] = s
+
+    def end_frame_card(self, h, refs8, mvs8, seg_ids, rows):
+        """refs8 / mvs8: the card's MV sideband (host_regs.fs_unpack_mv); seg_ids: its segment-id area (fs_unpack_seg);
+        rows: the CDF rows to save (the context tile's final rows, or the frame's starting rows when
+        disable_frame_end_update_cdf). 7.19 / 7.20 bookkeeping as SequenceState.end_frame."""
+        R, Cc = h.MiRows, h.MiCols
+        ref_frames = [[NONE] * Cc for _ in range(R)]
+        mvs = [[ZERO_MV] * Cc for _ in range(R)]
+        import numpy as np
+        a_refs = np.array(refs8, dtype=np.int8).reshape(R >> 1, Cc >> 1) if (R >> 1) and (Cc >> 1) else np.zeros((R >> 1, Cc >> 1), np.int8)
+        a_mvs = np.array(mvs8, dtype=np.int16).reshape(R >> 1, Cc >> 1, 2) if (R >> 1) and (Cc >> 1) else np.zeros((R >> 1, Cc >> 1, 2), np.int16)
+        for y8 in range(R >> 1):
+            rr, mm = refs8[y8], mvs8[y8]
+            for x8 in range(Cc >> 1):
+                if rr[x8]:
+                    ref_frames[2 * y8 + 1][2 * x8 + 1] = rr[x8]
+                    mvs[2 * y8 + 1][2 * x8 + 1] = tuple(mm[x8])
+        if h.segmentation_enabled and not h.segmentation_update_map:
+            prev = self.slots[h.ref_frame_idx[h.primary_ref_frame]].segment_ids if h.primary_ref_frame != PRIMARY_REF_NONE else None
+            seg = prev if prev is not None else [[0] * Cc for _ in range(R)]
+        else:
+            seg = seg_ids
+        for i in range(NUM_REF_FRAMES):
+            if (h.refresh_frame_flags >> i) & 1:
+                s = Slot()
+                s.rows = rows
+                s.refs8, s.mvs8 = a_refs, a_mvs
+                s.mvs, s.ref_frames, s.segment_ids = mvs, ref_frames, seg
+                s.mi_rows, s.mi_cols = R, Cc
+                s.frame_type = h.frame_type
+                s.order_hint = h.order_hint
+                s.saved_order_hints = list(h.OrderHints)
+                self.slots[i] = s

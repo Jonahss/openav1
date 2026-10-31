@@ -14,7 +14,7 @@ set root $::env(U200_ROOT)
 set out  $::env(U200_OUT)
 set mhz  $::env(U200_MHZ)
 set part xcu200-fsgd2104-2-e
-set_param general.maxThreads 8
+set_param general.maxThreads [expr {[info exists ::env(U200_THREADS)] ? $::env(U200_THREADS) : 8}]   ;# U200_THREADS: Vivado caps most phases at 8; 16 helps synthesis
 set_param board.repoPaths [list $::env(U200_BOARD_REPO)]
 create_project -force u200 $out/proj -part $part
 set bp [lindex [lsort -dictionary [get_board_parts xilinx.com:au200:part0:*]] end]
@@ -201,6 +201,12 @@ update_compile_order -fileset sources_1
 
 # ---------------------------------------------------------------- runs
 set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+if {[info exists ::env(U200_INCR)] && $::env(U200_INCR) ne ""} {
+    # incremental implementation from an earlier routed checkpoint of the same configuration: unchanged cells keep their
+    # placement and routing (2026-10-30, to cut the 3-hour turnaround of a small RTL change)
+    set_property incremental_checkpoint $::env(U200_INCR) [get_runs impl_1]
+    puts "incremental from: $::env(U200_INCR)"
+}
 if {[info exists ::env(U200_STRATEGY)] && $::env(U200_STRATEGY) ne ""} {
     set_property strategy $::env(U200_STRATEGY) [get_runs impl_1]
     puts "impl strategy: $::env(U200_STRATEGY)"

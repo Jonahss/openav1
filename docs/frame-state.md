@@ -60,3 +60,54 @@ model of what the card now does, and tb/test_dec_host_inter.py compares the card
 - **Stage B (~2.5 days): the card loads.** Segment-map loader, CDF loader, the projection engine; the host writes no
   bands. Same ladder.
 - Stage A is realistic before the symposium (2026-11-04); Stage B is more likely the week after. The deck says which.
+
+## 4. Stage B as built (2026-10-30 evening) and the projection engine's design
+
+Built: `rtl/fs_load.sv` (segment map and CDF rows from the slot's areas into the bands, zero-map mode; START bit 6,
+registers 0x700-0x714) and the CDF save in `dec_host.sv` (engine SV_ENG's rows through the read-back port to SV_CDF,
+START bit 7). The twin's `TS_FSTATE_B=1` mode exercises both: the host writes no rows and no map. The read channel is
+muxed between the loader and ref_fetch (the loader runs before the first tile, so the two never overlap).
+
+**The projection engine (7.9), the last block.** The host already computes every distance the process needs (they are
+functions of the order hints alone), so the engine takes a table, not the rules:
+- per frame: `MF_DST[1..7]` = refToDst for each destination (signed 8), `MF_W8/H8` (from hdr), `MF_SRC_N` (0..5 sources
+  in the spec's order: LAST, BWDREF, ALTREF2, ALTREF, LAST2 with the refStamp rule applied by the host; a source whose
+  saved frame is intra, of another size, or whose distances fail the test is simply left out);
+- per source s: `MF_SRC_BASE/ROWB` (the slot's MV area), `MF_SRC_SIGN` (dstSign), `MF_SRC_TOCUR` (refToCur, signed),
+  `MF_SRC_OFF[1..7]` (refOffset for each saved reference, signed; the engine tests |x| <= 31 and > 0 itself).
+- the job: clear the field (every (dst, y8, x8) invalid: w8 x h8 x 7 writes; 1080p 227 k cycles, 2.3 ms; a per-row
+  valid bitmap would remove it later), then for each source in order read its MV area line by line and, per word,
+  if ref != 0 and the distance test passes: projMv = mv_projection(mv, refToCur * sign, refOffset); (PosY8, PosX8) from
+  block_position (row offsets never leave the 64-pixel band; columns within 8 units); if valid, write
+  mf[dst][PosY8][PosX8] = mv_projection(mv, refToDst[dst], refOffset) for dst = 1..7, seven writes a cell (one
+  multiplier per destination, Div_Mult a 32-entry ROM, round2signed and the clips in logic). Raster order, so a later
+  cell's write wins at a shared target, as the scalar code and _project_np do.
+- cost: reads 1080p: 5 sources x 32 k words = 160 k beats; writes up to 7 per valid cell; at one cell a cycle the
+  whole field is ~0.5 M cycles worst case, 5 ms at 100 MHz, overlapping nothing today (it runs before the first tile)
+  and later the previous frame's filters.
+- verification: the twin in B mode stops writing the motion field; the pictures stay identical (every temporal
+  candidate goes through this band), and a read-back path for mf_band compares the field with _project_np directly.
+
+## 5. The host path for stage B (2026-10-31, `decode.py --card-load`)
+
+`decode_frames_inter(card_load=True)` (implies `card_state`) is stage A's loop with the per-frame state traffic
+removed. The host keeps only the slot table: for each of the 8 slots, the header fields the projection table needs
+(`mf_table`: frame type, size, order hints) and `Slot.areas` = where the card keeps that frame's state (its MV and
+segment-id sideband areas, its saved CDF rows, or `('defaults', base_q_idx)` for a frame that disabled the frame-end
+update and started from defaults). Per frame:
+
+1. `start_frame_load`: the primary reference slot's areas decide the loader's job (segment map if the frame uses
+   segmentation and the slot's map is its size, else a zero map for inter frames; the CDF rows unless the slot holds
+   defaults, which the host writes as before, `rows=M.default_rows(q)`); `mf_table` builds the projection table from
+   the order hints (empty for a frame without a usable source, which still clears the band).
+2. `frame_state_load`: frame header registers (the loader and the engine take `mi_rows` / `mi_cols` from `HDR`), the
+   LD / MF registers, START bit 6, poll `FS_STATUS` bit 3. Then the reference table, DMA + sideband registers and the
+   pipelined frame start as in stage A; the tile rows run with `rows=False` (no CDF writes).
+3. After the context tile's row: `frame_state_save` (SV registers, START bit 7, poll bit 6) into the frame's own CDF
+   area (`fs_layout` puts it behind the segment ids), unless `disable_frame_end_update_cdf`.
+4. Frame end: wait for the sideband DMA, `end_frame_load` records the areas for the refreshed slots with 7.20's two
+   rules (a verbatim-kept segment map and a disabled CDF update both pass the primary slot's area on).
+
+Register traffic per 1080p inter frame drops from ~500 k writes (motion-field band 227 k, CDF rows 13.5 k, segment map
+8 k, plus the 1501-row read-back) to the frame's own headers and ~40 loader / table words. The stage A path
+(`--card-state`) stays as the fallback and the cross-check: both must produce identical pictures.

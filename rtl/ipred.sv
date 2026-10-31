@@ -1,7 +1,7 @@
 // openav1 — intra predictor (AV1 spec 7.11.2), four pixels per clock.
 //
 // The caller loads the prepared edges (AboveRow[0..w+h-1], LeftCol[0..w+h-1], top-left) through
-// the edge write port, sets the parameters and pulses start. The block then
+// the edge write port, sets the parameters and pulses start (both taken one cycle late, see the port register). The block then
 //   1. runs the spec's edge preparation passes in place for directional modes
 //      (filter corner, intra edge filter per side, 2x upsampling per side),
 //   2. for DC, sums the available edges eight per clock and divides in one cycle,
@@ -53,6 +53,23 @@ module ipred #(
     localparam int ESZ  = 260;               // -2 .. 257
 
     localparam logic [3:0] DC_PRED = 0, SMOOTH_PRED = 9, SMOOTH_V_PRED = 10, SMOOTH_H_PRED = 11, PAETH_PRED = 12;
+
+    // Idle-time port register (2026-10-31): the edge write port and start are taken one cycle late. The frame memory's
+    // read data reaches this port from the double-pumped memory's mid-cycle register (frame_mem_uram a_q_r), so the
+    // logic between that register and the first clk register here has half a clk cycle; the U200 image at 100 MHz
+    // missed by 0.21 ns on a_q_r -> the request merge below -> bwdA_r (11 LUT levels, 83 % routing). Registered, the
+    // half cycle holds only the pixel selects of frame_mem_uram and recon_top and the merge has a full cycle. The
+    // block's internal timing is unchanged (every input shifts together); the caller sees busy / done one cycle later
+    // and already waits for done (recon_top R_IP_W).
+    logic            edge_we_q, edge_we4_q, start_q;
+    logic [1:0]      edge_side_q;
+    logic [7:0]      edge_idx_q;
+    logic [PW-1:0]   edge_data_q;
+    logic [4*PW-1:0] edge_data4_q;
+    always_ff @(posedge clk) begin
+        edge_we_q <= edge_we && !rst; edge_we4_q <= edge_we4 && !rst; start_q <= start && !rst;
+        edge_side_q <= edge_side; edge_idx_q <= edge_idx; edge_data_q <= edge_data; edge_data4_q <= edge_data4;
+    end
 
     // Edge storage in four banks each (entry e at bank e & 3, address e >> 2), as distributed RAM: every read site
     // is then a small asynchronous RAM port instead of a 260:1 mux. All writes come from the sequencer below and
@@ -701,11 +718,11 @@ module ipred #(
         for (int r = 0; r < NRQ; r++) begin rq_v[r] = 1'b0; rq_side[r] = 1'b0; rq_idx[r] = '0; rq_d[r] = '0; end
         if (!rst) case (state)
             S_IDLE: begin
-                if (edge_we4)                            // edge_idx is a multiple of 4: entries idx .. idx+3
-                    for (int l = 0; l < 4; l++) post(l, 1'b0, int'(edge_idx) + l, edge_data4[l * PW +: PW]);
-                if (edge_we && edge_side == 2'd0) post(4, 1'b0, int'(edge_idx), edge_data);
-                if (edge_we && edge_side == 2'd1) post(4, 1'b1, int'(edge_idx), edge_data);
-                if (start) begin post(5, 1'b0, -1, TL_in); post(6, 1'b1, -1, TL_in); end
+                if (edge_we4_q)                            // edge_idx_q is a multiple of 4: entries idx .. idx+3
+                    for (int l = 0; l < 4; l++) post(l, 1'b0, int'(edge_idx_q) + l, edge_data4_q[l * PW +: PW]);
+                if (edge_we_q && edge_side_q == 2'd0) post(4, 1'b0, int'(edge_idx_q), edge_data_q);
+                if (edge_we_q && edge_side_q == 2'd1) post(4, 1'b1, int'(edge_idx_q), edge_data_q);
+                if (start_q) begin post(5, 1'b0, -1, TL_in); post(6, 1'b1, -1, TL_in); end
             end
             S_CORNER: if (p_angle > 90 && p_angle < 180 && wh >= 24) begin
                 post(0, 1'b0, -1, corner_v);
@@ -739,13 +756,13 @@ module ipred #(
         end else begin
             case (state)
             S_IDLE: begin
-                if (edge_we) begin
-                    case (edge_side)
+                if (edge_we_q) begin
+                    case (edge_side_q)
                         2'd0, 2'd1: ;                   // posted as edge-write requests below
-                        default: TL_in <= edge_data;
+                        default: TL_in <= edge_data_q;
                     endcase
                 end
-                if (start) begin
+                if (start_q) begin
                     l_mode <= mode; l_fi <= use_filter_intra; l_fimode <= filter_intra_mode;
                     l_log2w <= log2w; l_log2h <= log2h;
                     w <= 7'd1 << log2w; h <= 7'd1 << log2h;

@@ -100,7 +100,7 @@ async def run_tile(ax, th, dec, data, tag, stats, rows=None):
     await write_wide(ax, R_HDR, TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, 0)), HDR_WORDS)
     await write_wide(ax, R_RH, TT.pack(TD.REC_FIELDS, TD.rec_vals(th)), RH_WORDS)
     await write_wide(ax, HR.R_IH, TT.pack(HR.IHDR_FIELDS, HR.ihdr_vals(th)), HR.IH_WORDS)
-    for i, row in enumerate(M.default_rows(th.base_q_idx) if rows is None else rows):
+    for i, row in enumerate([] if rows is False else (M.default_rows(th.base_q_idx) if rows is None else rows)):   # False: the loader wrote them (stage B)
         await write_wide(ax, R_DEF, row, 8)
         await ax.write(R_DEF_ADDR, i)
     await ax.write(R_START, START_TILE)
@@ -149,7 +149,7 @@ async def run_tile_row(ax, tiles, tag, stats, rows=None, chunk=256):
     for e, (th, _, _) in enumerate(tiles):
         await ax.write(HR.R_TILE_COL + 4 * e, (th.MiColEnd << 16) | th.MiColStart)
     await ax.write(HR.R_TILE_ENG, (1 << len(tiles)) - 1)
-    for i, row in enumerate(M.default_rows(th0.base_q_idx) if rows is None else rows):
+    for i, row in enumerate([] if rows is False else (M.default_rows(th0.base_q_idx) if rows is None else rows)):   # False: the loader wrote them (stage B)
         await write_wide(ax, R_DEF, row, 8)
         await ax.write(R_DEF_ADDR, i)
     ctrl0 = (await ax.read(R_CTRL, record=False)) & ~(HR.CTRL_ENG_MASK | CTRL_EOS)   # the previous tile row's EOS must not ride along

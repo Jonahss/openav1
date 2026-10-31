@@ -19,6 +19,8 @@
 #   U200_BOARD_REPO=~/vivado-dl/boards   directory holding au200/<ver>/ (AMD's au200_board_files zip, unpacked)
 #   U200_STRATEGY=        an implementation strategy for a timing-tight build (Performance_ExtraTimingOpt closed the
 #                         decoder at 100 MHz on 2026-10-23; 80 MHz closes under the default strategy)
+#   U200_THREADS=8        general.maxThreads (16 helps synthesis; place/route stay at 8)
+#   U200_INCR=<routed.dcp> incremental implementation from an earlier build of the same configuration
 #   U200_PBLOCK=0         1: keep XDMA in the PCIe clock regions (fpga/u200/pcie_pblock.xdc), for the 100 MHz builds
 #                         whose only misses were the PCIe core's 500 MHz paths into the hard block
 # Output in ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/u200-<tag>/: the Vivado project (proj/), impl_*.rpt, and
@@ -37,7 +39,7 @@ mkdir -p "$out/stubs" "$out/work"
 # the rtl list = synth/vivado/run.sh's plus dec_host and phase_gen (keep in step with fpga/kv260/build.sh)
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq sym_path coef_rd blk_ctx
        pal_syntax mv_mem mf_band seg_band mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
-       mc_tables_pkg mc_filt fb_fetch ref_fetch warp_setup frame_mem_w frame_mem_uram recon_top cdef_pkg lr_pkg mi_store rec_fifo tile_engines lf_top cdef_top lr_top sr_top dec_top
+       mc_tables_pkg mc_filt fb_fetch ref_fetch warp_setup frame_mem_w frame_mem_uram recon_top cdef_pkg lr_pkg mi_store frame_state_w fs_load mf_project rec_fifo tile_engines lf_top cdef_top lr_top sr_top dec_top
        dec_host phase_gen"
 sources="$root/synth/vivado/frame_mem_pr.sv"
 for f in $files; do

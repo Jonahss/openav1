@@ -82,6 +82,8 @@ package syn_pkg;
         logic [7:0]  seg_globalmv_en;          // FeatureEnabled[s][SEG_LVL_GLOBALMV]
         logic        seg_update_map;           // segmentation_update_map (1 when primary_ref_frame is NONE)
         logic        seg_temporal_update;      // segmentation_temporal_update
+        logic [6:0]  ref_dist_neg;             // get_relative_dist(OrderHints[LAST_FRAME + i], OrderHint) < 0 at bit i (7.19: which
+                                               // references the frame-state writer may save; rtl/frame_state_w.sv)
     } ihdr_t;
 
     // Frame-level parameters only the reconstruction stage needs (software fills this in).
