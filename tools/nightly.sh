@@ -16,10 +16,18 @@ run() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the suites 
   [[ -n "${NIGHTLY_ONLY:-}" && ! "$name" =~ ${NIGHTLY_ONLY} ]] && return 0
   local t0=$(date +%s)
   local log="logs/nightly-$tag-$name.log"
-  if env "$@" > "$log" 2>&1 && grep -q "OK:" "$log"; then
+  # Every step is capped (NIGHTLY_STEP_TIMEOUT seconds, default 4 h; the longest step, dec_inter, takes ~2.7 h): on
+  # 2026-10-31 a hung simulation (test4592, intrabc at the top edge) held argon_features for 10.5 h and the rest of
+  # the night with it. SIGINT lets cocotb print what it had; the FAIL line says it was a timeout.
+  local step_rc=0
+  timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "$@" > "$log" 2>&1 || step_rc=$?
+  if [[ $step_rc -eq 0 ]] && grep -q "OK:" "$log"; then
     printf "PASS %-22s %5ss  %s\n" "$name" "$(( $(date +%s) - t0 ))" "$(grep -o 'OK: {.*}' "$log" | tail -1 | cut -c1-140)" >> "$out"
   else
-    printf "FAIL %-22s %5ss  %s\n" "$name" "$(( $(date +%s) - t0 ))" "$(grep -m1 'AssertionError\|%Error' "$log" | cut -c1-160)" >> "$out"
+    local why
+    if [[ $step_rc -eq 124 || $step_rc -eq 137 ]]; then why="TIMEOUT after ${NIGHTLY_STEP_TIMEOUT:-14400}s: $(grep -E '^\[rc\]' "$log" | tail -1 | cut -c1-120)"
+    else why=$(grep -m1 'AssertionError\|%Error' "$log" | cut -c1-160); fi
+    printf "FAIL %-22s %5ss  %s\n" "$name" "$(( $(date +%s) - t0 ))" "$why" >> "$out"
     rc=1
   fi
 }

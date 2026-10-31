@@ -693,6 +693,14 @@ module recon_top
                             kk = 18'(signed'({2'b0, yb})) - y0m3;
                             if (kk < 18'sd0) kk = 18'sd0;
                             if (kk > 18'(signed'({11'd0, nrow}))) kk = 18'(signed'({11'd0, nrow}));
+                            // Nothing flushed yet (yb == 0: the whole-picture build, or the first FRAME_WIN superblock rows): every
+                            // patch row is in fb0, including the rows above the picture, which clamp to line 0 and line 0 is in
+                            // the ring. The difference alone gave kk = -y0m3 > 0 for a source at the top edge and sent ref_fetch
+                            // to DDR for rows the picture has not flushed (2026-10-31: test4592, a 969x128 intrabc frame, hung the
+                            // nightly's whole-picture harness, which has no AXI slave, 10.5 h in B_MC_FETCH; the inter harness
+                            // passed because the copy never reads the 3 margin rows). With rows flushed (yb > 0) line 0 is in DDR
+                            // and the difference counts the clamped rows correctly.
+                            if (yb == 16'd0) kk = 18'sd0;
                             rf_r_lo <= 7'd0; rf_r_hi <= 7'(kk); ff_r_lo <= 7'(kk); ff_r_hi <= nrow;
                         end else begin
                             rf_r_lo <= 7'd0; rf_r_hi <= 7'd0;                                       // all rows
@@ -1497,9 +1505,16 @@ module recon_top
         rc_hb <= rst ? 0 : rc_hb + 1;
         if (sb_start)
             $display("[rc] t=%0t sb_start (%0d,%0d) hdr cols %0d..%0d rows %0d..%0d", $time, ev_sb_r, ev_sb_c, hdr.mi_col_start, hdr.mi_col_end, hdr.mi_row_start, hdr.mi_row_end);
-        if (busy && rc_hb[17:0] == 18'd0)
+        if (busy && rc_hb[17:0] == 18'd0) begin
             $display("[rc] t=%0t hb: rs %0d bst %0d blk_ready %0d mi_blk_busy %0d mi_tx_busy %0d | sb (%0d,%0d) hdr cols %0d..%0d rows %0d..%0d sb128 %0d | ev valid %0d kind %0d",
                      $time, rs, bst, blk_ready, mi_blk_busy, mi_tx_busy, l_sb_r, l_sb_c, hdr.mi_col_start, hdr.mi_col_end, hdr.mi_row_start, hdr.mi_row_end, hdr.sb128, ev_valid, ev_kind);
+            // the MC fetch wait, for a heartbeat stuck in B_MC_FETCH (2026-10-31: test4592, the nightly's whole-picture
+            // intrabc hang): which loader is waited for, its state and the patch rows each was asked for
+            if (bst == B_MC_FETCH)
+                $display("[rc]   mc_fetch: ibc %0d | rf req_valid %0d ready %0d wait %0d done %0d st %0d rows [%0d,%0d) x0 %0d y0 %0d w %0d h %0d | ff req_valid %0d ready %0d pend %0d wait %0d done %0d st %0d rows [%0d,%0d)",
+                         mc_ibc, rf_req_valid, rf_req_ready, rf_wait, rf_done, g_inter.u_rf.st, rf_r_lo, rf_r_hi, rf_x0, rf_y0, rf_w, rf_h,
+                         ff_req_valid, ff_req_ready, ff_pend, ff_wait, ff_done, g_inter.u_ff.st, ff_r_lo, ff_r_hi);
+        end
     end
 `endif
     assign mi_tx_plane = t.plane; assign mi_tx_sz = t.txsz;
