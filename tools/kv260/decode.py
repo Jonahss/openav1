@@ -173,6 +173,8 @@ def main():
     ap.add_argument("--inter", action="store_true", help="RING build with inter: every stage under the sequencer, the model decoding alongside for the "
                     "frame sequence, references = the flushed pictures in a pool of --pool frame buffers in the DMA region; implies --window")
     ap.add_argument("--pool", type=int, default=8, help="with --inter: frame buffers carved from the DMA region (>= 8 reference slots + 1)")
+    ap.add_argument("--card-state", action="store_true", help="with --inter: no model on the host; the frame-to-frame state comes back from the card "
+                    "(the sideband areas + CDF read-back, docs/frame-state.md stage A); every frame must fit the image")
     ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
     ap.add_argument("--dma-size", type=lambda x: int(x, 0), default=256 << 20)
     ap.add_argument("--xdma", type=int, metavar="N", help="Alveo U200 host path: registers through /dev/xdmaN_user, pictures in the card's DDR4 "
