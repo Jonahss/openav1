@@ -97,6 +97,7 @@ module recon_top
     input  logic [215:0] cur_planes,          // the current picture's flush layout, plane p: {stride[31:0], base[39:0]} at [72p +: 72]
     input  logic        cur_fmt16,            //    (intra block copy sources the window has already flushed)
     output logic        mc_unsup,             // sticky: an inter block used a feature beyond stage 2a (masks, OBMC, warp, scaled references)
+    output logic          mem_err,              // sticky: a reference read answered with an AXI error (ref_fetch err); the picture is not trustworthy
     output logic [39:0] m_axi_araddr,
     output logic [7:0]  m_axi_arlen,
     output logic [2:0]  m_axi_arsize,
@@ -260,6 +261,7 @@ module recon_top
     logic [1:0]  u_i0, u_i1;
     // ref_fetch request / mc_filt run
     logic        rf_req_valid, rf_req_ready, rf_done, rf_err, rf_lst;
+    always_ff @(posedge clk) if (rst) mem_err <= 1'b0; else if (rf_err) mem_err <= 1'b1;   // 2026-10-30 audit: a failed reference read was collected as pixels and never reported
     logic        blk_inter;                                  // b.is_inter, constant 0 in the INTER = 0 build
     assign blk_inter = (INTER != 0) && b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
@@ -509,6 +511,7 @@ module recon_top
         if (rst) begin
             bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
+            ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
             // motion compensation states (inter blocks): compiled out at INTER = 0
             case (bst)

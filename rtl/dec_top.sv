@@ -80,6 +80,7 @@ module dec_top
     output logic              tile_done,           // syntax finished and every block reconstructed (1-cycle pulse)
     output logic              tile_done_lvl,       // same, held until the next tile_start (for slow pollers)
     output logic              unsupported,
+    output logic              mem_err,             // a reference read failed on the AXI bus (recon_top): the frame is not trustworthy
     output logic [31:0]       perf_syn_stall,      // tile cycles the syntax decoder held a transform block waiting for reconstruction
     output logic [31:0]       perf_rec_idle,       // tile cycles reconstruction had nothing to do (syntax-bound)
     // frame sequencer (pipe_en = 1): the in-loop filters trail the tile decoder by superblock rows; software
@@ -263,7 +264,7 @@ module dec_top
                                             .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata, .fb_rdata4,
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
                                             .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
-                                            .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .cur_planes, .cur_fmt16, .mc_unsup,
+                                            .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .cur_planes, .cur_fmt16, .mc_unsup, .mem_err,
                                             .m_axi_araddr(rf_araddr), .m_axi_arlen(rf_arlen), .m_axi_arsize(rf_arsize), .m_axi_arburst(rf_arburst), .m_axi_arcache(rf_arcache), .m_axi_arprot(rf_arprot),
                                             .m_axi_arvalid(rf_arvalid), .m_axi_arready(rf_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(rf_rvalid), .m_axi_rready(rf_rready));
 
@@ -571,7 +572,7 @@ module dec_top
             win_unsup <= 1'b1;                                   // the fb0 ring is too shallow for the stages in flight: recon(r), LF(r-1),
                                                                  // CDEF(r-2), LR(r-3) and the hold slot would deadlock (2026-10-24, WIN 3 + CDEF + LR)
     end
-    assign unsupported = ts_unsup || win_unsup || mc_unsup;        // mc_unsup: an inter feature beyond stage 2a
+    assign unsupported = ts_unsup || win_unsup || mc_unsup || mem_err;   // mc_unsup: an inter feature beyond stage 2a; mem_err: a failed reference read
     always_ff @(posedge clk) begin
         row_final <= 1'b0;
         if (rst || frame_start) begin

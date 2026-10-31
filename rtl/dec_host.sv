@@ -68,7 +68,8 @@
 //   0x1C4 FS_MV_LO / 0x1C8 FS_MV_HI    RW  MV area base (40-bit); 0x1CC FS_MV_ROWB  RW  bytes per 8x8 line (multiple of 8)
 //   0x1D0 FS_SEG_LO / 0x1D4 FS_SEG_HI  RW  segment-id area base;  0x1D8 FS_SEG_ROWB RW  bytes per 4x4 line (multiple of 8)
 //   0x1DC FS_STATUS  R   bit 0 sideband busy, 1 sideband error (BRESP), 2 load busy, 3 load done (sticky), 4 load error,
-//                       5 save busy, 6 save done (sticky), 7 save error, [23:16] sideband rows written since the frame start
+//                       5 save busy, 6 save done (sticky), 7 save error, 8 a reference read failed on the AXI bus (sticky, also
+//                       STATUS bit 2 unsupported), [23:16] sideband rows written since the frame start
 //   Frame-state loader / CDF save (rtl/fs_load.sv, stage B): START bit 6 loads the segment map and / or the CDF rows from
 //   the reference slot's areas (before the frame's first tile); START bit 7 saves engine SV_ENG's CDF rows to SV_CDF
 //   (after the context tile's row, before the next tile row starts):
@@ -253,6 +254,7 @@ module dec_host
     logic           sv_busy, sv_done_s, sv_err, sv_rb_en, sv_rb_l1;
     logic [CDF_AW-1:0] sv_row;
     logic [255:0]   sv_data;
+    logic           mem_err;                                 // recon_top: a reference read failed (also raises STATUS unsupported)
     // the projection engine's table (rtl/mf_project.sv): 5 sources x (base, rowb, sign + refToCur, 7 refOffsets), 7 refToDst
     logic [31:0]    mf_nsrc_r;
     logic [199:0]   mf_src_base;
@@ -275,7 +277,7 @@ module dec_host
         .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]), .cur_planes, .cur_fmt16(fmt16),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
-        .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .perf_syn_stall, .perf_rec_idle,
+        .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .mem_err, .perf_syn_stall, .perf_rec_idle,
         .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done, .frame_done_lvl,
         .row_final, .row_final_idx, .flush_done,
         .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_line, .fs_rd_beat, .fs_rd_buf, .fs_rd_data,
@@ -821,7 +823,7 @@ module dec_host
                     10'h074: s_axi_rdata <= fs_seg_base[31:0];
                     10'h075: s_axi_rdata <= {24'd0, fs_seg_base[39:32]};
                     10'h076: s_axi_rdata <= {16'd0, fs_seg_rowb};
-                    10'h077: s_axi_rdata <= {8'd0, fs_rows, 8'd0, sv_err, sv_done_s, sv_busy, ld_err, ld_done_s, ld_busy, fs_err, fs_active || fs_pend};
+                    10'h077: s_axi_rdata <= {8'd0, fs_rows, 7'd0, mem_err, sv_err, sv_done_s, sv_busy, ld_err, ld_done_s, ld_busy, fs_err, fs_active || fs_pend};
                     10'h1C0: s_axi_rdata <= ld_cfg_r;
                     10'h1C1: s_axi_rdata <= ld_seg_base[31:0];
                     10'h1C2: s_axi_rdata <= {24'd0, ld_seg_base[39:32]};

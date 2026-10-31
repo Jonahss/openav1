@@ -364,7 +364,7 @@ module tile_syntax
     end
 
     assign tile_busy = (st != T_IDLE);
-    assign unsupported = b_unsup;
+    assign unsupported = b_unsup | cf_nonconf;   // a Golomb prefix past the limit (coef_rd) is a malformed stream: say so, do not decode on (2026-10-30 audit)
     assign sb_start_o = sb_start; assign sb_r_o = sb_r; assign sb_c_o = sb_c;
     assign p_r = top.r; assign p_c = top.c; assign p_bs = top.bs;
 
