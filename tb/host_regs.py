@@ -747,8 +747,12 @@ class HostDecoder:
         self.wr(R_CTRL, 0)
 
     def flush_wait(self, tag):
-        """Window builds: after frame_done, until every released row has been written to DDR."""
+        """Window builds: after frame_done, until every released row has been written to DDR; a write error on any
+        of the frame's flushes (DMA_STATUS bit 2, sticky until the next frame start) is an error here."""
         self.poll(R_DMA_STATUS, DMA_FLUSH_BUSY, 0, f"{tag}: row flush")
+        st = self.rd(R_DMA_STATUS)
+        if st & DMA_ERR:
+            raise HostError(f"{tag}: a row flush reported a write error (DMA_STATUS 0x{st:08x})")
 
     def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False, want_planes=True, window=False):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)

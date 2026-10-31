@@ -58,7 +58,8 @@
 //                       the planes before START.frame and wait for DMA_STATUS bit 3 to clear after frame_done)
 //   0x184 DMA_START W   any write starts a run (the decoder must be idle: the engine owns the frame memory's host
 //                       port while it runs, and data reads through HDATA* wait)
-//   0x188 DMA_STATUS R  bit 0 busy, 1 done (sticky, cleared by a start), 2 error (a BRESP other than OKAY, sticky),
+//   0x188 DMA_STATUS R  bit 0 busy, 1 done (sticky, cleared by a start), 2 error (a BRESP other than OKAY, sticky until the
+//                       next frame start or software DMA start: an auto flush does not clear it),
 //                       3 flush busy (rows queued or being written), [23:16] rows flushed since the last frame start
 //   0x18C DMA_BEATS  R  64-bit beats written by the last run
 //   Frame-state sideband (rtl/frame_state_w.sv, docs/frame-state.md; INTER window builds): per finished superblock row
@@ -465,14 +466,14 @@ module dec_host
             if (row_final && !fq_full) begin fq[fq_w[2:0]] <= row_final_idx; fq_w <= fq_w + 1'b1; end
             if (start[1]) begin
                 for (int p = 0; p < 3; p++) begin fl_addr[p] <= dma_base[p]; fl_y[p] <= '0; end
-                fl_rows <= '0;
+                fl_rows <= '0; dma_err <= 1'b0;              // the error bit covers the whole frame's flushes (2026-10-30 audit)
             end
             case (ds)
                 D_IDLE: if (fs_active || fs_go) ;              // the sideband engine owns the write channel
                 else if (dma_start) begin
                     dma_busy <= 1'b1; dma_done <= 1'b0; dma_err <= 1'b0; dma_beats <= '0; d_plane <= 2'd0; fl_run <= 1'b0; ds <= D_PLANE;
                 end else if (fl_auto && !fq_empty) begin     // a released superblock row: its lines of every plane
-                    dma_busy <= 1'b1; dma_err <= 1'b0; d_plane <= 2'd0; fl_run <= 1'b1; fq_r <= fq_r + 1'b1; ds <= D_PLANE;
+                    dma_busy <= 1'b1; d_plane <= 2'd0; fl_run <= 1'b1; fq_r <= fq_r + 1'b1; ds <= D_PLANE;   // dma_err stays: sticky over the frame's flushes
                 end
                 D_PLANE: begin                               // first line of plane d_plane in this run
                     d_row_addr <= fl_run ? fl_addr[d_plane] : dma_base[d_plane];

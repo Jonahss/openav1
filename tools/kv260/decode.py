@@ -199,7 +199,9 @@ def main():
         d.feed_annexb(data)
     else:
         d.feed_temporal_unit(data)
-    shown = d.shown_frames()                     # coded-frame index of each output picture, in output order
+    shown = d.shown_frames()                     # coded-frame index of each output picture, in output order (a coded frame
+    import collections                           # shown twice, or shown later through show_existing_frame, appears where it is displayed)
+    owed = collections.Counter(shown)            # displays still owed per coded frame
     out = open(args.out, "wb") if args.out else None
     y4m = open(args.y4m, "wb") if args.y4m else None
     y4m_hdr = None                               # the first shown frame's (width, height, colour space) once written
@@ -212,11 +214,11 @@ def main():
         fps = f"{fps}:1"
     ref = Path(args.ref).read_bytes() if args.ref else None
     ref_off = 0
-    ref_frames = {}                              # coded frame -> reference byte range, in output order
+    ref_events = []                              # per output picture: its reference byte range (dav1d writes output order)
     if ref is not None:
         for k in shown:
             h_k = d.tiles[d.frames[k][0]][0]
-            ref_frames[k] = (ref_off, ref_off + frame_bytes(h_k))
+            ref_events.append((ref_off, ref_off + frame_bytes(h_k)))
             ref_off += frame_bytes(h_k)
         if ref_off != len(ref):
             print(f"warning: reference holds {len(ref)} bytes, the stream's shown frames need {ref_off}")
@@ -257,7 +259,7 @@ def main():
     def frames():
         if args.inter:
             for fi, hdr, planes, mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read, stage.write), name=Path(args.stream).name, card_state=args.card_state,
-                                                                   pool=args.pool, want_planes=bool(out or ref)):
+                                                                   pool=args.pool, want_planes=bool(out or ref or y4m)):
                 t["lf"] = t.get("filters", 0.0)
                 t["tiles"] = t.get("tiles", 0.0) + t.get("model", 0.0) + t.get("setup", 0.0)
                 t["read"] = t.get("read", 0.0)
@@ -267,7 +269,50 @@ def main():
         else:
             yield from host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
                                           dma=(stage.base, stage.read) if stage else None, pipe=args.pipe,
-                                          want_planes=bool(out or ref) or stage is None, window=args.window)
+                                          want_planes=bool(out or ref or y4m) or stage is None, window=args.window)
+    pending = {}                                 # coded frame -> (hdr, planes, from the model?) until its last display
+    ev_next = 0                                  # the next output picture to emit
+    n_model_bad = 0
+
+    def emit():
+        """Output pictures in display order, as far as the decoded frames allow: the comparison with the reference
+        and the -o / --y4m writes happen here, once per display (show_existing_frame repeats a picture)."""
+        nonlocal ev_next, n_bad_frames, n_model_bad, y4m_hdr
+        while ev_next < len(shown) and shown[ev_next] in pending:
+            k = shown[ev_next]
+            hdr_k, planes_k, from_model = pending[k]
+            line = f"  shown #{ev_next} = coded frame {k}" + (" (model picture)" if from_model else "")
+            if ref is not None and planes_k is not None:
+                lo, hi = ref_events[ev_next]
+                bad = compare(ref[lo:hi], hdr_k, planes_k)
+                if bad:
+                    if from_model: n_model_bad += 1
+                    else: n_bad_frames += 1
+                    line += f": {len(bad)} samples differ (plane, y, x, {'model' if from_model else 'board'}, reference): {bad[:args.max_bad]}"
+                else:
+                    line += ": identical to the reference"
+            if planes_k is not None and out is not None:
+                write_planes(out, hdr_k, planes_k)
+            if planes_k is not None and y4m is not None:
+                w, h = plane_size(hdr_k, 0)
+                cs = ("mono" if hdr_k.NumPlanes == 1 else "420jpeg" if hdr_k.subsampling_x and hdr_k.subsampling_y
+                      else "422" if hdr_k.subsampling_x else "444") + (f"p{hdr_k.BitDepth}" if hdr_k.BitDepth > 8 else "")
+                if cs == "monop10": cs = "mono10"
+                if y4m_hdr is None:
+                    y4m_hdr = (w, h, cs)
+                    y4m.write(f"YUV4MPEG2 W{w} H{h} F{fps} Ip A1:1 C{cs}\n".encode())
+                if (w, h, cs) != y4m_hdr:
+                    line += f" (not in the .y4m: {w}x{h} {cs} vs {y4m_hdr[0]}x{y4m_hdr[1]} {y4m_hdr[2]})"
+                else:
+                    y4m.write(b"FRAME\n")
+                    write_planes(y4m, hdr_k, planes_k)
+            if ref is not None or out is not None or y4m is not None:
+                print(line, flush=True)
+            owed[k] -= 1
+            if owed[k] == 0:
+                del pending[k]
+            ev_next += 1
+
     try:
         for fi, hdr, planes, t in frames():
             if stage is not None and args.show and fast is not None:
@@ -282,42 +327,21 @@ def main():
             if t.get("model_only"):
                 # the image could not take this frame: the model decoded it and the card got its picture as a reference
                 line = f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}: model only ({t['model_only']})"
-                if fi in ref_frames:
-                    lo, hi = ref_frames[fi]
-                    mbad = compare(ref[lo:hi], hdr, t["model_planes"])
-                    line += f": model {'differs from' if mbad else 'identical to'} the reference" + (f" ({len(mbad)} samples)" if mbad else "")
                 print(line, flush=True)
+                if owed[fi]:
+                    pending[fi] = (hdr, t["model_planes"], True)
+                    emit()
                 continue
-            if fi in ref_frames:
-                lo, hi = ref_frames[fi]
-                bad = compare(ref[lo:hi], hdr, planes)
-                if bad:
-                    n_bad_frames += 1
-                    line += f": {len(bad)} samples differ (plane, y, x, board, reference): {bad[:args.max_bad]}"
-                else:
-                    line += ": identical to the reference"
-            elif ref is not None:
-                line += " (not shown: no reference picture)"
+            if owed[fi] == 0:
+                line += " (never shown)"
             if t.get("fs"):
                 f_ = t["fs"]
                 line += (f"\n        state -> card DDR: MV words at 0x{f_['mv_base']:x} ({f_['mv_bytes']} bytes, {f_['refs']} cells with a saved reference), "
                          f"segment ids at 0x{f_['seg_base']:x} ({f_['seg_bytes']} bytes); {f_['cdf_rows']} CDF rows read back")
             print(line, flush=True)
-            if out is not None and fi in shown:
-                write_planes(out, hdr, planes)
-            if y4m is not None and fi in shown:
-                w, h = plane_size(hdr, 0)
-                cs = ("mono" if hdr.NumPlanes == 1 else "420jpeg" if hdr.subsampling_x and hdr.subsampling_y
-                      else "422" if hdr.subsampling_x else "444") + (f"p{hdr.BitDepth}" if hdr.BitDepth > 8 else "")
-                if cs == "monop10": cs = "mono10"
-                if y4m_hdr is None:
-                    y4m_hdr = (w, h, cs)
-                    y4m.write(f"YUV4MPEG2 W{w} H{h} F{fps} Ip A1:1 C{cs}\n".encode())
-                if (w, h, cs) != y4m_hdr:
-                    print(f"warning: frame {fi} is {w}x{h} {cs}, the .y4m is {y4m_hdr[0]}x{y4m_hdr[1]} {y4m_hdr[2]}: frame skipped")
-                else:
-                    y4m.write(b"FRAME\n")
-                    write_planes(y4m, hdr, planes)
+            if owed[fi]:
+                pending[fi] = (hdr, planes, False)
+                emit()
     except HostError as e:
         print(f"error: {e}")
         sys.exit(2)
@@ -329,9 +353,10 @@ def main():
     s = host.stats
     dt_all = time.monotonic() - t_all
     print(f"{s['frames']} frames, {s['tiles']} tiles, {s['bytes']} stream bytes, {s['pixels']} samples read back, "
-          f"{s['writes']} register writes + {s['reads']} reads in {dt_all:.1f}s ({s['frames'] / dt_all:.1f} fps)"
-          + (f"; {n_bad_frames} frame(s) differ from the reference" if ref is not None else ""))
-    sys.exit(1 if n_bad_frames else 0)
+          f"{s['writes']} register writes + {s['reads']} reads in {dt_all:.1f}s ({s['frames'] / dt_all:.1f} fps); "
+          f"{ev_next} of {len(shown)} pictures output"
+          + (f"; {n_bad_frames} board picture(s) and {n_model_bad} model picture(s) differ from the reference" if ref is not None else ""))
+    sys.exit(1 if (n_bad_frames or n_model_bad) else 0)
 
 
 if __name__ == "__main__":
