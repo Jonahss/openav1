@@ -298,6 +298,10 @@ def main():
                     line += ": identical to the reference"
             elif ref is not None:
                 line += " (not shown: no reference picture)"
+            if t.get("fs"):
+                f_ = t["fs"]
+                line += (f"\n        state -> card DDR: MV words at 0x{f_['mv_base']:x} ({f_['mv_bytes']} bytes, {f_['refs']} cells with a saved reference), "
+                         f"segment ids at 0x{f_['seg_base']:x} ({f_['seg_bytes']} bytes); {f_['cdf_rows']} CDF rows read back")
             print(line, flush=True)
             if out is not None and fi in shown:
                 write_planes(out, hdr, planes)

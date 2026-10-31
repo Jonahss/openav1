@@ -981,6 +981,7 @@ class HostDecoder:
                 seq.end_frame_card(ph, refs8, mvs8, seg_ids, rows_end)
                 mp = None
                 t["state"] = time.monotonic() - t_fs
+                t["fs"] = dict(fsL, cdf_rows=len(rows_end), refs=int(sum(1 for r in refs8 for v in r if v)))   # where the card put this frame's state
             else:
                 # the model's final picture: the reference store (and, if asked, the comparison)
                 mp = frame["planes"]
