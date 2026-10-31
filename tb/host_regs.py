@@ -1028,7 +1028,9 @@ class HostDecoder:
                         raise HostError(f"{tag}: the frame-state sideband DMA never went idle (FS_STATUS 0x{self.rd(R_FS_STATUS):08x})")
                 refs8, mvs8 = fs_unpack_mv(hdr0, read(fsL["mv_base"] - base, fsL["mv_bytes"]), fsL["mv_rowb"])
                 seg_ids = fs_unpack_seg(hdr0, read(fsL["seg_base"] - base, fsL["seg_bytes"]), fsL["seg_rowb"])
-                if getattr(ph, "disable_frame_end_update_cdf", 0) or rows_saved is None:
+                if not getattr(ph, "disable_frame_end_update_cdf", 0) and rows_saved is None:
+                    raise HostError(f"{tag}: the frame updates its CDFs at the end, but the context tile ({ph.context_update_tile_id})'s rows were never read back from the card")
+                if getattr(ph, "disable_frame_end_update_cdf", 0):
                     import tile_model as tm
                     rows_end = rows_start if rows_start is not None else M.rows_of(tm.make_cdfs(hdr0.base_q_idx))
                 else:
