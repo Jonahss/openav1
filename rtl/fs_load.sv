@@ -13,7 +13,7 @@ module fs_load
     input  logic          rst,
     input  hdr_t          hdr,
     input  logic          ld_start,            // one-cycle pulse (dec_host START bit 6)
-    input  logic [1:0]    ld_cfg,              // bit 0: the segment map, bit 1: the CDF rows
+    input  logic [2:0]    ld_cfg,              // bit 0: the segment map from DDR, bit 1: the CDF rows, bit 2: zero the segment map
     input  logic [39:0]   ld_seg_base,
     input  logic [15:0]   ld_seg_rowb,         // bytes per 4x4 line (multiple of 8)
     input  logic [39:0]   ld_cdf_base,
@@ -43,7 +43,7 @@ module fs_load
     output logic [CDF_AW-1:0] def_addr,
     output logic [245:0]  def_data
 );
-    typedef enum logic [2:0] {L_IDLE, L_SEG_LINE, L_CDF_START, L_AR, L_R, L_NEXT, L_DONE} lstate_t;
+    typedef enum logic [2:0] {L_IDLE, L_SEG_LINE, L_CDF_START, L_AR, L_R, L_NEXT, L_DONE, L_ZERO} lstate_t;
     lstate_t        st;
     logic           job;                                     // 0 segment map, 1 CDF rows
     logic [39:0]    addr;                                    // the next beat's address
@@ -82,6 +82,7 @@ module fs_load
                 L_IDLE: if (ld_start) begin
                     ld_err <= 1'b0; line <= '0; row <= '0; row_q <= '0;
                     if (ld_cfg[0]) begin job <= 1'b0; addr <= ld_seg_base; st <= L_SEG_LINE; end
+                    else if (ld_cfg[2]) begin job <= 1'b0; beat <= '0; st <= L_ZERO; end
                     else if (ld_cfg[1]) begin job <= 1'b1; st <= L_CDF_START; end
                     else st <= L_DONE;
                 end
@@ -123,6 +124,15 @@ module fs_load
                     if (beats != 32'd0) st <= L_AR;
                     else if (!job) begin line <= line + MIW'(1); st <= L_SEG_LINE; end
                     else st <= L_DONE;
+                end
+                L_ZERO: begin                                // PrevSegmentIds = zeros: one zero word per 16 units per line
+                    sp_we <= 1'b1; sp_wrow <= line; sp_wwc <= (MIW-4)'(beat); sp_wdata <= '0;
+                    if (MIW'({beat[MIW-5:0], 4'd0}) + MIW'(16) < hdr.mi_cols) beat <= beat + 16'd1;
+                    else begin
+                        beat <= '0;
+                        if (line + MIW'(1) < hdr.mi_rows) line <= line + MIW'(1);
+                        else begin st <= ld_cfg[1] ? L_CDF_START : L_DONE; if (ld_cfg[1]) job <= 1'b1; end
+                    end
                 end
                 L_DONE: begin ld_done <= 1'b1; st <= L_IDLE; end
                 default: st <= L_IDLE;

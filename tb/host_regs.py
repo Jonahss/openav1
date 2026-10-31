@@ -194,6 +194,11 @@ R_MF_ADDR, R_MF_DATA, R_SP_ADDR, R_SP_DATA0, R_SP_DATA1 = 0x300, 0x304, 0x308, 0
 R_SLOT, R_REF_SLOT, R_REF_CFG = 0x400, 0x600, 0x604        # reference slot table (0x40 per slot, 0x10 per plane), ref_frame_idx, fmt16
 R_FS_CFG, R_FS_MV_LO, R_FS_MV_HI, R_FS_MV_ROWB = 0x1C0, 0x1C4, 0x1C8, 0x1CC   # frame-state sideband (rtl/frame_state_w.sv)
 R_FS_SEG_LO, R_FS_SEG_HI, R_FS_SEG_ROWB, R_FS_STATUS = 0x1D0, 0x1D4, 0x1D8, 0x1DC
+R_LD_CFG, R_LD_SEG_LO, R_LD_SEG_HI, R_LD_SEG_ROWB, R_LD_CDF_LO, R_LD_CDF_HI = 0x700, 0x704, 0x708, 0x70C, 0x710, 0x714   # stage B loader
+R_SV_CDF_LO, R_SV_CDF_HI, R_SV_ENG = 0x718, 0x71C, 0x720
+START_LOAD, START_SAVE = 1 << 6, 1 << 7
+FS_LD_BUSY, FS_LD_DONE, FS_LD_ERR, FS_SV_BUSY, FS_SV_DONE, FS_SV_ERR = 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7
+CDF_AREA_BYTES = M.ROWS * 32
 ID_VALUE = 0xA71D0001
 ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
 START_TILE, START_FRAME, START_LF = 1, 2, 4
@@ -302,6 +307,23 @@ def fs_regs(hdr, base, enable=True):
            (R_FS_SEG_LO, L["seg_base"] & 0xFFFFFFFF), (R_FS_SEG_HI, L["seg_base"] >> 32), (R_FS_SEG_ROWB, L["seg_rowb"]),
            (R_FS_CFG, int(enable))]
     return seq, L
+
+
+def ld_regs(seg=None, cdf_base=None, zero_seg=False):
+    """Stage B: the loader's registers. seg: (base, rowb) of the segment-id area to load, or None; zero_seg: write a zero
+    map instead; cdf_base: the CDF area to load (None: the host writes rows / defaults as before). Then START_LOAD."""
+    cfg = (1 if seg else 0) | (2 if cdf_base is not None else 0) | (4 if zero_seg else 0)
+    seq = [(R_LD_CFG, cfg)]
+    if seg:
+        seq += [(R_LD_SEG_LO, seg[0] & 0xFFFFFFFF), (R_LD_SEG_HI, seg[0] >> 32), (R_LD_SEG_ROWB, seg[1])]
+    if cdf_base is not None:
+        seq += [(R_LD_CDF_LO, cdf_base & 0xFFFFFFFF), (R_LD_CDF_HI, cdf_base >> 32)]
+    return seq
+
+
+def sv_regs(cdf_base, engine):
+    """Stage B: where engine `engine`'s CDF rows go on START_SAVE (CDF_AREA_BYTES at cdf_base)."""
+    return [(R_SV_CDF_LO, cdf_base & 0xFFFFFFFF), (R_SV_CDF_HI, cdf_base >> 32), (R_SV_ENG, engine)]
 
 
 def fs_unpack_mv(hdr, data, rowb):

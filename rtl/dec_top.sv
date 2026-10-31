@@ -97,7 +97,7 @@ module dec_top
     // frame-state sideband (rtl/frame_state_w.sv, INTER builds): finished rows for dec_host's sideband DMA + its read port
     // frame-state loader (rtl/fs_load.sv, stage B): the segment map and the CDF rows from the reference slot's areas
     input  logic              ld_start,
-    input  logic [1:0]        ld_cfg,
+    input  logic [2:0]        ld_cfg,
     input  logic [39:0]       ld_seg_base,
     input  logic [15:0]       ld_seg_rowb,
     input  logic [39:0]       ld_cdf_base,

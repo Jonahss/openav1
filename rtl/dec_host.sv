@@ -71,7 +71,7 @@
 //   Frame-state loader / CDF save (rtl/fs_load.sv, stage B): START bit 6 loads the segment map and / or the CDF rows from
 //   the reference slot's areas (before the frame's first tile); START bit 7 saves engine SV_ENG's CDF rows to SV_CDF
 //   (after the context tile's row, before the next tile row starts):
-//   0x700 LD_CFG     RW  bit 0 load the segment map, bit 1 load the CDF rows
+//   0x700 LD_CFG     RW  bit 0 load the segment map, bit 1 load the CDF rows, bit 2 zero the segment map (PrevSegmentIds = 0)
 //   0x704 LD_SEG_LO / 0x708 LD_SEG_HI  RW  segment-id area; 0x70C LD_SEG_ROWB RW bytes per 4x4 line
 //   0x710 LD_CDF_LO / 0x714 LD_CDF_HI  RW  CDF area to load (CDF_ROWS x 32 bytes)
 //   0x718 SV_CDF_LO / 0x71C SV_CDF_HI  RW  CDF area to save into;  0x720 SV_ENG RW the engine whose rows are saved
@@ -252,7 +252,7 @@ module dec_host
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
-        .ld_start(start[6]), .ld_cfg(ld_cfg_r[1:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
+        .ld_start(start[6]), .ld_cfg(ld_cfg_r[2:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
         .mf_we, .mf_wref(mf_addr_r[26:24]), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
         .mf_wrow(signed'(mf_wd[31:16])), .mf_wcol(signed'(mf_wd[15:0])),
         .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),

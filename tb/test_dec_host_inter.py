@@ -30,7 +30,7 @@ import superres_model as srm                                 # noqa: E402
 import cdf_map as M                                          # noqa: E402
 import obu_parser as op                                      # noqa: E402
 import host_regs as HR                                       # noqa: E402
-from host_regs import (HostDecoder, R_ID, R_CTRL, R_CFG, R_DMA_STATUS, CTRL_RST, DMA_FLUSH_BUSY, DMA_ERR, dma_regs, unpack_dma, plane_size)   # noqa: E402
+from host_regs import (R_START, HostDecoder, R_ID, R_CTRL, R_CFG, R_DMA_STATUS, CTRL_RST, DMA_FLUSH_BUSY, DMA_ERR, dma_regs, unpack_dma, plane_size)   # noqa: E402
 from axil import AxiLite                                     # noqa: E402
 from axi_mem import AxiMem                                   # noqa: E402
 
@@ -63,6 +63,21 @@ def block_at(blocks, hdr, plane, x, y):
             return (f"block r{b['r']} c{b['c']} size {b['size']} skip {b['skip']} inter {b.get('inter')} ymode {b['ymode']} ref {b.get('ref')} "
                     f"mvs {b.get('mvs')} mm {b.get('motion_mode')} ct {b.get('compound_type')} interp {b.get('interp')} seg {b['seg']}")
     return "no block"
+
+
+async def cdf_save(ax, dut, cdf_area, engine, tag, stats):
+    """Stage B: engine `engine`'s CDF rows to cdf_area (START_SAVE), right after the context tile's row."""
+    await write_seq(ax, HR.sv_regs(cdf_area, engine))
+    await ax.write(R_START, HR.START_SAVE)
+    for _ in range(20000):
+        stv = await ax.read(HR.R_FS_STATUS)
+        if stv & HR.FS_SV_DONE:
+            break
+        await ClockCycles(dut.clk, 20)
+    else:
+        raise AssertionError(f"{tag}: the CDF save never finished (FS_STATUS 0x{stv:08x})")
+    assert not (stv & HR.FS_SV_ERR), f"{tag}: the CDF save reported a write error"
+    stats["sv_frames"] = stats.get("sv_frames", 0) + 1
 
 
 async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, deblocked=None, blocks=None, visible=True):
@@ -247,6 +262,8 @@ async def dec_host_inter_vs_model(dut):
         name = Path(path).name
         seq = sm.SequenceState()
         store = {}                                           # slot -> store_entry
+        fsb = os.environ.get("TS_FSTATE_B") == "1"           # stage B: the card loads the segment map and the CDF rows itself
+        slot_areas = {}                                      # slot -> dict(seg=(base, rowb) | None, cdf=base | None)
         slot_mem = {}                                        # slot -> (gen, [(base, stride) per plane]) of the model picture loaded at the slot's own address
         hdr_iter = iter(d.frame_headers)
         for fi, tile_idx in enumerate(d.frames):
@@ -273,15 +290,38 @@ async def dec_host_inter_vs_model(dut):
             # ---- the model decodes the frame (the RTL follows tile by tile unless model_only)
             frame = {"refs": store}
             decs, summaries = [], []
-            rows = M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None
+            rows = False if loaded_cdf else (M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None)
+            cdf_area = flush_base + 0x1C00_0000 if not model_only else None      # stage B: this frame's saved CDF rows
+            pending_k = []
             if not model_only:
                 await ax.write(R_CTRL, CTRL_RST)
                 await ClockCycles(dut.clk, 4)
                 await ax.write(R_CTRL, 0)
                 fmt16 = th0.BitDepth > 8
+                loaded_cdf = False
+                if fsb:
+                    # stage B: the loader reads the primary slot's areas (written by the card in earlier frames)
+                    prim = slot_areas.get(ph.ref_frame_idx[ph.primary_ref_frame]) if ph.primary_ref_frame != sm.PRIMARY_REF_NONE else None
+                    seg_ld = prim["seg"] if (ctx.prev_segment_ids is not None and prim and prim.get("seg")) else None
+                    cdf_ld = prim["cdf"] if (ctx.cdfs is not None and prim and prim.get("cdf") is not None) else None
+                    assert (ctx.prev_segment_ids is None) == (seg_ld is None), f"{tag}: the model has a previous segment map but no slot area holds one"
+                    assert (ctx.cdfs is None) == (cdf_ld is None), f"{tag}: the model inherits CDFs but no slot area holds them"
+                    await write_seq(ax, HR.ld_regs(seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra)))
+                    await ax.write(R_START, HR.START_LOAD)
+                    for _ in range(20000):
+                        stv = await ax.read(HR.R_FS_STATUS)
+                        if stv & HR.FS_LD_DONE:
+                            break
+                        await ClockCycles(dut.clk, 20)
+                    else:
+                        raise AssertionError(f"{tag}: the frame-state loader never finished (FS_STATUS 0x{stv:08x})")
+                    assert not (stv & HR.FS_LD_ERR), f"{tag}: the frame-state loader reported a read error"
+                    loaded_cdf = cdf_ld is not None
+                    stats["ld_frames"] = stats.get("ld_frames", 0) + 1
                 if not ph.FrameIsIntra:
                     # the bands and the slot table before the frame; references the RTL never flushed go in at a slot address
-                    await write_seq(ax, HR.seg_map_seq(ctx.prev_segment_ids, th0.MiRows, th0.MiCols))
+                    if not fsb:
+                        await write_seq(ax, HR.seg_map_seq(ctx.prev_segment_ids, th0.MiRows, th0.MiCols))
                     await write_seq(ax, HR.motion_field_seq(ctx.motion_field, th0.MiRows, th0.MiCols))
                     ref_store = {}
                     for i in range(7):
@@ -318,11 +358,15 @@ async def dec_host_inter_vs_model(dut):
                 if not model_only:
                     if pending and th.MiRowStart != pending[0][0].MiRowStart:
                         await TH.run_tile_row(ax, pending, f"{tag} tile row {pending[0][0].MiRowStart}", stats, rows=rows)
-                        pending = []
-                    pending.append((th, dec, data))
+                        if fsb and ph.context_update_tile_id in pending_k and not getattr(ph, "disable_frame_end_update_cdf", 0):
+                            await cdf_save(ax, dut, cdf_area, pending_k.index(ph.context_update_tile_id), tag, stats)
+                        pending, pending_k = [], []
+                    pending.append((th, dec, data)); pending_k.append(k)
                     if k == len(tile_idx) - 1:
                         await TH.run_tile_row(ax, pending, f"{tag} tile row {pending[0][0].MiRowStart}", stats, rows=rows)
-                        pending = []
+                        if fsb and ph.context_update_tile_id in pending_k and not getattr(ph, "disable_frame_end_update_cdf", 0):
+                            await cdf_save(ax, dut, cdf_area, pending_k.index(ph.context_update_tile_id), tag, stats)
+                        pending, pending_k = [], []
             # ---- the in-loop filters: the sequencer runs them, the model follows (LF in place: frame["planes"] = deblocked)
             pre = [[row[:] for row in p_] for p_ in frame["planes"]] if not model_only else None
             t_mf = time.monotonic()                       # pure-Python LF/CDEF/SR/LR: minutes at 1080p, hours with LR on every plane
@@ -368,9 +412,18 @@ async def dec_host_inter_vs_model(dut):
                 stats["fs_frames"] = stats.get("fs_frames", 0) + 1
             planes_ref = TI.ref_planes_of(th0, planes)
             entry = store_entry(th0, ph, planes_ref, None if os.environ.get("TS_REFS_FROM_MODEL") == "1" else layout, fi)
+            if fsb and not model_only:
+                # the slot's areas for later frames (7.20): the map is this frame's unless it kept the previous one verbatim;
+                # the CDF rows are the saved ones unless the frame-end update was disabled (then the ones it started with)
+                primA = slot_areas.get(ph.ref_frame_idx[ph.primary_ref_frame]) if ph.primary_ref_frame != sm.PRIMARY_REF_NONE else None
+                seg_a = (primA["seg"] if primA else None) if (getattr(ph, "segmentation_enabled", 0) and not getattr(ph, "segmentation_update_map", 1)) else (fsL["seg_base"], fsL["seg_rowb"])
+                cdf_a = (primA["cdf"] if primA else None) if getattr(ph, "disable_frame_end_update_cdf", 0) else cdf_area
+                areas = dict(seg=seg_a, cdf=cdf_a)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
                     store[i] = entry
+                    if fsb and not model_only:
+                        slot_areas[i] = areas
             if debug:
                 dut._log.info(f"{tag}: picture {len(planes_ref[0][0])}x{len(planes_ref[0])} -> slots {[i for i in range(8) if (ph.refresh_frame_flags >> i) & 1]}"
                               f"{' at ' + hex(layout[0][0]) if layout else ' (model only)'}")
