@@ -302,8 +302,10 @@ async def dec_host_inter_vs_model(dut):
                     prim = slot_areas.get(ph.ref_frame_idx[ph.primary_ref_frame]) if ph.primary_ref_frame != sm.PRIMARY_REF_NONE else None
                     seg_ld = prim["seg"] if (ctx.prev_segment_ids is not None and prim and prim.get("seg")) else None
                     cdf_ld = prim["cdf"] if (ctx.cdfs is not None and prim and prim.get("cdf") is not None) else None
+                    if isinstance(cdf_ld, tuple):            # ("defaults", base_q_idx): the slot holds a frame's starting defaults, no area
+                        cdf_ld = None
                     assert (ctx.prev_segment_ids is None) == (seg_ld is None), f"{tag}: the model has a previous segment map but no slot area holds one"
-                    assert (ctx.cdfs is None) == (cdf_ld is None), f"{tag}: the model inherits CDFs but no slot area holds them"
+                    assert ctx.cdfs is None or cdf_ld is not None or (prim and isinstance(prim.get("cdf"), tuple)), f"{tag}: the model inherits CDFs but no slot area holds them"
                     await write_seq(ax, HR.ld_regs(seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra)))
                     await ax.write(R_START, HR.START_LOAD)
                     for _ in range(20000):
@@ -418,7 +420,7 @@ async def dec_host_inter_vs_model(dut):
                 # the CDF rows are the saved ones unless the frame-end update was disabled (then the ones it started with)
                 primA = slot_areas.get(ph.ref_frame_idx[ph.primary_ref_frame]) if ph.primary_ref_frame != sm.PRIMARY_REF_NONE else None
                 seg_a = (primA["seg"] if primA else None) if (getattr(ph, "segmentation_enabled", 0) and not getattr(ph, "segmentation_update_map", 1)) else (fsL["seg_base"], fsL["seg_rowb"])
-                cdf_a = (primA["cdf"] if primA else None) if getattr(ph, "disable_frame_end_update_cdf", 0) else cdf_area
+                cdf_a = ((primA["cdf"] if primA else ("defaults", th0.base_q_idx)) if getattr(ph, "disable_frame_end_update_cdf", 0) else cdf_area)
                 areas = dict(seg=seg_a, cdf=cdf_a)
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:

@@ -43,7 +43,7 @@ module fs_load
     output logic [CDF_AW-1:0] def_addr,
     output logic [245:0]  def_data
 );
-    typedef enum logic [2:0] {L_IDLE, L_SEG_LINE, L_CDF_START, L_AR, L_R, L_NEXT, L_DONE, L_ZERO} lstate_t;
+    typedef enum logic [3:0] {L_IDLE, L_SEG_LINE, L_CDF_START, L_LEN, L_AR, L_R, L_NEXT, L_DONE, L_ZERO} lstate_t;
     lstate_t        st;
     logic           job;                                     // 0 segment map, 1 CDF rows
     logic [39:0]    addr;                                    // the next beat's address
@@ -88,11 +88,12 @@ module fs_load
                 end
                 L_SEG_LINE: begin                            // one 4x4 line: ld_seg_rowb / 8 beats from the running address
                     beats <= 32'(ld_seg_rowb >> 3); beat <= '0; acc <= '0;
-                    st <= (line < hdr.mi_rows && ld_seg_rowb != 16'd0) ? L_AR : (ld_cfg[1] ? L_CDF_START : L_DONE);
+                    st <= (line < hdr.mi_rows && ld_seg_rowb != 16'd0) ? L_LEN : (ld_cfg[1] ? L_CDF_START : L_DONE);
                     if (!(line < hdr.mi_rows && ld_seg_rowb != 16'd0) && ld_cfg[1]) job <= 1'b1;
                 end
-                L_CDF_START: begin addr <= ld_cdf_base; beats <= 32'(CDF_ROWS) * 32'd4; row <= '0; row_q <= '0; st <= L_AR; end
-                L_AR: begin len <= burst_len; cnt <= '0; if (m_axi_arready) st <= L_R; end
+                L_CDF_START: begin addr <= ld_cdf_base; beats <= 32'(CDF_ROWS) * 32'd4; row <= '0; row_q <= '0; st <= L_LEN; end
+                L_LEN: begin len <= burst_len; cnt <= '0; st <= L_AR; end   // arlen settled a cycle before arvalid (the sideband DMA's lesson)
+                L_AR: if (m_axi_arready) st <= L_R;
                 L_R: if (m_axi_rvalid) begin
                     if (m_axi_rresp[1]) ld_err <= 1'b1;
                     addr <= addr + 40'd8; beats <= beats - 32'd1; cnt <= cnt + 5'd1;
@@ -121,7 +122,7 @@ module fs_load
                     if (m_axi_rlast) st <= L_NEXT;
                 end
                 L_NEXT: begin
-                    if (beats != 32'd0) st <= L_AR;
+                    if (beats != 32'd0) st <= L_LEN;
                     else if (!job) begin line <= line + MIW'(1); st <= L_SEG_LINE; end
                     else st <= L_DONE;
                 end
