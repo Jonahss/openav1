@@ -4,7 +4,7 @@
 // model decoding alongside.
 //   MV sideband (spec 7.19 motion field motion vector storage): one 32-bit word per 8x8 luma unit, taken from the
 //     block that covers the unit's odd 4x4 (2*y8+1, 2*x8+1): {3'd0, mv_row[12:0], mv_col[12:0], ref[2:0]} with
-//     ref = 0 (none) or LAST_FRAME..ALTREF_FRAME = 1..7: the first of the block's two references whose relative
+//     ref = 0 (none) or LAST_FRAME..ALTREF_FRAME = 1..7: the last of the block's two references (list 1 over list 0) whose relative
 //     distance to this frame is negative (ihdr.ref_dist_neg, one bit per reference, from the host) and whose MV
 //     is within REFMVS_LIMIT (|mv| <= 4095). Two units per 64-bit DDR beat, the even unit in the low word.
 //   Segment-id sideband (spec SegmentIds, saved as the slot's segmentation map): one byte per 4x4 unit, 8 per beat.
@@ -102,8 +102,10 @@ module frame_state_w
               && (b.mv_row <= 18'sd4095) && (b.mv_row >= -18'sd4095) && (b.mv_col <= 18'sd4095) && (b.mv_col >= -18'sd4095);
         ok1 = b.is_inter && !b.intrabc && (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7) && dneg[3'(b.ref1 - 4'd1)]
               && (b.mv1_row <= 18'sd4095) && (b.mv1_row >= -18'sd4095) && (b.mv1_col <= 18'sd4095) && (b.mv1_col >= -18'sd4095);
-        if (ok0)      w = {b.mv_row[12:0], b.mv_col[12:0], b.ref0[2:0]};
-        else if (ok1) w = {b.mv1_row[12:0], b.mv1_col[12:0], b.ref1[2:0]};
+        // 7.19 loops over the two lists without a break: the LAST qualifying list is the one saved (a compound block
+        // with both references in the past saves list 1; the model and the twin agree, inter_obmc frame 2, 2026-10-30)
+        if (ok1)      w = {b.mv1_row[12:0], b.mv1_col[12:0], b.ref1[2:0]};
+        else if (ok0) w = {b.mv_row[12:0], b.mv_col[12:0], b.ref0[2:0]};
         else          w = '0;
         return w;
     endfunction
