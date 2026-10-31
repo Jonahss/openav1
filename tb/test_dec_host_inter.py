@@ -290,10 +290,8 @@ async def dec_host_inter_vs_model(dut):
             # ---- the model decodes the frame (the RTL follows tile by tile unless model_only)
             frame = {"refs": store}
             decs, summaries = [], []
-            rows = False if loaded_cdf else (M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None)
-            cdf_area = flush_base + 0x1C00_0000 if not model_only else None      # stage B: this frame's saved CDF rows
-            pending_k = []
             loaded_cdf = False
+            cdf_area = None
             if not model_only:
                 await ax.write(R_CTRL, CTRL_RST)
                 await ClockCycles(dut.clk, 4)
@@ -348,6 +346,9 @@ async def dec_host_inter_vs_model(dut):
                 fs_seq, fsL = HR.fs_regs(th0, flush_base + 0x1800_0000)
                 await write_seq(ax, fs_seq)
                 await TH.pipe_start(ax, th0, n_tile_cols, flush_base, mem, clear=False, visible=not th0.allow_intrabc)
+            rows = False if loaded_cdf else (M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None)   # False: the loader wrote them
+            cdf_area = flush_base + 0x1C00_0000 if not model_only else None      # stage B: this frame's saved CDF rows
+            pending_k = []
             pending = []                                      # the tiles of a tile row go to the engines together
             for k, ti in enumerate(tile_idx):
                 th, data = d.tiles[ti]
