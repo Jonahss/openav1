@@ -95,6 +95,15 @@ module dec_top
     output logic [SBW-1:0]    row_final_idx,
     input  logic              flush_done,          // 1-cycle pulse: the oldest released row is in DDR
     // frame-state sideband (rtl/frame_state_w.sv, INTER builds): finished rows for dec_host's sideband DMA + its read port
+    // frame-state loader (rtl/fs_load.sv, stage B): the segment map and the CDF rows from the reference slot's areas
+    input  logic              ld_start,
+    input  logic [1:0]        ld_cfg,
+    input  logic [39:0]       ld_seg_base,
+    input  logic [15:0]       ld_seg_rowb,
+    input  logic [39:0]       ld_cdf_base,
+    output logic              ld_busy,
+    output logic              ld_done,
+    output logic              ld_err,
     output logic              fs_row_ready,
     output logic [SBW-1:0]    fs_row_idx,
     input  logic              fs_done,
@@ -143,11 +152,47 @@ module dec_top
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
     // the motion-field and segmentation-map bands hold the PREVIOUS frame's whole picture (the host writes them before the
     // frame), so they are full-height whenever inter is built; the window build trims them only at INTER = 0 (unused there)
+    // ---- the frame-state loader (rtl/fs_load.sv): the read channel belongs to it while it runs (before the first tile),
+    // to ref_fetch otherwise; its band and CDF writes merge with the host's register writes
+    logic           def_we_i, sp_we_i;
+    logic [CDF_AW-1:0] def_addr_i; logic [245:0] def_data_i;
+    logic [MIW-1:0] sp_wrow_i; logic [MIW-5:0] sp_wwc_i; logic [47:0] sp_wdata_i;
+    logic [39:0]    rf_araddr, ld_araddr; logic [7:0] rf_arlen, ld_arlen; logic [2:0] rf_arsize, ld_arsize; logic [1:0] rf_arburst, ld_arburst;
+    logic [3:0]     rf_arcache, ld_arcache; logic [2:0] rf_arprot, ld_arprot; logic rf_arvalid, ld_arvalid, rf_arready, ld_arready, rf_rvalid, ld_rvalid, rf_rready, ld_rready;
+    logic           ld_sp_we, ld_def_we; logic [MIW-1:0] ld_sp_wrow; logic [MIW-5:0] ld_sp_wwc; logic [47:0] ld_sp_wdata; logic [CDF_AW-1:0] ld_def_addr; logic [245:0] ld_def_data;
+    if (INTER != 0 && FRAME_WIN > 0) begin : g_fsl
+        fs_load u_fsl (.clk, .rst, .hdr, .ld_start, .ld_cfg, .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
+            .m_axi_araddr(ld_araddr), .m_axi_arlen(ld_arlen), .m_axi_arsize(ld_arsize), .m_axi_arburst(ld_arburst), .m_axi_arcache(ld_arcache), .m_axi_arprot(ld_arprot),
+            .m_axi_arvalid(ld_arvalid), .m_axi_arready(ld_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(ld_rvalid), .m_axi_rready(ld_rready),
+            .sp_we(ld_sp_we), .sp_wrow(ld_sp_wrow), .sp_wwc(ld_sp_wwc), .sp_wdata(ld_sp_wdata), .def_we(ld_def_we), .def_addr(ld_def_addr), .def_data(ld_def_data));
+    end else begin : g_nofsl
+        assign ld_busy = 1'b0; assign ld_done = 1'b0; assign ld_err = 1'b0;
+        assign ld_araddr = '0; assign ld_arlen = '0; assign ld_arsize = '0; assign ld_arburst = '0; assign ld_arcache = '0; assign ld_arprot = '0;
+        assign ld_arvalid = 1'b0; assign ld_rready = 1'b0;
+        assign ld_sp_we = 1'b0; assign ld_sp_wrow = '0; assign ld_sp_wwc = '0; assign ld_sp_wdata = '0; assign ld_def_we = 1'b0; assign ld_def_addr = '0; assign ld_def_data = '0;
+    end
+    assign m_axi_araddr  = ld_busy ? ld_araddr  : rf_araddr;
+    assign m_axi_arlen   = ld_busy ? ld_arlen   : rf_arlen;
+    assign m_axi_arsize  = ld_busy ? ld_arsize  : rf_arsize;
+    assign m_axi_arburst = ld_busy ? ld_arburst : rf_arburst;
+    assign m_axi_arcache = ld_busy ? ld_arcache : rf_arcache;
+    assign m_axi_arprot  = ld_busy ? ld_arprot  : rf_arprot;
+    assign m_axi_arvalid = ld_busy ? ld_arvalid : rf_arvalid;
+    assign m_axi_rready  = ld_busy ? ld_rready  : rf_rready;
+    assign ld_arready = ld_busy && m_axi_arready;  assign rf_arready = !ld_busy && m_axi_arready;
+    assign ld_rvalid  = ld_busy && m_axi_rvalid;   assign rf_rvalid  = !ld_busy && m_axi_rvalid;
+    assign def_we_i   = def_we | ld_def_we;
+    assign def_addr_i = ld_def_we ? ld_def_addr : def_addr;
+    assign def_data_i = ld_def_we ? ld_def_data : def_data;
+    assign sp_we_i    = sp_we | ld_sp_we;
+    assign sp_wrow_i  = ld_sp_we ? ld_sp_wrow : sp_wrow;
+    assign sp_wwc_i   = ld_sp_we ? ld_sp_wwc : sp_wwc;
+    assign sp_wdata_i = ld_sp_we ? ld_sp_wdata : sp_wdata;
     tile_engines #(.TE(TE), .INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R((FRAME_WIN > 0 && INTER == 0) ? 4 + SB128 : FBY - 3), .MFL2C(FBX - 3),
                    .SPL2R((FRAME_WIN > 0 && INTER == 0) ? 5 + SB128 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
                    .clk, .rst, .hdr, .ihdr, .eng_mask, .col_start, .col_end,
-                   .in_data, .in_valid, .in_ready, .in_eos, .def_we, .def_addr, .def_data, .rb_en, .rb_addr, .rb_sel, .rb_data,
-                   .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
+                   .in_data, .in_valid, .in_ready, .in_eos, .def_we(def_we_i), .def_addr(def_addr_i), .def_data(def_data_i), .rb_en, .rb_addr, .rb_sel, .rb_data,
+                   .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we(sp_we_i), .sp_wrow(sp_wrow_i), .sp_wwc(sp_wwc_i), .sp_wdata(sp_wdata_i),
                    .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                    .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight, .rc_busy, .rc_col_start, .rc_col_end,
                    .q_slot_r, .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx,
@@ -185,8 +230,8 @@ module dec_top
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
                                             .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
                                             .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .cur_planes, .cur_fmt16, .mc_unsup,
-                                            .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot,
-                                            .m_axi_arvalid, .m_axi_arready, .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready);
+                                            .m_axi_araddr(rf_araddr), .m_axi_arlen(rf_arlen), .m_axi_arsize(rf_arsize), .m_axi_arburst(rf_arburst), .m_axi_arcache(rf_arcache), .m_axi_arprot(rf_arprot),
+                                            .m_axi_arvalid(rf_arvalid), .m_axi_arready(rf_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(rf_rvalid), .m_axi_rready(rf_rready));
 
     // per-4x4 state + deblocking filter; the filter owns the frame buffer port while it runs
     logic [MIW-1:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;

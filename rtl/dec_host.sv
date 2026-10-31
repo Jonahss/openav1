@@ -66,7 +66,15 @@
 //   0x1C0 FS_CFG     RW  bit 0 enable (rows are dropped when clear)
 //   0x1C4 FS_MV_LO / 0x1C8 FS_MV_HI    RW  MV area base (40-bit); 0x1CC FS_MV_ROWB  RW  bytes per 8x8 line (multiple of 8)
 //   0x1D0 FS_SEG_LO / 0x1D4 FS_SEG_HI  RW  segment-id area base;  0x1D8 FS_SEG_ROWB RW  bytes per 4x4 line (multiple of 8)
-//   0x1DC FS_STATUS  R   bit 0 busy, bit 1 error (BRESP), [23:16] rows written since the frame start
+//   0x1DC FS_STATUS  R   bit 0 sideband busy, 1 sideband error (BRESP), 2 load busy, 3 load done (sticky), 4 load error,
+//                       5 save busy, 6 save done (sticky), 7 save error, [23:16] sideband rows written since the frame start
+//   Frame-state loader / CDF save (rtl/fs_load.sv, stage B): START bit 6 loads the segment map and / or the CDF rows from
+//   the reference slot's areas (before the frame's first tile); START bit 7 saves engine SV_ENG's CDF rows to SV_CDF
+//   (after the context tile's row, before the next tile row starts):
+//   0x700 LD_CFG     RW  bit 0 load the segment map, bit 1 load the CDF rows
+//   0x704 LD_SEG_LO / 0x708 LD_SEG_HI  RW  segment-id area; 0x70C LD_SEG_ROWB RW bytes per 4x4 line
+//   0x710 LD_CDF_LO / 0x714 LD_CDF_HI  RW  CDF area to load (CDF_ROWS x 32 bytes)
+//   0x718 SV_CDF_LO / 0x71C SV_CDF_HI  RW  CDF area to save into;  0x720 SV_ENG RW the engine whose rows are saved
 //   0x190 + 0x10 p  plane p (0..2): +0 BASE_LO (bits 31:0), +4 BASE_HI (bits 39:32), +8 STRIDE (bytes),
 //                       +C SIZE {height[31:16], width[15:0]} in samples. Base and stride are multiples of 8 (the
 //                       driver rounds the stride up); a row goes out as 64-bit beats, the last with the byte strobes
@@ -189,7 +197,7 @@ module dec_host
     logic [31:0]       mf_wd;
     logic [15:0]       sp_d1;
     logic [245:0]      def_data;
-    logic [5:0]        start;                                // tile, frame, lf, cdef, sr, lr
+    logic [7:0]        start;                                // tile, frame, lf, cdef, sr, lr, state load, cdf save
     logic              tile_busy, tile_done, tile_done_lvl, unsupported;
     logic [31:0]       perf_syn_stall, perf_rec_idle;
     logic              frame_busy, frame_done, frame_done_lvl;
@@ -230,12 +238,21 @@ module dec_host
     logic [39:0]    fs_addr;
     logic [4:0]     fs_len, fs_cnt;
     logic           fs_awvalid, fs_wvalid, fs_bready, fs_wlast;
+    logic [31:0]    ld_cfg_r;
+    logic [39:0]    ld_seg_base, ld_cdf_base, sv_cdf_base;
+    logic [15:0]    ld_seg_rowb;
+    logic           ld_busy, ld_done, ld_err, ld_done_s;
+    logic [EW-1:0]  sv_eng;
+    logic           sv_busy, sv_done_s, sv_err, sv_rb_en, sv_rb_l1;
+    logic [CDF_AW-1:0] sv_row;
+    logic [255:0]   sv_data;
     logic [215:0]   cur_planes;                              // the current picture's flush layout for intra block copy
     logic           fmt16;                                  // DMA_CFG bit 0, declared ahead of the core instance that takes it (cur_fmt16)
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
-        .def_we, .def_addr, .def_data, .rb_en, .rb_addr(def_addr), .rb_sel(eng_sel), .rb_data,
+        .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
+        .ld_start(start[6]), .ld_cfg(ld_cfg_r[1:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
         .mf_we, .mf_wref(mf_addr_r[26:24]), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
         .mf_wrow(signed'(mf_wd[31:16])), .mf_wcol(signed'(mf_wd[15:0])),
         .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),
@@ -426,7 +443,7 @@ module dec_host
     assign m_axi_awcache = 4'b0011;                          // normal, non-cacheable, bufferable
     assign m_axi_awprot  = 3'b000;
     assign m_axi_awvalid = fs_active ? fs_awvalid : (ds == D_AW);
-    assign m_axi_wdata   = fs_active ? fs_rd_data
+    assign m_axi_wdata   = fs_active ? (sv_busy ? sv_data[64 * fs_cnt[1:0] +: 64] : fs_rd_data)
                          : fmt16 ? {4'd0, d_g0[47:36], 4'd0, d_g0[35:24], 4'd0, d_g0[23:12], 4'd0, d_g0[11:0]}
                                  : {d_g1[43:36], d_g1[31:24], d_g1[19:12], d_g1[7:0], d_g0[43:36], d_g0[31:24], d_g0[19:12], d_g0[7:0]};
     assign m_axi_wstrb   = fs_active ? 8'hFF : beat_strb;
@@ -519,7 +536,8 @@ module dec_host
     // lines (segment bytes), each line at the area's running cursor (rows arrive in order; a frame start rewinds the
     // cursors to the bases). Lines of a partial last row are clipped to the frame. The engine takes the write channel
     // between picture runs (fs_active) and answers fs_done when the row's buffer may be refilled.
-    typedef enum logic [3:0] {FS_IDLE, FS_SEL, FS_LINE, FS_LEN, FS_AW, FS_RD, FS_W, FS_B, FS_DONE} fsstate_t;
+    typedef enum logic [3:0] {FS_IDLE, FS_SEL, FS_LINE, FS_LEN, FS_AW, FS_RD, FS_W, FS_B, FS_DONE,
+                              SV_RB, SV_RB1, SV_AW, SV_W, SV_B, SV_DONE} fsstate_t;
     fsstate_t       fss;
     logic           fs_go, fs_pend, fs_sel;
     logic [SBW-1:0] fs_row;
@@ -532,16 +550,17 @@ module dec_host
     logic [15:0]    fs_row_lines;                            // lines per superblock row in this area
     logic [9:0]     fs_to4k;
     assign fs_to4k = 10'((13'd4096 - 13'(fs_addr[11:0])) >> 3);
-    assign fs_go = (fss == FS_IDLE) && fs_pend && (ds == D_IDLE) && fs_cfg[0];
+    logic           sv_pend;
+    assign fs_go = (fss == FS_IDLE) && (fs_pend || sv_pend) && (ds == D_IDLE) && (fs_cfg[0] || sv_pend);
     assign fs_rows_total = fs_sel ? 16'(hdr.mi_rows) : 16'(hdr.mi_rows >> 1);
     assign fs_row_lines  = fs_sel ? ((SB128 != 0 && hdr.sb128) ? 16'd32 : 16'd16) : ((SB128 != 0 && hdr.sb128) ? 16'd16 : 16'd8);
     assign fs_rd_sel = fs_sel;
     assign fs_rd_buf = fs_row[0];
     assign fs_rd_line = fs_line[4:0];
     assign fs_rd_beat = fs_beat[8:0];
-    assign fs_awvalid = (fss == FS_AW);
-    assign fs_wvalid  = (fss == FS_W);
-    assign fs_bready  = (fss == FS_B);
+    assign fs_awvalid = (fss == FS_AW) || (fss == SV_AW);
+    assign fs_wvalid  = (fss == FS_W) || (fss == SV_W);
+    assign fs_bready  = (fss == FS_B) || (fss == SV_B);
     assign fs_wlast   = (fs_cnt == fs_len - 5'd1);
     always_ff @(posedge clk) begin
         fs_done <= 1'b0;
@@ -549,11 +568,19 @@ module dec_host
             fss <= FS_IDLE; fs_pend <= 1'b0; fs_active <= 1'b0; fs_sel <= 1'b0; fs_row <= '0; fs_err <= 1'b0; fs_rows <= '0;
             fs_mv_cur <= '0; fs_seg_cur <= '0; fs_lines <= '0; fs_line <= '0; fs_line_beats <= '0; fs_beats <= '0; fs_beat <= '0;
             fs_addr <= '0; fs_len <= '0; fs_cnt <= '0;
+            sv_pend <= 1'b0; sv_busy <= 1'b0; sv_done_s <= 1'b0; sv_err <= 1'b0; sv_rb_en <= 1'b0; sv_rb_l1 <= 1'b0; sv_row <= '0; sv_data <= '0; ld_done_s <= 1'b0;
         end else begin
+            sv_rb_en <= 1'b0; sv_rb_l1 <= sv_rb_en;
+            if (sv_rb_l1) sv_data <= {10'd0, rb_data};
+            if (start[7]) begin sv_pend <= 1'b1; sv_done_s <= 1'b0; sv_err <= 1'b0; end
+            if (start[6]) ld_done_s <= 1'b0; else if (ld_done) ld_done_s <= 1'b1;
             if (fs_row_ready) begin fs_pend <= 1'b1; fs_row <= fs_row_idx; end
             if (start[1]) begin fs_mv_cur <= fs_mv_base; fs_seg_cur <= fs_seg_base; fs_rows <= '0; fs_err <= 1'b0; end
             case (fss)
                 FS_IDLE: if (fs_pend && !fs_cfg[0]) begin fs_pend <= 1'b0; fs_done <= 1'b1; end   // disabled: drop the row
+                         else if (fs_go && sv_pend) begin       // the CDF save first: the host waits on it between tile rows
+                             fs_active <= 1'b1; sv_busy <= 1'b1; sv_pend <= 1'b0; sv_row <= '0; fs_addr <= sv_cdf_base; fss <= SV_RB;
+                         end
                          else if (fs_go) begin fs_active <= 1'b1; fs_pend <= 1'b0; fs_sel <= 1'b0; fss <= FS_SEL; end
                 FS_SEL: begin                                // the lines of this row in area fs_sel (clipped to the frame)
                     fs_line <= '0;
@@ -588,6 +615,16 @@ module dec_host
                     else fss <= FS_LEN;
                 end
                 FS_DONE: begin fs_active <= 1'b0; fs_done <= 1'b1; fs_rows <= fs_rows + 8'd1; fss <= FS_IDLE; end
+                // the CDF save: one row (246 bits in 4 beats) at a time from engine sv_eng's store through the read-back port
+                SV_RB:  begin sv_rb_en <= 1'b1; fss <= SV_RB1; end
+                SV_RB1: if (sv_rb_l1) begin fs_len <= 5'd4; fs_cnt <= '0; fss <= SV_AW; end   // sv_data lands this cycle
+                SV_AW:  if (m_axi_awready) fss <= SV_W;
+                SV_W:   if (m_axi_wready) begin fs_addr <= fs_addr + 40'd8; fs_cnt <= fs_cnt + 5'd1; if (fs_wlast) fss <= SV_B; end
+                SV_B:   if (m_axi_bvalid) begin
+                    if (m_axi_bresp[1]) sv_err <= 1'b1;
+                    if (sv_row == CDF_AW'(CDF_ROWS - 1)) fss <= SV_DONE; else begin sv_row <= sv_row + CDF_AW'(1); fss <= SV_RB; end
+                end
+                SV_DONE: begin fs_active <= 1'b0; sv_busy <= 1'b0; sv_done_s <= 1'b1; fss <= FS_IDLE; end
                 default: fss <= FS_IDLE;
             endcase
         end
@@ -628,6 +665,7 @@ module dec_host
             mf_addr_r <= '0; sp_addr_r <= '0; sp_d0 <= '0; sp_d1 <= '0; mf_wd <= '0;
             dma_cfg <= '0; dma_start <= 1'b0;
             fs_cfg <= '0; fs_mv_base <= '0; fs_seg_base <= '0; fs_mv_rowb <= '0; fs_seg_rowb <= '0;
+            ld_cfg_r <= '0; ld_seg_base <= '0; ld_seg_rowb <= '0; ld_cdf_base <= '0; sv_cdf_base <= '0; sv_eng <= '0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
             for (int sl = 0; sl < 8; sl++) begin rs_w[sl] <= '0; rs_h[sl] <= '0; rs_xs[sl] <= 16'd16384; rs_ys[sl] <= 16'd16384; for (int pl = 0; pl < 3; pl++) begin rs_base[sl][pl] <= '0; rs_stride[sl][pl] <= '0; end end
             ref_slot_r <= '0; ref_cfg_r <= '0;
@@ -646,7 +684,7 @@ module dec_host
                         ctrl <= strb(ctrl, w_d, w_s);
                         if (w_s[1] && w_d[8]) eos_e[(TE > 1) ? ctrl_nx[24 +: EW] : '0] <= 1'b1;
                     end
-                    10'h003: start <= w_d[5:0];
+                    10'h003: start <= w_d[7:0];
                     // a push must be one whole transfer: a narrow or split write (a byte-wise memcpy on the PS,
                     // first board run) is dropped and flagged like an overflow
                     10'h007: begin if (w_s[0]) begin push <= 1'b1; push_d <= {2'd0, 24'd0, w_d[7:0]}; end else f_badw <= 1'b1; end
@@ -669,6 +707,15 @@ module dec_host
                     10'h074: fs_seg_base[31:0] <= strb(fs_seg_base[31:0], w_d, w_s);                          // 0x1D0
                     10'h075: fs_seg_base[39:32] <= w_d[7:0];                                                  // 0x1D4
                     10'h076: fs_seg_rowb <= w_d[15:0];                                                        // 0x1D8
+                    10'h1C0: ld_cfg_r <= strb(ld_cfg_r, w_d, w_s);                                            // 0x700
+                    10'h1C1: ld_seg_base[31:0] <= strb(ld_seg_base[31:0], w_d, w_s);                          // 0x704
+                    10'h1C2: ld_seg_base[39:32] <= w_d[7:0];                                                  // 0x708
+                    10'h1C3: ld_seg_rowb <= w_d[15:0];                                                        // 0x70C
+                    10'h1C4: ld_cdf_base[31:0] <= strb(ld_cdf_base[31:0], w_d, w_s);                          // 0x710
+                    10'h1C5: ld_cdf_base[39:32] <= w_d[7:0];                                                  // 0x714
+                    10'h1C6: sv_cdf_base[31:0] <= strb(sv_cdf_base[31:0], w_d, w_s);                          // 0x718
+                    10'h1C7: sv_cdf_base[39:32] <= w_d[7:0];                                                  // 0x71C
+                    10'h1C8: sv_eng <= EW'(w_d);                                                              // 0x720
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
                     // 0x300 .. 0x310: the inter frame bands (motion field, previous segment ids); no-ops at INTER = 0
                     10'h0C0: if (INTER != 0) mf_addr_r <= strb(mf_addr_r, w_d, w_s);                          // 0x300
@@ -741,7 +788,16 @@ module dec_host
                     10'h074: s_axi_rdata <= fs_seg_base[31:0];
                     10'h075: s_axi_rdata <= {24'd0, fs_seg_base[39:32]};
                     10'h076: s_axi_rdata <= {16'd0, fs_seg_rowb};
-                    10'h077: s_axi_rdata <= {8'd0, fs_rows, 14'd0, fs_err, fs_active || fs_pend};
+                    10'h077: s_axi_rdata <= {8'd0, fs_rows, 8'd0, sv_err, sv_done_s, sv_busy, ld_err, ld_done_s, ld_busy, fs_err, fs_active || fs_pend};
+                    10'h1C0: s_axi_rdata <= ld_cfg_r;
+                    10'h1C1: s_axi_rdata <= ld_seg_base[31:0];
+                    10'h1C2: s_axi_rdata <= {24'd0, ld_seg_base[39:32]};
+                    10'h1C3: s_axi_rdata <= {16'd0, ld_seg_rowb};
+                    10'h1C4: s_axi_rdata <= ld_cdf_base[31:0];
+                    10'h1C5: s_axi_rdata <= {24'd0, ld_cdf_base[39:32]};
+                    10'h1C6: s_axi_rdata <= sv_cdf_base[31:0];
+                    10'h1C7: s_axi_rdata <= {24'd0, sv_cdf_base[39:32]};
+                    10'h1C8: s_axi_rdata <= 32'(sv_eng);
                     10'h0C0: s_axi_rdata <= mf_addr_r;
                     10'h180: s_axi_rdata <= {11'd0, ref_slot_r};
                     10'h181: s_axi_rdata <= ref_cfg_r;
