@@ -175,6 +175,8 @@ def main():
     ap.add_argument("--pool", type=int, default=10, help="with --inter: frame buffers carved from the DMA region (at least 9: 8 reference slots + the frame being decoded; 8 stalled the 1080p clip at frame 8, 2026-10-30)")
     ap.add_argument("--card-state", action="store_true", help="with --inter: no model on the host; the frame-to-frame state comes back from the card "
                     "(the sideband areas + CDF read-back, docs/frame-state.md stage A); every frame must fit the image")
+    ap.add_argument("--card-load", action="store_true", help="with --inter: stage B of docs/frame-state.md (implies --card-state): the card loads the "
+                    "segment map and the CDF rows from its own areas, saves the CDF rows and projects the motion field; the host keeps the slot table")
     ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
     ap.add_argument("--dma-size", type=lambda x: int(x, 0), default=256 << 20)
     ap.add_argument("--xdma", type=int, metavar="N", help="Alveo U200 host path: registers through /dev/xdmaN_user, pictures in the card's DDR4 "
@@ -259,7 +261,7 @@ def main():
     def frames():
         if args.inter:
             for fi, hdr, planes, mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read, stage.write), name=Path(args.stream).name, card_state=args.card_state,
-                                                                   pool=args.pool, want_planes=bool(out or ref or y4m)):
+                                                                   card_load=args.card_load, pool=args.pool, want_planes=bool(out or ref or y4m)):
                 t["lf"] = t.get("filters", 0.0)
                 t["tiles"] = t.get("tiles", 0.0) + t.get("model", 0.0) + t.get("setup", 0.0)
                 t["read"] = t.get("read", 0.0)
@@ -334,7 +336,13 @@ def main():
                 continue
             if owed[fi] == 0:
                 line += " (never shown)"
-            if t.get("fs"):
+            if t.get("fsb"):
+                f_ = t["fsb"]
+                line += (f"\n        state on the card: segment map {f_['seg']}, CDF rows {f_['cdf']}"
+                         + (f", motion field projected from {f_['mf_srcs']} source(s)" if f_["mf_srcs"] is not None else "")
+                         + (f"; CDF rows saved at 0x{f_['cdf_base']:x}" if f_["saved"] else "; frame-end CDF update disabled")
+                         + f", MV words at 0x{f_['mv_base']:x}, segment ids at 0x{f_['seg_base']:x}")
+            elif t.get("fs"):
                 f_ = t["fs"]
                 line += (f"\n        state -> card DDR: MV words at 0x{f_['mv_base']:x} ({f_['mv_bytes']} bytes, {f_['refs']} cells with a saved reference), "
                          f"segment ids at 0x{f_['seg_base']:x} ({f_['seg_bytes']} bytes); {f_['cdf_rows']} CDF rows read back")
@@ -355,6 +363,7 @@ def main():
     print(f"{s['frames']} frames, {s['tiles']} tiles, {s['bytes']} stream bytes, {s['pixels']} samples read back, "
           f"{s['writes']} register writes + {s['reads']} reads in {dt_all:.1f}s ({s['frames'] / dt_all:.1f} fps); "
           f"{ev_next} of {len(shown)} pictures output"
+          + (f"; card-side state: {s.get('ld_frames', 0)} loads, {s.get('sv_frames', 0)} CDF saves, {s.get('mf_srcs', 0)} projected sources" if args.card_load else "")
           + (f"; {n_bad_frames} board picture(s) and {n_model_bad} model picture(s) differ from the reference" if ref is not None else ""))
     sys.exit(1 if (n_bad_frames or n_model_bad) else 0)
 

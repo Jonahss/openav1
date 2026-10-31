@@ -340,6 +340,34 @@ class CardSequenceState(SequenceState):
             out[ref] = [[MF_HOLE if a[y, x, 0] == MV_INVALID else (int(a[y, x, 0]), int(a[y, x, 1])) for x in range(w8)] for y in range(h8)]
         return out
 
+    # ---- stage B (docs/frame-state.md): the words stay on the card; the host keeps where they are
+    def start_frame_load(self, h):
+        """What the card's loader takes from the primary reference slot (load_cdfs / load_previous_segment_ids on the
+        card): dict(prim=that slot's areas or None, seg=(base, rowb) | None, cdf=base | ('defaults', base_q_idx))."""
+        prim = seg = cdf = None
+        if h.primary_ref_frame != PRIMARY_REF_NONE:
+            slot = self.slots[h.ref_frame_idx[h.primary_ref_frame]]
+            prim = getattr(slot, "areas", None)
+            assert prim is not None, "primary_ref_frame points at a slot no card frame has filled"
+            cdf = prim["cdf"]
+            if h.segmentation_enabled and slot.mi_rows == h.MiRows and slot.mi_cols == h.MiCols and prim["seg"] is not None:
+                seg = prim["seg"]
+        return dict(prim=prim, seg=seg, cdf=cdf)
+
+    def end_frame_load(self, h, areas):
+        """7.20 for the slots the frame refreshes: the header fields the projection table needs (mf_table) and where
+        the card keeps the frame's state, areas = dict(seg=(base, rowb) | None, cdf=base | ('defaults', q), mv=(base, rowb))."""
+        for i in range(NUM_REF_FRAMES):
+            if (h.refresh_frame_flags >> i) & 1:
+                s = Slot()
+                s.areas = areas
+                s.ref_frames = ()                        # mf_table: None would mean a slot without MV words
+                s.mi_rows, s.mi_cols = h.MiRows, h.MiCols
+                s.frame_type = h.frame_type
+                s.order_hint = h.order_hint
+                s.saved_order_hints = list(h.OrderHints)
+                self.slots[i] = s
+
     def end_frame_card(self, h, refs8, mvs8, seg_ids, rows):
         """refs8 / mvs8: the card's MV sideband (host_regs.fs_unpack_mv); seg_ids: its segment-id area (fs_unpack_seg);
         rows: the CDF rows to save (the context tile's final rows, or the frame's starting rows when
