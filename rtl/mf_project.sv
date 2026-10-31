@@ -166,7 +166,7 @@ module mf_project
     logic           c_sign;
     logic signed [15:0] pr, pc;                              // projMv
     logic [MIW-2:0] py, px;
-    logic [2:0]     d;
+    logic [3:0]     d;                                       // phase: 0 test + projection, 1 position, 2..8 the seven destinations
     assign c_ref = c.w[2:0];
     assign c_mvc = 14'(signed'(c.w[15:3]));
     assign c_mvr = 14'(signed'(c.w[28:16]));
@@ -206,25 +206,26 @@ module mf_project
                     if (c_ref == 3'd0 || c.x8 >= w8) cs <= C_IDLE;                  // no saved reference / the padding cell
                     else begin
                         // computed from the registered inputs next state: hold one cycle via d as a phase counter
-                        d <= 3'd0; cs <= C_DST;
+                        d <= 4'd0; cs <= C_DST;
                     end
                 end
                 C_DST: begin
-                    if (d == 3'd0) begin                     // phase 0: the test and the projection toward the current frame
+                    if (d == 4'd0) begin                     // phase 0: the test and the projection toward the current frame
                         if (c_off <= 8'sd0 || c_off > 8'sd31 || c_tocur > 8'sd31 || c_tocur < -8'sd31) cs <= C_IDLE;
                         else begin
                             pr <= mvproj(c_mvr, c_sign ? c_tocur : -c_tocur, 5'(c_off));
                             pc <= mvproj(c_mvc, c_sign ? c_tocur : -c_tocur, 5'(c_off));
-                            d <= 3'd1;
+                            d <= 4'd1;
                         end
-                    end else if (d == 3'd1) begin            // phase 1: block_position (by / bx from pr / pc, combinational)
+                    end else if (d == 4'd1) begin            // phase 1: block_position (by / bx from pr / pc, combinational)
                         if (by[MIW] || bx[MIW]) cs <= C_IDLE;
-                        else begin py <= by[MIW-2:0]; px <= bx[MIW-2:0]; d <= 3'd2; end
+                        else begin py <= by[MIW-2:0]; px <= bx[MIW-2:0]; d <= 4'd2; end
                     end else begin                           // phases 2..8: the seven destinations
-                        mf_we <= 1'b1; mf_wref <= d - 3'd2; mf_wy8 <= py; mf_wx8 <= px; mf_wvalid <= 1'b1;
+                        mf_we <= 1'b1; mf_wref <= 3'(d - 4'd2); mf_wy8 <= py; mf_wx8 <= px; mf_wvalid <= 1'b1;
                         mf_wrow <= mvproj(c_mvr, signed'(dst_dist[8 * (d - 2) +: 8]), 5'(c_off));
                         mf_wcol <= mvproj(c_mvc, signed'(dst_dist[8 * (d - 2) +: 8]), 5'(c_off));
-                        if (d == 3'd7 + 3'd1) cs <= C_IDLE; else d <= d + 3'd1;
+                        // d counts to 8 (it was 3 bits once: 7 + 1 wrapped to 0, the cell never left this loop and P_DRAIN waited forever)
+                        if (d == 4'd8) cs <= C_IDLE; else d <= d + 4'd1;
                     end
                 end
                 default: cs <= C_IDLE;

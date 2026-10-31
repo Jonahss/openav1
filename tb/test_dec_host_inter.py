@@ -330,6 +330,9 @@ async def dec_host_inter_vs_model(dut):
                         await write_seq(ax, HR.motion_field_seq(ctx.motion_field, th0.MiRows, th0.MiCols))
                     elif mf_tab is not None:
                         stats["mf_frames"] = stats.get("mf_frames", 0) + 1
+                        # how much the engine really did: sources read (a frame whose table is empty only runs the clear pass)
+                        stats["mf_srcs"] = stats.get("mf_srcs", 0) + len(mf_tab["src"])
+                        stats["mf_srcs_fwd"] = stats.get("mf_srcs_fwd", 0) + sum(1 for sd in mf_tab["src"] if sd["sign"] > 0)
                     ref_store = {}
                     for i in range(7):
                         slot = ph.ref_frame_idx[i]
