@@ -293,12 +293,12 @@ async def dec_host_inter_vs_model(dut):
             rows = False if loaded_cdf else (M.rows_of(ctx.cdfs) if ctx.cdfs is not None else None)
             cdf_area = flush_base + 0x1C00_0000 if not model_only else None      # stage B: this frame's saved CDF rows
             pending_k = []
+            loaded_cdf = False
             if not model_only:
                 await ax.write(R_CTRL, CTRL_RST)
                 await ClockCycles(dut.clk, 4)
                 await ax.write(R_CTRL, 0)
                 fmt16 = th0.BitDepth > 8
-                loaded_cdf = False
                 if fsb:
                     # stage B: the loader reads the primary slot's areas (written by the card in earlier frames)
                     prim = slot_areas.get(ph.ref_frame_idx[ph.primary_ref_frame]) if ph.primary_ref_frame != sm.PRIMARY_REF_NONE else None
