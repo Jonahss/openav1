@@ -23,6 +23,8 @@
 #   U200_INCR=<routed.dcp> incremental implementation from an earlier build of the same configuration
 #   U200_PBLOCK=0         1: keep XDMA in the PCIe clock regions (fpga/u200/pcie_pblock.xdc), for the 100 MHz builds
 #                         whose only misses were the PCIe core's 500 MHz paths into the hard block
+#   U200_XDC=             extra constraint files for implementation (space-separated), e.g. fpga/u200/lr_pblock.xdc:
+#                         LR + the fb0 mirror in SLR2, the floorplan the SB128 build needs at 100 MHz
 # Output in ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/u200-<tag>/: the Vivado project (proj/), impl_*.rpt, and
 # sys_wrapper.bit for JTAG programming (fpga/u200/program.sh) or sys_wrapper.mcs for the configuration flash.
 set -euo pipefail

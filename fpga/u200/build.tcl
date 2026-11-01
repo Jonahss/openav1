@@ -31,6 +31,16 @@ if {[info exists ::env(U200_PBLOCK)] && $::env(U200_PBLOCK) eq "1"} {
     set_property USED_IN {implementation} [get_files $root/fpga/u200/pcie_pblock.xdc]
     puts "placement: XDMA kept in the PCIe clock regions (pcie_pblock.xdc)"
 }
+# U200_XDC: extra constraint files (space-separated, repo-relative or absolute), implementation only; e.g. the
+# fpga/u200/lr_pblock.xdc floorplan for the SB128 build.
+if {[info exists ::env(U200_XDC)]} {
+    foreach x $::env(U200_XDC) {
+        if {[file pathtype $x] eq "relative"} { set x [file join $root $x] }
+        add_files -fileset constrs_1 -norecurse $x
+        set_property USED_IN {implementation} [get_files $x]
+        puts "placement: extra constraints $x"
+    }
+}
 update_compile_order -fileset sources_1
 
 # ---------------------------------------------------------------- the block design
