@@ -7,6 +7,8 @@ from cocotb.triggers import ReadOnly, RisingEdge, Timer
 
 
 class AxiMem:
+    import os as _os
+    fill = int(_os.environ.get("TS_MEM_FILL", "0"), 0) & 0xFF   # unwritten bytes read as this (TS_MEM_FILL=0x5a: poison, 2026-10-31)
     def __init__(self, dut, clk, prefix="m_axi_", seed=1, stall=0.3):
         self.dut = dut
         self.clk = clk
@@ -120,7 +122,7 @@ class AxiMem:
                     await RisingEdge(self.clk)
                 data = 0
                 for b in range(8):
-                    data |= self.mem.get(a + b, 0) << (8 * b)
+                    data |= self._get(a + b) << (8 * b)
                 s("rvalid").value = 1
                 s("rdata").value = data
                 s("rresp").value = 0
@@ -138,8 +140,21 @@ class AxiMem:
                 self.read_beats = getattr(self, "read_beats", 0) + 1
             self.read_bursts = getattr(self, "read_bursts", 0) + 1
 
+    def _get(self, a):
+        """A byte for the read channel; with TS_MEM_FILL set, a read of a byte nobody wrote is logged (the first 24,
+        then counted): the decoder reading memory the stream never produced (2026-10-31, test5466 after test5366)."""
+        if a in self.mem:
+            return self.mem[a]
+        if self.fill:
+            self.unwritten = getattr(self, "unwritten", 0) + 1
+            if self.unwritten <= 24:
+                print(f"[axi] UNWRITTEN read at 0x{a:010x} (#{self.unwritten})", flush=True)
+            elif self.unwritten == 25:
+                print("[axi] UNWRITTEN reads: more (counting only)", flush=True)
+        return self.fill
+
     def read(self, addr, n):
-        return bytes(self.mem.get(addr + i, 0) for i in range(n))
+        return bytes(self.mem.get(addr + i, self.fill) for i in range(n))
 
     def load(self, addr, data):
         """Place bytes in memory (the testbench's reference pictures)."""
