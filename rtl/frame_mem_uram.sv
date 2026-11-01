@@ -1,8 +1,13 @@
 // On-chip frame memory for the FPGA builds (docs/frame-memory.md): the same ports as the frame_mem simulation
 // model for NRD = NWR = 2 (the core build's fb0), one UltraRAM copy of the picture, double-pumped. The RAM runs on
-// clk2x (2x clk, phase-aligned from the same MMCM): on the clk-aligned clk2x edge its two ports read for the two
-// read ports (or the host) and the write requests are captured, on the mid-cycle edge they write for the two
-// write ports. Every decoder-side port keeps its one-cycle latency at clk; nothing arbitrates or stalls.
+// clk2x (2x clk, phase-aligned from the same MMCM). Two-cycle read (2026-10-31): a request presented in cycle k is
+// captured into clk2x registers at the clk-aligned edge E_b(k); the UltraRAMs read at the mid-cycle edge E_a(k+1)
+// (a half cycle of pure routing from replicable registers to the RAM enables), their own output registers capture
+// the read at E_b(k+1) (OREG, clock-enabled at E_b only, so they hold through the write) and the data is valid for
+// the whole of cycle k+2: the output mux and the consumer's logic have a full clk cycle. Writes captured at E_b(k)
+// land at E_b(k+1). Before this the RAMs read at E_b and a fabric register captured at E_a, which left half a clk
+// cycle for the mux and every hop into a consumer: -0.214 ns on the 2026-10-31 stage B image, -0.354 ns with sb128
+// (twice the RAMs), placement-bound (4.3 to 4.9 ns of routing per build). Nothing arbitrates or stalls.
 //
 // Word = one aligned group of four samples, 4 x 16-bit lanes in a 72-bit URAM word (a sample in the low 12 bits
 // of its lane; the lane is two URAM bytes, so the lane write enables are byte-write enables; byte 8 unused). Address = plane base +
@@ -86,20 +91,21 @@ module frame_mem_uram #(
 
     // ---------------------------------------------------------------- the RAM (clk2x domain)
     // Slot schedule per clk cycle (clk2x edges: E_b aligned with the clk edge that ends the cycle, E_a mid-cycle):
-    //   E_b (phase 0): port A reads read-port 0, port B reads read-port 1 (or the host when read-port 1 is
-    //        idle) — the same edge at which the model samples a request; the write requests are captured into
-    //        clk2x registers at this edge too.
-    //   E_a (phase 1): port A writes write-port 0, port B writes write-port 1 from the captured requests.
-    // So every decoder-side path is a full clk cycle (request flops at one clk edge, sampled at the next: a
-    // 2-cycle multicycle path in clk2x terms, see synth/vivado), read data is valid for the whole next cycle
-    // (one-cycle latency, as the model), a write issued in cycle t lands mid-cycle t+1 and is visible to the
-    // reads sampled at the end of t+1, and a read in the same cycle as a write to the same word sees the old
-    // data: exactly the model's semantics. phase = 1 at E_a, 0 at E_b (from the clock generator).
+    //   E_b (phase 0): the read requests (read-port 0, read-port 1 or the host) and the write requests of the cycle
+    //        that ends are captured into clk2x registers (rq / wq); the write requests captured one cycle earlier are
+    //        applied (port A write-port 0, port B write-port 1); the output registers capture the mid-cycle read.
+    //   E_a (phase 1): port A reads for read-port 0, port B for read-port 1 (or the host), from rq.
+    // Read latency two clk cycles (the model's 2-cycle frame_mem); a write issued in cycle t lands at the end of
+    // t+1 and is visible to the reads issued in t+1 (sampled at the end of t+1, performed mid t+2); a read issued
+    // in the same cycle as a write to the same word sees the old data: the same ordering as the one-cycle version.
+    // phase = 1 at E_a, 0 at E_b (from the clock generator).
     // The RAM: 72-bit words, 9 bytes of 8 bits; lane l = bytes 2l, 2l+1 (bits 16l .. 16l+15, sample in the low 12),
     // byte 8 unused. Vivado's inference accepts UltraRAM only for full-word no-change writes (probed 2026-10-13:
     // read-first and per-byte enables are both "invalid write mode"), but the URAM288 primitive has byte-write
     // enables, so synthesis instantiates the primitives directly (below) and simulation uses the behavioural model;
     // the gate-level replay (tb/gate) checks the two agree.
+    localparam int NU   = (NWORD + 4095) / 4096;              // UltraRAMs (4096 x 72 each)
+    localparam int SW   = (NU > 1) ? $clog2(NU) : 1;
     logic           a_en, b_en;
     logic [8:0]     a_bwe, b_bwe;                            // byte-write enables; none set = read
     logic [AW-1:0]  a_addr, b_addr;
@@ -114,33 +120,29 @@ module frame_mem_uram #(
     // fine, two 50 MHz images decoded wrongly, and the same RTL with the exceptions removed decoded bit-exact. Here
     // nothing on the read path changes at E_a: the URAMs hold DOUT through a write (no-change), the select changes
     // at E_b, so the data launched at E_b is valid for the whole clk cycle and the exception is honest.
-    localparam int NU   = (NWORD + 4095) / 4096;              // UltraRAMs (4096 x 72 each)
-    localparam int SW   = (NU > 1) ? $clog2(NU) : 1;
-    logic [SW-1:0]  a_sel, b_sel, a_sel_r, b_sel_r;
+    logic [SW-1:0]  a_sel, b_sel;
     logic [71:0]    a_dout [NU], b_dout [NU];
     assign a_sel = (NU > 1) ? SW'(a_addr >> 12) : '0;
     assign b_sel = (NU > 1) ? SW'(b_addr >> 12) : '0;
-    always_ff @(posedge clk2x) if (!phase) begin a_sel_r <= a_sel; b_sel_r <= b_sel; end   // the read's URAM, held through E_a
-    // The read data is captured at E_a, the edge of the write: the URAMs' DOUT is disturbed by a write on the same port
-    // (two 50 MHz images decoded wrongly with DOUT feeding the clk domain directly, under a 2-cycle exception that
-    // let the timer ignore everything launched at E_a; the exception-free 40 MHz image was exact). A register loaded
-    // at E_a samples DOUT before the write can touch it (DOUT moves a clock-to-out after the edge) and then holds for
-    // a whole clk cycle, so every path from the frame memory into the clk domain is an ordinary one-clk2x-cycle path:
-    // no exception on the read side (sys.xdc keeps the clk -> clk2x one for the requests captured at E_b).
-    logic [71:0] a_q_r, b_q_r;
-    always_ff @(posedge clk2x) if (phase) begin a_q_r <= a_dout[a_sel_r]; b_q_r <= b_dout[b_sel_r]; end
-    assign a_q = a_q_r;
-    assign b_q = b_q_r;
+    // The read data: each UltraRAM's own output register (OREG) captures its array output at E_b, the edge after the
+    // mid-cycle read, and only there (OREG_CE = the E_b edge), so it holds the read through the write at that same
+    // edge and for the whole clk cycle; the select of the RAM that was read (a_sel_q, loaded at the same E_b) and
+    // the output mux then have a full cycle to the consumers' registers (pre_opt.tcl excepts URAM -> clk as 2 clk2x).
+    // (Before 2026-10-31 a fabric register captured DOUT at E_a and had half a cycle to the consumers.)
+    logic [SW-1:0]  a_sel_q, b_sel_q;
+    always_ff @(posedge clk2x) if (!phase) begin a_sel_q <= rq_sel[0]; b_sel_q <= rq_sel[1]; end
+    assign a_q = a_dout[a_sel_q];
+    assign b_q = b_dout[b_sel_q];
     for (genvar k = 0; k < NU; k++) begin : g_uram
         URAM288 #(
-            .CASCADE_ORDER_A("NONE"), .CASCADE_ORDER_B("NONE"), .OREG_A("FALSE"), .OREG_B("FALSE"), .REG_CAS_A("FALSE"), .REG_CAS_B("FALSE"),
+            .CASCADE_ORDER_A("NONE"), .CASCADE_ORDER_B("NONE"), .OREG_A("TRUE"), .OREG_B("TRUE"), .REG_CAS_A("FALSE"), .REG_CAS_B("FALSE"),
             .BWE_MODE_A("PARITY_INDEPENDENT"), .BWE_MODE_B("PARITY_INDEPENDENT"), .EN_AUTO_SLEEP_MODE("FALSE"),
             .IREG_PRE_A("FALSE"), .IREG_PRE_B("FALSE"), .RST_MODE_A("SYNC"), .RST_MODE_B("SYNC"), .USE_EXT_CE_A("FALSE"), .USE_EXT_CE_B("FALSE")
         ) u (
             .CLK(clk2x), .SLEEP(1'b0), .RST_A(1'b0), .RST_B(1'b0),
             .EN_A(a_en && (a_sel == SW'(k))), .RDB_WR_A(|a_bwe), .ADDR_A({11'd0, a_addr[11:0]}), .BWE_A(a_bwe), .DIN_A(a_d), .DOUT_A(a_dout[k]),
             .EN_B(b_en && (b_sel == SW'(k))), .RDB_WR_B(|b_bwe), .ADDR_B({11'd0, b_addr[11:0]}), .BWE_B(b_bwe), .DIN_B(b_d), .DOUT_B(b_dout[k]),
-            .OREG_CE_A(1'b1), .OREG_CE_B(1'b1), .OREG_ECC_CE_A(1'b0), .OREG_ECC_CE_B(1'b0),
+            .OREG_CE_A(!phase), .OREG_CE_B(!phase), .OREG_ECC_CE_A(1'b0), .OREG_ECC_CE_B(1'b0),
             .INJECT_SBITERR_A(1'b0), .INJECT_DBITERR_A(1'b0), .INJECT_SBITERR_B(1'b0), .INJECT_DBITERR_B(1'b0),
             .CAS_IN_ADDR_A(23'd0), .CAS_IN_ADDR_B(23'd0), .CAS_IN_BWE_A(9'd0), .CAS_IN_BWE_B(9'd0), .CAS_IN_DBITERR_A(1'b0), .CAS_IN_DBITERR_B(1'b0),
             .CAS_IN_DIN_A(72'd0), .CAS_IN_DIN_B(72'd0), .CAS_IN_DOUT_A(72'd0), .CAS_IN_DOUT_B(72'd0), .CAS_IN_EN_A(1'b0), .CAS_IN_EN_B(1'b0),
@@ -153,14 +155,16 @@ module frame_mem_uram #(
     end
 `else
     logic [71:0] mem [0:NWORD-1];
+    logic [71:0] a_q_i, b_q_i;                               // the mid-cycle read, as the URAM's array output
     always_ff @(posedge clk2x) if (a_en) begin
         if (|a_bwe) begin for (int by = 0; by < 9; by++) if (a_bwe[by]) mem[a_addr][by*8 +: 8] <= a_d[by*8 +: 8]; end
-        else a_q <= mem[a_addr];
+        else a_q_i <= mem[a_addr];
     end
     always_ff @(posedge clk2x) if (b_en) begin
         if (|b_bwe) begin for (int by = 0; by < 9; by++) if (b_bwe[by]) mem[b_addr][by*8 +: 8] <= b_d[by*8 +: 8]; end
-        else b_q <= mem[b_addr];
+        else b_q_i <= mem[b_addr];
     end
+    always_ff @(posedge clk2x) if (!phase) begin a_q <= a_q_i; b_q <= b_q_i; end   // the OREG: captured at E_b, held
 `endif
 
     // ---------------------------------------------------------------- requests
@@ -169,14 +173,22 @@ module frame_mem_uram #(
     assign {rx1, rx0} = r_x; assign {ry1, ry0} = r_y;
     assign {wx1, wx0} = w_x; assign {wy1, wy0} = w_y;
     logic host_slot;                                         // the host read takes read-port 1's slot when idle
+    logic h_ok1;
     assign host_slot = !re[1];
-    // write requests captured at E_b (the clk edge), applied at E_a
+    // read and write requests captured at E_b (the clk edge); reads applied at E_a, writes at the next E_b
     logic           wq_we [2];
     logic [8:0]     wq_bwe [2];
     logic [AW-1:0]  wq_addr [2];
     logic [71:0]    wq_d [2];
+    logic           rq_en [2];
+    logic [AW-1:0]  rq_addr [2];
+    logic [SW-1:0]  rq_sel [2];
     always_ff @(posedge clk2x) if (!phase) begin
         wq_we[0] <= we[0]; wq_we[1] <= we[1];
+        rq_en[0] <= re[0];               rq_addr[0] <= waddr(r_plane[1:0], rx0, ry0);
+        rq_en[1] <= re[1] || host_slot;  rq_addr[1] <= host_slot ? waddr(h_plane, h_x, h_y) : waddr(r_plane[3:2], rx1, ry1);
+        rq_sel[0] <= (NU > 1) ? SW'(waddr(r_plane[1:0], rx0, ry0) >> 12) : '0;
+        rq_sel[1] <= (NU > 1) ? SW'((host_slot ? waddr(h_plane, h_x, h_y) : waddr(r_plane[3:2], rx1, ry1)) >> 12) : '0;
         wq_addr[0] <= waddr(w_plane[1:0], wx0, wy0);
         wq_addr[1] <= waddr(w_plane[3:2], wx1, wy1);
         wq_d[0][71:64] <= '0; wq_d[1][71:64] <= '0; wq_bwe[0][8] <= 1'b0; wq_bwe[1][8] <= 1'b0;
@@ -186,32 +198,31 @@ module frame_mem_uram #(
         end
     end
     always_comb begin
-        if (!phase) begin                                    // E_b: reads (no byte enabled)
-            a_en = re[0];               a_addr = waddr(r_plane[1:0], rx0, ry0); a_d = '0; a_bwe = '0;
-            b_en = re[1] || host_slot;  b_d = '0; b_bwe = '0;
-            b_addr = host_slot ? waddr(h_plane, h_x, h_y) : waddr(r_plane[3:2], rx1, ry1);
-        end else begin                                       // E_a: writes
+        if (phase) begin                                     // E_a: the captured reads (no byte enabled)
+            a_en = rq_en[0]; a_addr = rq_addr[0]; a_d = '0; a_bwe = '0;
+            b_en = rq_en[1]; b_addr = rq_addr[1]; b_d = '0; b_bwe = '0;
+        end else begin                                       // E_b: the writes captured a cycle ago
             a_en = wq_we[0] && (|wq_bwe[0]); a_addr = wq_addr[0]; a_d = wq_d[0]; a_bwe = wq_bwe[0];
             b_en = wq_we[1] && (|wq_bwe[1]); b_addr = wq_addr[1]; b_d = wq_d[1]; b_bwe = wq_bwe[1];
         end
     end
 
     // ---------------------------------------------------------------- results into the clk domain
-    // a_q / b_q are updated at E_b (reads) and hold through E_a (the writes are "no change"), so they are the
-    // model's rdata for the whole next clk cycle.
+    // a_q / b_q are the output registers: loaded at E_b two cycles after the request (the mid-cycle read of the
+    // cycle after), held through the writes, so they are the model's rdata for the whole of that cycle.
     logic [71:0] rq0, rq1;
     assign rq0 = a_q; assign rq1 = b_q;
-    logic [1:0]  rx0l, rx1l, hxl;
+    logic [1:0]  rx0l, rx1l, hxl, rx0l2, rx1l2, hxl2;       // the lane within the word, with the data (two cycles)
     always_ff @(posedge clk) begin
-        rx0l <= rx0[1:0]; rx1l <= rx1[1:0]; hxl <= h_x[1:0];
-        h_ok <= host_slot;                                   // sampled with the request: read-port 1 idle at this edge
+        rx0l <= rx0[1:0]; rx1l <= rx1[1:0]; hxl <= h_x[1:0]; rx0l2 <= rx0l; rx1l2 <= rx1l; hxl2 <= hxl;
+        h_ok1 <= host_slot; h_ok <= h_ok1;                   // sampled with the request (read-port 1 idle), with the data
     end
     always_comb begin
         rdata4[0*4*PW +: 4*PW] = {rq0[3*16 +: PW], rq0[2*16 +: PW], rq0[1*16 +: PW], rq0[0*16 +: PW]};
         rdata4[1*4*PW +: 4*PW] = {rq1[3*16 +: PW], rq1[2*16 +: PW], rq1[1*16 +: PW], rq1[0*16 +: PW]};
-        rdata[0*PW +: PW] = rq0[32'(rx0l)*16 +: PW];
-        rdata[1*PW +: PW] = rq1[32'(rx1l)*16 +: PW];
-        h_rdata = rq1[32'(hxl)*16 +: PW];
+        rdata[0*PW +: PW] = rq0[32'(rx0l2)*16 +: PW];
+        rdata[1*PW +: PW] = rq1[32'(rx1l2)*16 +: PW];
+        h_rdata = rq1[32'(hxl2)*16 +: PW];
         h_rdata4 = {rq1[3*16 +: PW], rq1[2*16 +: PW], rq1[1*16 +: PW], rq1[0*16 +: PW]};
     end
 endmodule

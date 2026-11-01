@@ -46,8 +46,8 @@ module cdef_top
 );
     typedef enum logic [4:0] {
         C_IDLE, C_BLK, C_RD_IDX, C_RD_S0, C_RD_S1, C_RD_S2, C_RD_S3, C_DECIDE,
-        C_PLANE, C_WIN, C_WIN_LAST, C_DIR_A, C_DIR_B, C_DIR_B2, C_DIR_C, C_DIR, C_PIX,
-        C_COPY_RD, C_COPY_WR, C_NEXT
+        C_PLANE, C_WIN, C_WIN_LAST, C_WIN_LAST2, C_DIR_A, C_DIR_B, C_DIR_B2, C_DIR_C, C_DIR, C_PIX,
+        C_COPY_RD, C_COPY_RDW, C_COPY_WR, C_NEXT
     } st_t;
     st_t st;
     logic done_pend;
@@ -89,6 +89,7 @@ module cdef_top
     logic [3:0]  wr;                                    // load row 0 .. ph+3
     logic [1:0]  wg, wg_last;                           // aligned group of 4 within the row: x = px0 - 4 + 4 wg
     logic        wpend; logic [3:0] wpr; logic [1:0] wpg; logic wp_rowok; logic signed [PXS-1:0] wpx;
+    logic        wpend2; logic [3:0] wpr2; logic [1:0] wpg2; logic wp_rowok2; logic signed [PXS-1:0] wpx2;   // the landing, two cycles after the read (2026-10-31)
     logic signed [PXS-1:0] wy, wx;
     logic        w_row_in;
     always_comb begin
@@ -403,16 +404,17 @@ module cdef_top
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
         done_i <= 1'b0;
-        if (wpend)                                       // the group issued last cycle lands: lane l -> column 4 wpg - 2 + l
+        if (wpend2)                                      // the group issued two cycles ago lands: lane l -> column 4 wpg - 2 + l
             for (int l = 0; l < 4; l++) begin
                 int col;
-                col = 4 * int'(wpg) - 2 + l;
+                col = 4 * int'(wpg2) - 2 + l;
                 if (col >= 0 && col < int'(pw) + 4) begin
-                    win[wpr][col] <= src_rdata4[l * 12 +: 12];
-                    win_ok[wpr][col] <= wp_rowok && (wpx + PXS'(l) >= 0) && (wpx + PXS'(l) < PXS'(signed'({2'b0, fw})));
+                    win[wpr2][col] <= src_rdata4[l * 12 +: 12];
+                    win_ok[wpr2][col] <= wp_rowok2 && (wpx2 + PXS'(l) >= 0) && (wpx2 + PXS'(l) < PXS'(signed'({2'b0, fw})));
                 end
             end
         wpend <= 1'b0;
+        wpend2 <= wpend && !rst; wpr2 <= wpr; wpg2 <= wpg; wp_rowok2 <= wp_rowok; wpx2 <= wpx;
         if (rst) st <= C_IDLE;
         else case (st)
             C_IDLE: if (start) begin r <= row_first; c <= MIW'(0); st <= C_BLK; end
@@ -439,7 +441,8 @@ module cdef_top
                     else st <= C_WIN_LAST;
                 end
             end
-            C_WIN_LAST: st <= (fplane == 2'd0) ? C_DIR_A : C_DIR;   // the last read lands here; luma searches
+            C_WIN_LAST: st <= C_WIN_LAST2;               // the last read lands in C_WIN_LAST2 (two-cycle read)
+            C_WIN_LAST2: st <= (fplane == 2'd0) ? C_DIR_A : C_DIR;   // luma searches
             C_DIR_A: st <= C_DIR_B;                      // partial sums registered from the complete window
             C_DIR_B: st <= C_DIR_B2;                     // squares registered
             C_DIR_B2: st <= C_DIR_C;                     // costs registered
@@ -486,7 +489,8 @@ module cdef_top
                 end
             end
             // ---- unfiltered block: copy src -> dst for all planes
-            C_COPY_RD: st <= C_COPY_WR;
+            C_COPY_RD: st <= C_COPY_RDW;
+            C_COPY_RDW: st <= C_COPY_WR;                 // the group lands in C_COPY_WR, two cycles after the read
             C_COPY_WR: begin
                 if (4'(cpi[2:0]) + 4'd4 < pw) begin cpi <= cpi + 6'd4; st <= C_COPY_RD; end
                 else if (4'(cpi[5:3]) + 4'd1 < ph) begin cpi <= {cpi[5:3] + 3'd1, 3'd0}; st <= C_COPY_RD; end

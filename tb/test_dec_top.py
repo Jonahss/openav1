@@ -457,6 +457,7 @@ async def rtl_only_stream(dut, path, stats):
                         dut.h_x.value = x
                         dut.h_y.value = y
                         await RisingEdge(dut.clk)
+                        await RisingEdge(dut.clk)   # two-cycle frame-memory read (2026-10-31)
                         await ReadOnly()
                         v = int(dut.h_rdata.value)
                         row.append(v)
@@ -493,6 +494,7 @@ async def rtl_only_stream(dut, path, stats):
                                         dut.h_x.value = xx
                                         dut.h_y.value = yy
                                         await RisingEdge(dut.clk)
+                                        await RisingEdge(dut.clk)   # two-cycle frame-memory read (2026-10-31)
                                         await ReadOnly()
                                         rowv.append(int(dut.h_rdata.value))
                                         await Timer(1, "ns")
@@ -543,6 +545,7 @@ async def compare_frame(dut, hdr, planes, tag, stats, decs_events=(), blocks_all
                 dut.h_x.value = x
                 dut.h_y.value = y
                 await RisingEdge(dut.clk)
+                await RisingEdge(dut.clk)   # two-cycle frame-memory read (2026-10-31)
                 await ReadOnly()
                 v = int(dut.h_rdata.value)
                 got[y][x] = v

@@ -56,7 +56,7 @@ module lr_top
     localparam int W = 1 << FBX;
 
     typedef enum logic [4:0] {
-        L_IDLE, L_BAND, L_ROWS, L_LOAD, L_LOAD_LAST, L_UNIT, L_REC, L_DECIDE,
+        L_IDLE, L_BAND, L_ROWS, L_LOAD, L_LOAD_LAST, L_LOAD_LAST2, L_UNIT, L_REC, L_DECIDE,
         L_COPY, L_WIEN, L_AB, L_AB_DRAIN, L_PASS_NEXT, L_BLEND, L_UNIT_NEXT, L_BAND_NEXT, L_DONE,
         L_WPRO                                                 // window prologue before a compute row
     } st_t;
@@ -552,9 +552,10 @@ module lr_top
     logic done_i, busy_q; logic [3:0] dsr;
     logic ld_pend;                                      // a load read is in flight (lands this cycle)
     logic [PXW-1:0] ld_x;                                  // its x (aligned group of 4)
+    logic ld_pend2; logic [PXW-1:0] ld_x2; logic [PXW:0] k_rule_r2; logic [3:0] k_slot_r2;   // the landing: two cycles after the read (2026-10-31)
     always_comb begin
-        lb_we = ld_pend; lb_wslot = k_slot_r; lb_waddr = GW'(ld_x >> 2);
-        for (int l = 0; l < 4; l++) lb_wdata[l * 12 +: 12] = k_rule_r[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
+        lb_we = ld_pend2; lb_wslot = k_slot_r2; lb_waddr = GW'(ld_x2 >> 2);
+        for (int l = 0; l < 4; l++) lb_wdata[l * 12 +: 12] = k_rule_r2[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
         // the compute phases move to the next group: output states every clock, the box phase at a group's last column
         win_shift = out_issue || (st == L_AB && ax[1:0] == 2'd3);
         s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule_r[PXW-1:0]);
@@ -585,6 +586,7 @@ module lr_top
     always_ff @(posedge clk) begin
         done_i <= 1'b0;
         ld_pend <= 1'b0;                                                  // (the landing group is written by lb_we)
+        ld_pend2 <= ld_pend && !rst; ld_x2 <= ld_x; k_rule_r2 <= k_rule_r; k_slot_r2 <= k_slot_r;
         if (win_shift) wg <= wg + PXS'(1);
         if (rst) begin
             st <= L_IDLE;
@@ -607,7 +609,8 @@ module lr_top
                 if (lx + PXW'(4) <= plane_end_x) lx <= lx + PXW'(4);
                 else st <= L_LOAD_LAST;
             end
-            L_LOAD_LAST: begin                                                // the last group lands this cycle
+            L_LOAD_LAST: st <= L_LOAD_LAST2;                                  // the last group lands in L_LOAD_LAST2 (two-cycle read)
+            L_LOAD_LAST2: begin
                 ring_row[k_slot_r] <= k_rule_r[PXW-1:0]; ring_src[k_slot_r] <= k_rule_r[PXW]; ring_ok[k_slot_r] <= 1'b1;
                 k <= k + 4'd1; st <= L_ROWS;
             end

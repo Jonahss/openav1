@@ -370,19 +370,19 @@ module dec_host
     // answer the cycle after the address; the hold covers that with margin, 16 cycles per fetch against a
     // microsecond per AXI transaction from the PS). A data read while the fetch is in progress waits on the
     // AXI read channel (arready stays low), so software never sees stale samples.
-    localparam int HL = 3;
+    localparam int HL = 4;                                   // two-cycle frame-memory read since 2026-10-31 (was 3)
     logic [FBX-1:0] hx_q;                                    // the address presented to the decoder's host port
     logic [11:0]    hbuf [4];
     logic           hbuf_ok, h_busy, h_fetch;                // h_fetch: (re)start at haddr (pulse from the AXI side)
-    logic [1:0]     h_idx, h_cnt;
+    logic [1:0]     h_idx; logic [2:0] h_cnt;                 // h_cnt counts to HL (4 since the two-cycle read)
     always_ff @(posedge clk) begin
-        if (!aresetn) begin hbuf_ok <= 1'b0; h_busy <= 1'b0; h_idx <= 2'd0; h_cnt <= 2'd0; hx_q <= '0; end
+        if (!aresetn) begin hbuf_ok <= 1'b0; h_busy <= 1'b0; h_idx <= 2'd0; h_cnt <= 3'd0; hx_q <= '0; end
         else if (h_fetch) begin
-            hbuf_ok <= 1'b0; h_busy <= 1'b1; h_idx <= 2'd0; h_cnt <= 2'd0; hx_q <= haddr[FBX-1:0];
+            hbuf_ok <= 1'b0; h_busy <= 1'b1; h_idx <= 2'd0; h_cnt <= 3'd0; hx_q <= haddr[FBX-1:0];
         end else if (h_busy) begin
-            if (h_cnt == 2'(HL)) begin
+            if (h_cnt == 3'(HL)) begin
                 hbuf[h_idx] <= h_rdata;
-                h_cnt <= 2'd0;
+                h_cnt <= 3'd0;
                 hx_q  <= hx_q + 1'b1;
                 h_idx <= h_idx + 1'b1;
                 if (h_idx == 2'd3) begin h_busy <= 1'b0; hbuf_ok <= 1'b1; end
@@ -422,7 +422,7 @@ module dec_host
     always_comb for (int p = 0; p < 3; p++) cur_planes[72 * p +: 72] = {dma_stride[p], dma_base[p]};   // the picture being decoded: intra block copy
     logic [15:0]    dma_w [3], dma_h [3];
     logic [31:0]    dma_beats;
-    typedef enum logic [3:0] {D_IDLE, D_PLANE, D_ROW, D_BURST, D_AW, D_F0, D_F1, D_F2, D_W, D_B, D_NEXT} dstate_t;
+    typedef enum logic [3:0] {D_IDLE, D_PLANE, D_ROW, D_BURST, D_AW, D_F0, D_F0W, D_F1, D_F2, D_W, D_B, D_NEXT} dstate_t;
     dstate_t        ds;
     logic [1:0]     d_plane;
     logic [15:0]    row_lines;                               // lines of plane d_plane in one released superblock row
@@ -453,7 +453,7 @@ module dec_host
     always_comb beat_strb = (rem_bytes >= 16'd8) ? 8'hFF : 8'((9'd1 << rem_bytes[3:0]) - 9'd1);
     assign h_plane_m = dma_busy ? d_plane : haddr[29:28];
     assign h_y_m     = dma_busy ? d_y : haddr[14 +: FBY];
-    assign h_x_m     = dma_busy ? ((ds == D_F1) ? d_x + FBX'(4) : d_x) : hx_q;
+    assign h_x_m     = dma_busy ? ((ds == D_F0W) ? d_x + FBX'(4) : d_x) : hx_q;   // D_F0: group d_x, D_F0W: d_x + 4 (two-cycle read: both in flight)
     assign m_axi_awaddr  = fs_active ? fs_addr : d_addr;
     assign m_axi_awlen   = fs_active ? 8'(fs_len - 5'd1) : 8'(d_len - 5'd1);
     assign m_axi_awsize  = 3'b011;                           // 8 bytes
@@ -509,10 +509,11 @@ module dec_host
                     else begin d_len <= burst_len; d_cnt <= 5'd0; ds <= D_AW; end
                 end
                 D_AW: if (m_axi_awready) ds <= D_F0;
-                D_F0: ds <= fmt16 ? D_F2 : D_F1;             // h_x = d_x this cycle; its group is readable next cycle
+                D_F0: ds <= D_F0W;                           // h_x = d_x this cycle; its group lands two cycles later (D_F1 / D_F2)
+                D_F0W: ds <= fmt16 ? D_F2 : D_F1;            // h_x = d_x + 4 this cycle (8-bit: the beat's second group)
                 // the window memory serves the host port only when the filter's read port is idle (a flush runs
                 // alongside decoding): a group the memory did not serve (h_ok low) is fetched again from D_F0
-                D_F1: begin d_g0 <= h_rdata4; ds <= h_ok ? D_F2 : D_F0; end   // h_x = d_x + 4 this cycle (8-bit: two groups a beat)
+                D_F1: begin d_g0 <= h_rdata4; ds <= h_ok ? D_F2 : D_F0; end   // group d_x lands (8-bit: d_x + 4 follows in D_F2)
                 D_F2: begin
                     if (fmt16) d_g0 <= h_rdata4; else d_g1 <= h_rdata4;
                     ds <= h_ok ? D_W : D_F0;
