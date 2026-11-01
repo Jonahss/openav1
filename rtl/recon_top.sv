@@ -663,6 +663,11 @@ module recon_top
                     end
                     rf_lastx <= ((dw + 16'(mc_sx)) >> mc_sx) - 16'd1; rf_lasty <= ((dh + 16'(mc_sy)) >> mc_sy) - 16'd1;
                     rf_lst <= mc_l;
+                    // every request: all rows from ref_fetch (the intra block copy split below overrides). These were set only on
+                    // the unscaled path, so a scaled-reference or warp strip kept the row range of the last intra block copy:
+                    // after a copy from the picture's top edge (kk = 3) the next scaled strip fetched a three-row patch
+                    // (2026-10-31: test5466 frame 4 after test5366's 2048-wide copy frames on the card; random-init sims too).
+                    rf_r_lo <= 7'd0; rf_r_hi <= 7'd0; ff_r_lo <= 7'd0; ff_r_hi <= 7'd0;
                     mc_mode <= ob_active ? 3'd0 : mc_l ? (mb_active ? 3'd4 : 3'(mc_bmode)) : (mc_comp ? 3'd1 : 3'd0);
                     mc_warp <= unit_warp && w_use[mc_l];
                     if (unit_warp && w_use[mc_l]) begin

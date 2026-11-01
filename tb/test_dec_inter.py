@@ -106,7 +106,7 @@ async def dec_inter_vs_model(dut):
     if os.environ.get("TD_MVTRACE"):
         async def mv_trace():
             # every find_mv_stack result of the syntax block: position, refs, NumMvFound, RefStackMv[0..1], GlobalMvs
-            blk = dut.u_ts.u_blk; mvs = blk.u_mvs
+            blk = dut.u_ts.g_e[0].u_ts.u_blk; mvs = blk.u_mvs   # tile_engines wrapper (engine 0)
             def arr(name, i):
                 try:
                     return int(getattr(mvs, name)[i].value.signed_integer)
