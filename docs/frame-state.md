@@ -107,6 +107,9 @@ update and started from defaults). Per frame:
    area (`fs_layout` puts it behind the segment ids), unless `disable_frame_end_update_cdf`.
 4. Frame end: wait for the sideband DMA, `end_frame_load` records the areas for the refreshed slots with 7.20's two
    rules (a verbatim-kept segment map and a disabled CDF update both pass the primary slot's area on).
+   Because areas are passed on, a slot can name areas inside another frame's buffer: the flush target is a buffer
+   no live slot holds *either the picture or the state areas of* (2026-11-01: test5439 frame 8 took frame 0's buffer and
+   saved its rows over the areas slots 0-6 still named; frame 9 then loaded frame 8's state, 1,604 samples off by one).
 
 Register traffic per 1080p inter frame drops from ~500 k writes (motion-field band 227 k, CDF rows 13.5 k, segment map
 8 k, plus the 1501-row read-back) to the frame's own headers and ~40 loader / table words. The stage A path

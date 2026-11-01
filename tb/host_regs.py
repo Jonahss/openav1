@@ -985,6 +985,17 @@ class HostDecoder:
             t0 = time.monotonic()
             # the flush target: a frame buffer no live reference slot holds
             busy = {e["mem"][0][0] for e in store.values() if e.get("mem")}
+            if card_load:
+                # Stage B: a slot's state areas can sit in another frame's buffer (7.20 passes the primary slot's segment map
+                # and CDF rows on to a frame that kept them), and the card's loader reads them for later frames, so a buffer
+                # holding any live slot's areas is live even when no slot holds its picture. test5439 (2026-11-01): frame 8
+                # took frame 0's buffer and saved its CDF rows and segment ids over the areas slots 0-6 still named, and
+                # frame 9 loaded frame 8's state for a reference that carried frame 0's (1,604 samples off by one).
+                for s_ in seq.slots:
+                    for a_ in (getattr(s_, "areas", None) or {}).values():
+                        addr = a_[0] if isinstance(a_, tuple) else a_
+                        if isinstance(addr, int) and base <= addr < base + pool * stride:
+                            busy.add(base + ((addr - base) // stride) * stride)
             target = next((base + k * stride for k in range(pool) if base + k * stride not in busy), None)
             if target is None:
                 raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
