@@ -156,7 +156,7 @@ module replay_{name};
 `else
     {name} dut (.*);
 `endif
-    int n, errs, cmp, xmask, preroll, maxerr;
+    int n, errs, cmp, xmask, preroll, maxerr, ncyc;
     string vecfile;
     initial begin
         if (!$value$plusargs("vec=%s", vecfile)) vecfile = "vectors.hex";
@@ -164,6 +164,8 @@ module replay_{name};
         if (!$value$plusargs("maxerr=%d", maxerr)) maxerr = 100000;   // how many MISMATCH lines to print    // 1: X bits of the DUT are don't-care (RTL control)
         if (!$value$plusargs("preroll=%d", preroll)) preroll = 15;   // cycles of vector 0 before the replay: the
                                                                      // funcsim netlist holds GSR for the first 100 ns
+        if (!$value$plusargs("ncyc=%d", ncyc)) ncyc = 0;             // the recording's length, for a two-state simulator
+                                                                     // (Verilator: the arrays hold zeros past it, not X)
         for (int i = 0; i < MAXV; i++) vin[i] = 'x;
         $readmemh(vecfile, vin, 0, MAXV-1);
         $readmemh({{vecfile, ".out"}}, vout, 0, MAXV-1);
@@ -177,7 +179,7 @@ module replay_{name};
             {{{', '.join(p for p, _, _ in ins_v)}}} = vin[0];
             {edge_seq}
         end
-        while (n < MAXV && vin[n] !== 'x) begin
+        while (n < MAXV && (ncyc != 0 ? n < ncyc : vin[n] !== 'x)) begin
             {{{', '.join(p for p, _, _ in ins_v)}}} = vin[n];
             #4;
             if (n > 2) begin
