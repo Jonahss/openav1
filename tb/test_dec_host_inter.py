@@ -34,7 +34,7 @@ from host_regs import (R_START, HostDecoder, R_ID, R_CTRL, R_CFG, R_DMA_STATUS, 
 from axil import AxiLite                                     # noqa: E402
 from axi_mem import AxiMem                                   # noqa: E402
 
-FLUSH_BASE = 0x80_0000_0000                                  # frame fi's picture at FLUSH_BASE + fi * FLUSH_STRIDE (40-bit space)
+FLUSH_BASE = 0x80_0000_0000                                  # frame fi's picture at FLUSH_BASE + fi * FLUSH_STRIDE (40-bit space), or buffer k of TS_POOL
 FLUSH_STRIDE = TI.SLOT_STRIDE
 
 
@@ -263,6 +263,7 @@ async def dec_host_inter_vs_model(dut):
         seq = sm.SequenceState()
         store = {}                                           # slot -> store_entry
         fsb = os.environ.get("TS_FSTATE_B") == "1"           # stage B: the card loads the segment map and the CDF rows itself
+        ts_pool = int(os.environ.get("TS_POOL", "0"))         # N: pictures in a pool of N frame buffers with the host's recycling rule
         slot_areas = {}                                      # slot -> dict(seg=(base, rowb) | None, cdf=base | None)
         slot_mem = {}                                        # slot -> (gen, [(base, stride) per plane]) of the model picture loaded at the slot's own address
         hdr_iter = iter(d.frame_headers)
@@ -353,7 +354,12 @@ async def dec_host_inter_vs_model(dut):
                     stats["inter_frames"] += 1
                 elif ctx.prev_segment_ids is not None or True:
                     pass                                     # intra frames read neither band
-                flush_base = FLUSH_BASE + fi_global * FLUSH_STRIDE
+                if ts_pool:
+                    # the host's frame-buffer pool and recycling rule (HR.pool_target: a buffer stays live while any slot
+                    # names a picture or state areas in it), so a buffer reused too early fails here, not on the card
+                    flush_base = HR.pool_target(FLUSH_BASE, FLUSH_STRIDE, ts_pool, store, slot_areas.values(), tag)
+                else:
+                    flush_base = FLUSH_BASE + fi_global * FLUSH_STRIDE
                 # the frame-state sideband areas (docs/frame-state.md) in the frame's own region, past any picture
                 fs_seq, fsL = HR.fs_regs(th0, flush_base + 0x1800_0000)
                 await write_seq(ax, fs_seq)

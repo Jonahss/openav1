@@ -424,6 +424,34 @@ def unpack_dma(hdr, data, planes, raw=False):
     return out
 
 
+def pool_target(base, stride, pool, store, areas, tag=""):
+    """The frame buffer the next picture goes to: the first of `pool` buffers of `stride` bytes from `base` that no
+    live reference slot holds a picture in (store: slot -> entry with mem = [(address, stride)...] where the card put
+    it) and that none of the live slots' state areas sit in (areas: per slot, dict(seg, cdf, mv) with addresses or
+    (address, ...) tuples, or None). Stage B needs the second half (docs/frame-state.md): a slot's segment map and CDF
+    rows can live in another frame's buffer (7.20 passes the primary slot's on to a frame that kept them) and the
+    card's loader reads them for later frames, so a buffer is live while any slot names areas in it even when no slot
+    holds its picture. test5439 (2026-11-01): frame 8 took frame 0's buffer and saved its state over the areas slots 0-6
+    still named; frame 9 then loaded frame 8's state for a reference that carried frame 0's (1,604 samples off by one).
+    One rule for decode_frames_inter and the simulation twin (tb/test_dec_host_inter.py, TS_POOL), so a recycling bug
+    fails where the pictures are compared instead of on the card."""
+    busy = set()
+    for e in store.values():
+        if e.get("mem"):
+            addr = e["mem"][0][0]
+            if base <= addr < base + pool * stride:
+                busy.add(base + ((addr - base) // stride) * stride)
+    for a in areas:
+        for v in (a or {}).values():
+            addr = v[0] if isinstance(v, tuple) else v
+            if isinstance(addr, int) and base <= addr < base + pool * stride:
+                busy.add(base + ((addr - base) // stride) * stride)
+    target = next((base + k * stride for k in range(pool) if base + k * stride not in busy), None)
+    if target is None:
+        raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
+    return target
+
+
 def plane_size(hdr, plane, visible=True):
     """(width, height) of a plane: the visible picture (dav1d's output) or the whole decoded MI area."""
     sx = hdr.subsampling_x if plane else 0
@@ -987,22 +1015,8 @@ class HostDecoder:
                 raise HostError(f"{tag}: {why}: the card-state path (stage A) needs every frame on the card")
             t = {}
             t0 = time.monotonic()
-            # the flush target: a frame buffer no live reference slot holds
-            busy = {e["mem"][0][0] for e in store.values() if e.get("mem")}
-            if card_load:
-                # Stage B: a slot's state areas can sit in another frame's buffer (7.20 passes the primary slot's segment map
-                # and CDF rows on to a frame that kept them), and the card's loader reads them for later frames, so a buffer
-                # holding any live slot's areas is live even when no slot holds its picture. test5439 (2026-11-01): frame 8
-                # took frame 0's buffer and saved its CDF rows and segment ids over the areas slots 0-6 still named, and
-                # frame 9 loaded frame 8's state for a reference that carried frame 0's (1,604 samples off by one).
-                for s_ in seq.slots:
-                    for a_ in (getattr(s_, "areas", None) or {}).values():
-                        addr = a_[0] if isinstance(a_, tuple) else a_
-                        if isinstance(addr, int) and base <= addr < base + pool * stride:
-                            busy.add(base + ((addr - base) // stride) * stride)
-            target = next((base + k * stride for k in range(pool) if base + k * stride not in busy), None)
-            if target is None:
-                raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
+            # the flush target: a frame buffer no live reference slot holds a picture or (stage B) state areas in
+            target = pool_target(base, stride, pool, store, [getattr(s_, "areas", None) for s_ in seq.slots] if card_load else [], tag)
             dseq, layout, total = dma_regs(hdr0, target, not hdr0.allow_intrabc)   # an intrabc frame flushes its whole decoded (MI) area: its own copy source
             self.last_target = target                    # where this frame's picture lands (tools/host/decode.py --show)
             # A model-decoded picture bigger than a pool buffer (an 8K-class frame) stays on the host: no card frame can
