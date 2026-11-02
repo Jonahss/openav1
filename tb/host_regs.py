@@ -402,8 +402,11 @@ def fs_unpack_seg(hdr, data, rowb):
     return [list(data[r * rowb: r * rowb + hdr.MiCols]) for r in range(hdr.MiRows)]
 
 
-def unpack_dma(hdr, data, planes):
-    """The DMA image back into plane row lists (data: the bytes from the first plane's base)."""
+def unpack_dma(hdr, data, planes, raw=False):
+    """The DMA image back into plane rows (data: the bytes from the first plane's base). Rows are lists of ints, or
+    with raw=True the samples as they came: bytes (8-bit) or array("H") (16-bit little-endian, the host's order).
+    Raw rows index and compare like lists but cost no conversion: turning a 1080p picture into lists took ~30 ms a
+    frame on the U200 host (2026-11-02), ten times the PCIe read itself."""
     bps = 1 if hdr.BitDepth == 8 else 2
     base0 = planes[0][0]
     out = []
@@ -413,10 +416,10 @@ def unpack_dma(hdr, data, planes):
             off = b - base0 + y * stride
             row = data[off:off + W * bps]
             if bps == 1:
-                rows.append(list(row))
+                rows.append(row if raw else list(row))
             else:
                 a = array.array("H"); a.frombytes(row)            # 16-bit little-endian samples (the host is little-endian)
-                rows.append(a.tolist())
+                rows.append(a if raw else a.tolist())
         out.append(rows)
     return out
 
@@ -446,6 +449,7 @@ class HostDecoder:
         self.poll_timeout = poll_timeout
         self.log = log or (lambda s: None)
         self.stats = dict(frames=0, tiles=0, bytes=0, pixels=0, writes=0, reads=0)
+        self.raw_planes = False                      # yield pictures as raw rows (unpack_dma raw=True): the board / card hosts set it
         self._def_seq = {}                      # base_q_idx -> the CDF default rows as a write sequence
 
     # -- primitives (TS_REG_LOG=<file>: every register write and read as "w addr value" / "r addr value" lines, so a
@@ -869,12 +873,12 @@ class HostDecoder:
                 base, read = dma
                 self.flush_wait(tag)
                 layout, total = dma_layout(hdr0, base, visible)
-                planes = unpack_dma(hdr0, read(0, total), layout) if want_planes else None
+                planes = unpack_dma(hdr0, read(0, total), layout, raw=self.raw_planes) if want_planes else None
                 self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             elif dma is not None:
                 base, read = dma
                 layout, total = self.dma_picture(hdr0, base, tag, visible)
-                planes = unpack_dma(hdr0, read(0, total), layout) if want_planes else None
+                planes = unpack_dma(hdr0, read(0, total), layout, raw=self.raw_planes) if want_planes else None
                 self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             else:
                 planes = [self.read_plane(hdr0, p, visible, packed) for p in range(hdr0.NumPlanes)]
@@ -1080,7 +1084,7 @@ class HostDecoder:
                 self.flush_wait(tag)
             t["filters"] = time.monotonic() - t0
             t0 = time.monotonic()
-            planes = unpack_dma(hdr0, read(target - base, total), layout) if (want_planes and not model_only) else None
+            planes = unpack_dma(hdr0, read(target - base, total), layout, raw=self.raw_planes) if (want_planes and not model_only) else None
             if not model_only:
                 self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             t["read"] = time.monotonic() - t0

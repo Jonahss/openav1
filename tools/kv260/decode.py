@@ -239,6 +239,7 @@ def main():
             from hostlib import HostLib
             fast = HostLib(args.base)
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
+    host.raw_planes = True                       # pictures as bytes / array rows: compare() and write_planes() take them as they are
     stage = None
     if args.xdma is not None:
         stage = XdmaStage(args.xdma, args.dma_base, args.dma_size)
