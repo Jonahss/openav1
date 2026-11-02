@@ -1093,7 +1093,9 @@ class HostDecoder:
                 dis = getattr(ph, "disable_frame_end_update_cdf", 0)
                 verbatim = getattr(ph, "segmentation_enabled", 0) and not getattr(ph, "segmentation_update_map", 1)
                 prim = ld["prim"]
-                seg_a = (prim["seg"] if prim else None) if verbatim else (fsL["seg_base"], fsL["seg_rowb"])
+                # a map kept verbatim is the primary slot's only when that slot's frame has this frame's dimensions
+                # (ld["seg"] carries that check); otherwise the card wrote the zero map into this frame's own area
+                seg_a = prim["seg"] if (verbatim and prim and ld["seg"] is not None) else (fsL["seg_base"], fsL["seg_rowb"])
                 cdf_a = ((prim["cdf"] if prim else ("defaults", hdr0.base_q_idx)) if dis else fsL["cdf_base"])
                 seq.end_frame_load(ph, dict(seg=seg_a, cdf=cdf_a, mv=(fsL["mv_base"], fsL["mv_rowb"])))
                 mp = None

@@ -385,7 +385,14 @@ class CardSequenceState(SequenceState):
                     ref_frames[2 * y8 + 1][2 * x8 + 1] = rr[x8]
                     mvs[2 * y8 + 1][2 * x8 + 1] = tuple(mm[x8])
         if h.segmentation_enabled and not h.segmentation_update_map:
-            prev = self.slots[h.ref_frame_idx[h.primary_ref_frame]].segment_ids if h.primary_ref_frame != PRIMARY_REF_NONE else None
+            # the map kept verbatim is the one load_previous_segment_ids gave this frame: the primary slot's, or zeros
+            # when that slot's frame had other dimensions (7.20; a slot must never hold a map of another frame's size:
+            # test6562_1344_5677 changes size every few frames and stage A indexed past the inherited map, 2026-11-01)
+            prev = None
+            if h.primary_ref_frame != PRIMARY_REF_NONE:
+                ps = self.slots[h.ref_frame_idx[h.primary_ref_frame]]
+                if ps.mi_rows == R and ps.mi_cols == Cc:
+                    prev = ps.segment_ids
             seg = prev if prev is not None else [[0] * Cc for _ in range(R)]
         else:
             seg = seg_ids
