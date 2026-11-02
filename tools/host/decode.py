@@ -2,8 +2,8 @@
 """Decode an AV1 stream on the KV260 with the openav1 bitstream: stream file in, raw picture out. No model, no
 transcript: the OBU parser runs on the PS, and tb/host_regs.py drives the decoder's register file over /dev/mem
 exactly as the simulation test does.
-    sudo tools/kv260/decode.py streams/synth/natural_lf_only_8bit.ivf -o out.yuv [--ref refout/natural_lf_only_8bit.yuv]
-    python tools/kv260/decode.py clip.ivf --xdma 0 --inter --y4m clip.y4m      # the U200: a playable file (fpga/u200/stream_to_video.sh)
+    sudo tools/host/decode.py streams/synth/natural_lf_only_8bit.ivf -o out.yuv [--ref refout/natural_lf_only_8bit.yuv]
+    python tools/host/decode.py clip.ivf --xdma 0 --inter --y4m clip.y4m      # the U200: a playable file (fpga/u200/stream_to_video.sh)
 Output is planar, visible size, 8-bit as bytes and >8-bit as 16-bit little-endian (dav1d's `-o x.yuv` layout), shown
 frames in output order; --ref compares every sample against such a file and reports the mismatches. --stage recon
 skips the loop filter (and then the picture is the reconstruction, not dav1d's). Exit status 0 when every frame

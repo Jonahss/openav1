@@ -16,7 +16,7 @@ names if they have moved. The demo that runs this whole path on the Alveo U200 i
 
 ## 1. The stream file -> OBUs -> headers (host, Python)
 
-`tools/kv260/decode.py main()` (line 156) reads the file; `feed_ivf` (`tb/obu_parser.py:147`) splits the IVF container
+`tools/host/decode.py main()` (line 156) reads the file; `feed_ivf` (`tb/obu_parser.py:147`) splits the IVF container
 into temporal units; `obu_parser.Decoder` parses each OBU: the sequence header (`SequenceHeader`, line 106: profile, bit
 depth, subsampling), each frame header (`ParsedFrameHeader`, line 110: size, references, quantizers, filter parameters,
 tile layout) and the tile groups (the compressed tile bytes, kept as `dec.tiles[i] = (tile header, bytes)`).
@@ -30,11 +30,11 @@ tile layout) and the tile groups (the compressed tile bytes, kept as `dec.tiles[
   = CDF rows, `R_HDR`/`R_RH`/`R_LH`/`R_CH`/`R_IH` = the header structs the blocks read, `R_DMA_*` = the picture flush,
   `R_SLOT`/`R_REF_*` = the reference slot table, `R_MF_*`/`R_SP_*` = the motion-field and segmentation bands).
 - `HostDecoder` (line 304) owns a session. `write_seq` (363) sends (address, value) pairs; through `libhostregs.so`
-  (`tools/kv260/hostlib.c`) each is one 32-bit store on the mapped BAR, ~0.1 us, versus ~7 us from Python.
+  (`tools/host/hostlib.c`) each is one 32-bit store on the mapped BAR, ~0.1 us, versus ~7 us from Python.
 - `run_tile` (422) / `run_tile_row` (472): write the frame's headers, the CDF rows (`default_rows_seq`, 379, or the rows
   inherited from an earlier frame), the engine mask and each engine's columns, then push the tile bytes four at a time
   into the FIFO (`R_DATA4`, budgeted by the free-word count at `0x070 + 4e`), pulse `START.tile`, and poll `STATUS`.
-- On the U200 the bus is PCIe: `tools/kv260/xdma.py` `XdmaRegs.rd/wr` (26/29) are 32-bit accesses on `/dev/xdma0_user`;
+- On the U200 the bus is PCIe: `tools/host/xdma.py` `XdmaRegs.rd/wr` (26/29) are 32-bit accesses on `/dev/xdma0_user`;
   `XdmaStage.read/write` (43/54) move picture bytes with `/dev/xdma0_c2h_0` / `_h2c_0` (a `pread` at offset A is a DMA
   from card address A).
 

@@ -57,7 +57,7 @@ existing decoder's source; dav1d and libaom are used only as judges.
   transforms, reconstruction, deblocking) is a bitstream on the Kria KV260 with a 512 x 512 UltraRAM frame memory:
   102.5 k LUTs (87 % of the K26), timing met at 80 MHz. libaom-encoded intra streams decode **bit-exact with dav1d**
   on the board; a 120-frame 352 x 288 clip at **86 fps end to end**, the picture written into the PS's DDR by the
-  decoder's own DMA (`tools/kv260/decode.py`: stream file in, picture out). Timing work the same day: the arithmetic
+  decoder's own DMA (`tools/host/decode.py`: stream file in, picture out). Timing work the same day: the arithmetic
   decoder in two stages, the intra predictor's edge-address lookahead, the frame-memory write address precomputed;
   the routed core is 1.95 ns short of 100 MHz, with routing congestion at 99 % slice use the remaining obstacle.
   Intra-only; CDEF, loop restoration and super-resolution are built and verified in simulation but left out of this

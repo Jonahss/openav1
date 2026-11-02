@@ -1,7 +1,7 @@
 /* Device-tree overlay for the openav1 core-decoder bitstream on the KV260 (Kria firmware loader: xmutil loadapp).
  * Programs the PL with the bitstream, releases the PL resets and enables pl_clk0 at 100 MHz (the MMCM in the
  * design makes the decoder clocks from it). The register file sits at 0xA000_0000 and is driven through
- * /dev/mem (tools/kv260/play.py): no kernel driver. */
+ * /dev/mem (tools/host/play.py): no kernel driver. */
 /dts-v1/;
 /plugin/;
 &fpga_full {

@@ -1,7 +1,7 @@
 """The decoder's host-side protocol, with no simulator dependency: the register map of rtl/dec_host.sv, the
 header structs packed the way syn_pkg declares them (hdr_t, rec_hdr_t, lf_hdr_t), and HostDecoder, the sequence
 that drives a frame through the register file (headers, CDF default rows, tile bytes, stage starts, done polls,
-picture read-back). tb/test_dec_host.py uses the packing from here under cocotb; tools/kv260/decode.py runs
+picture read-back). tb/test_dec_host.py uses the packing from here under cocotb; tools/host/decode.py runs
 HostDecoder on the KV260 over /dev/mem. One definition of the protocol, so the board does what the test does."""
 import array
 import sys
@@ -441,7 +441,7 @@ class HostDecoder:
     """Drives one register file (regs.rd(addr) / regs.wr(addr, value), each one 32-bit bus transfer) through a
     frame the way tb/test_dec_host.py does in simulation. Synchronous: meant for software on the PS."""
     def __init__(self, regs, poll_timeout=30.0, log=None, fast=None):
-        """fast: an optional bulk backend (tools/kv260/hostlib.py over the C helper) with write_seq(addrs, vals),
+        """fast: an optional bulk backend (tools/host/hostlib.py over the C helper) with write_seq(addrs, vals),
         push(data, timeout) -> bytes pushed or -1, poll(addr, mask, value, timeout) -> value or None, and
         read_plane(plane, W, H, bd8) -> rows; the protocol stays here, only the word moving goes there."""
         self.r = regs
@@ -1004,7 +1004,7 @@ class HostDecoder:
             if target is None:
                 raise HostError(f"{tag}: every one of the {pool} frame buffers holds a live reference")
             dseq, layout, total = dma_regs(hdr0, target, not hdr0.allow_intrabc)   # an intrabc frame flushes its whole decoded (MI) area: its own copy source
-            self.last_target = target                    # where this frame's picture lands (tools/kv260/decode.py --show)
+            self.last_target = target                    # where this frame's picture lands (tools/host/decode.py --show)
             # A model-decoded picture bigger than a pool buffer (an 8K-class frame) stays on the host: no card frame can
             # take a picture that size as a reference anyway, and a frame that still names it goes to the model as well.
             host_only = model_only and total > stride

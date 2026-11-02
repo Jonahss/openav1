@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build tools/kv260/libhostregs.so for the board (aarch64). The Kria image has no compiler; build on any aarch64 Linux
+# Build tools/host/libhostregs.so for the board (aarch64). The Kria image has no compiler; build on any aarch64 Linux
 # (a Raspberry Pi does) and copy the .so next to decode.py: it uses only open / mmap / clock_gettime, so glibc
 # version differences do not matter.
 set -euo pipefail

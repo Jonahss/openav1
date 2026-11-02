@@ -15,7 +15,7 @@ default strategy, VCO 800): **everything met** (WNS +0.031 ns, decoder clock +1.
 185.8k LUT, routed with no errors: **the day-one bitstream**, `~/openav1-synth/u200-u200c80-4fd1001/sys_wrapper.bit`
 on atium, the same 80 MHz decoder clock the Kria runs at. 100 MHz and up is a follow-up once the host path is
 proven on the card. Everything below the host wrapper is the KV260 design unchanged: the same
-`dec_host` register file, the same host protocol (`tb/host_regs.py`), the same driver (`tools/kv260/decode.py`)
+`dec_host` register file, the same host protocol (`tb/host_regs.py`), the same driver (`tools/host/decode.py`)
 with one new backend. Day one on the card is: program, see the PCIe function, read the ID register, decode the
 1080p clip bit-exact through the window build at 100 MHz. The inter decoder comes after that (below).
 
@@ -84,8 +84,8 @@ cd ~/openav1-wt-u200 && U200_MHZ=100 fpga/u200/build.sh <tag>        # ~2-3 h on
 
 ## Host software
 
-`tools/kv260/decode.py --xdma 0 --window stream.ivf --ref ref.yuv` drives the card: the register file through
-the XDMA user BAR (`tools/kv260/xdma.py` `XdmaRegs`, and `libhostregs.so` through `HostLib(0, dev="/dev/xdma0_user")`:
+`tools/host/decode.py --xdma 0 --window stream.ivf --ref ref.yuv` drives the card: the register file through
+the XDMA user BAR (`tools/host/xdma.py` `XdmaRegs`, and `libhostregs.so` through `HostLib(0, dev="/dev/xdma0_user")`:
 `hl_open_dev` maps the device node the way `hl_open` maps `/dev/mem`), the picture DMA target in the card's DDR4
 (`XdmaStage`: `--dma-base` is a card address, default 0x1000_0000; the host reads the finished picture with
 `pread` on the C2H channel, loads reference pictures with `pwrite` on H2C). Every register access is one 32-bit
@@ -122,9 +122,9 @@ host-side step once the register path is proven; it is not needed to decode.
    (`init_calib_complete` is also an ILA-free check: the smartconnect holds any DMA to the bank until it does, so a
    hung `dma_to_device` means no calibration). Then `dma_to_device` / `dma_from_device` a megabyte at 0x1000_0000
    and compare.
-5. The decoder: `tools/kv260/decode.py --xdma 0 --window streams/demo/testsrc2_1080p_20f_core.ivf --ref refout/...`
+5. The decoder: `tools/host/decode.py --xdma 0 --window streams/demo/testsrc2_1080p_20f_core.ivf --ref refout/...`
    (20 of 20 frames identical on the KV260 at 80 MHz; here 100 MHz). Then the 120-frame foreman clip, then the
-   same register transcript the KV260 replays (`tools/kv260/play.py` needs an `--xdma` switch: todo when the card
+   same register transcript the KV260 replays (`tools/host/play.py` needs an `--xdma` switch: todo when the card
    is here).
 6. Programme the configuration flash later (`write_cfgmem` -> `.mcs`, QSPI x4 per the bitstream settings in
    `sys.xdc`) so the card comes up with the decoder at power-on and the PCIe function enumerates at boot.
@@ -138,7 +138,7 @@ the final picture is flushed row by row to DDR and the references are read back 
 throughput-grade memory (the line-buffer version is step C, for silicon). Synthesis at 1080p geometry
 (FBX = FBY = 11): 207.5k LUT, 255 URAM, 204 BRAM, 820 DSP for `dec_host` alone. The register map and host software
 gained the inter protocol (`tb/host_regs.py`: `seg_map_seq`, `motion_field_seq`, `ref_seq`,
-`HostDecoder.decode_frames_inter`; `tools/kv260/decode.py --inter`), which `tb/test_dec_host_inter.py` verified
+`HostDecoder.decode_frames_inter`; `tools/host/decode.py --inter`), which `tb/test_dec_host_inter.py` verified
 against the model on the generated inter streams and the Argon streams test47 (multi-tile rows, super-res), test6641,
 test648 and test8854 (super-res + CDEF + LR).
 
@@ -147,7 +147,7 @@ Inter day one on the card, after the intra checklist above:
 1. `U200_CORE=0 U200_INTER=1 U200_WIN=5 U200_WIN1=3 U200_WIN2=3 U200_MHZ=100 U200_STRATEGY=Performance_ExtraTimingOpt
    U200_PBLOCK=1 fpga/u200/build.sh <tag>` (the inter build; the 100 MHz closure of the intra build is the hope, not
    a given: ~290k LUT with XDMA and the MIG).
-2. `python3 tools/kv260/decode.py --xdma 0 --inter streams/inter/inter2a_8bit.ivf --ref refout/inter2a_8bit.yuv`: the
+2. `python3 tools/host/decode.py --xdma 0 --inter streams/inter/inter2a_8bit.ivf --ref refout/inter2a_8bit.yuv`: the
    model decodes alongside (seconds a frame: the sequence state comes from it, as in simulation), the pictures land
    in a pool of 8 frame buffers in the card's DDR (`--pool`), each frame's buffer becomes its reference slots'
    address. Then test47 and the Argon super-res streams, then `--show` for the panel... the U200 has no panel: the

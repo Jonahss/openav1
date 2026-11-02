@@ -43,11 +43,11 @@ poll `STATUS.tile_done_lvl`; then `START.lf` and poll `STATUS.lf_done`; then the
 data registers. That sequence lives once, in `tb/host_regs.py` (no simulator dependency: the register map, the
 header packing and `HostDecoder`), and the test and the board driver both use it.
 
-**Stream in, picture out, on the board:** `tools/kv260/decode.py` parses the stream on the PS (`tb/obu_parser.py`)
+**Stream in, picture out, on the board:** `tools/host/decode.py` parses the stream on the PS (`tb/obu_parser.py`)
 and runs `HostDecoder` over `/dev/mem`:
 
 ```
-sudo tools/kv260/decode.py streams/synth/natural_lf_only_8bit.ivf -o out.yuv --ref refout/natural_lf_only_8bit.yuv
+sudo tools/host/decode.py streams/synth/natural_lf_only_8bit.ivf -o out.yuv --ref refout/natural_lf_only_8bit.yuv
 ```
 
 writes the shown frames in dav1d's raw layout and, with `--ref`, compares every sample against dav1d's output
@@ -90,7 +90,7 @@ kernel never sees: the board boots with `mem=3584M` (a `boot.scr` with that in `
 
 **Transcript replay** (no parser on the board, the expected pixels recorded by the simulation):
 `TS_TRANSCRIPT=<file> python tb/runner.py dec_host` (with `FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_STAGE=lf`)
-records every register write, every poll and the expected value of every read, and `tools/kv260/play.py <file>`
+records every register write, every poll and the expected value of every read, and `tools/host/play.py <file>`
 replays it over `/dev/mem` and reports mismatches.
 
 ## Board lessons (2026-10-14)
@@ -121,7 +121,7 @@ PL, releases the PL resets, enables `pl_clk0` at 100 MHz) and `shell.json`. On t
 ```
 sudo mkdir -p /lib/firmware/xilinx/openav1 && sudo cp fw/openav1/* /lib/firmware/xilinx/openav1/
 sudo xmutil unloadapp; sudo xmutil loadapp openav1
-sudo tools/kv260/play.py host-seed1.txt
+sudo tools/host/play.py host-seed1.txt
 ```
 
 With the first bitstream (32-bit port), first `devmem`-style clear bits [9:8] of 0xFD615000 (see above).

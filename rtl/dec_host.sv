@@ -88,7 +88,7 @@
 //                       driver rounds the stride up); a row goes out as 64-bit beats, the last with the byte strobes
 //                       of the samples that exist, in INCR bursts of up to 16 beats that never cross 4 KB.
 // Reads of other words return 0; writes are ignored. (tb/test_dec_host.py drives this map and records the
-// register transcript tools/kv260 replays on the board.)
+// register transcript tools/host replays on the board.)
 module dec_host
     import syn_pkg::*;
     import cdf_map_pkg::*;

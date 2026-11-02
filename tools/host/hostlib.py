@@ -1,4 +1,4 @@
-"""ctypes binding of tools/kv260/hostlib.c (libhostregs.so next to this file, built by build_hostlib.sh): the bulk
+"""ctypes binding of tools/host/hostlib.c (libhostregs.so next to this file, built by build_hostlib.sh): the bulk
 register traffic of the board driver in C. Used by tb/host_regs.HostDecoder as its `fast` backend."""
 import array
 import ctypes

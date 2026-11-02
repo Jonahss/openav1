@@ -1,6 +1,6 @@
 """A minimal AXI4-Lite master for cocotb (one transaction at a time) that can also record a transcript of the
 register traffic: W <addr> <data>, R <addr> <expect> (a read whose value is checked), P <addr> <mask> <value>
-(poll until (read & mask) == value). tools/kv260/play.py replays a transcript against the real register file
+(poll until (read & mask) == value). tools/host/play.py replays a transcript against the real register file
 over /dev/mem, so a board run needs no model: the expected pixel values are in the transcript."""
 import os
 _REG_LOG = open(os.environ["TS_REG_LOG"], "w") if os.environ.get("TS_REG_LOG") else None

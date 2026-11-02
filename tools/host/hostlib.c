@@ -1,6 +1,6 @@
-// Bulk register traffic for the KV260 host driver (tools/kv260/decode.py): the per-access cost from Python
+// Bulk register traffic for the KV260 host driver (tools/host/decode.py): the per-access cost from Python
 // through /dev/mem is ~7 us, from here ~0.1 us, and a frame is tens of thousands of accesses (1269 CDF default
-// rows x 9 words, the tile bytes, the picture). Built as a shared object (tools/kv260/build_hostlib.sh) and
+// rows x 9 words, the tile bytes, the picture). Built as a shared object (tools/host/build_hostlib.sh) and
 // called through ctypes; the Python HostDecoder keeps the protocol, this only moves words. Every access is one
 // aligned 32-bit volatile load or store on a device mapping (uncached, ordered on arm64).
 #include <fcntl.h>

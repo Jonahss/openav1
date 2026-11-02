@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # On the KV260: install a firmware directory (bit.bin + dtbo + shell.json from fpga/kv260/build.sh) under
 # /lib/firmware/xilinx/<name> and load it with xmutil; then show what the FPGA manager and the clock tree say.
-#   sudo tools/kv260/load.sh <fw dir> [name]        (name defaults to the directory's basename, e.g. openav1)
+#   sudo tools/host/load.sh <fw dir> [name]        (name defaults to the directory's basename, e.g. openav1)
 set -euo pipefail
 src=${1:?firmware dir}
 name=${2:-$(basename "$src")}

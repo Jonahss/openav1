@@ -1,7 +1,7 @@
 """The decoder through its AXI-Lite host interface (rtl/dec_host.sv): the same generated streams and model as
 test_dec_top, but every header, CDF default row, tile byte, start and pixel read goes through the register map,
 exactly as software on the board does it. With TS_TRANSCRIPT=<file> the register traffic is written out
-(tb/axil.py format) for tools/kv260/play.py to replay on the KV260 against the bitstream.
+(tb/axil.py format) for tools/host/play.py to replay on the KV260 against the bitstream.
 Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (recon | lf | lr: lr = CDEF / super-res / LR under the frame
 sequencer, pipelined builds with fb1 / fb2 rings), TS_TRANSCRIPT; or TS_IVF=<a.ivf,b.ivf>
 to run real streams (intra, no CDEF / LR: the core build) against dav1d's pictures in refout/ (TS_REF_DIR).
