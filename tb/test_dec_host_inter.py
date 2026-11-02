@@ -313,7 +313,7 @@ async def dec_host_inter_vs_model(dut):
                     assert ctx.cdfs is None or cdf_ld is not None or (prim and isinstance(prim.get("cdf"), tuple)), f"{tag}: the model inherits CDFs but no slot area holds them"
                     await write_seq(ax, HR.ld_regs(seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra), mf=mf_tab))
                     await ax.write(R_START, HR.START_LOAD)
-                    for _ in range(20000):
+                    for _ in range(400000):          # a 1080p frame: zero map + CDF rows + motion-field projection ran past 460k cycles (2026-11-02)
                         stv = await ax.read(HR.R_FS_STATUS)
                         if stv & HR.FS_LD_DONE:
                             break
