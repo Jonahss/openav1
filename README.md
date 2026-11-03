@@ -187,7 +187,7 @@ for a picture memory banked by x mod 4. The tile decoder is the current constrai
 cycles per coefficient, prediction edge gather, transforms); synthesis figures come next.
 
 Reference oracle: the Argon conformance suite (2,763 streams) decodes identically with dav1d and against
-its reference checksums on our setup (`results/`), so dav1d is a trustworthy judge. Argon runs through the RTL
+its reference checksums on our setup (`docs/results/`), so dav1d is a trustworthy judge. Argon runs through the RTL
 started 2026-09-27 (profile0_core intra-only, non-superres subset: 52 streams); the parser follows the
 decoder's operating-point rules (OBUs of other temporal/spatial layers are dropped) and film grain is
 compared with grain disabled (`md5_no_film_grain`).
