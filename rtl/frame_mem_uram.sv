@@ -120,10 +120,12 @@ module frame_mem_uram #(
     // fine, two 50 MHz images decoded wrongly, and the same RTL with the exceptions removed decoded bit-exact. Here
     // nothing on the read path changes at E_a: the URAMs hold DOUT through a write (no-change), the select changes
     // at E_b, so the data launched at E_b is valid for the whole clk cycle and the exception is honest.
-    logic [SW-1:0]  a_sel, b_sel;
     logic [71:0]    a_dout [NU], b_dout [NU];
-    assign a_sel = (NU > 1) ? SW'(a_addr >> 12) : '0;
-    assign b_sel = (NU > 1) ? SW'(b_addr >> 12) : '0;
+    // Per-UltraRAM phase and request mux (2026-11-03): one phase register and one request mux driving the EN / ADDR /
+    // BWE / DIN pins of up to 120 UltraRAMs spread over the die missed timing by ~1 ns at 100 MHz (97 % wire; the
+    // earlier images closed the same path with +0.001 ns). phase alternates every clk2x cycle, so a two-stage copy
+    // equals it exactly and gives the placer two hops; the mux sits next to its UltraRAM, the captured requests
+    // (rq_* / wq_*) fan out as registers, which the placer replicates. KEEP stops synthesis from merging the copies.
     // The read data: each UltraRAM's own output register (OREG) captures its array output at E_b, the edge after the
     // mid-cycle read, and only there (OREG_CE = the E_b edge), so it holds the read through the write at that same
     // edge and for the whole clk cycle; the select of the RAM that was read (a_sel_q, loaded at the same E_b) and
@@ -134,15 +136,30 @@ module frame_mem_uram #(
     assign a_q = a_dout[a_sel_q];
     assign b_q = b_dout[b_sel_q];
     for (genvar k = 0; k < NU; k++) begin : g_uram
+        (* KEEP = "true" *) logic ph1, ph2;                  // local phase: two clk2x stages = the same value
+        always_ff @(posedge clk2x) begin ph1 <= phase; ph2 <= ph1; end
+        logic           ka_en, kb_en;
+        logic [8:0]     ka_bwe, kb_bwe;
+        logic [11:0]    ka_addr, kb_addr;
+        logic [71:0]    ka_d, kb_d;
+        always_comb begin
+            if (ph2) begin                                   // E_a: the captured reads (no byte enabled)
+                ka_en = rq_en[0] && (((NU > 1) ? SW'(rq_addr[0] >> 12) : '0) == SW'(k)); ka_addr = rq_addr[0][11:0]; ka_d = '0; ka_bwe = '0;
+                kb_en = rq_en[1] && (((NU > 1) ? SW'(rq_addr[1] >> 12) : '0) == SW'(k)); kb_addr = rq_addr[1][11:0]; kb_d = '0; kb_bwe = '0;
+            end else begin                                   // E_b: the writes captured a cycle ago
+                ka_en = wq_we[0] && (|wq_bwe[0]) && (((NU > 1) ? SW'(wq_addr[0] >> 12) : '0) == SW'(k)); ka_addr = wq_addr[0][11:0]; ka_d = wq_d[0]; ka_bwe = wq_bwe[0];
+                kb_en = wq_we[1] && (|wq_bwe[1]) && (((NU > 1) ? SW'(wq_addr[1] >> 12) : '0) == SW'(k)); kb_addr = wq_addr[1][11:0]; kb_d = wq_d[1]; kb_bwe = wq_bwe[1];
+            end
+        end
         URAM288 #(
             .CASCADE_ORDER_A("NONE"), .CASCADE_ORDER_B("NONE"), .OREG_A("TRUE"), .OREG_B("TRUE"), .REG_CAS_A("FALSE"), .REG_CAS_B("FALSE"),
             .BWE_MODE_A("PARITY_INDEPENDENT"), .BWE_MODE_B("PARITY_INDEPENDENT"), .EN_AUTO_SLEEP_MODE("FALSE"),
             .IREG_PRE_A("FALSE"), .IREG_PRE_B("FALSE"), .RST_MODE_A("SYNC"), .RST_MODE_B("SYNC"), .USE_EXT_CE_A("FALSE"), .USE_EXT_CE_B("FALSE")
         ) u (
             .CLK(clk2x), .SLEEP(1'b0), .RST_A(1'b0), .RST_B(1'b0),
-            .EN_A(a_en && (a_sel == SW'(k))), .RDB_WR_A(|a_bwe), .ADDR_A({11'd0, a_addr[11:0]}), .BWE_A(a_bwe), .DIN_A(a_d), .DOUT_A(a_dout[k]),
-            .EN_B(b_en && (b_sel == SW'(k))), .RDB_WR_B(|b_bwe), .ADDR_B({11'd0, b_addr[11:0]}), .BWE_B(b_bwe), .DIN_B(b_d), .DOUT_B(b_dout[k]),
-            .OREG_CE_A(!phase), .OREG_CE_B(!phase), .OREG_ECC_CE_A(1'b0), .OREG_ECC_CE_B(1'b0),
+            .EN_A(ka_en), .RDB_WR_A(|ka_bwe), .ADDR_A({11'd0, ka_addr}), .BWE_A(ka_bwe), .DIN_A(ka_d), .DOUT_A(a_dout[k]),
+            .EN_B(kb_en), .RDB_WR_B(|kb_bwe), .ADDR_B({11'd0, kb_addr}), .BWE_B(kb_bwe), .DIN_B(kb_d), .DOUT_B(b_dout[k]),
+            .OREG_CE_A(!ph2), .OREG_CE_B(!ph2), .OREG_ECC_CE_A(1'b0), .OREG_ECC_CE_B(1'b0),
             .INJECT_SBITERR_A(1'b0), .INJECT_DBITERR_A(1'b0), .INJECT_SBITERR_B(1'b0), .INJECT_DBITERR_B(1'b0),
             .CAS_IN_ADDR_A(23'd0), .CAS_IN_ADDR_B(23'd0), .CAS_IN_BWE_A(9'd0), .CAS_IN_BWE_B(9'd0), .CAS_IN_DBITERR_A(1'b0), .CAS_IN_DBITERR_B(1'b0),
             .CAS_IN_DIN_A(72'd0), .CAS_IN_DIN_B(72'd0), .CAS_IN_DOUT_A(72'd0), .CAS_IN_DOUT_B(72'd0), .CAS_IN_EN_A(1'b0), .CAS_IN_EN_B(1'b0),
