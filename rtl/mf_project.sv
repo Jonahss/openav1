@@ -1,6 +1,6 @@
 // Motion field projection engine (spec 7.9 motion_field_estimation; docs/frame-state.md stage B, the last block):
-// at a frame start, after the loader, the card fills the motion-field band itself from the reference slots' saved MV
-// words (rtl/frame_state_w.sv's sideband, one {ref, mv} per 8x8 unit) instead of the host writing every entry.
+// at a frame start the card fills the motion-field band itself from the reference slots' saved MV words
+// (rtl/frame_state_w.sv's sideband, one {ref, mv} per 8x8 unit) instead of the host writing every entry.
 // The host supplies what the spec derives from the order hints alone: which sources project and in which order
 // (LAST, BWDREF, ALTREF2, ALTREF, LAST2 with the refStamp rule), each source's dstSign and refToCur, its refOffset for
 // each saved reference 1..7, and refToDst for each destination 1..7. The engine does 7.9.2 per cell:
@@ -9,14 +9,25 @@
 //   64-pixel band, columns within 8 units); then for dst = 1..7: mf[dst][PosY8][PosX8] = mv_projection(mv, refToDst, refOffset)
 // mv_projection(mv, num, den): round2signed(mv * clip3(-31, 31, num) * Div_Mult[min(31, den)], 14) clipped to +-16383.
 // Cells go in raster order per source, sources in the host's order, so a later write wins at a shared target, as the
-// model does. The field is cleared (every entry invalid) first. One AXI read master; bursts of up to 16 beats.
+// model does. The field is cleared (every entry invalid) first.
+//
+// Throughput (2026-11-03): the clear writes all seven references of a position in one cycle (w8 x h8 cycles; it starts
+// with mf_start, which the loader group raises together with the segment-map / CDF loader, so the clear overlaps that
+// loader's reads: src_go says when the read channel is free); the reads run up to OUT bursts ahead into a beat FIFO
+// whose room is reserved at issue (rready never drops); the cells flow through a pipeline at one cell a cycle: the
+// source's constants and posValid (S1), the per-destination multipliers K = clip(num) * Div_Mult[den] (S2), the
+// sixteen products mv * K (S3), round2signed and the clip (S4), block_position (S5), the seven-reference write (S6).
+// The first version took 11 cycles a cell and 7 x w8 x h8 cycles for the clear: 1080p ran past 460k cycles a frame.
 module mf_project
   import syn_pkg::*;
-(
+#(
+    parameter int OUT = 8                                    // bursts in flight (a power of two)
+) (
     input  logic          clk,
     input  logic          rst,
     input  hdr_t          hdr,
     input  logic          mf_start,
+    input  logic          src_go,              // the read channel is free (the frame-state loader's reads are over)
     input  logic [2:0]    mf_nsrc,             // sources to project, 0..5, in order
     input  logic [199:0]  src_base,            // source s base at [40s +: 40]
     input  logic [79:0]   src_rowb,            // bytes per 8x8 line at [16s +: 16]
@@ -41,12 +52,11 @@ module mf_project
     input  logic          m_axi_rlast,
     input  logic          m_axi_rvalid,
     output logic          m_axi_rready,
-    // the band (mf_band: ref 0 = LAST_FRAME)
-    output logic          mf_we,
-    output logic [2:0]    mf_wref,
+    // the band (mf_band: ref 0 = LAST_FRAME; one write enable and one vector per reference)
+    output logic [6:0]    mf_we,
     output logic [MIW-2:0] mf_wy8, mf_wx8,
     output logic          mf_wvalid,
-    output logic signed [15:0] mf_wrow, mf_wcol
+    output logic [111:0]  mf_wrow, mf_wcol
 );
     // Div_Mult[1..31] (av1_tables); index 1 = 16384 is the only one past 14 bits, so the ROM is 15 bits wide
     function automatic logic [14:0] divm(input logic [4:0] d);
@@ -60,118 +70,202 @@ module mf_project
             5'd31: divm = 15'd528; default: divm = 15'd0;
         endcase
     endfunction
-    // mv_projection for one component: mv (signed 14: |mv| <= 4095 from the sideband), num signed 8 (clipped to +-31 here),
-    // den 5 bits (1..31): round2signed(mv * num * Div_Mult[den], 14) clipped to +-16383
-    function automatic logic signed [15:0] mvproj(input logic signed [13:0] mv, input logic signed [7:0] num, input logic [4:0] den);
-        logic signed [7:0] n; logic signed [35:0] x, r;
-        n = (num > 8'sd31) ? 8'sd31 : (num < -8'sd31) ? -8'sd31 : num;
-        x = 36'(mv) * 36'(n) * 36'(signed'({21'd0, divm(den)}));
-        r = (x >= 0) ? ((x + 36'sd8192) >>> 14) : -((-x + 36'sd8192) >>> 14);
-        mvproj = (r > 36'sd16383) ? 16'sd16383 : (r < -36'sd16383) ? -16'sd16383 : 16'(r);
+    // clip3(-31, 31, num) as a 6-bit signed value
+    function automatic logic signed [5:0] clip31(input logic signed [7:0] num);
+        clip31 = (num > 8'sd31) ? 6'sd31 : (num < -8'sd31) ? -6'sd31 : 6'(num);
+    endfunction
+    // round2signed(x, 14) clipped to +-16383: the tail of mv_projection, x = mv * clippedNum * Div_Mult (35 bits)
+    function automatic logic signed [15:0] rnd14(input logic signed [34:0] x);
+        logic signed [34:0] r;
+        r = (x >= 0) ? ((x + 35'sd8192) >>> 14) : -((-x + 35'sd8192) >>> 14);
+        rnd14 = (r > 35'sd16383) ? 16'sd16383 : (r < -35'sd16383) ? -16'sd16383 : 16'(r);
     endfunction
 
     logic [MIW-2:0] w8, h8;
     assign w8 = (MIW-1)'(hdr.mi_cols >> 1);
     assign h8 = (MIW-1)'(hdr.mi_rows >> 1);
+    logic signed [5:0] n_dst [7];                            // clip3(-31, 31, refToDst[d]) for d = 1..7
+    for (genvar d = 0; d < 7; d++) begin : g_nd
+        assign n_dst[d] = clip31(signed'(dst_dist[8 * d +: 8]));
+    end
 
-    // ---------------------------------------------------------------- the read side: cells into a small queue
-    typedef enum logic [3:0] {P_IDLE, P_CLEAR, P_SRC, P_LINE, P_LEN, P_AR, P_R, P_NEXT, P_DRAIN, P_DONE} pstate_t;
-    pstate_t        ps;
+    // ---------------------------------------------------------------- the address side
+    localparam int OW = $clog2(OUT);
+    localparam int BD = 32;                                  // beat FIFO depth
+    localparam int BW = $clog2(BD);
+    typedef enum logic [3:0] {A_IDLE, A_CLEAR, A_WAIT, A_SRC, A_LINE, A_LEN, A_AR, A_DRAIN, A_DONE} astate_t;
+    astate_t        as;
     logic [2:0]     s;                                       // the source being read
     logic [39:0]    addr;
-    logic [31:0]    beats;
-    logic [4:0]     len, cnt;
+    logic [15:0]    beats;                                   // beats left in the line
+    logic [4:0]     len;
     logic [9:0]     to4k;
     assign to4k = 10'((13'd4096 - 13'(addr[11:0])) >> 3);
-    logic [MIW-2:0] line, beat;
-    logic [2:0]     c_dst; logic [MIW-2:0] c_y, c_x;        // the clear pass
+    logic [MIW-2:0] line, bx8;                               // the line, the x8 of the next burst's first cell
+    logic [MIW-2:0] c_y, c_x;                                // the clear pass
+    logic [OW:0]    inflight;                                // bursts issued whose last beat has not arrived
+    logic [BW:0]    resv;                                    // beats reserved in the beat FIFO
     assign m_axi_arsize = 3'b011; assign m_axi_arburst = 2'b01; assign m_axi_arcache = 4'b0011; assign m_axi_arprot = 3'b000;
-    assign m_axi_araddr = addr; assign m_axi_arlen = 8'(len - 5'd1); assign m_axi_arvalid = (ps == P_AR);
-    assign mf_busy = (ps != P_IDLE);
+    assign m_axi_araddr = addr; assign m_axi_arlen = 8'(len - 5'd1); assign m_axi_arvalid = (as == A_AR);
+    assign m_axi_rready = 1'b1;                              // room is reserved at issue
+    assign mf_busy = (as != A_IDLE);
     logic [4:0] burst_len;
     always_comb begin
         burst_len = 5'd16;
-        if (beats < 32'd16) burst_len = 5'(beats);
+        if (beats < 16'd16) burst_len = 5'(beats);
         if (to4k < 10'(burst_len)) burst_len = 5'(to4k);
     end
-    // the cell queue: {word[31:0], y8, x8, src} x 4; a beat pushes two cells
-    typedef struct packed { logic [31:0] w; logic [MIW-2:0] y8, x8; logic [2:0] src; } cell_t;
-    cell_t          q [4];
-    logic [2:0]     q_w, q_r;
-    logic [2:0]     q_n;
-    assign q_n = q_w - q_r;
-    assign m_axi_rready = (ps == P_R) && (q_n <= 3'd2);
-    logic           pop;
-    always_ff @(posedge clk) begin
-        if (rst) begin q_w <= '0; end
-        else begin
-            if (mf_start) q_w <= '0;
-            if (ps == P_R && m_axi_rvalid && m_axi_rready) begin
-                q[q_w[1:0]] <= '{w: m_axi_rdata[31:0], y8: line, x8: (MIW-1)'({beat[MIW-3:0], 1'b0}), src: s};
-                q[2'(q_w + 3'd1)] <= '{w: m_axi_rdata[63:32], y8: line, x8: (MIW-1)'({beat[MIW-3:0], 1'b1}), src: s};
-                q_w <= q_w + 3'd2;
-            end
-        end
-    end
+    // issued bursts, in order: what the data side needs to tag the beats
+    typedef struct packed { logic [2:0] src; logic [MIW-2:0] line, x8; } desc_t;
+    desc_t          dq [OUT];
+    logic [OW:0]    dq_w, dq_r;
+    logic           issue, retire, pop_beat;
+    assign issue  = (as == A_AR) && m_axi_arready;
+    assign retire = m_axi_rvalid && m_axi_rlast;
+    logic           can_issue;
+    assign can_issue = (inflight < (OW+1)'(OUT)) && ((resv + (BW+1)'(burst_len)) <= (BW+1)'(BD));
+    logic           pipe_v;
+    logic [BW:0]    bq_n;
     always_ff @(posedge clk) begin
         mf_done <= 1'b0;
         if (rst) begin
-            ps <= P_IDLE; s <= '0; addr <= '0; beats <= '0; len <= '0; cnt <= '0; line <= '0; beat <= '0; mf_err <= 1'b0;
-            c_dst <= '0; c_y <= '0; c_x <= '0;
+            as <= A_IDLE; s <= '0; addr <= '0; beats <= '0; len <= '0; line <= '0; bx8 <= '0; c_y <= '0; c_x <= '0;
+            inflight <= '0; resv <= '0; dq_w <= '0;
         end else begin
-            case (ps)
-                P_IDLE: if (mf_start) begin mf_err <= 1'b0; c_dst <= '0; c_y <= '0; c_x <= '0; ps <= P_CLEAR; end
-                P_CLEAR: begin                               // every entry of the field invalid, one a cycle
+            inflight <= inflight + (OW+1)'(issue) - (OW+1)'(retire);
+            resv <= resv + (issue ? (BW+1)'(len) : '0) - (BW+1)'(pop_beat);
+            if (issue) begin dq[dq_w[OW-1:0]] <= '{src: s, line: line, x8: bx8}; dq_w <= dq_w + 1'b1; end
+            case (as)
+                A_IDLE: if (mf_start) begin c_y <= '0; c_x <= '0; inflight <= '0; resv <= '0; dq_w <= '0; as <= A_CLEAR; end
+                A_CLEAR: begin                               // every entry of the field invalid: one position (all references) a cycle
                     if (c_x + 1 < w8) c_x <= c_x + 1;
                     else begin
                         c_x <= '0;
                         if (c_y + 1 < h8) c_y <= c_y + 1;
-                        else begin c_y <= '0; if (c_dst != 3'd6) c_dst <= c_dst + 3'd1; else begin s <= '0; ps <= P_SRC; end end
+                        else begin c_y <= '0; as <= A_WAIT; end
                     end
                 end
-                P_SRC: begin
-                    if (s >= mf_nsrc) ps <= P_DRAIN;
-                    else begin addr <= src_base[40 * s +: 40]; line <= '0; ps <= P_LINE; end
+                A_WAIT: if (src_go) begin s <= '0; as <= A_SRC; end
+                A_SRC: begin
+                    if (s >= mf_nsrc) as <= A_DRAIN;
+                    else begin addr <= src_base[40 * s +: 40]; line <= '0; as <= A_LINE; end
                 end
-                P_LINE: begin
-                    beats <= 32'(src_rowb[16 * s +: 16] >> 3); beat <= '0;
-                    if (line < h8 && src_rowb[16 * s +: 16] != 16'd0) ps <= P_LEN;
-                    else begin s <= s + 3'd1; ps <= P_SRC; end
+                A_LINE: begin
+                    beats <= src_rowb[16 * s +: 16] >> 3; bx8 <= '0;
+                    if (line < h8 && src_rowb[16 * s +: 16] != 16'd0) as <= A_LEN;
+                    else begin s <= s + 3'd1; as <= A_SRC; end
                 end
-                P_LEN: begin len <= burst_len; cnt <= '0; ps <= P_AR; end
-                P_AR: if (m_axi_arready) ps <= P_R;
-                P_R: if (m_axi_rvalid && m_axi_rready) begin
-                    if (m_axi_rresp[1]) mf_err <= 1'b1;
-                    addr <= addr + 40'd8; beats <= beats - 32'd1; cnt <= cnt + 5'd1; beat <= beat + 1;
-                    if (m_axi_rlast) ps <= P_NEXT;
+                A_LEN: begin len <= burst_len; if (can_issue) as <= A_AR; end   // arlen settled a cycle before arvalid (the sideband DMA's lesson); a burst goes only with room reserved
+                A_AR: if (m_axi_arready) begin
+                    addr <= addr + 40'({len, 3'b000}); beats <= beats - 16'(len); bx8 <= bx8 + (MIW-1)'({len, 1'b0});
+                    if (beats == 16'(len)) begin line <= line + 1; as <= A_LINE; end
+                    else as <= A_LEN;
                 end
-                P_NEXT: begin
-                    if (beats != 32'd0) ps <= P_LEN;
-                    else begin line <= line + 1; ps <= P_LINE; end
-                end
-                P_DRAIN: if (q_n == 3'd0 && cs == C_IDLE) ps <= P_DONE;   // the last cells written
-                P_DONE: begin mf_done <= 1'b1; ps <= P_IDLE; end
-                default: ps <= P_IDLE;
+                A_DRAIN: if (inflight == '0 && bq_n == '0 && !pipe_v) as <= A_DONE;   // the last cells written
+                A_DONE: begin mf_done <= 1'b1; as <= A_IDLE; end
+                default: as <= A_IDLE;
             endcase
         end
     end
 
-    // ---------------------------------------------------------------- the cell side: project and write
-    typedef enum logic [2:0] {C_IDLE, C_POS, C_DST} cstate_t;
-    cstate_t        cs;
-    cell_t          c;
-    logic [2:0]     c_ref;
-    logic signed [13:0] c_mvr, c_mvc;
-    logic signed [7:0]  c_off, c_tocur;
-    logic           c_sign;
-    logic signed [15:0] pr, pc;                              // projMv
-    logic [MIW-2:0] py, px;
-    logic [3:0]     d;                                       // phase: 0 test + projection, 1 position, 2..8 the seven destinations
-    assign c_ref = c.w[2:0];
-    assign c_mvc = 14'(signed'(c.w[15:3]));
-    assign c_mvr = 14'(signed'(c.w[28:16]));
-    assign pop = (cs == C_IDLE) && (q_n != 3'd0) && (ps != P_CLEAR);
-    // block_position for one axis: v8 + dstSign * offset8, within the 8-unit block (+- margin) and the frame
+    // ---------------------------------------------------------------- the data side: beats into the FIFO
+    typedef struct packed { logic [63:0] w; logic [2:0] src; logic [MIW-2:0] line, x8; } beat_t;
+    beat_t          bq [BD];
+    logic [BW:0]    bq_w, bq_r;
+    logic [3:0]     bcnt;                                    // beat index within the burst
+    assign bq_n = bq_w - bq_r;
+    always_ff @(posedge clk) begin
+        if (rst) begin bq_w <= '0; dq_r <= '0; bcnt <= '0; mf_err <= 1'b0; end
+        else begin
+            if (mf_start) begin bq_w <= '0; dq_r <= '0; bcnt <= '0; mf_err <= 1'b0; end
+            if (m_axi_rvalid) begin
+                if (m_axi_rresp[1]) mf_err <= 1'b1;
+                bq[bq_w[BW-1:0]] <= '{w: m_axi_rdata, src: dq[dq_r[OW-1:0]].src, line: dq[dq_r[OW-1:0]].line,
+                                      x8: dq[dq_r[OW-1:0]].x8 + (MIW-1)'({bcnt, 1'b0})};
+                bq_w <= bq_w + 1'b1;
+                bcnt <= m_axi_rlast ? 4'd0 : bcnt + 4'd1;
+                if (m_axi_rlast) dq_r <= dq_r + 1'b1;
+            end
+        end
+    end
+
+    // ---------------------------------------------------------------- the cell pipeline, one cell a cycle
+    // S0: take a cell (half a beat)
+    logic           half;
+    logic           v0;
+    logic [31:0]    c0_w; logic [2:0] c0_src; logic [MIW-2:0] c0_y, c0_x;
+    assign pop_beat = (bq_n != '0) && half;
+    always_ff @(posedge clk) begin
+        if (rst) begin bq_r <= '0; half <= 1'b0; v0 <= 1'b0; end
+        else begin
+            if (mf_start) begin bq_r <= '0; half <= 1'b0; end
+            v0 <= (bq_n != '0);
+            if (bq_n != '0) begin
+                c0_w   <= half ? bq[bq_r[BW-1:0]].w[63:32] : bq[bq_r[BW-1:0]].w[31:0];
+                c0_src <= bq[bq_r[BW-1:0]].src;
+                c0_y   <= bq[bq_r[BW-1:0]].line;
+                c0_x   <= bq[bq_r[BW-1:0]].x8 + (MIW-1)'(half);
+                half   <= ~half;
+                if (half) bq_r <= bq_r + 1'b1;
+            end
+        end
+    end
+    // S1: the source's constants, posValid
+    logic           v1;
+    logic signed [13:0] c1_mvr, c1_mvc; logic [MIW-2:0] c1_y, c1_x;
+    logic signed [5:0]  c1_ncur; logic [14:0] c1_dm; logic c1_sign;
+    logic [2:0]     c0_ref; logic signed [7:0] c0_off, c0_tocur; logic c0_sign;
+    assign c0_ref   = c0_w[2:0];
+    logic [5:0]     c0_oi;                                   // 7 src + ref - 1 (0 for ref 0: the value is unused)
+    assign c0_oi    = (c0_ref == 3'd0) ? 6'd0 : 6'(7 * 32'(c0_src) + 32'(c0_ref) - 1);
+    assign c0_off   = signed'(src_off[8 * c0_oi +: 8]);
+    assign c0_tocur = signed'(src_tocur[8 * c0_src +: 8]);
+    assign c0_sign  = src_sign[c0_src];
+    always_ff @(posedge clk) begin
+        if (rst) v1 <= 1'b0;
+        else v1 <= v0 && c0_ref != 3'd0 && c0_x < w8 && c0_off > 8'sd0 && c0_off <= 8'sd31 && c0_tocur <= 8'sd31 && c0_tocur >= -8'sd31;
+        c1_mvc  <= 14'(signed'(c0_w[15:3]));
+        c1_mvr  <= 14'(signed'(c0_w[28:16]));
+        c1_y    <= c0_y; c1_x <= c0_x;
+        c1_ncur <= c0_sign ? 6'(c0_tocur) : -6'(c0_tocur);
+        c1_dm   <= divm(5'(c0_off));
+        c1_sign <= c0_sign;
+    end
+    // S2: K = clip(num) * Div_Mult[den] toward the current frame and each destination (signed 21 bits)
+    logic           v2;
+    logic signed [13:0] c2_mvr, c2_mvc; logic [MIW-2:0] c2_y, c2_x; logic c2_sign;
+    logic signed [20:0] k2_cur, k2_dst [7];
+    always_ff @(posedge clk) begin
+        if (rst) v2 <= 1'b0; else v2 <= v1;
+        c2_mvr <= c1_mvr; c2_mvc <= c1_mvc; c2_y <= c1_y; c2_x <= c1_x; c2_sign <= c1_sign;
+        k2_cur <= 21'(c1_ncur) * 21'(signed'({6'd0, c1_dm}));
+        for (int d = 0; d < 7; d++) k2_dst[d] <= 21'(n_dst[d]) * 21'(signed'({6'd0, c1_dm}));
+    end
+    // S3: the sixteen products mv * K (signed 35 bits)
+    logic           v3;
+    logic [MIW-2:0] c3_y, c3_x; logic c3_sign;
+    logic signed [34:0] x3_r, x3_c, x3_dr [7], x3_dc [7];
+    always_ff @(posedge clk) begin
+        if (rst) v3 <= 1'b0; else v3 <= v2;
+        c3_y <= c2_y; c3_x <= c2_x; c3_sign <= c2_sign;
+        x3_r <= 35'(c2_mvr) * 35'(k2_cur);
+        x3_c <= 35'(c2_mvc) * 35'(k2_cur);
+        for (int d = 0; d < 7; d++) begin
+            x3_dr[d] <= 35'(c2_mvr) * 35'(k2_dst[d]);
+            x3_dc[d] <= 35'(c2_mvc) * 35'(k2_dst[d]);
+        end
+    end
+    // S4: round2signed(., 14) and the clip
+    logic           v4;
+    logic [MIW-2:0] c4_y, c4_x; logic c4_sign;
+    logic signed [15:0] p4_r, p4_c, p4_dr [7], p4_dc [7];
+    always_ff @(posedge clk) begin
+        if (rst) v4 <= 1'b0; else v4 <= v3;
+        c4_y <= c3_y; c4_x <= c3_x; c4_sign <= c3_sign;
+        p4_r <= rnd14(x3_r); p4_c <= rnd14(x3_c);
+        for (int d = 0; d < 7; d++) begin p4_dr[d] <= rnd14(x3_dr[d]); p4_dc[d] <= rnd14(x3_dc[d]); end
+    end
+    // S5: block_position for one axis: v8 + dstSign * offset8, within the 8-unit block (+- margin) and the frame
     function automatic logic [MIW:0] bpos(input logic [MIW-2:0] v8, input logic signed [15:0] delta, input logic sign, input logic [MIW-2:0] max8, input int maxoff8);
         logic signed [MIW:0] v, base8, off8;
         off8 = (delta >= 0) ? (MIW+1)'(delta >>> 6) : -(MIW+1)'((-delta) >>> 6);
@@ -183,53 +277,26 @@ module mf_project
     endfunction
     logic [MIW:0] by, bx;
     always_comb begin
-        by = bpos(c.y8, pr, c_sign, h8, 0);
-        bx = bpos(c.x8, pc, c_sign, w8, 8);
+        by = bpos(c4_y, p4_r, c4_sign, h8, 0);
+        bx = bpos(c4_x, p4_c, c4_sign, w8, 8);
     end
+    logic           v5;
+    logic [MIW-2:0] p5_y, p5_x;
+    logic signed [15:0] p5_dr [7], p5_dc [7];
     always_ff @(posedge clk) begin
-        mf_we <= 1'b0;
-        if (rst) begin cs <= C_IDLE; q_r <= '0; c <= '0; d <= '0; pr <= '0; pc <= '0; py <= '0; px <= '0; c_off <= '0; c_tocur <= '0; c_sign <= 1'b0;
-                       mf_wref <= '0; mf_wy8 <= '0; mf_wx8 <= '0; mf_wvalid <= 1'b0; mf_wrow <= '0; mf_wcol <= '0; end
-        else begin
-            if (mf_start) q_r <= '0;
-            // the clear pass writes from the read-side FSM's counters
-            if (ps == P_CLEAR) begin mf_we <= 1'b1; mf_wref <= c_dst; mf_wy8 <= c_y; mf_wx8 <= c_x; mf_wvalid <= 1'b0; mf_wrow <= '0; mf_wcol <= '0; end
-            case (cs)
-                C_IDLE: if (pop) begin
-                    c <= q[q_r[1:0]]; q_r <= q_r + 3'd1;
-                    cs <= C_POS;
-                end
-                C_POS: begin                                 // posValid, projMv, then the position
-                    c_off   <= signed'(src_off[8 * (7 * c.src + c_ref - 1) +: 8]);
-                    c_tocur <= signed'(src_tocur[8 * c.src +: 8]);
-                    c_sign  <= src_sign[c.src];
-                    if (c_ref == 3'd0 || c.x8 >= w8) cs <= C_IDLE;                  // no saved reference / the padding cell
-                    else begin
-                        // computed from the registered inputs next state: hold one cycle via d as a phase counter
-                        d <= 4'd0; cs <= C_DST;
-                    end
-                end
-                C_DST: begin
-                    if (d == 4'd0) begin                     // phase 0: the test and the projection toward the current frame
-                        if (c_off <= 8'sd0 || c_off > 8'sd31 || c_tocur > 8'sd31 || c_tocur < -8'sd31) cs <= C_IDLE;
-                        else begin
-                            pr <= mvproj(c_mvr, c_sign ? c_tocur : -c_tocur, 5'(c_off));
-                            pc <= mvproj(c_mvc, c_sign ? c_tocur : -c_tocur, 5'(c_off));
-                            d <= 4'd1;
-                        end
-                    end else if (d == 4'd1) begin            // phase 1: block_position (by / bx from pr / pc, combinational)
-                        if (by[MIW] || bx[MIW]) cs <= C_IDLE;
-                        else begin py <= by[MIW-2:0]; px <= bx[MIW-2:0]; d <= 4'd2; end
-                    end else begin                           // phases 2..8: the seven destinations
-                        mf_we <= 1'b1; mf_wref <= 3'(d - 4'd2); mf_wy8 <= py; mf_wx8 <= px; mf_wvalid <= 1'b1;
-                        mf_wrow <= mvproj(c_mvr, signed'(dst_dist[8 * (d - 2) +: 8]), 5'(c_off));
-                        mf_wcol <= mvproj(c_mvc, signed'(dst_dist[8 * (d - 2) +: 8]), 5'(c_off));
-                        // d counts to 8 (it was 3 bits once: 7 + 1 wrapped to 0, the cell never left this loop and P_DRAIN waited forever)
-                        if (d == 4'd8) cs <= C_IDLE; else d <= d + 4'd1;
-                    end
-                end
-                default: cs <= C_IDLE;
-            endcase
+        if (rst) v5 <= 1'b0; else v5 <= v4 && !by[MIW] && !bx[MIW];
+        p5_y <= by[MIW-2:0]; p5_x <= bx[MIW-2:0];
+        for (int d = 0; d < 7; d++) begin p5_dr[d] <= p4_dr[d]; p5_dc[d] <= p4_dc[d]; end
+    end
+    assign pipe_v = v0 | v1 | v2 | v3 | v4 | v5;
+    // S6: the write (the clear pass uses the same register from the address side's counters)
+    always_ff @(posedge clk) begin
+        mf_we <= 7'd0;
+        if (rst) begin mf_wy8 <= '0; mf_wx8 <= '0; mf_wvalid <= 1'b0; mf_wrow <= '0; mf_wcol <= '0; end
+        else if (as == A_CLEAR) begin mf_we <= 7'h7f; mf_wy8 <= c_y; mf_wx8 <= c_x; mf_wvalid <= 1'b0; mf_wrow <= '0; mf_wcol <= '0; end
+        else if (v5) begin
+            mf_we <= 7'h7f; mf_wy8 <= p5_y; mf_wx8 <= p5_x; mf_wvalid <= 1'b1;
+            for (int d = 0; d < 7; d++) begin mf_wrow[16 * d +: 16] <= p5_dr[d]; mf_wcol[16 * d +: 16] <= p5_dc[d]; end
         end
     end
 endmodule

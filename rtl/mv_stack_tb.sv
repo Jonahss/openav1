@@ -22,11 +22,10 @@ module mv_stack_tb
     input  logic [MIW-1:0] clr_row,
     input  logic [5:0]  clr_n,
     // motion field writes
-    input  logic        mf_we,
-    input  logic [2:0]  mf_wref,
+    input  logic [6:0]  mf_we,                   // one per reference
     input  logic [MIW-2:0] mf_wy8, mf_wx8,
     input  logic        mf_wvalid,
-    input  logic signed [15:0] mf_wrow, mf_wcol,
+    input  logic [111:0] mf_wrow, mf_wcol,       // per reference at [16r +: 16]
     // the stack
     input  logic        start,
     input  logic [MIW-1:0] r, c,
@@ -47,7 +46,7 @@ module mv_stack_tb
     mv_mem #(.ML2R(ML2R), .ML2C(ML2C)) u_mvm (.clk, .rst, .we(mvm_we), .w_r(mvm_r), .w_c(mvm_c), .w_bw4(mvm_bw4), .w_bh4(mvm_bh4),
                                               .w_data(mvm_data), .busy(mvm_busy), .clr(mvm_clr), .clr_row, .clr_n,
                                               .rd_row, .rd_col, .rd_ent, .rd_written);
-    mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_ref(mf_wref), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
+    mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
                                                   .w_row(mf_wrow), .w_col(mf_wcol), .rd_ref(mf_ref), .rd_y8(mf_y8), .rd_x8(mf_x8),
                                                   .rd_valid(mf_valid), .rd_row(mf_row), .rd_col(mf_col));
     logic signed [17:0] st0_row [4], st0_col [4], st1_row [4], st1_col [4], gmv_row [2], gmv_col [2];

@@ -46,6 +46,8 @@ LR_FIELDS = [("plane", 2), ("unit_row", SBW), ("unit_col", SBW), ("lr_type", 2),
 
 
 
+rep7 = lambda v: sum(v << (16 * i) for i in range(7))     # mf_band: the same vector for every reference's memory
+
 def pack_cmv(cmv):
     """blk_rec_t.cmv from the model's chroma_mv_units: unit k at [76k +: 76]."""
     v = 0
@@ -274,7 +276,7 @@ async def tile_vs_model(dut):
         dut.phase.value = 0
         cocotb.start_soon(phase_gen())
     for s in ("in_valid", "in_eos", "def_we", "rb_en", "rb_addr", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "ihdr", "blk_ack", "pm_plane", "pm_x", "pm_y",
-              "mf_we", "mf_wref", "mf_wy8", "mf_wx8", "mf_wvalid", "mf_wrow", "mf_wcol", "sp_we", "sp_wrow", "sp_wwc", "sp_wdata"):
+              "mf_we", "mf_wy8", "mf_wx8", "mf_wvalid", "mf_wrow", "mf_wcol", "sp_we", "sp_wrow", "sp_wwc", "sp_wdata"):
         if hasattr(dut, s):
             getattr(dut, s).value = 0
     dut.rst.value = 1
@@ -492,13 +494,12 @@ async def load_frame_state(dut, h, ctx):
                 for x8 in range(cols >> 1):         # aliases onto row / column 0 of an exactly-sized band (test1861 frame 7)
                     mv = mf[ref][y8][x8] if (mf is not None and y8 < len(mf[ref]) and x8 < len(mf[ref][y8])) else [tm.MV_INVALID, tm.MV_INVALID]
                     valid = mv[0] != tm.MV_INVALID
-                    dut.mf_we.value = 1
-                    dut.mf_wref.value = ref - 1
+                    dut.mf_we.value = 1 << (ref - 1)                 # one memory per reference
                     dut.mf_wy8.value = y8
                     dut.mf_wx8.value = x8
                     dut.mf_wvalid.value = int(valid)
-                    dut.mf_wrow.value = (mv[0] & 0xFFFF) if valid else 0
-                    dut.mf_wcol.value = (mv[1] & 0xFFFF) if valid else 0
+                    dut.mf_wrow.value = rep7((mv[0] & 0xFFFF)) if valid else 0
+                    dut.mf_wcol.value = rep7((mv[1] & 0xFFFF)) if valid else 0
                     await RisingEdge(dut.clk)
         dut.mf_we.value = 0
 
