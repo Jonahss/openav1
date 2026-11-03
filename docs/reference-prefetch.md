@@ -56,20 +56,26 @@ separated from the rest before the fix is sized. §3 does that with the simulati
 The same frames through the simulation twin (`tb/test_dec_host_inter.py`, FBX = FBY = 11, WIN 5/3/3, stage B with the
 10-buffer pool, i.e. the card's configuration) against the card (`~/measure1080/rb/raw.log`, image
 `u200-fm2s100p-0fd3b46`). Simulated cycles are the sequencer's own count (the Python model's time does not advance the
-clock); the card's are the tile-stage wall time at 100 MHz.
+clock) from a frame's `frame started` line to its `identical` line; the card's are the tile-stage wall time at 100 MHz
+(two digits: ±0.5 M cycles, i.e. ±1-3 cycles per read). The twin's own frame-state load between frames is left out
+on both sides: it is 0.24 M cycles with stage B (frame 1) and 1.4 M through the register path (frames 2-3, which ran
+with stage B off after the first run stopped on the loader wait bound), and it is host time, not tile time.
 
 | frame | kind | reads | simulation | card | card − sim | per read |
 |---|---|---|---|---|---|---|
 | 0 | intra | 0 | 12.79 M cycles | 13 M (0.13 s) | ~0 | — |
-| 1 | inter, 7,718 blocks (16x16 / 8x8) | 404,354 | 15.0 M | 34 M (0.34 s) | 19 M | **47 cycles** |
-| 2, 3 | inter (simulation pending: the first run stopped at frame 2 on the twin's frame-state-loader wait bound, see below) | 268k / 198k | | 24 M / 20 M | | |
+| 1 | inter, 7,718 blocks (16x16 / 8x8), no compound | 404,354 | 14.8 M | 34 M (0.34 s) | 19.2 M | **48 cycles** |
+| 2 | inter, 2,361 blocks (32x32 / 16x16 / 64x64), 1,284 compound | 268,193 | 11.2 M | 24 M (0.24 s) | 12.8 M | **48 cycles** |
+| 3 | inter, 1,556 blocks (32x32 / 16x16 / 64x64), 736 compound | 197,580 | 10.1 M | 20 M (0.20 s) | 9.9 M | **50 cycles** |
 
 The intra frame agrees to 2 %: everything the testbench models (syntax, reconstruction, the filters under the
 sequencer, the register traffic) costs on the card what it costs in simulation. The inter frame does not, and the
 whole of the difference sits in the one thing the testbench answers in a few cycles and the card does not: 404k
-reference reads at about 47 cycles each, 470 ns per round trip through the XDMA interconnect and the DDR4 controller.
-That is the number the design below is sized against; frames 2 and 3 (larger blocks: fewer, longer rows) and the
-Argon inter streams (small pictures) will show how it varies. A side finding from the same run: at 1080p the stage B
+reference reads at about 48 cycles each, 480 ns per round trip through the XDMA interconnect and the DDR4 controller.
+Frames 2 and 3 say the same: 48 and 50 cycles per read with half the reads, larger blocks (fewer, longer rows) and
+a third to a half of the blocks compound (two references per block, so two patches). The term is a per-row round trip
+that does not depend on block size or on the compound share, which is what a serial fetch predicts, and the design
+below is sized against ~48 cycles. The Argon inter streams (small pictures) remain to be measured. A side finding from the same run: at 1080p the stage B
 frame-state loader (zero segment map, CDF rows, motion-field projection) ran past 460k cycles on frame 2, where the twin's
 wait bound stopped it (raised); on the card that is ~5 ms a frame, hidden inside the host's timeout today but 15 % of a
 33 ms frame at 30 fps, so the projection engine joins the throughput list. The number is also what makes
