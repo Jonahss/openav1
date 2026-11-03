@@ -1,7 +1,8 @@
 """A minimal AXI4 slave memory for cocotb: the write channels of the picture DMA (INCR bursts, byte strobes) into
 a dict of bytes keyed by address, the read channels of the reference fetch (run_read: INCR bursts of 8-byte beats
 out of the same dict), and a read side for the testbench. Independent handshakes with random ready / valid gaps so
-the masters' back-pressure handling is exercised; one burst outstanding per direction at a time."""
+the masters' back-pressure handling is exercised; one write burst at a time, reads up to TS_AXI_OUT ahead with
+TS_AXI_LAT cycles of latency (defaults 1 and 0)."""
 import random
 from cocotb.triggers import ReadOnly, RisingEdge, Timer
 
@@ -90,31 +91,60 @@ class AxiMem:
             self.bursts += 1
 
     async def run_read(self):
-        """Serve the read channels: one AR burst at a time, 8-byte INCR beats from self.mem (unwritten bytes read 0)."""
+        """Serve the read channels: INCR bursts of 8-byte beats from self.mem (unwritten bytes read fill). Up to
+        TS_AXI_OUT bursts are accepted ahead (default 1: one at a time, as before 2026-11-03) and each is answered
+        TS_AXI_LAT cycles (default 0) after its address was accepted, in order (one ID). TS_AXI_LAT=48 TS_AXI_OUT=16
+        is the U200's XDMA / DDR4 path as measured on 2026-11-02 (docs/reference-prefetch.md): the configuration that
+        shows what the pipelined ref_fetch buys; the default keeps the quick answers the suites always had."""
+        import collections
+        import os
+        import cocotb
+        lat = int(os.environ.get("TS_AXI_LAT", "0"))
+        out = max(1, int(os.environ.get("TS_AXI_OUT", "1")))
         s = self.sig
-        while True:
-            while self.rng.random() < self.stall:
-                await RisingEdge(self.clk)
-            s("arready").value = 1
+        q = collections.deque()
+        self.cycle = 0
+        self.in_flight = 0
+
+        async def ticks():
             while True:
-                await ReadOnly()
-                if int(s("arvalid").value) == 1:
-                    addr = int(s("araddr").value)
-                    length = int(s("arlen").value) + 1
-                    size = int(s("arsize").value)
-                    burst = int(s("arburst").value)
-                    break
                 await RisingEdge(self.clk)
-            await RisingEdge(self.clk)
-            await Timer(1, "ns")
-            s("arready").value = 0
-            if size != 3 or burst != 1:
-                self.errors.append(f"read burst at 0x{addr:x}: size {size} burst {burst}")
-            if addr & 7:
-                self.errors.append(f"read burst at 0x{addr:x}: unaligned")
-            if (addr & 0xFFF) + 8 * length > 0x1000:
-                self.errors.append(f"read burst at 0x{addr:x} of {length} beats crosses 4 KB")
-            a = addr & ~7
+                self.cycle += 1
+
+        async def ar_side():
+            while True:
+                while len(q) + self.in_flight >= out or self.rng.random() < self.stall:
+                    await RisingEdge(self.clk)
+                s("arready").value = 1
+                while True:
+                    await ReadOnly()
+                    if int(s("arvalid").value) == 1:
+                        addr = int(s("araddr").value)
+                        length = int(s("arlen").value) + 1
+                        size = int(s("arsize").value)
+                        burst = int(s("arburst").value)
+                        break
+                    await RisingEdge(self.clk)
+                await RisingEdge(self.clk)
+                await Timer(1, "ns")
+                s("arready").value = 0
+                if size != 3 or burst != 1:
+                    self.errors.append(f"read burst at 0x{addr:x}: size {size} burst {burst}")
+                if addr & 7:
+                    self.errors.append(f"read burst at 0x{addr:x}: unaligned")
+                if (addr & 0xFFF) + 8 * length > 0x1000:
+                    self.errors.append(f"read burst at 0x{addr:x} of {length} beats crosses 4 KB")
+                q.append((addr & ~7, length, self.cycle))
+
+        cocotb.start_soon(ticks())
+        cocotb.start_soon(ar_side())
+        while True:
+            while not q:
+                await RisingEdge(self.clk)
+            a, length, t0 = q.popleft()
+            self.in_flight = 1
+            while self.cycle < t0 + lat:
+                await RisingEdge(self.clk)
             for i in range(length):
                 while self.rng.random() < self.stall:
                     await RisingEdge(self.clk)
@@ -136,6 +166,7 @@ class AxiMem:
                 s("rlast").value = 0
                 a += 8
                 self.read_beats = getattr(self, "read_beats", 0) + 1
+            self.in_flight = 0
             self.read_bursts = getattr(self, "read_bursts", 0) + 1
 
     def read(self, addr, n):
