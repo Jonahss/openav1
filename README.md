@@ -1,5 +1,66 @@
 # openav1 — an open-source AV1 hardware decoder
 
+That's right! As of this writing, there is no open hardware for an AV1 decoder. The goal of this project is to create one.
+
+End-use most likely will look like a block of RTL that can be added as a module to an SoC.
+I will endeavor to create a media chiplet, but will require some funding in order to make that happen.
+
+Short term goal is the completed RTL, verified on an FPGA. 4K at 60fps. Then doing a Tiny Tapeout of just the msac kernel.
+
+This project is built by AI, though a human is involved.
+
+# current status
+
+Verified against test videos on an FPGA:
+*Argon profile-0 passing*
+*1080p at 3.6fps*
+- entropy decoder
+  - CDF adaptation
+  - coefficients
+- tile syntax
+  - segmentation
+  - delta q/lf
+  - palette
+- intra
+  - 13 modes
+  - filter-intra
+  - CfL
+  - intra block copy
+- transforms
+  - all 19 transform sizes
+- inter
+  - MV prediction (spatial, temporal, global, DRL)
+  - 4 compound types
+  - OBMC
+  - inter-intra
+  - local + global warp
+  - scaled references
+- in-loop filters
+  - deblocking
+  - CDEF
+  - super-resolution
+  - loop restoration
+- frame state on the FPGA
+  - CDFs segment map
+  - formats
+  - 8/10-bit 4:2:0
+  - 128-px superblocks
+  - motion-field projection
+ 
+Next:
+
+Basically, all that's missing is 4K support and then speed optimization to get up to 60fps.
+4:4:4 / 4:2:2 / 12-bit will be added after that.
+
+Out of scope:
+These seems like things for extreme specialty use.
+
+ - Film grain synthesis (left to be implemented in software)
+ - large-scale tile mode
+ - more than 8 tile columns
+ - scalability layers beyond operating point 0
+
+
 **Goal:** a complete, spec-exact AV1 video decoder in synthesizable SystemVerilog, developed in the open,
 verified against the reference decoders at every stage, and brought up on a low-cost FPGA (AMD Kria KV260)
 before anyone talks about silicon. Year one targets **intra-only 1080p** (key frames / still pictures /
