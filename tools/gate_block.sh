@@ -25,7 +25,21 @@ if [ "$dcp" != "-" ]; then
   # Black-boxed memories (frame_mem for dec_top): compile the sim models AFTER the netlist so they override the stubs.
   models=""; for m in frame_mem.sv frame_mem_w.sv frame_mem_variants.sv; do [ -f "$m" ] && models="$models $m"; done
   if [ "$SIM" = verilator ]; then
-    $VGATE/vgate_build.sh ${blk}_$tag $PWD/${blk}_$tag.v $PWD/replay_$blk.sv $models > vg_$tag.build 2>&1 || { echo "netlist: verilator build failed: $(grep -m1 '%Error' $VGATE/../vgate/${blk}_$tag/build.log 2>/dev/null | cut -c1-160)"; exit 1; }
+    # Flavour (2026-11-03, dec_host): g++ -O0 builds in ~35 min and replays 100k cycles in 29 min; g++ -O2 + --threads 16 builds
+    # in ~47 min and replays them in 11 min (xsim: 51). Recordings above 150k cycles get the optimized build, short ones the
+    # quick one; VGATE_OPT=-O2 / VGATE_THREADS=16 (0: none) override.
+    nvec=$(wc -l < $vec); opt=${VGATE_OPT:-}; thr=${VGATE_THREADS:-}
+    if [ -z "$opt" ]; then if [ "$nvec" -gt 150000 ]; then opt=-O2; thr=${thr:-16}; else opt=-O0; fi; fi
+    thrarg=""; [ -n "$thr" ] && [ "$thr" != 0 ] && thrarg="--threads $thr"
+    # The harness array (gen_replay --maxv) is the most a replay takes: Verilator's $readmemh aborts past it where xsim stops
+    # silently (m2a: 1.87 M recorded, MAXV 450000, 2026-11-03), so a longer recording is cut to a copy.
+    maxv=$(grep -oE "MAXV *= *[0-9]+" replay_$blk.sv | grep -oE "[0-9]+$" | head -1)
+    if [ -n "$maxv" ] && [ "$nvec" -gt "$maxv" ]; then
+      head -n $maxv $vec > ${vec%.hex}_$maxv.hex; head -n $maxv $vec.out > ${vec%.hex}_$maxv.hex.out; vec=${vec%.hex}_$maxv.hex
+      echo "vectors cut to the harness array: $maxv of $nvec"
+    fi
+    echo "netlist (verilator): $opt $thrarg, $nvec vectors"
+    OPT=$opt $VGATE/vgate_build.sh ${blk}_$tag $PWD/${blk}_$tag.v $PWD/replay_$blk.sv $models $thrarg > vg_$tag.build 2>&1 || { echo "netlist: verilator build failed: $(grep -m1 '%Error' $VGATE/../vgate/${blk}_$tag/build.log 2>/dev/null | cut -c1-160)"; exit 1; }
     $VGATE/vgate_run.sh ${blk}_$tag $PWD $vec +fminit=zero > vg_$tag.run 2>&1
     cp $HOME/vgate/${blk}_$tag/run_$(basename $vec).log g_$tag.xsim      # the verdict where the ladder scripts look for it
     echo "netlist (verilator): $(grep -E '^REPLAY' g_$tag.xsim || tail -n 3 vg_$tag.run | tr '\n' ' ' | cut -c1-200)"
