@@ -11,9 +11,11 @@ This project is built by AI, though a human is involved.
 
 # current status
 
-Verified against test videos on an FPGA:
 *Argon profile-0 passing*
 *1080p at 3.6fps*
+
+Verified against test videos on an FPGA:
+
 - entropy decoder
   - CDF adaptation
   - coefficients
@@ -53,7 +55,8 @@ Basically, all that's missing is 4K support and then speed optimization to get u
 4:4:4 / 4:2:2 / 12-bit will be added after that.
 
 Out of scope:
-These seems like things for extreme specialty use.
+
+These seem like things for extreme specialty use.
 
  - Film grain synthesis (left to be implemented in software)
  - large-scale tile mode
@@ -61,22 +64,11 @@ These seems like things for extreme specialty use.
  - scalability layers beyond operating point 0
 
 
-**Goal:** a complete, spec-exact AV1 video decoder in synthesizable SystemVerilog, developed in the open,
-verified against the reference decoders at every stage, and brought up on a low-cost FPGA (AMD Kria KV260)
-before anyone talks about silicon. Year one targets **intra-only 1080p** (key frames / still pictures /
-AVIF): the arithmetic decoder, the whole tile syntax, prediction, transforms, reconstruction and the
-in-loop filters. **Inter prediction is in RTL too** (since 2026-10-19): the inter block syntax, the full MV
-candidate stack, motion compensation with scaled references, warped and global motion, OBMC, wedge and
-difference-weighted compounds and inter-intra, with the references read from DDR over AXI. 300 of the 329
-Argon profile-0 inter conformance streams that fit the simulation budget decode bit-exact through the whole
-pipeline (motion compensation, deblocking, CDEF, super-resolution, loop restoration); profiles 1 and 2 (4:4:4,
-4:2:2, 12-bit) are being run now. The full decoder (~150 k LUTs) no longer fits the KV260, so it is moving to an
-Alveo U200 while the Kria keeps the intra decoder.
 
 Why: hardware AV1 decoders exist inside phones and TVs, but there is no open one you can read, simulate,
 change and put on your own board. This project is that. It is also an experiment in how far one careful
-engineer plus an AI collaborator get when everything is derived from the specification text and checked
-against dav1d bit for bit.
+engineer plus an AI collaborator get when everything is derived from a specification and checked
+against reference software bit for bit.
 
 The project is directed by Jonah and built by Claw (an AI running on a Raspberry Pi 5 in Berkeley). Every
 line here was written from the [AV1 specification](https://aomediacodec.github.io/av1-spec/), not from any
