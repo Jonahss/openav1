@@ -175,7 +175,7 @@ module recon_top
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
                               B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_R4, B_IBC_R5, B_IBC_WR,
-                              B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
+                              B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_NEXT, B_MC_DRAIN, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
@@ -267,6 +267,18 @@ module recon_top
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_out_valid;
     logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
+    // Block-ahead fetch (docs/reference-prefetch.md step B, 2026-11-03): a strip's reference patch is fetched into one of
+    // mc_filt's two patch buffers while the filter still runs the previous strip from the other, so a fetch's round trip
+    // hides behind a run. The sequencer moves on as soon as a run starts: the registers the output path reads during a
+    // run are copied into the run record (r_*) at the start, and a block ends only after its last run has drained.
+    logic        pbuf;                                       // patch buffer of the strip being fetched (then run)
+    logic        run_buf;                                    // patch buffer of the run being started (sampled by mc_filt with start)
+    logic        run_v;                                      // a run was started and mc_busy has not risen yet (it does the cycle after start)
+    logic [PXW-1:0] r_px, r_py, r_bx, r_by;                  // run record: strip origin, plane block origin
+    logic [1:0]  r_pl; logic r_sx, r_sy, r_l;
+    logic        r_ob_active, r_ob_pass; logic [5:0] r_ob_mlen;
+    logic        r_ii_active, r_ii_wedge; logic [3:0] r_ii_mode; logic [2:0] r_ii_lsh;
+    logic        r_mb_active, r_mb_diff; logic [3:0] r_post;
     logic [9:0]  mc_xf0, mc_yf0;                             // startX & 1023, startY & 1023 of the strip
     logic [2:0]  mc_mode;
     logic [135:0] mc_out_pair;                               // 2 lists x 4 lanes x 17-bit signed
@@ -303,7 +315,9 @@ module recon_top
     logic [2:0]  mk_d;                                       // wedge master direction
     logic [5:0]  mk_xoff, mk_yoff;
     logic        mk_inv;
+    logic        filt_free;                                  // no run in flight and the blend pipelines drained
     logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
+    assign filt_free = !mc_busy && !run_v && !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v;   // fm2: three read stages
     logic [135:0] mb_a_pair, mb_a2_pair;
     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
     logic [3:0]  mb_a_be, mb_a2_be, mb_b_be;
@@ -382,8 +396,8 @@ module recon_top
         .fb_re(ff_fb_re), .fb_plane(ff_fb_plane), .fb_x(ff_fb_x), .fb_y(ff_fb_y), .fb_rdata4,
         .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
-        .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
-        .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
+        .patch_we(pw_we), .patch_buf(pbuf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
+        .start(mc_start), .lst(mc_l), .rbuf(run_buf), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
         .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
         .warp(mc_warp), .w_alpha(w_al[mc_l]), .w_beta(w_be[mc_l]), .w_gamma(w_ga[mc_l]), .w_delta(w_de[mc_l]), .w_sx4(mc_wsx), .w_sy4(mc_wsy),
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
@@ -509,8 +523,9 @@ module recon_top
     always_ff @(posedge clk) begin
         mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0;
         if (mc_done) mc_fin <= 1'b1;
+        if (mc_busy) run_v <= 1'b0;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0;
+            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
@@ -750,10 +765,18 @@ module recon_top
                     if (rf_done) rf_wait <= 1'b0;
                     if (ff_done) ff_wait <= 1'b0;
                     if (ff_pend && !(rf_wait && !rf_done)) begin ff_req_valid <= 1'b1; ff_pend <= 1'b0; end
-                    if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done)) begin mc_start <= 1'b1; bst <= B_MC_FILT; end
+                    // the patch is in: once the previous run has drained, start this strip's run (the output path switches to its
+                    // run record), give the other buffer to the next fetch, and move on without waiting for the run
+                    if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done) && filt_free) begin
+                        mc_start <= 1'b1; run_v <= 1'b1; run_buf <= pbuf; pbuf <= !pbuf; mc_fin <= 1'b0;
+                        r_px <= mc_px; r_py <= mc_py; r_bx <= mc_bx; r_by <= mc_by; r_pl <= mc_pl; r_sx <= mc_sx; r_sy <= mc_sy; r_l <= mc_l;
+                        r_ob_active <= ob_active; r_ob_pass <= ob_pass; r_ob_mlen <= ob_mlen;
+                        r_ii_active <= ii_active; r_ii_wedge <= ii_wedge; r_ii_mode <= ii_mode; r_ii_lsh <= ii_lsh;
+                        r_mb_active <= mb_active; r_mb_diff <= mb_diff; r_post <= mc_post;
+                        bst <= B_MC_NEXT;
+                    end
                 end
-                B_MC_FILT: if ((mc_done || mc_fin) && !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v) begin   // the run finished and the blend pipelines drained
-                    mc_fin <= 1'b0;
+                B_MC_NEXT: begin
                     // all strips of the unit first (an OBMC neighbour unit is up to 64 tall / wide: two strips in a frame
                     // with scaled references), then the other list, the next OBMC neighbour, the next unit
                     if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
@@ -769,9 +792,10 @@ module recon_top
                     else begin
                         ob_done <= 1'b0; ob_active <= 1'b0;
                         if (mc_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin mc_pl <= mc_pl + 2'd1; bst <= B_MC_PL; end
-                        else begin blk_ready <= 1'b1; bst <= B_IDLE; end
+                        else bst <= B_MC_DRAIN;
                     end
                 end
+                B_MC_DRAIN: if (filt_free) begin blk_ready <= 1'b1; bst <= B_IDLE; end   // the block's last run has written its samples
                 B_MC_OB: begin
                     // the next overlap neighbour of this pass (above: entries 0 .. 3, needs the plane block >= BLOCK_8X8; left: 4 .. 7)
                     logic [50:0] e;
@@ -898,26 +922,26 @@ module recon_top
     // OBMC read-modify-write pipeline: A = the prediction group and its mask values (the frame memory read is issued
     // from these registers), B = the blended group to write. One group per cycle.
     logic [PXW-1:0] mb_bx, mb_by;                            // block-relative position of the output group (plane samples)
-    assign mb_bx = mc_px - mc_bx + PXW'(mc_out_x);
-    assign mb_by = mc_py - mc_by + PXW'(mc_out_y);
+    assign mb_bx = r_px - r_bx + PXW'(mc_out_x);
+    assign mb_by = r_py - r_by + PXW'(mc_out_y);
     logic [6:0]  mb_wm [4];                                  // the mask values of the A group's lanes, from the banks
     always_ff @(posedge clk) begin
         ob_rd_v <= 1'b0; ob_rd2_v <= 1'b0; ob_rd3_v <= 1'b0; ob_wr_v <= 1'b0;
         if (!rst) begin
-            if (mc_out_valid && (ob_active || ii_active)) begin
+            if (mc_out_valid && (r_ob_active || r_ii_active)) begin
                 ob_rd_v <= 1'b1;
                 ob_a_pix <= mc_out_pix4 << (12 * mc_osh);
                 ob_a_be <= mc_out_mask << mc_osh;
-                ob_a_x <= {mc_ox[PXW-1:2], 2'b00}; ob_a_y <= mc_py + PXW'(mc_out_y);
+                ob_a_x <= {mc_ox[PXW-1:2], 2'b00}; ob_a_y <= r_py + PXW'(mc_out_y);
                 for (int l = 0; l < 4; l++) begin
                     logic [6:0] i, j;
                     i = 7'(mb_by); j = 7'(mb_bx) + 7'(l) - 7'(mc_osh);                     // block-relative position (plane samples)
-                    if (ob_active) ob_a_m[l] <= ob_pass ? obmc_mask(ob_mlen, 6'(mc_out_x + 7'(l) - 7'(mc_osh))) : obmc_mask(ob_mlen, 6'(mc_out_y));
-                    else if (ii_wedge) ob_a_m[l] <= 7'd0;                                  // from the wedge buffer, in the A cycle
-                    else case (ii_mode)
-                        4'd1: ob_a_m[l] <= ii_weight(i << ii_lsh);                          // II_V_PRED
-                        4'd2: ob_a_m[l] <= ii_weight(j << ii_lsh);                          // II_H_PRED
-                        4'd9: ob_a_m[l] <= ii_weight(((i < j) ? i : j) << ii_lsh);          // II_SMOOTH_PRED
+                    if (r_ob_active) ob_a_m[l] <= r_ob_pass ? obmc_mask(r_ob_mlen, 6'(mc_out_x + 7'(l) - 7'(mc_osh))) : obmc_mask(r_ob_mlen, 6'(mc_out_y));
+                    else if (r_ii_wedge) ob_a_m[l] <= 7'd0;                                  // from the wedge buffer, in the A cycle
+                    else case (r_ii_mode)
+                        4'd1: ob_a_m[l] <= ii_weight(i << r_ii_lsh);                          // II_V_PRED
+                        4'd2: ob_a_m[l] <= ii_weight(j << r_ii_lsh);                          // II_H_PRED
+                        4'd9: ob_a_m[l] <= ii_weight(((i < j) ? i : j) << r_ii_lsh);          // II_SMOOTH_PRED
                         default: ob_a_m[l] <= 7'd32;                                        // II_DC_PRED
                     endcase
                 end
@@ -925,7 +949,7 @@ module recon_top
             // the frame memory read issued from the A registers lands two cycles later (two-cycle read since 2026-10-31):
             // A2 and A3 hold the group meanwhile, and the blend uses fb_rdata4 in the A3 cycle
             ob_rd2_v <= ob_rd_v; ob_a2_pix <= ob_a_pix; ob_a2_x <= ob_a_x; ob_a2_y <= ob_a_y; ob_a2_be <= ob_a_be;
-            if (ii_active && ii_wedge) ob_a2_m <= mb_wm;                                   // the wedge buffer's values for the A group
+            if (r_ii_active && r_ii_wedge) ob_a2_m <= mb_wm;                                   // the wedge buffer's values for the A group
             else ob_a2_m <= ob_a_m;
             ob_rd3_v <= ob_rd2_v; ob_a3_pix <= ob_a2_pix; ob_a3_x <= ob_a2_x; ob_a3_y <= ob_a2_y; ob_a3_be <= ob_a2_be; ob_a3_m <= ob_a2_m;
             if (ob_rd3_v) begin
@@ -958,21 +982,21 @@ module recon_top
                 mk_wdata[(mk_y[0] ? 4 : 0) + l] = mk_inv ? 7'd64 - wv[l] : wv[l];
             end
         end
-        if (mc_out_valid && (mb_active || (ii_active && ii_wedge))) begin
-            if (mc_pl == 2'd0 || !(mc_sx || mc_sy)) begin
+        if (mc_out_valid && (r_mb_active || (r_ii_active && r_ii_wedge))) begin
+            if (r_pl == 2'd0 || !(r_sx || r_sy)) begin
                 // luma (or 4:4:4 chroma): the row's parity banks, one lane per x bank
                 rowbase = 11'(mb_by[PXW-1:1]) * 11'd32 + 11'(mb_bx[PXW-1:2]);
                 for (int l = 0; l < 4; l++) begin
                     mk_ra0[(mb_by[0] ? 4 : 0) + l] = rowbase;
-                    if (mc_pl == 2'd0 && mb_active && mb_diff) begin
-                        mb_dm[l] = diff_mask(signed'(mc_out_pair[17*l +: 17]), signed'(mc_out_pair[68 + 17*l +: 17]), hdr.bit_depth, mc_post, b.mask_type);
+                    if (r_pl == 2'd0 && r_mb_active && r_mb_diff) begin
+                        mb_dm[l] = diff_mask(signed'(mc_out_pair[17*l +: 17]), signed'(mc_out_pair[68 + 17*l +: 17]), hdr.bit_depth, r_post, b.mask_type);
                         mk_we[(mb_by[0] ? 4 : 0) + l] = 1'b1; mk_waddr[(mb_by[0] ? 4 : 0) + l] = rowbase; mk_wdata[(mb_by[0] ? 4 : 0) + l] = mb_dm[l];
                     end
                 end
             end else begin
                 // subsampled chroma: luma columns 2x .. 2x + 7 = column words 2k and 2k + 1 of every x bank (k = x >> 2)
                 colw = 11'(mb_bx[PXW-1:2]) << 1;
-                if (mc_sy) begin                                   // 4:2:0: luma rows 2y and 2y + 1 = row word y, both parities
+                if (r_sy) begin                                   // 4:2:0: luma rows 2y and 2y + 1 = row word y, both parities
                     rowbase = 11'(mb_by) * 11'd32;
                     for (int k = 0; k < 8; k++) begin mk_ra0[k] = rowbase + colw; mk_ra1[k] = rowbase + colw + 11'd1; end
                 end else begin                                     // 4:2:2: luma row y, its parity's banks
@@ -1003,13 +1027,13 @@ module recon_top
     always_ff @(posedge clk) begin
         mb_a_v <= 1'b0; mb_b_v <= 1'b0;
         if (!rst) begin
-            if (mc_out_valid && (ii_active && ii_wedge)) begin                  // flags only: the RMW path blends
-                mb_a_sub <= (mc_pl != 2'd0) && (mc_sx || mc_sy); mb_a_sy <= mc_sy; mb_a_p <= mb_by[0];
+            if (mc_out_valid && (r_ii_active && r_ii_wedge)) begin                  // flags only: the RMW path blends
+                mb_a_sub <= (r_pl != 2'd0) && (r_sx || r_sy); mb_a_sy <= r_sy; mb_a_p <= mb_by[0];
             end
-            if (mc_out_valid && mb_active) begin
+            if (mc_out_valid && r_mb_active) begin
                 mb_a_v <= 1'b1; mb_a_pair <= mc_out_pair;
-                mb_a_x <= {mc_ox[PXW-1:2], 2'b00}; mb_a_y <= mc_py + PXW'(mc_out_y); mb_a_be <= mc_out_mask << mc_osh;
-                mb_a_sub <= (mc_pl != 2'd0) && (mc_sx || mc_sy); mb_a_sy <= mc_sy; mb_a_p <= mb_by[0];
+                mb_a_x <= {mc_ox[PXW-1:2], 2'b00}; mb_a_y <= r_py + PXW'(mc_out_y); mb_a_be <= mc_out_mask << mc_osh;
+                mb_a_sub <= (r_pl != 2'd0) && (r_sx || r_sy); mb_a_sy <= r_sy; mb_a_p <= mb_by[0];
                 mb_a_dm <= mb_dm;
             end
             if (mb_a_v) begin
@@ -1018,9 +1042,9 @@ module recon_top
                     logic [6:0] m;
                     logic signed [23:0] v;
                     logic signed [16:0] p0, p1;
-                    m = (mc_pl == 2'd0 && mb_diff) ? mb_a_dm[l] : mb_wm[l];
+                    m = (r_pl == 2'd0 && r_mb_diff) ? mb_a_dm[l] : mb_wm[l];
                     p0 = signed'(mb_a_pair[17*l +: 17]); p1 = signed'(mb_a_pair[68 + 17*l +: 17]);
-                    v = (24'(signed'({1'b0, m})) * 24'(p0) + 24'(signed'({1'b0, 7'd64 - m})) * 24'(p1) + (24'sd1 <<< (mc_post + 4'd5))) >>> (mc_post + 4'd6);
+                    v = (24'(signed'({1'b0, m})) * 24'(p0) + 24'(signed'({1'b0, 7'd64 - m})) * 24'(p1) + (24'sd1 <<< (r_post + 4'd5))) >>> (r_post + 4'd6);
                     mb_b_pix[l*12 +: 12] <= (v < 24'sd0) ? 12'd0 : (v > 24'(pix_max)) ? pix_max : 12'(v);
                 end
             end
@@ -1499,17 +1523,17 @@ module recon_top
         endcase
         // motion compensation output: 4 samples at (strip origin + out_x, + out_y); a 2-wide unit at an x offset of 2
         // within its 4-group is lane-shifted (the frame memory's 4-wide port is aligned)
-        mc_ox = mc_px + PXW'(mc_out_x);
+        mc_ox = r_px + PXW'(mc_out_x);
         mc_osh = mc_ox[1:0];
-        if (mc_out_valid && !ob_active && !ii_active && !(mb_active && mc_l)) begin
-            fb4_we = 1'b1; fb4_plane = mc_pl;
-            fb4_x = FBX'({mc_ox[PXW-1:2], 2'b00}); fb4_y = FBY'(mc_py + PXW'(mc_out_y));
+        if (mc_out_valid && !r_ob_active && !r_ii_active && !(r_mb_active && r_l)) begin
+            fb4_we = 1'b1; fb4_plane = r_pl;
+            fb4_x = FBX'({mc_ox[PXW-1:2], 2'b00}); fb4_y = FBY'(r_py + PXW'(mc_out_y));
             fb4_wdata = mc_out_pix4 << (12 * mc_osh); fb4_be = mc_out_mask << mc_osh;
         end
         // OBMC: read the group to blend (stage A), write the blended group (stage B)
-        if (ob_rd_v) begin fb_re = 1'b1; fb_plane = mc_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
-        if (ob_wr_v) begin fb4_we = 1'b1; fb4_plane = mc_pl; fb4_x = FBX'(ob_b_x); fb4_y = FBY'(ob_b_y); fb4_wdata = ob_b_pix; fb4_be = ob_b_be; end
-        if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = mc_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
+        if (ob_rd_v) begin fb_re = 1'b1; fb_plane = r_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
+        if (ob_wr_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(ob_b_x); fb4_y = FBY'(ob_b_y); fb4_wdata = ob_b_pix; fb4_be = ob_b_be; end
+        if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
 `ifndef SYNTHESIS

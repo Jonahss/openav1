@@ -43,6 +43,7 @@ module mc_filt
     input  logic          rst,
     // ---- patch write port ----
     input  logic          patch_we,
+    input  logic          patch_buf,           // which of the two patch buffers (block-ahead fetch: one is written while the other is run)
     input  logic          patch_list,
     input  logic [6:0]    patch_row,           // 0 .. 71
     input  logic [4:0]    patch_w4,            // word 0 .. 17 (samples 4 w4 .. 4 w4 + 3)
@@ -50,6 +51,7 @@ module mc_filt
     // ---- run (parameters sampled at start) ----
     input  logic          start,
     input  logic          lst,                 // the patch list to filter
+    input  logic          rbuf,                // the patch buffer to filter from
     input  logic [6:0]    w,                   // 2, 4, 8, .. 64 (<= 32 when scaled)
     input  logic [6:0]    h,
     input  logic [1:0]    interp_x,            // interp_filter[1]
@@ -79,7 +81,8 @@ module mc_filt
 );
     localparam int PATCH_WPR = 18;                        // words per patch row
     localparam int PATCH_ROWS = 72;
-    localparam int PATCH_N = 2 * PATCH_ROWS * PATCH_WPR;  // 2592
+    localparam int PATCH_LN = 2 * PATCH_ROWS * PATCH_WPR; // 2592: a buffer (two lists)
+    localparam int PATCH_N = 2 * PATCH_LN;                // two buffers: the fetch of strip n + 1 fills one while strip n runs from the other
     localparam int STRIP_ROWS = 71;                       // nrow <= 71
     localparam int GRP = 16;                              // groups per row (64 / 4)
 
@@ -88,16 +91,17 @@ module mc_filt
     logic [63:0]     strip_ram [0:STRIP_ROWS*GRP-1];      // intermediate: 4 x 16-bit signed per word
     logic [67:0]     pred_ram  [0:64*GRP-1];              // parked list-0 prediction: 4 x 17-bit signed per word
 
-    function automatic logic [11:0] patch_addr(input logic l, input logic [6:0] r, input logic [4:0] w4);
-        return 12'(l) * 12'(PATCH_ROWS * PATCH_WPR) + 12'(r) * 12'(PATCH_WPR) + 12'(w4);
+    function automatic logic [12:0] patch_addr(input logic bf, input logic l, input logic [6:0] r, input logic [4:0] w4);
+        return 13'(bf) * 13'(PATCH_LN) + 13'(l) * 13'(PATCH_ROWS * PATCH_WPR) + 13'(r) * 13'(PATCH_WPR) + 13'(w4);
     endfunction
 
-    logic [11:0] patch_waddr;
-    assign patch_waddr = patch_addr(patch_list, patch_row, patch_w4);
+    logic [12:0] patch_waddr;
+    assign patch_waddr = patch_addr(patch_buf, patch_list, patch_row, patch_w4);
     always_ff @(posedge clk) if (patch_we) patch_ram[patch_waddr] <= patch_d4;
 
     // ================================================================ run parameters
     logic        p_list;
+    logic        p_buf;
     logic        p_scaled;                               // x_step or y_step != 1024
     logic        p_warp;                                 // block_warp: 15 x 8 horizontal, 8 x 8 vertical, per-sample taps
     logic signed [15:0] p_wa, p_wb, p_wg, p_wd;
@@ -146,7 +150,7 @@ module mc_filt
     assign busy = st != S_IDLE;
 
     // ---------------------------------------------------------------- memory ports
-    logic [11:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
+    logic [12:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
     logic [10:0] srd_addr;  logic [63:0] srd_q, srd_q1;  // strip read (q1 with the v1 tags)
     logic [10:0] swr_addr;  logic [63:0] swr_d;  logic swr_we;
     logic [9:0]  pdr_addr;  logic [67:0] pdr_q, pdr_q1;  // parked prediction read (q1 with the v1 tags)
@@ -161,7 +165,7 @@ module mc_filt
         prd_q1 <= prd_q; srd_q1 <= srd_q; pdr_q1 <= pdr_q;
     end
     always_comb begin
-        prd_addr = patch_addr(p_list, hr, hk);
+        prd_addr = patch_addr(p_buf, p_list, hr, hk);
         srd_row  = p_scaled ? 7'(vpos[16:10]) + 7'(vt) : vk;
         srd_addr = 11'(srd_row) * 11'(GRP) + 11'(vg);
         pdr_addr = (p_scaled ? 10'(vi) : 10'(vk - 7'd7)) * 10'(GRP) + 10'(vg);
@@ -238,7 +242,7 @@ module mc_filt
             // ---------------- FSM: the address streams
             case (st)
                 S_IDLE: if (start) begin
-                    p_list <= lst;
+                    p_list <= lst; p_buf <= rbuf;
                     p_scaled <= !warp && ((x_step != 12'd1024) || (y_step != 12'd1024));
                     p_warp <= warp; p_wa <= w_alpha; p_wb <= w_beta; p_wg <= w_gamma; p_wd <= w_delta; p_wsx <= w_sx4; p_wsy <= w_sy4;
                     p_ngrp <= warp ? 5'd2 : 5'((w + 7'd3) >> 2); p_h <= warp ? 7'd8 : h;
