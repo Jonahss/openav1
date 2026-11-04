@@ -123,3 +123,36 @@ still shows fetch idle time in the filter; C with the 4K memory. The expectation
 toward the intra frame's cost plus the filter time, which for this clip is 2-3x on the tile stage, i.e. 1080p
 inter from 3.5 fps to 7-9 fps at 100 MHz with nothing else changed. The further steps on the roadmap (second tile
 engine on real content, four pixels per clock in the tile stage, 200 MHz) multiply from there.
+
+## 6. Measured (2026-11-03)
+
+**Step A on the card.** Image `u200-fm2pfs100p-91c481f` (fm2 + the pipelined `ref_fetch` + per-UltraRAM phase copies,
+TE=1, sb128, 100 MHz, lr_pblock, ExtraTimingOpt; WNS +0.013 ns, 0 failing): `in_to_tree-aom.ivf`, 548 coded frames, 500
+pictures, all identical to dav1d:
+
+| image | clock | fetch | 548 frames | fps | frame 1 tiles | frame 2 | frame 3 | frame 13 |
+|---|---|---|---|---|---|---|---|---|
+| fm2s100p-0fd3b46 | 100 MHz | serial | 158.3 s | 3.5 | 0.34 s | 0.24 | 0.20 | 0.36 |
+| fm2s80p-0fd3b46 | 80 MHz | serial | 181.3 s | 3.0 | 0.39 | 0.27 | 0.23 | 0.41 |
+| fm2pfs100p-91c481f | 100 MHz | rows in flight (A) | 78.9 s | **6.9** | 0.19 | 0.12 | 0.09 | 0.15 |
+
+The 80 MHz serial row says the same thing as §3 from the other side: 15 % slower at 80 % of the clock, because the DDR
+round trip is fixed in nanoseconds. With A the inter frames sit at 0.09-0.19 s = 9-19 M cycles against the 12.8 M of the
+intra frame and the 14.8 M the testbench predicts for frame 1 at zero latency: a few million cycles of latency are left
+per frame, which is step B's target (block-ahead fetch, bit-exact in the twin on the fm2 line; netlist rung and image
+pending). The §5 expectation for A alone was 7-9 fps.
+
+**The first prefetch image missed timing** (-0.981 ns, 3,104 failing endpoints) on `phase -> LUT3 -> URAM288 ADDR/EN`:
+one phase register plus one request mux drove 120 UltraRAMs across the die; earlier images had closed the same path at
++0.001. The fix (`frame_mem_uram.sv`, synthesis branch): two clk2x stages of `phase` per UltraRAM (the copy equals
+`phase` exactly since it alternates every cycle) and a request mux per UltraRAM; the netlist replay checks the
+behavioural branch still matches. An incremental implementation from the previous routed checkpoint failed outright
+(Place 46-13: the changed fetch engine moved too much), and a provisional run of the timing-failing image corrupted
+every frame including the intra one: the +0.001 images really were at the edge.
+
+**The loader group** (§3's side finding): the host's waits measured on the card with the TE=2 serial image, same clip:
+loads 5.69 s = **10.4 ms a frame** (zero segment map + CDF rows + motion-field projection before every frame), CDF saves
+0.32 s = 0.6 ms a frame. Rewritten the same day (`docs/frame-state.md` §6): the band one memory per reference, the clear
+one position a cycle and overlapped with the CDF load, cells one a cycle, both loaders and the save with bursts in
+flight; the stage B twin at 48-cycle latency goes from 267,909 to 71,972 cycles over 20 small frames (3.7x), the 1080p
+twin and the card image are pending.
