@@ -253,7 +253,12 @@ module dec_host
     logic [EW-1:0]  sv_eng;
     logic           sv_busy, sv_done_s, sv_err, sv_rb_en, sv_rb_l1;
     logic [CDF_AW-1:0] sv_row;
-    logic [255:0]   sv_data;
+    logic [255:0]   sv_buf [4];                             // a group of up to 4 CDF rows (16 beats) on their way out
+    logic [CDF_AW-1:0] sv_rb_row;                           // the row the read-back port shows
+    logic [1:0]     sv_slot, sv_slot_d1, sv_wc;
+    logic [2:0]     g_rows;                                  // rows read back into the group
+    logic [4:0]     g_beats, g_done;                         // beats of the group, beats written
+    logic [3:0]     sv_out;                                  // write bursts issued whose B has not arrived
     logic           mem_err;                                 // recon_top: a reference read failed (also raises STATUS unsupported)
     // the projection engine's table (rtl/mf_project.sv): 5 sources x (base, rowb, sign + refToCur, 7 refOffsets), 7 refToDst
     logic [31:0]    mf_nsrc_r;
@@ -268,7 +273,7 @@ module dec_host
     dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
-        .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
+        .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_rb_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
         .ld_start(start[6]), .ld_cfg(ld_cfg_r[3:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
         .mf_nsrc(mf_nsrc_r[2:0]), .mf_src_base, .mf_src_rowb, .mf_src_sign, .mf_src_tocur, .mf_src_off, .mf_dst_dist,
         .mf_we(mf_we ? 7'(7'd1 << mf_addr_r[26:24]) : 7'd0), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
@@ -461,7 +466,7 @@ module dec_host
     assign m_axi_awcache = 4'b0011;                          // normal, non-cacheable, bufferable
     assign m_axi_awprot  = 3'b000;
     assign m_axi_awvalid = fs_active ? fs_awvalid : (ds == D_AW);
-    assign m_axi_wdata   = fs_active ? (sv_busy ? sv_data[64 * fs_cnt[1:0] +: 64] : fs_rd_data)
+    assign m_axi_wdata   = fs_active ? (sv_busy ? sv_buf[g_done[3:2]][64 * g_done[1:0] +: 64] : fs_rd_data)
                          : fmt16 ? {4'd0, d_g0[47:36], 4'd0, d_g0[35:24], 4'd0, d_g0[23:12], 4'd0, d_g0[11:0]}
                                  : {d_g1[43:36], d_g1[31:24], d_g1[19:12], d_g1[7:0], d_g0[43:36], d_g0[31:24], d_g0[19:12], d_g0[7:0]};
     assign m_axi_wstrb   = fs_active ? 8'hFF : beat_strb;
@@ -556,7 +561,7 @@ module dec_host
     // cursors to the bases). Lines of a partial last row are clipped to the frame. The engine takes the write channel
     // between picture runs (fs_active) and answers fs_done when the row's buffer may be refilled.
     typedef enum logic [3:0] {FS_IDLE, FS_SEL, FS_LINE, FS_LEN, FS_AW, FS_RD, FS_W, FS_B, FS_DONE,
-                              SV_RB, SV_RB1, SV_AW, SV_W, SV_B, SV_DONE} fsstate_t;
+                              SV_RB, SV_WAIT, SV_LEN, SV_AW, SV_W, SV_DRAIN, SV_DONE} fsstate_t;
     fsstate_t       fss;
     logic           fs_go, fs_pend, fs_sel;
     logic [SBW-1:0] fs_row;
@@ -579,7 +584,7 @@ module dec_host
     assign fs_rd_beat = fs_beat[8:0];
     assign fs_awvalid = (fss == FS_AW) || (fss == SV_AW);
     assign fs_wvalid  = (fss == FS_W) || (fss == SV_W);
-    assign fs_bready  = (fss == FS_B) || (fss == SV_B);
+    assign fs_bready  = (fss == FS_B) || sv_busy;         // the save keeps up to 4 write bursts in flight
     assign fs_wlast   = (fs_cnt == fs_len - 5'd1);
     always_ff @(posedge clk) begin
         fs_done <= 1'b0;
@@ -587,10 +592,12 @@ module dec_host
             fss <= FS_IDLE; fs_pend <= 1'b0; fs_active <= 1'b0; fs_sel <= 1'b0; fs_row <= '0; fs_err <= 1'b0; fs_rows <= '0;
             fs_mv_cur <= '0; fs_seg_cur <= '0; fs_lines <= '0; fs_line <= '0; fs_line_beats <= '0; fs_beats <= '0; fs_beat <= '0;
             fs_addr <= '0; fs_len <= '0; fs_cnt <= '0;
-            sv_pend <= 1'b0; sv_busy <= 1'b0; sv_done_s <= 1'b0; sv_err <= 1'b0; sv_rb_en <= 1'b0; sv_rb_l1 <= 1'b0; sv_row <= '0; sv_data <= '0; ld_done_s <= 1'b0;
+            sv_pend <= 1'b0; sv_busy <= 1'b0; sv_done_s <= 1'b0; sv_err <= 1'b0; sv_rb_en <= 1'b0; sv_rb_l1 <= 1'b0; sv_row <= '0; sv_rb_row <= '0; sv_slot <= '0; sv_slot_d1 <= '0; sv_wc <= '0; g_rows <= '0; g_beats <= '0; g_done <= '0; sv_out <= '0; ld_done_s <= 1'b0;
         end else begin
-            sv_rb_en <= 1'b0; sv_rb_l1 <= sv_rb_en;
-            if (sv_rb_l1) sv_data <= {10'd0, rb_data};
+            sv_rb_en <= 1'b0; sv_rb_l1 <= sv_rb_en; sv_slot_d1 <= sv_slot;
+            if (sv_rb_l1) sv_buf[sv_slot_d1] <= {10'd0, rb_data};   // the row read back two cycles ago lands in its slot
+            if (sv_busy && m_axi_bvalid && m_axi_bresp[1]) sv_err <= 1'b1;
+            sv_out <= sv_out + 4'((fss == SV_W) && m_axi_wready && fs_wlast) - 4'(sv_busy && m_axi_bvalid);
             if (start[7]) begin sv_pend <= 1'b1; sv_done_s <= 1'b0; sv_err <= 1'b0; end
             if (start[6]) ld_done_s <= 1'b0; else if (ld_done) ld_done_s <= 1'b1;
             if (fs_row_ready) begin fs_pend <= 1'b1; fs_row <= fs_row_idx; end
@@ -599,6 +606,7 @@ module dec_host
                 FS_IDLE: if (fs_pend && !fs_cfg[0]) begin fs_pend <= 1'b0; fs_done <= 1'b1; end   // disabled: drop the row
                          else if (fs_go && sv_pend) begin       // the CDF save first: the host waits on it between tile rows
                              fs_active <= 1'b1; sv_busy <= 1'b1; sv_pend <= 1'b0; sv_row <= '0; fs_addr <= sv_cdf_base; fss <= SV_RB;
+                             g_rows <= '0; g_done <= '0; sv_out <= '0;
                          end
                          else if (fs_go) begin fs_active <= 1'b1; fs_pend <= 1'b0; fs_sel <= 1'b0; fss <= FS_SEL; end
                 FS_SEL: begin                                // the lines of this row in area fs_sel (clipped to the frame)
@@ -634,15 +642,27 @@ module dec_host
                     else fss <= FS_LEN;
                 end
                 FS_DONE: begin fs_active <= 1'b0; fs_done <= 1'b1; fs_rows <= fs_rows + 8'd1; fss <= FS_IDLE; end
-                // the CDF save: one row (246 bits in 4 beats) at a time from engine sv_eng's store through the read-back port
-                SV_RB:  begin sv_rb_en <= 1'b1; fss <= SV_RB1; end
-                SV_RB1: if (sv_rb_l1) begin fs_len <= 5'd4; fs_cnt <= '0; fss <= SV_AW; end   // sv_data lands this cycle
-                SV_AW:  if (m_axi_awready) fss <= SV_W;
-                SV_W:   if (m_axi_wready) begin fs_addr <= fs_addr + 40'd8; fs_cnt <= fs_cnt + 5'd1; if (fs_wlast) fss <= SV_B; end
-                SV_B:   if (m_axi_bvalid) begin
-                    if (m_axi_bresp[1]) sv_err <= 1'b1;
-                    if (sv_row == CDF_AW'(CDF_ROWS - 1)) fss <= SV_DONE; else begin sv_row <= sv_row + CDF_AW'(1); fss <= SV_RB; end
+                // the CDF save: groups of up to 4 rows (246 bits in 4 beats each) from engine sv_eng's store through the read-back
+                // port, one row read back a cycle, written as one 16-beat burst (split at 4 KB), up to 4 bursts in flight (2026-11-03:
+                // one row per round trip before, 1501 round trips a frame while the host waited between tile rows)
+                SV_RB: begin                                 // read back the group's rows, one a cycle
+                    sv_rb_en <= 1'b1; sv_rb_row <= sv_row; sv_slot <= g_rows[1:0]; sv_row <= sv_row + CDF_AW'(1); g_rows <= g_rows + 3'd1;
+                    if (g_rows == 3'd3 || sv_row == CDF_AW'(CDF_ROWS - 1)) begin g_beats <= {g_rows + 3'd1, 2'b00}; sv_wc <= '0; fss <= SV_WAIT; end
                 end
+                SV_WAIT: begin sv_wc <= sv_wc + 2'd1; if (sv_wc == 2'd1) fss <= SV_LEN; end   // the last row lands two cycles after its read
+                SV_LEN: if (sv_out < 4'd4) begin           // the burst: the group's remaining beats, not across 4 KB
+                    fs_len <= (fs_to4k < 10'(g_beats - g_done)) ? 5'(fs_to4k) : 5'(g_beats - g_done);
+                    fs_cnt <= '0; fss <= SV_AW;
+                end
+                SV_AW:  if (m_axi_awready) fss <= SV_W;
+                SV_W:   if (m_axi_wready) begin
+                    fs_addr <= fs_addr + 40'd8; fs_cnt <= fs_cnt + 5'd1; g_done <= g_done + 5'd1;
+                    if (fs_wlast) begin
+                        if (g_done + 5'd1 != g_beats) fss <= SV_LEN;
+                        else begin g_rows <= '0; g_done <= '0; fss <= (sv_row == CDF_AW'(CDF_ROWS)) ? SV_DRAIN : SV_RB; end
+                    end
+                end
+                SV_DRAIN: if (sv_out == 4'd0) fss <= SV_DONE;   // every B answered
                 SV_DONE: begin fs_active <= 1'b0; sv_busy <= 1'b0; sv_done_s <= 1'b1; fss <= FS_IDLE; end
                 default: fss <= FS_IDLE;
             endcase
