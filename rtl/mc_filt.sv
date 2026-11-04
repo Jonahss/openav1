@@ -136,6 +136,12 @@ module mc_filt
     // ================================================================ control
     typedef enum logic [2:0] {S_IDLE, S_PRE, S_H, S_HS, S_V, S_VS, S_DRAIN} st_t;
     st_t st;
+    // cycle counter per state (simulation profiling; read through the hierarchy by the testbench)
+    logic [31:0] perf_st [0:31];
+    always_ff @(posedge clk) begin
+        if (rst) perf_st <= '{default: 32'd0};
+        else perf_st[5'(st)] <= perf_st[5'(st)] + 32'd1;
+    end
     logic [6:0] hr;                                      // horizontal: patch row
     logic [4:0] hk;                                      // horizontal: next word of the row to read
     logic [4:0] hg;                                      // horizontal, scaled: the group being completed

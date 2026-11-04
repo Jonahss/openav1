@@ -72,6 +72,52 @@ def start_feed(dut, coro):
     _feed_task[0] = cocotb.start_soon(coro)
     return _feed_task[0]
 
+
+def perf_report(dut, tag, stats, cycles):
+    """After a tile: the syntax-stalled / reconstruction-idle counters and, with TS_PERF, the per-state cycle histograms
+    of the reconstruction and syntax FSMs plus the transform histogram (deltas since the previous tile). Both tile-run paths
+    (the held-done poll and the cycle-accurate loop) call it; before 2026-11-03 only the first printed it."""
+    dut._log.info(f"{tag}: tile done in ~{cycles} cycles (syntax stalled on recon {int(dut.perf_syn_stall.value)}, recon idle {int(dut.perf_rec_idle.value)})")
+    if os.environ.get("TS_PERF"):
+        import re as _re
+        def enum_names(fname, tname):
+            src = (HERE.parent / "rtl" / fname).read_text()
+            m = _re.search(r"typedef enum[^{]*\{([^}]*)\}\s*" + tname + r"\s*;", src, _re.S)
+            return [x.strip() for x in _re.sub(r"//[^\n]*", "", m.group(1)).replace("\n", " ").split(",") if x.strip()]
+        rs_names = [n[2:] for n in enum_names("recon_top.sv", "rst_t")]      # R_IDLE -> IDLE
+        bst_names = [n[2:] for n in enum_names("recon_top.sv", "bst_t")]     # B_MC_FETCH -> MC_FETCH
+        prev = getattr(perf_report, "_perf_prev", None) or ({}, {})
+        cur_rs = {n: int(dut.u_rc.perf_rs[i].value) for i, n in enumerate(rs_names)}
+        cur_b = {n: int(dut.u_rc.perf_bst[i].value) for i, n in enumerate(bst_names)}
+        d_rs = {n: cur_rs[n] - prev[0].get(n, 0) for n in rs_names}
+        d_b = {n: cur_b[n] - prev[1].get(n, 0) for n in bst_names}
+        perf_report._perf_prev = (cur_rs, cur_b)
+        tot = sum(d_rs.values()) or 1
+        dut._log.info(f"{tag}: recon tx-FSM cycles " + ", ".join(f"{n} {v} ({100 * v // tot}%)" for n, v in d_rs.items() if v))
+        dut._log.info(f"{tag}: recon blk-FSM cycles " + ", ".join(f"{n} {v}" for n, v in d_b.items() if v))
+        if stats.get("tx_hist"):
+            names_sz = ["4x4","8x8","16x16","32x32","64x64","4x8","8x4","8x16","16x8","16x32","32x16","32x64","64x32","4x16","16x4","8x32","32x8","16x64","64x16"]
+            names_ty = ["DCT_DCT","ADST_DCT","DCT_ADST","ADST_ADST","FLIPADST_DCT","DCT_FLIPADST","FLIPADST_FLIPADST","ADST_FLIPADST","FLIPADST_ADST","IDTX","V_DCT","H_DCT","V_ADST","H_ADST","V_FLIPADST","H_FLIPADST"]
+            h = stats.pop("tx_hist")
+            top = sorted(h.items(), key=lambda kv: -kv[1])[:16]
+            dut._log.info(f"{tag}: tx blocks {sum(h.values())} by (chroma, size, type, no-residual): " +
+                          ", ".join(f"{'uv' if c else 'y'} {names_sz[sz]} {names_ty[ty]}{' skip' if sk else ''} {n}" for (c, sz, ty, sk), n in top))
+        # syntax side: tile FSM, block FSM and coefficient reader, state names parsed from the RTL enums
+        prev_s = getattr(perf_report, "_perf_prev_syn", None) or {}
+        cur_s = {}
+        ts0 = dut.u_ts.g_e[0].u_ts if hasattr(dut.u_ts, "g_e") else dut.u_ts    # engine 0 (tile_engines since 2026-10-27)
+        groups = [("tile", ts0, "tile_syntax.sv", "t_t"), ("blk", ts0.u_blk, "blk_syntax.sv", "st_t"), ("coef", ts0.u_coef, "coef_rd.sv", "st_t")]
+        if hasattr(dut.u_rc, "g_inter"):
+            groups.append(("mc", dut.u_rc.g_inter.u_mc, "mc_filt.sv", "st_t"))    # the motion-compensation filter's states
+        for label, inst, fname, tname in groups:
+            names = enum_names(fname, tname)
+            cur_s[label] = {n: int(inst.perf_st[i].value) for i, n in enumerate(names)}
+            d = {n: cur_s[label][n] - prev_s.get(label, {}).get(n, 0) for n in names}
+            tot = sum(d.values()) or 1
+            top = sorted(d.items(), key=lambda kv: -kv[1])[:14]
+            dut._log.info(f"{tag}: syntax {label}-FSM cycles (total {tot}) " + ", ".join(f"{n} {v} ({100 * v // tot}%)" for n, v in top if v))
+        perf_report._perf_prev_syn = cur_s
+
 async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0, rows=None):
     """rows: the tile's starting CDF rows (an inter frame's inherited CDFs); default: the defaults for base_q_idx."""
     dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(th, dec, frame_parity))
@@ -103,43 +149,7 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0, rows=N
         await Timer(1, "ns")
         stats["tiles"] += 1
         stats["cycles"] += cycles
-        dut._log.info(f"{tag}: tile done in ~{cycles} cycles (syntax stalled on recon {int(dut.perf_syn_stall.value)}, recon idle {int(dut.perf_rec_idle.value)})")
-        if os.environ.get("TS_PERF"):
-            rs_names = ["IDLE", "SETUP", "PAL", "PAL_LAST", "EDGE", "IP_START", "IP_W", "CFL_L", "CFL_D", "CFL_START", "CFL_W",
-                        "RESID", "DQ", "DQ_LAST", "ITX_START", "ITX_W", "ADD", "ADD_LAST", "FIN", "MIW"]
-            bst_names = ["IDLE", "FT0", "FT1", "FT2", "FT3", "FT4", "WR", "WR_W", "IBC_INIT", "IBC_PL", "IBC_R0", "IBC_R1", "IBC_R2", "IBC_R3", "IBC_WR"]
-            prev = getattr(run_tile, "_perf_prev", None) or ({}, {})
-            cur_rs = {n: int(dut.u_rc.perf_rs[i].value) for i, n in enumerate(rs_names)}
-            cur_b = {n: int(dut.u_rc.perf_bst[i].value) for i, n in enumerate(bst_names)}
-            d_rs = {n: cur_rs[n] - prev[0].get(n, 0) for n in rs_names}
-            d_b = {n: cur_b[n] - prev[1].get(n, 0) for n in bst_names}
-            run_tile._perf_prev = (cur_rs, cur_b)
-            tot = sum(d_rs.values()) or 1
-            dut._log.info(f"{tag}: recon tx-FSM cycles " + ", ".join(f"{n} {v} ({100 * v // tot}%)" for n, v in d_rs.items() if v))
-            dut._log.info(f"{tag}: recon blk-FSM cycles " + ", ".join(f"{n} {v}" for n, v in d_b.items() if v))
-            if stats.get("tx_hist"):
-                names_sz = ["4x4","8x8","16x16","32x32","64x64","4x8","8x4","8x16","16x8","16x32","32x16","32x64","64x32","4x16","16x4","8x32","32x8","16x64","64x16"]
-                names_ty = ["DCT_DCT","ADST_DCT","DCT_ADST","ADST_ADST","FLIPADST_DCT","DCT_FLIPADST","FLIPADST_FLIPADST","ADST_FLIPADST","FLIPADST_ADST","IDTX","V_DCT","H_DCT","V_ADST","H_ADST","V_FLIPADST","H_FLIPADST"]
-                h = stats.pop("tx_hist")
-                top = sorted(h.items(), key=lambda kv: -kv[1])[:16]
-                dut._log.info(f"{tag}: tx blocks {sum(h.values())} by (chroma, size, type, no-residual): " +
-                              ", ".join(f"{'uv' if c else 'y'} {names_sz[sz]} {names_ty[ty]}{' skip' if sk else ''} {n}" for (c, sz, ty, sk), n in top))
-            # syntax side: tile FSM, block FSM and coefficient reader, state names parsed from the RTL enums
-            import re as _re
-            def enum_names(fname, tname):
-                src = (HERE.parent / "rtl" / fname).read_text()
-                m = _re.search(r"typedef enum[^{]*\{(.*?)\}\s*" + tname + r"\s*;", src, _re.S)
-                return [x.strip() for x in _re.sub(r"//[^\n]*", "", m.group(1)).replace("\n", " ").split(",") if x.strip()]
-            prev_s = getattr(run_tile, "_perf_prev_syn", None) or {}
-            cur_s = {}
-            for label, inst, fname, tname in (("tile", dut.u_ts, "tile_syntax.sv", "t_t"), ("blk", dut.u_ts.u_blk, "blk_syntax.sv", "st_t"), ("coef", dut.u_ts.u_coef, "coef_rd.sv", "st_t")):
-                names = enum_names(fname, tname)
-                cur_s[label] = {n: int(inst.perf_st[i].value) for i, n in enumerate(names)}
-                d = {n: cur_s[label][n] - prev_s.get(label, {}).get(n, 0) for n in names}
-                tot = sum(d.values()) or 1
-                top = sorted(d.items(), key=lambda kv: -kv[1])[:14]
-                dut._log.info(f"{tag}: syntax {label}-FSM cycles (total {tot}) " + ", ".join(f"{n} {v} ({100 * v // tot}%)" for n, v in top if v))
-            run_tile._perf_prev_syn = cur_s
+        perf_report(dut, tag, stats, cycles)
         return
     while True:
         await RisingEdge(dut.clk)
@@ -197,6 +207,7 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0, rows=N
     stats["cycles"] += cycles
     if debug:
         dut._log.info(f"{tag}: tile done, {blocks} blocks, {txb} tx blocks, {cycles} cycles")
+    perf_report(dut, tag, stats, cycles)
 
 
 async def pulse_and_wait(dut, start_sig, done_sig, tag, limit=60_000_000, busy_sig=None):
