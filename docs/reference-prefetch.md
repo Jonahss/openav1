@@ -135,9 +135,11 @@ pictures, all identical to dav1d:
 | fm2s100p-0fd3b46 | 100 MHz | serial | 158.3 s | 3.5 | 0.34 s | 0.24 | 0.20 | 0.36 |
 | fm2s80p-0fd3b46 | 80 MHz | serial | 181.3 s | 3.0 | 0.39 | 0.27 | 0.23 | 0.41 |
 | fm2pfs100p-91c481f | 100 MHz | rows in flight (A) | 78.9 s | **6.9** | 0.19 | 0.12 | 0.09 | 0.15 |
+| fm2pfs80p-91c481f | 80 MHz | rows in flight (A) | 92.2 s | 5.9 | 0.19 | 0.14 | 0.11 | 0.17 |
 
 The 80 MHz serial row says the same thing as §3 from the other side: 15 % slower at 80 % of the clock, because the DDR
-round trip is fixed in nanoseconds. With A the inter frames sit at 0.09-0.19 s = 9-19 M cycles against the 12.8 M of the
+round trip is fixed in nanoseconds. With A the prefetch gains the same 2.0x at both clocks and 80 vs 100 MHz costs 17 %:
+the frame time now scales with the clock, i.e. the tile stage, not the memory, is what is left. With A the inter frames sit at 0.09-0.19 s = 9-19 M cycles against the 12.8 M of the
 intra frame and the 14.8 M the testbench predicts for frame 1 at zero latency: a few million cycles of latency are left
 per frame, which is step B's target (block-ahead fetch, bit-exact in the twin on the fm2 line; netlist rung and image
 pending). The §5 expectation for A alone was 7-9 fps.
