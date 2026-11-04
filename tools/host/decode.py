@@ -364,7 +364,7 @@ def main():
     print(f"{s['frames']} frames, {s['tiles']} tiles, {s['bytes']} stream bytes, {s['pixels']} samples read back, "
           f"{s['writes']} register writes + {s['reads']} reads in {dt_all:.1f}s ({s['frames'] / dt_all:.1f} fps); "
           f"{ev_next} of {len(shown)} pictures output"
-          + (f"; card-side state: {s.get('ld_frames', 0)} loads, {s.get('sv_frames', 0)} CDF saves, {s.get('mf_srcs', 0)} projected sources" if args.card_load else "")
+          + (f"; card-side state: {s.get('ld_frames', 0)} loads, {s.get('sv_frames', 0)} CDF saves, {s.get('mf_srcs', 0)} projected sources; host waits: loads {s.get('ld_time', 0.0):.2f}s, CDF saves {s.get('sv_time', 0.0):.2f}s" if args.card_load else "")
           + (f"; {n_bad_frames} board picture(s) and {n_model_bad} model picture(s) differ from the reference" if ref is not None else ""))
     sys.exit(1 if (n_bad_frames or n_model_bad) else 0)
 

@@ -542,15 +542,19 @@ class HostDecoder:
         seq += ld_regs(seg=seg, cdf_base=cdf_base, zero_seg=zero_seg, mf=mf)
         seq.append((R_START, START_LOAD))
         self.write_seq(seq)
+        t_ld = time.monotonic()
         st = self.poll(R_FS_STATUS, FS_LD_DONE, FS_LD_DONE, f"{tag}: frame-state load")
+        self.stats["ld_time"] = self.stats.get("ld_time", 0.0) + time.monotonic() - t_ld   # the host's wait on the loader group
         if st & FS_LD_ERR:
             raise HostError(f"{tag}: the frame-state loader reported a read error (FS_STATUS 0x{st:08x})")
         self.stats["ld_frames"] = self.stats.get("ld_frames", 0) + 1
 
     def frame_state_save(self, cdf_base, engine, tag):
         """Stage B: tile engine `engine`'s CDF rows (the context tile's, after its tile row) to cdf_base on the card."""
+        t_sv = time.monotonic()
         self.write_seq(sv_regs(cdf_base, engine) + [(R_START, START_SAVE)])
         st = self.poll(R_FS_STATUS, FS_SV_DONE, FS_SV_DONE, f"{tag}: CDF save")
+        self.stats["sv_time"] = self.stats.get("sv_time", 0.0) + time.monotonic() - t_sv   # the host's wait on the CDF save (between tile rows)
         if st & FS_SV_ERR:
             raise HostError(f"{tag}: the CDF save reported a write error (FS_STATUS 0x{st:08x})")
         self.stats["sv_frames"] = self.stats.get("sv_frames", 0) + 1
