@@ -168,7 +168,7 @@ flight; the stage B twin at 48-cycle latency goes from 267,909 to 71,972 cycles 
 the loads 5.68 s -> 0.64 s over the clip (8.9x), on the saves 0.32 -> 0.24 s (what remains is the host's register traffic
 and poll latency, not the card). Netlist rung pending at the time of writing.
 
-## 7. The tile stage, profiled (2026-11-04, in progress)
+## 7. The tile stage, profiled (2026-11-04)
 
 With the fetch latency and the loader gone, the frame time scales with the clock (§6: 80 vs 100 MHz costs the full
 17 %), so the tile stage itself is the wall. The twin counts cycles per FSM state (`TS_PERF`; `perf_syn_stall` /
@@ -192,3 +192,70 @@ first profile printed nothing for those states (the testbench's state list preda
 and by `mc_filt` phase (prefilter, horizontal, vertical, drain) is the rerun in progress, and it decides the next step:
 the filter's cycles per block (pixels per cycle through the 8-tap passes) against the per-strip overhead of the
 sequencer (`B_MC_STRIP`/`B_MC_UNIT`/`B_MC_NEXT`).
+
+**The rerun (2026-11-04 morning), by MC state and `mc_filt` phase, RING=4, LAT=48 OUT=16:**
+
+| frame | tile cycles | `B_MC_FETCH` | `mc_filt` H + V | `mc_filt` idle |
+|---|---|---|---|---|
+| 1, inter, 7,718 inter blocks | 12.81 M | 10.15 M (79 %) | 3.77 M (28 %) | 68 % |
+| 2, inter, 2,361 inter blocks (mostly 64x64 / 32x32 skip) | 7.87 M | 7.03 M (89 %) | 3.98 M (51 %) | 48 % |
+
+The filter is not the wall; the block FSM waits for the reference fetch four fifths of the frame. Counters added to
+`ref_fetch` (per address-side state, plus the flags *ring full*, *writer busy*, *waiting for data*, *busy*; printed by
+`TS_PERF` as the `ref_fetch addr-FSM` histogram) say why, frame 2: the address side sat in `A_ROW` waiting for a free line
+buffer 43 % of the time (`RING_FULL`), the engine waited for data 43 %, the writer was busy 28 %. Step A's ring of four
+rows releases a row only when the writer has produced it, so four rows cover ~16 of the 48 latency cycles on narrow units.
+
+**RING=16 (one parameter), same frames, pixels identical:** frame 2 7,865,972 → 5,804,865 cycles (−26 %; `MC_FETCH`
+7.03 M → 4.97 M; ring full 7 %, data wait 16 %, writer busy 38 %); frame 1 12,808,180 → 8,499,239 (−34 %; `MC_FETCH`
+5.79 M = 68 %; ring full 1 %, data wait 24 %, writer busy 28 %, address-side states 35 % of the tile). RING=8: frame 2
+6,067,977 (−23 %). Cost: the OOC `dec_host` synthesis grows from 260,422 to 326,146 LUTs (the 16 x 80 x 12-bit ring is
+flip-flops with four dynamically indexed read lanes). On the card (`u200-fm2rf16s100p-b98724d`, TE=1 sb128 100 MHz, WNS
++0.010): the 548-frame 1080p clip in 47.2 s = **11.6 fps** (10.0 the day before), 500 / 500 pictures identical.
+
+**Address side pipelined (c756ca3 on ref-prefetch):** the ROW → MUL → ADDR → AR → NEXT walk, five cycles a row, became
+three register stages feeding the AR issuer (one AR cycle per single-burst row). Pixels identical; the Argon inter test
+515,598 → 515,036 cycles only: those five cycles were hidden behind the fill and the writer. Worth keeping, not a lever.
+
+**What is left in the engine at RING=16 (frame 1):** the per-strip *fill*. `req_ready` needs the engine drained (address
+side idle, no rows allocated, writer idle), so every strip begins with the full DDR round trip: 38,626 strips x ~56
+cycles = 2.16 M of the frame's 8.5 M (24 %). Then the writer at one 4-sample word a cycle (28 %). That order is the
+next two steps.
+
+## 8. Step C: the sequencer hands over strip n + 1 while strip n lands (design, 2026-11-04)
+
+Today's handoff, per strip: `B_MC_STRIP` (geometry) → `B_MC_STRIP2` (request) → `B_MC_FETCH` (wait `done`; when `filt_free`,
+start the run on this patch buffer, give the other buffer to the next fetch) → `B_MC_NEXT` → `B_MC_STRIP`. The fetch of
+strip n + 1 cannot start before `done` of strip n, so the 48-cycle fill is paid once per strip and the engine idles
+through it. The filter (the other half of step B's overlap) is faster than the fetch, so the strip period is the fetch's:
+fill + rows + handoff, ~110–120 cycles on frame 1's narrow strips, against ~70 for the filter.
+
+**The change, two halves, no new memory:**
+
+*`ref_fetch`:* accept a request as soon as the address side is idle (`ast == A_IDLE`), writer and ring regardless. The
+writer and the data side then need the request's geometry per row rather than one `q_*` copy: at the pop each row's
+slot takes `fmt16`, `nsamp`, `cx_lo`, `x0`, `lastx`, `nw`, `lst`, its patch row, its patch *buffer* and a last-row flag
+(~70 bits x RING, flip-flops). `done` pulses at the writer's last word of a row flagged last; `patch_row` / `patch_list`
+/ `patch_buf` come from the slot. New ports: `req_buf` in (the buffer the sequencer assigned to the request),
+`patch_buf` out (replaces the sequencer's live `pbuf` on `mc_filt`'s write port), `buf_busy[1:0]` in. The writer takes a
+row (`wr_take`) only if its buffer is not busy: rows of strip n + 1 wait in the ring (RING=16 holds a strip) until the
+run that last read that buffer (strip n − 1) has finished. No deadlock: that run does not depend on the fetch.
+
+*`recon_top`:* `B_MC_FETCH` splits into two threads. The *issue* thread runs `B_MC_STRIP` / `B_MC_STRIP2` for the next
+strip as soon as the engine accepted the previous request and advances the strip iteration (`B_MC_NEXT`'s logic) on
+acceptance, not on the run start; it stops when the one-deep run-record queue is full. The *run* thread waits for the
+oldest pending patch's `done` and `filt_free`, copies the queued run record (today's `r_*` fields plus the `mc_start`
+parameters: `mc_sw`, `mc_sh`, `u_i1`, `u_i0`, `mc_l`, the buffer) into the output path and starts the run. `buf_busy`
+is `run_v` on `run_buf` (and the OBMC / masked blend pipelines while they read). The intra-block-copy path (`ff_*`, the
+ring loader sharing the patch write port) stays on the serial handoff: `mc_ibc` disables the lookahead.
+
+**Expected:** the strip period becomes max(filter, rows + writer) ≈ 70 cycles on frame 1 instead of ~115: `MC_FETCH`
+from 68 % to roughly 45 % of the frame, the frame −20–25 %, i.e. ~14 fps at 100 MHz from today's 11.6. After it the
+writer's word rate (two patch words a cycle needs a wider `mc_filt` patch port) is the last fetch lever before the
+filter itself.
+
+**Verification:** the same twin suites at LAT=48 OUT=16 (the Argon inter tests cover OBMC, compound, masks, scaled
+references), then a gate rung with fresh recordings, since the `ref_fetch` ↔ `mc_filt` interface and the AXI timing
+change. Risks, in order: the run-record queue (thirty fields; a missed one shows as a wrong blend on the first OBMC or
+masked block), the buffer-busy gate (a write into a buffer still being read shows as a one-strip-late reference), and
+the strip iteration advancing past a unit boundary before its run started (the `B_MC_PLEND` / plane change).
