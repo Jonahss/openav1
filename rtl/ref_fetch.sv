@@ -23,7 +23,7 @@
 // card and under tb/axi_mem.py's TS_AXI_LAT / TS_AXI_OUT.
 module ref_fetch #(
     parameter int PW = 12,
-    parameter int RING = 4                                // line buffers = rows in flight ahead of the writer
+    parameter int RING = 16                               // line buffers = rows in flight ahead of the writer
 ) (
     input  logic          clk,
     input  logic          rst,
