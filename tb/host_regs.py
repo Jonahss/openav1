@@ -1020,7 +1020,10 @@ class HostDecoder:
             t = {}
             t0 = time.monotonic()
             # the flush target: a frame buffer no live reference slot holds a picture or (stage B) state areas in
-            target = pool_target(base, stride, pool, store, [getattr(s_, "areas", None) for s_ in seq.slots] if card_load else [], tag)
+            # a picture still being read back (overlap_read) keeps its buffer until the read is done
+            self.pending_reads = [(t_, f_) for t_, f_ in getattr(self, "pending_reads", []) if not f_.done()]
+            target = pool_target(base, stride, pool, store, ([getattr(s_, "areas", None) for s_ in seq.slots] if card_load else [])
+                                 + [{"rd": t_} for t_, f_ in self.pending_reads], tag)
             dseq, layout, total = dma_regs(hdr0, target, not hdr0.allow_intrabc)   # an intrabc frame flushes its whole decoded (MI) area: its own copy source
             self.last_target = target                    # where this frame's picture lands (tools/host/decode.py --show)
             # A model-decoded picture bigger than a pool buffer (an 8K-class frame) stays on the host: no card frame can
@@ -1102,7 +1105,17 @@ class HostDecoder:
                 self.flush_wait(tag)
             t["filters"] = time.monotonic() - t0
             t0 = time.monotonic()
-            planes = unpack_dma(hdr0, read(target - base, total), layout, raw=self.raw_planes) if (want_planes and not model_only) else None
+            if want_planes and not model_only and getattr(self, "overlap_read", False):
+                # the read-back runs in a thread (pread releases the GIL) while the card decodes the next frame; the caller
+                # gets a Future and resolves it a frame later (tools/host/decode.py --overlap)
+                if not hasattr(self, "_rd_pool"):
+                    from concurrent.futures import ThreadPoolExecutor
+                    self._rd_pool = ThreadPoolExecutor(max_workers=1)
+                _hdr, _tgt, _tot, _lay = hdr0, target, total, layout
+                planes = self._rd_pool.submit(lambda: unpack_dma(_hdr, read(_tgt - base, _tot), _lay, raw=self.raw_planes))
+                self.pending_reads.append((target, planes))
+            else:
+                planes = unpack_dma(hdr0, read(target - base, total), layout, raw=self.raw_planes) if (want_planes and not model_only) else None
             if not model_only:
                 self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
             t["read"] = time.monotonic() - t0

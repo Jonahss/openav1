@@ -166,6 +166,7 @@ def main():
     ap.add_argument("--single", action="store_true", help="read the picture sample by sample (HDATA) instead of packed")
     ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
     ap.add_argument("--dma", action="store_true", help="the picture through the DMA engine into the framebuffer's spare lines")
+    ap.add_argument("--overlap", action="store_true", help="with --inter: read each picture back while the card decodes the next frame (output lags one frame; --show shows the newest)")
     ap.add_argument("--show", action="store_true", help="with --dma / --dma-base: also put each picture on the screen (8-bit 4:2:0, RGB565 fb0)")
     ap.add_argument("--flip", action="store_true", help="with --show: the picture turned by 180 degrees (panel mounted upside down)")
     ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
@@ -240,6 +241,7 @@ def main():
             fast = HostLib(args.base)
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
     host.raw_planes = True                       # pictures as bytes / array rows: compare() and write_planes() take them as they are
+    host.overlap_read = bool(args.overlap)
     stage = None
     if args.xdma is not None:
         stage = XdmaStage(args.xdma, args.dma_base, args.dma_size)
@@ -316,8 +318,26 @@ def main():
                 del pending[k]
             ev_next += 1
 
+    def resolve(item):
+        # a frame whose picture is still being read back (--overlap): wait for it here, a frame later
+        fi, hdr, planes, t = item
+        if planes is not None and hasattr(planes, "result"):
+            t0_ = time.monotonic()
+            planes = planes.result()
+            t["read"] = t.get("read", 0.0) + time.monotonic() - t0_
+        return fi, hdr, planes, t
+
+    def lagged(gen):
+        prev = None
+        for item in gen:
+            if prev is not None:
+                yield resolve(prev)
+            prev = item
+        if prev is not None:
+            yield resolve(prev)
+
     try:
-        for fi, hdr, planes, t in frames():
+        for fi, hdr, planes, t in (lagged(frames()) if args.overlap else frames()):
             if stage is not None and args.show and fast is not None:
                 from host_regs import dma_layout
                 stage.show(fast, hdr, dma_layout(hdr, host.last_target if args.inter else stage.base)[0], flip=args.flip)
