@@ -137,6 +137,7 @@ pictures, all identical to dav1d:
 | fm2pfs100p-91c481f | 100 MHz | rows in flight (A) | 78.9 s | **6.9** | 0.19 | 0.12 | 0.09 | 0.15 |
 | fm2pfs80p-91c481f | 80 MHz | rows in flight (A) | 92.2 s | 5.9 | 0.19 | 0.14 | 0.11 | 0.17 |
 | fm2pfbte2s100p-fc34a84 | 100 MHz | A + block-ahead (B), two tile engines | 59.6 s | **9.2** | 0.13 | 0.09 | 0.07 | 0.10 |
+| fm2mfs100p-0890cc6 | 100 MHz | A + B + loader group + burst CDF save | 54.8 s | **10.0** | 0.13 | 0.08 | 0.06 | 0.09 |
 
 The 80 MHz serial row says the same thing as §3 from the other side: 15 % slower at 80 % of the clock, because the DDR
 round trip is fixed in nanoseconds. With A the prefetch gains the same 2.0x at both clocks and 80 vs 100 MHz costs 17 %:
@@ -162,5 +163,7 @@ every frame including the intra one: the +0.001 images really were at the edge.
 loads 5.69 s = **10.4 ms a frame** (zero segment map + CDF rows + motion-field projection before every frame), CDF saves
 0.32 s = 0.6 ms a frame. Rewritten the same day (`docs/frame-state.md` §6): the band one memory per reference, the clear
 one position a cycle and overlapped with the CDF load, cells one a cycle, both loaders and the save with bursts in
-flight; the stage B twin at 48-cycle latency goes from 267,909 to 71,972 cycles over 20 small frames (3.7x), the 1080p
-twin and the card image are pending.
+flight; the stage B twin at 48-cycle latency goes from 267,909 to 71,972 cycles over 20 small frames (3.7x). On the card
+(image `u200-fm2mfs100p-0890cc6`, TE=1, WNS +0.021, same evening): 54.8 s = 10.0 fps, 500/500 identical; the host's wait on
+the loads 5.68 s -> 0.64 s over the clip (8.9x), on the saves 0.32 -> 0.24 s (what remains is the host's register traffic
+and poll latency, not the card). Netlist rung pending at the time of writing.
