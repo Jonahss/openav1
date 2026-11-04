@@ -167,3 +167,28 @@ flight; the stage B twin at 48-cycle latency goes from 267,909 to 71,972 cycles 
 (image `u200-fm2mfs100p-0890cc6`, TE=1, WNS +0.021, same evening): 54.8 s = 10.0 fps, 500/500 identical; the host's wait on
 the loads 5.68 s -> 0.64 s over the clip (8.9x), on the saves 0.32 -> 0.24 s (what remains is the host's register traffic
 and poll latency, not the card). Netlist rung pending at the time of writing.
+
+## 7. The tile stage, profiled (2026-11-04, in progress)
+
+With the fetch latency and the loader gone, the frame time scales with the clock (§6: 80 vs 100 MHz costs the full
+17 %), so the tile stage itself is the wall. The twin counts cycles per FSM state (`TS_PERF`; `perf_syn_stall` /
+`perf_rec_idle` in `dec_top`, per-state counters in `recon_top`, `tile_syntax`, `blk_syntax`, `coef_rd`, `mc_filt`),
+`in_to_tree-aom.ivf` at the card's memory timing (TS_AXI_LAT=48 OUT=16), one tile per frame, branch ref-prefetch (A + B):
+
+| frame | cycles | cycles/px | syntax stalled on recon | recon idle | 
+|---|---|---|---|---|
+| 0, intra | 11.31 M | 5.5 | 2.14 M (19 %) | 1.72 M (15 %) |
+| 1, inter, 7,718 inter blocks | 12.81 M | 6.2 | 8.52 M (67 %) | 540 |
+
+**Intra (frame 0): the two sides are balanced**, each waiting on the other about a sixth of the time. The reconstruction
+FSM's cycles: CfL 35 % (`CFL_L` 20 %, the luma gather, `CFL_W` 10 %, `CFL_D` 5 %), inverse transforms 25 % (`ITX_W` 14 %,
+`DQ` 6 %, `ADD` 5 %), intra prediction 16 % (`IP_W` 10 %, `EDGE` 6 %), idle 17 %. 33,895 transform blocks, mostly uv 8x8 /
+4x4 DCT. The lever on intra is therefore CfL's luma gather and the prediction/transform overlap, not one block.
+
+**Inter (frame 1): reconstruction is the wall.** The syntax decoder sits stalled behind it two thirds of the time and
+reconstruction is never idle; its transform FSM is idle 90 % of the cycles, so the time is in the motion-compensation
+path (the `B_MC_*` states of the block FSM and `mc_filt`): ~1,660 cycles per inter block on this 16x16 / 8x8 frame. The
+first profile printed nothing for those states (the testbench's state list predated them); the breakdown by MC state
+and by `mc_filt` phase (prefilter, horizontal, vertical, drain) is the rerun in progress, and it decides the next step:
+the filter's cycles per block (pixels per cycle through the 8-tap passes) against the per-strip overhead of the
+sequencer (`B_MC_STRIP`/`B_MC_UNIT`/`B_MC_NEXT`).
