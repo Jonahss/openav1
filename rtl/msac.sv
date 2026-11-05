@@ -223,8 +223,10 @@ module msac (
                 end
                 S_READY: begin
                     if (accept) begin                        // stage 1: the symbol
-                        s1_v <= 1'b1; s1_sym <= sym; s1_cur <= cur;
-                        s1_icdf <= icdf; s1_cnt <= cnt_eff; s1_n <= n_eff; s1_upd <= do_update;
+                        s1_v <= 1'b1; s1_sym <= sym;
+                        for (int k = 0; k < 16; k++) s1_cur[k]  <= cur[k];    // element-wise copies: yosys 0.55 (Tiny Tapeout/LibreLane) rejects whole unpacked-array assignment
+                        for (int k = 0; k < 15; k++) s1_icdf[k] <= icdf[k];
+                        s1_cnt <= cnt_eff; s1_n <= n_eff; s1_upd <= do_update;
                         resp_valid <= 1'b1;
                         resp_sym   <= sym;
                     end
