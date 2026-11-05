@@ -70,3 +70,20 @@ DRM "if we want to be a serious chip"; Fabien (NVIDIA) asked for film grain synt
   (one AXI-Lite control port, picture traffic on its own AXI master), (3) the picture bus able to sit behind a
   memory firewall (addresses from a base register, never from the stream). The current design already has (2) and
   (3) by construction; (1) is a build parameter to add when the output stage exists.
+
+## Sizing the decoder for silicon (2026-11-04)
+
+From the routed U200 image (TE=2, u200-fm2te2s100p-0fd3b46): the decoder is ~273k LUTs, 868 DSPs, 1,263 RAMB36 (45 Mbit)
+and 555 UltraRAMs (160 Mbit, the 1080p window rows and picture rings). On an ASIC a LUT is 6 to 10 simple gates, so
+~2 to 2.5 M gates of logic.
+
+- **sky130 (130 nm, the open shuttles):** standard cells at a sane utilisation give ~200k gates/mm2, so ~12 to 15 mm2
+  of logic alone, more than a ChipFoundry Caravel slot's ~10 mm2 user area; and sky130 SRAM is roughly 40 to 100 kbit
+  per mm2, so the 160 Mbit window cannot exist on the die at all and even the 45 Mbit of block RAM is a wafer. A 130 nm
+  decoder would keep its window in external SRAM with small internal bands: a different, slower chip (480p or 720p).
+  Use 130 nm for what it is good for: proving blocks on silicon with measured clock and power: msac on Tiny Tapeout
+  first, then a Caravel-sized piece with real memory in it (the entropy decoder plus tile syntax and a transform
+  engine, or the intra reconstruction path at a small picture size, the DDR interface in the harness).
+- **28 nm (the media chiplet):** logic ~1 to 2 mm2, SRAM ~20x denser than sky130, so the full 1080p window fits in
+  ~5 to 10 mm2 and the frame memory stays external (DDR / LPDDR / an HBM neighbour), as on the U200 today. That is
+  where the whole decoder goes; 130 nm proves the blocks, 28 nm is the product.
