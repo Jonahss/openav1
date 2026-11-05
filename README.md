@@ -240,6 +240,13 @@ Every block is parameterised so throughput trades against area (butterfly slots,
 4. ~~Inter prediction.~~ In RTL and verified in simulation (2026-10-19 .. 25); on the U200 next (the full decoder is 1.3x the K26).
 5. Throughput: the filter datapaths pipelined for 100 MHz, then 4+ pixels per clock and the picture memory in DDR (`docs/picture-memory.md`, `docs/throughput-budget.md`): 1080p60 at 200 MHz, 4K60 after.
 6. A first piece of silicon: the arithmetic decoder (`rtl/msac.sv`) as a Tiny Tapeout submission once its FPGA twin with the same pin interface exists.
+7. What a product needs that a conformance decoder does not (asked for at the AOMedia symposium, 2026-11-04; the
+   reasoning in `docs/FUTURE.md`): metadata OBUs passed through in a sideband next to the picture (HDR static metadata,
+   T.35, timecodes, scalability; the same path carries whatever stereo / multiview signalling comes next), `render_size`
+   honoured in the output stage, film grain synthesis as an output-stage block after the decoder, and the three design
+   rules that make the core usable inside a secure video path (DRM): no pixel read-back through the register file
+   except a debug mode that can be fused off, control registers separate from data paths, the picture bus able to sit
+   behind a memory firewall.
 
 Deferred items and the reasoning behind them: [docs/FUTURE.md](docs/FUTURE.md).
 
