@@ -63,6 +63,8 @@ module lf_top
     logic [3:0]  kk, n_rd;                              // read counter / count
     logic        rd_pend;
     logic [3:0]  rd_slot;
+    logic        rd_pend2, pss2;                        // the read lands two cycles after its request (2026-10-31)
+    logic [3:0]  rd_slot2;
     // vertical edges (pss = 0): the n_rd samples k = -n_rd/2 .. n_rd/2-1 lie in n_rg aligned groups of 4 starting
     // at k = rbase (sx is a multiple of 4); every lane of those groups is kept so the groups can be written back whole
     logic [1:0]  rd_g, n_rg;
@@ -359,16 +361,17 @@ module lf_top
     // ---------------------------------------------------------------- FSM
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        if (rd_pend && pss) for (int l = 0; l < 4; l++) pixc[l][rd_slot] <= fb_rdata4[l * 12 +: 12];   // read issued last cycle lands now
-        if (rd_pend && !pss)                             // group rd_slot[1:0]: lane l is position rbase + 4 g + l
+        if (rd_pend2 && pss2) for (int l = 0; l < 4; l++) pixc[l][rd_slot2] <= fb_rdata4[l * 12 +: 12];   // read issued two cycles ago lands now
+        if (rd_pend2 && !pss2)                           // group rd_slot[1:0]: lane l is position rbase + 4 g + l
             for (int l = 0; l < 4; l++) begin
                 int k;
-                k = int'(rbase) + 4 * int'(rd_slot[1:0]) + l;
+                k = int'(rbase) + 4 * int'(rd_slot2[1:0]) + l;
                 if (k == -8) pix_m8 <= fb_rdata4[l * 12 +: 12];
                 else if (k == 7) pix_p7 <= fb_rdata4[l * 12 +: 12];
                 else if (k >= -7 && k <= 6) pix[7 + k] <= fb_rdata4[l * 12 +: 12];
             end
         rd_pend <= 1'b0;
+        rd_pend2 <= rd_pend && !rst; rd_slot2 <= rd_slot; pss2 <= pss;
         if (rst) st <= L_IDLE;
         else case (st)
             L_IDLE: if (start) begin
@@ -399,7 +402,7 @@ module lf_top
             L_S_RD: begin
                 if (pss ? (kk < n_rd) : (kk <= 4'(n_rg))) begin
                     rd_pend <= 1'b1; rd_slot <= pss ? 4'(7 + int'(rk)) : 4'(kk); kk <= kk + 4'd1;
-                end else if (!rd_pend) begin
+                end else if (!rd_pend && !rd_pend2) begin
                     wk <= -5'sd7; rd_g <= 2'd0; cc <= 2'd0; any_mod <= 1'b0; f_lo_all <= 5'sd6; f_hi_all <= -5'sd7;
                     st <= L_S_CALC;
                 end

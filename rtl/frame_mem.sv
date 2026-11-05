@@ -2,7 +2,7 @@
 // and NWR independent write ports, so that pipelined stages (reconstruction, deblocking, CDEF, super-resolution,
 // loop restoration) access the picture concurrently; plus a host read port for the testbench.
 //   read port i:  re[i] with (r_plane, r_x, r_y) -> rdata[i] (the sample at x) and rdata4[i] (the aligned group
-//                 of 4 samples containing x: lane l = sample at {x[FBX-1:2], l}), registered, 1-cycle latency
+//                 of 4 samples containing x: lane l = sample at {x[FBX-1:2], l}), registered twice, 2-cycle latency (as the UltraRAM version since 2026-10-31)
 //   write port i: we[i] with w_be[i] lane enables writes lane l of w_data[i] to {w_x[FBX-1:2], l}; a single-sample
 //                 write is one enabled lane (the frame_mem_w1 helper below builds be/data from x and a sample)
 // Ports are packed vectors (port i at [i*W +: W]). Two write ports never target the same sample in one cycle
@@ -44,6 +44,18 @@ module frame_mem #(
     logic [PW-1:0] mem0 [0:N-1];
     logic [PW-1:0] mem1 [0:N-1];
     logic [PW-1:0] mem2 [0:N-1];
+    logic [NRD-1:0]      r1_v;                                  // first stage: the read of the cycle before
+    logic [NRD*PW-1:0]   rdata_1;
+    logic [NRD*4*PW-1:0] rdata4_1;
+    logic [PW-1:0]       h_rdata_1;
+    logic [4*PW-1:0]     h_rdata4_1;
+    always_ff @(posedge clk) begin                            // second stage: the two-cycle latency
+        for (int i = 0; i < NRD; i++) begin
+            r1_v[i] <= re[i];
+            if (r1_v[i]) begin rdata[i*PW +: PW] <= rdata_1[i*PW +: PW]; rdata4[i*4*PW +: 4*PW] <= rdata4_1[i*4*PW +: 4*PW]; end
+        end
+        h_rdata <= h_rdata_1; h_rdata4 <= h_rdata4_1;
+    end
 
     always_ff @(posedge clk) begin
         for (int i = 0; i < NWR; i++) begin
@@ -66,33 +78,33 @@ module frame_mem #(
                 logic [FBX+FBY-1:0] a;
                 a = {r_y[i*FBY +: FBY], r_x[i*FBX +: FBX]};
                 case (r_plane[i*2 +: 2])
-                    2'd0: rdata[i*PW +: PW] <= mem0[a];
-                    2'd1: rdata[i*PW +: PW] <= mem1[a];
-                    default: rdata[i*PW +: PW] <= mem2[a];
+                    2'd0: rdata_1[i*PW +: PW] <= mem0[a];
+                    2'd1: rdata_1[i*PW +: PW] <= mem1[a];
+                    default: rdata_1[i*PW +: PW] <= mem2[a];
                 endcase
                 for (int l = 0; l < 4; l++) begin
                     logic [FBX+FBY-1:0] g;
                     g = {r_y[i*FBY +: FBY], r_x[i*FBX + 2 +: FBX-2], 2'(l)};
                     case (r_plane[i*2 +: 2])
-                        2'd0: rdata4[(i*4 + l)*PW +: PW] <= mem0[g];
-                        2'd1: rdata4[(i*4 + l)*PW +: PW] <= mem1[g];
-                        default: rdata4[(i*4 + l)*PW +: PW] <= mem2[g];
+                        2'd0: rdata4_1[(i*4 + l)*PW +: PW] <= mem0[g];
+                        2'd1: rdata4_1[(i*4 + l)*PW +: PW] <= mem1[g];
+                        default: rdata4_1[(i*4 + l)*PW +: PW] <= mem2[g];
                     endcase
                 end
             end
         end
         case (h_plane)
-            2'd0: h_rdata <= mem0[{h_y, h_x}];
-            2'd1: h_rdata <= mem1[{h_y, h_x}];
-            default: h_rdata <= mem2[{h_y, h_x}];
+            2'd0: h_rdata_1 <= mem0[{h_y, h_x}];
+            2'd1: h_rdata_1 <= mem1[{h_y, h_x}];
+            default: h_rdata_1 <= mem2[{h_y, h_x}];
         endcase
         for (int l = 0; l < 4; l++) begin
             logic [FBX+FBY-1:0] hg;
             hg = {h_y, h_x[FBX-1:2], 2'(l)};
             case (h_plane)
-                2'd0: h_rdata4[l*PW +: PW] <= mem0[hg];
-                2'd1: h_rdata4[l*PW +: PW] <= mem1[hg];
-                default: h_rdata4[l*PW +: PW] <= mem2[hg];
+                2'd0: h_rdata4_1[l*PW +: PW] <= mem0[hg];
+                2'd1: h_rdata4_1[l*PW +: PW] <= mem1[hg];
+                default: h_rdata4_1[l*PW +: PW] <= mem2[hg];
             endcase
         end
     end

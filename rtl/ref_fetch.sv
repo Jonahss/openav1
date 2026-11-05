@@ -9,8 +9,21 @@
 // nearest column. Per row: the clamped column range [cx_lo, cx_hi] is read as 8-byte INCR bursts (<= 16 beats, never
 // across 4 KB) into a line buffer, then the patch words are written with each lane's column clamped into that range.
 // Rows that clamp to the same picture row are read again (simple; bandwidth is not the limit in stage 2a).
+//
+// Pipelined rows (2026-11-03, docs/reference-prefetch.md step A). Three parts share a ring of RING line buffers:
+//   - the address side walks the rows (clamp, row address, burst split) and issues a row's bursts as soon as a line
+//     buffer is free, so up to RING rows are in flight ahead of the writer;
+//   - the data side takes the read responses in order (one AXI ID, so the interconnect answers in order) into the
+//     line buffer of the row they belong to;
+//   - the writer produces the patch words of each completed row.
+// A patch then costs about L + rows x max(beats, words) cycles instead of rows x (L + beats + words), L being the
+// read latency the memory path shows: ~48 cycles through the U200's XDMA interconnect and DDR4 controller (measured
+// 2026-11-02), which made the serial engine the inter frames' wall. Request, clamping, burst rules, the patch write
+// port and `done` are unchanged; the simulation twin's memory answers in a few cycles, so the gain shows on the
+// card and under tb/axi_mem.py's TS_AXI_LAT / TS_AXI_OUT.
 module ref_fetch #(
-    parameter int PW = 12
+    parameter int PW = 12,
+    parameter int RING = 16                               // line buffers = rows in flight ahead of the writer
 ) (
     input  logic          clk,
     input  logic          rst,
@@ -53,33 +66,47 @@ module ref_fetch #(
     output logic [4*PW-1:0] patch_d4
 );
     localparam int LINE = 80;                             // line buffer samples (a row reads at most 72)
+    localparam int SW = (RING > 1) ? $clog2(RING) : 1;    // ring slot index
+    localparam int CW = $clog2(RING + 1);                 // ring occupancy counters, 0 .. RING
 
-    typedef enum logic [3:0] {F_IDLE, F_ROW, F_MUL, F_ADDR, F_AR, F_R, F_WR, F_NEXT} st_t;
-    st_t st;
-
-    // request copy
+    // request copy (per patch)
     logic        q_lst, q_fmt16;
     logic [39:0] q_base;
     logic [31:0] q_stride;
     logic [15:0] q_lastx, q_lasty;
     logic signed [16:0] q_x0, q_y0;
-    logic [6:0]  q_h;
     logic [4:0]  q_nw;                                    // patch words per row = ngrp + 2
-    logic [6:0]  q_nrow;                                  // h + 7
+    logic [6:0]  q_nrow;                                  // last row + 1
     logic [15:0] cx_lo, cx_hi;                            // clamped column range of the region
-    logic [15:0] nsamp;                                   // cx_hi - cx_lo + 1
+    logic [15:0] nsamp;                                   // cx_hi - cx_lo + 1: samples per row
 
-    // per row
-    logic [6:0]  r;                                       // patch row
+    // ---- address side ----
+    typedef enum logic [2:0] {A_IDLE, A_PREP, A_ROW, A_MUL, A_ADDR, A_AR, A_NEXT} ast_t;
+    ast_t ast;
+    logic [6:0]  r_ar;                                    // row whose bursts are being issued
     logic [15:0] src_y;
     logic [47:0] mul;                                     // src_y * stride
-    logic [39:0] row_addr, addr_lo, cur_addr;
-    logic [2:0]  lead;                                    // bytes before the first wanted byte in the first beat
-    logic [15:0] beats_left;
-    logic [4:0]  len;                                     // beats of the burst being issued / received
-    logic        first_beat;
+    logic [39:0] cur_addr;
+    logic [15:0] beats_left;                              // beats of the row still to issue
+    logic [SW-1:0] slot_ar;                               // line buffer the row being issued was given
+
+    // ---- ring ----
+    logic [PW-1:0] line [0:RING-1][0:LINE-1];
+    logic [2:0]  row_lead  [0:RING-1];                    // per slot: bytes before the first wanted byte in the row's first beat
+    logic [15:0] row_beats [0:RING-1];                    // per slot: beats of the row
+    logic [CW-1:0] rows_alloc;                            // rows issued and not yet written: ring occupancy
+    logic [CW-1:0] rows_ready;                            // rows fully received and not yet taken by the writer
+
+    // ---- data side ----
+    logic [SW-1:0] slot_rx;                               // line buffer of the row being received
+    logic [15:0] beats_rx;                                // beats received of that row
     logic [6:0]  wptr;                                    // next line sample to write
-    logic [PW-1:0] line [0:LINE-1];
+    logic        first_beat;
+
+    // ---- writer ----
+    logic        wr_busy;
+    logic [SW-1:0] slot_wr;
+    logic [6:0]  r_wr;                                    // patch row being written
     logic [4:0]  w4;                                      // patch word being written
 
     function automatic logic [15:0] clip_col(input logic signed [17:0] c, input logic [15:0] last);
@@ -87,19 +114,34 @@ module ref_fetch #(
         if (c > 18'(signed'({2'b0, last}))) return last;
         return 16'(c);
     endfunction
+    function automatic logic [SW-1:0] slot_next(input logic [SW-1:0] s);
+        return (int'(s) == RING - 1) ? SW'(0) : SW'(s + 1'b1);
+    endfunction
 
-    logic [4:0] burst_len;                                // declared before its first use (xsim / Vivado implicit-net rule)
-    assign req_ready = (st == F_IDLE);
+    // observability: recon_top's B_MC_FETCH heartbeat and tb/test_dec_top.py print `st` as a number
+    logic [7:0] st;
+    assign st = {wr_busy, 4'(rows_alloc), 3'(ast)};
+
+    // events
+    logic accept, alloc, rx_beat, rx_last, wr_take, wr_last;
+    assign accept  = (ast == A_IDLE) && req_valid && req_ready;
+    assign alloc   = (ast == A_ADDR);                                              // the row takes its line buffer
+    assign rx_beat = m_axi_rvalid && m_axi_rready;
+    assign rx_last = rx_beat && (beats_rx == row_beats[slot_rx] - 16'd1);           // the row's last beat
+    assign wr_take = !wr_busy && (rows_ready != CW'(0));
+    assign wr_last = wr_busy && (w4 == q_nw - 5'd1);                               // the row's last word: its buffer is free
+
+    assign req_ready = (ast == A_IDLE) && !wr_busy && (rows_alloc == CW'(0));
     assign m_axi_arsize  = 3'b011;                        // 8 bytes
     assign m_axi_arburst = 2'b01;                         // INCR
     assign m_axi_arcache = 4'b0011;
     assign m_axi_arprot  = 3'b000;
     assign m_axi_araddr  = cur_addr;
-    assign m_axi_arlen   = 8'(burst_len - 5'd1);             // the length of the burst being offered (len latches it at the handshake)
-    assign m_axi_arvalid = (st == F_AR);
-    assign m_axi_rready  = (st == F_R);
+    assign m_axi_arvalid = (ast == A_AR);
+    assign m_axi_rready  = 1'b1;                          // every response belongs to a row that owns a line buffer
 
     // burst length: <= 16 beats, <= beats_left, never across a 4 KB boundary
+    logic [4:0] burst_len;
     logic [9:0] to4k;
     assign to4k = 10'((13'd4096 - 13'(cur_addr[11:0])) >> 3);
     always_comb begin
@@ -107,8 +149,9 @@ module ref_fetch #(
         if (beats_left < 16'(burst_len)) burst_len = 5'(beats_left);
         if (to4k < 10'(burst_len)) burst_len = 5'(to4k);
     end
+    assign m_axi_arlen = 8'(burst_len - 5'd1);
 
-    // patch word lanes: column of lane l clamped into the region's range, read from the line buffer
+    // patch word lanes: column of lane l clamped into the region's range, read from the row's line buffer
     logic [4*PW-1:0] word_d4;
     always_comb begin
         for (int l = 0; l < 4; l++) begin
@@ -116,14 +159,14 @@ module ref_fetch #(
             logic [15:0] cc;
             col = 18'(q_x0) - 18'sd3 + 18'(signed'({13'd0, w4})) * 18'sd4 + 18'(l);
             cc = clip_col(col, q_lastx) - cx_lo;
-            word_d4[l*PW +: PW] = line[cc[6:0]];
+            word_d4[l*PW +: PW] = line[slot_wr][cc[6:0]];
         end
     end
     assign patch_d4 = word_d4;
     assign patch_list = q_lst;
-    assign patch_row = r;
+    assign patch_row = r_wr;
     assign patch_w4 = w4;
-    assign patch_we = (st == F_WR);
+    assign patch_we = wr_busy;
 
     // the samples of a beat (8 bytes): 8 one-byte samples or 4 16-bit samples
     function automatic logic [PW-1:0] beat_sample(input logic [63:0] d, input logic fmt16, input int k);
@@ -133,74 +176,115 @@ module ref_fetch #(
         return PW'(d[k*8 +: 8]);
     endfunction
 
+    // done: an empty request (no rows to produce) or the last word of the last row; err: sticky on a bad response
+    logic empty_req;
+    assign empty_req = accept && !(req_r_lo < ((req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi));
+    always_ff @(posedge clk) done <= !rst && (empty_req || (wr_last && (r_wr == q_nrow - 7'd1)));
+    always_ff @(posedge clk) if (rst) err <= 1'b0; else if (rx_beat && m_axi_rresp != 2'b00) err <= 1'b1;
+
+    // ---- address side ----
     always_ff @(posedge clk) begin
-        done <= 1'b0;
         if (rst) begin
-            st <= F_IDLE; err <= 1'b0;
-        end else case (st)
-            F_IDLE: if (req_valid) begin
+            ast <= A_IDLE; slot_ar <= SW'(0);
+        end else case (ast)
+            A_IDLE: if (req_valid && req_ready) begin
                 logic [4:0] nw;
+                logic [6:0] nrow;
                 nw = 5'((req_w + 7'd3) >> 2) + 5'd2;
+                nrow = (req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi;
                 q_lst <= req_lst; q_fmt16 <= req_fmt16; q_base <= req_base; q_stride <= req_stride;
-                q_lastx <= req_lastx; q_lasty <= req_lasty; q_x0 <= req_x0; q_y0 <= req_y0; q_h <= req_h;
-                q_nw <= nw; q_nrow <= (req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi;
+                q_lastx <= req_lastx; q_lasty <= req_lasty; q_x0 <= req_x0; q_y0 <= req_y0;
+                q_nw <= nw; q_nrow <= nrow;
                 cx_lo <= clip_col(18'(req_x0) - 18'sd3, req_lastx);
                 cx_hi <= clip_col(18'(req_x0) - 18'sd3 + 18'(signed'({13'd0, nw})) * 18'sd4 - 18'sd1, req_lastx);
-                r <= req_r_lo;
-                if (req_r_lo < ((req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi)) st <= F_ROW;
-                else done <= 1'b1;                                            // nothing to produce
+                r_ar <= req_r_lo;
+                if (req_r_lo < nrow) ast <= A_PREP;                           // else: nothing to produce, done pulses
             end
-            F_ROW: begin
-                logic signed [17:0] yy;
-                yy = 18'(q_y0) - 18'sd3 + 18'(signed'({11'd0, r}));
-                src_y <= clip_col(yy, q_lasty);
+            A_PREP: begin
                 nsamp <= cx_hi - cx_lo + 16'd1;
-                st <= F_MUL;
+                ast <= A_ROW;
             end
-            F_MUL: begin
+            A_ROW: if (rows_alloc < CW'(RING)) begin                          // a line buffer is free for this row
+                logic signed [17:0] yy;
+                yy = 18'(q_y0) - 18'sd3 + 18'(signed'({11'd0, r_ar}));
+                src_y <= clip_col(yy, q_lasty);
+                ast <= A_MUL;
+            end
+            A_MUL: begin
                 mul <= 48'(src_y) * 48'(q_stride);
-                st <= F_ADDR;
+                ast <= A_ADDR;
             end
-            F_ADDR: begin
+            A_ADDR: begin
                 logic [39:0] a_lo, a_hi_excl;
                 logic [15:0] nbytes;
                 a_lo = q_base + 40'(mul) + (q_fmt16 ? {23'd0, cx_lo, 1'b0} : {24'd0, cx_lo});
                 nbytes = q_fmt16 ? {nsamp[14:0], 1'b0} : nsamp;
                 a_hi_excl = a_lo + 40'(nbytes);
-                lead <= a_lo[2:0];
                 cur_addr <= {a_lo[39:3], 3'b000};
                 beats_left <= 16'((a_hi_excl + 40'd7 - {a_lo[39:3], 3'b000}) >> 3);
-                wptr <= 7'd0; first_beat <= 1'b1;
-                st <= F_AR;
+                row_lead[slot_ar] <= a_lo[2:0];
+                row_beats[slot_ar] <= 16'((a_hi_excl + 40'd7 - {a_lo[39:3], 3'b000}) >> 3);
+                ast <= A_AR;
             end
-            F_AR: if (m_axi_arready) begin len <= burst_len; st <= F_R; end
-            F_R: if (m_axi_rvalid) begin
-                logic [3:0] k0;                           // first wanted sample of the beat
-                logic [3:0] nk;                           // samples in the beat
-                if (m_axi_rresp != 2'b00) err <= 1'b1;
-                nk = q_fmt16 ? 4'd4 : 4'd8;
-                k0 = first_beat ? (q_fmt16 ? 4'(lead >> 1) : 4'(lead)) : 4'd0;
-                for (int k = 0; k < 8; k++)
-                    if (4'(k) >= k0 && 4'(k) < nk && (wptr + 7'(k) - 7'(k0)) < 7'(nsamp))
-                        line[wptr + 7'(k) - 7'(k0)] <= beat_sample(m_axi_rdata, q_fmt16, k);
-                wptr <= wptr + 7'(nk) - 7'(k0);
-                first_beat <= 1'b0;
-                cur_addr <= cur_addr + 40'd8;
-                beats_left <= beats_left - 16'd1;
-                if (m_axi_rlast) begin
-                    if (beats_left == 16'd1) begin w4 <= 5'd0; st <= F_WR; end   // this was the row's last beat
-                    else st <= F_AR;
-                end
+            A_AR: if (m_axi_arready) begin
+                cur_addr <= cur_addr + 40'(burst_len) * 40'd8;
+                beats_left <= beats_left - 16'(burst_len);
+                if (beats_left == 16'(burst_len)) ast <= A_NEXT;              // the row's last burst
             end
-            F_WR: begin
-                if (w4 == q_nw - 5'd1) st <= F_NEXT;
-                else w4 <= w4 + 5'd1;
+            A_NEXT: begin
+                slot_ar <= slot_next(slot_ar);
+                if (r_ar == q_nrow - 7'd1) ast <= A_IDLE;                     // all rows issued; the writer finishes the patch
+                else begin r_ar <= r_ar + 7'd1; ast <= A_ROW; end
             end
-            F_NEXT: begin
-                if (r == q_nrow - 7'd1) begin done <= 1'b1; st <= F_IDLE; end
-                else begin r <= r + 7'd1; st <= F_ROW; end
-            end
-            default: st <= F_IDLE;
+            default: ast <= A_IDLE;
         endcase
+    end
+
+    // ---- data side: responses in order into the line buffer of the row they belong to ----
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            slot_rx <= SW'(0); beats_rx <= 16'd0; wptr <= 7'd0; first_beat <= 1'b1;
+        end else if (rx_beat) begin
+            logic [3:0] k0;                               // first wanted sample of the beat
+            logic [3:0] nk;                               // samples in the beat
+            logic [2:0] lead;
+            lead = row_lead[slot_rx];
+            nk = q_fmt16 ? 4'd4 : 4'd8;
+            k0 = first_beat ? (q_fmt16 ? 4'(lead >> 1) : 4'(lead)) : 4'd0;
+            for (int k = 0; k < 8; k++)
+                if (4'(k) >= k0 && 4'(k) < nk && (wptr + 7'(k) - 7'(k0)) < 7'(nsamp))
+                    line[slot_rx][wptr + 7'(k) - 7'(k0)] <= beat_sample(m_axi_rdata, q_fmt16, k);
+            wptr <= wptr + 7'(nk) - 7'(k0);
+            first_beat <= 1'b0;
+            beats_rx <= beats_rx + 16'd1;
+            if (rx_last) begin
+                slot_rx <= slot_next(slot_rx); beats_rx <= 16'd0; wptr <= 7'd0; first_beat <= 1'b1;
+            end
+        end
+    end
+
+    // ---- writer: the patch words of each completed row, in row order ----
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            wr_busy <= 1'b0; slot_wr <= SW'(0); w4 <= 5'd0; r_wr <= 7'd0;
+        end else begin
+            if (accept) r_wr <= req_r_lo;
+            if (wr_take) begin wr_busy <= 1'b1; w4 <= 5'd0; end
+            else if (wr_busy) begin
+                if (wr_last) begin
+                    wr_busy <= 1'b0; slot_wr <= slot_next(slot_wr); r_wr <= r_wr + 7'd1;
+                end else w4 <= w4 + 5'd1;
+            end
+        end
+    end
+
+    // ---- ring accounting ----
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            rows_alloc <= CW'(0); rows_ready <= CW'(0);
+        end else begin
+            rows_alloc <= rows_alloc + CW'(alloc) - CW'(wr_last);
+            rows_ready <= rows_ready + CW'(rx_last) - CW'(wr_take);
+        end
     end
 endmodule

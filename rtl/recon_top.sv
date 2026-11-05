@@ -174,8 +174,8 @@ module recon_top
     endfunction
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
-                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_R4, B_IBC_WR,
-                              B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_FILT, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
+                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_R4, B_IBC_R5, B_IBC_WR,
+                              B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_NEXT, B_MC_DRAIN, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
@@ -267,6 +267,18 @@ module recon_top
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_out_valid;
     logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
+    // Block-ahead fetch (docs/reference-prefetch.md step B, 2026-11-03): a strip's reference patch is fetched into one of
+    // mc_filt's two patch buffers while the filter still runs the previous strip from the other, so a fetch's round trip
+    // hides behind a run. The sequencer moves on as soon as a run starts: the registers the output path reads during a
+    // run are copied into the run record (r_*) at the start, and a block ends only after its last run has drained.
+    logic        pbuf;                                       // patch buffer of the strip being fetched (then run)
+    logic        run_buf;                                    // patch buffer of the run being started (sampled by mc_filt with start)
+    logic        run_v;                                      // a run was started and mc_busy has not risen yet (it does the cycle after start)
+    logic [PXW-1:0] r_px, r_py, r_bx, r_by;                  // run record: strip origin, plane block origin
+    logic [1:0]  r_pl; logic r_sx, r_sy, r_l;
+    logic        r_ob_active, r_ob_pass; logic [5:0] r_ob_mlen;
+    logic        r_ii_active, r_ii_wedge; logic [3:0] r_ii_mode; logic [2:0] r_ii_lsh;
+    logic        r_mb_active, r_mb_diff; logic [3:0] r_post;
     logic [9:0]  mc_xf0, mc_yf0;                             // startX & 1023, startY & 1023 of the strip
     logic [2:0]  mc_mode;
     logic [135:0] mc_out_pair;                               // 2 lists x 4 lanes x 17-bit signed
@@ -279,8 +291,9 @@ module recon_top
     logic [2:0]  ob_k;                                       // entry index within the pass
     logic [4:0]  mc_psz;                                     // the plane's block size (the above pass needs >= BLOCK_8X8)
     logic [5:0]  ob_mlen;                                    // mask length (predH above, predW left)
-    logic        ob_rd_v, ob_rd2_v, ob_wr_v;                 // read-modify-write pipeline: A (read issued), A2 (data lands), B (write)
+    logic        ob_rd_v, ob_rd2_v, ob_rd3_v, ob_wr_v;       // read-modify-write pipeline: A (read issued), A2, A3 (data lands: two-cycle read), B (write)
     logic [47:0] ob_a2_pix; logic [PXW-1:0] ob_a2_x, ob_a2_y; logic [3:0] ob_a2_be; logic [6:0] ob_a2_m [4];
+    logic [47:0] ob_a3_pix; logic [PXW-1:0] ob_a3_x, ob_a3_y; logic [3:0] ob_a3_be; logic [6:0] ob_a3_m [4];
     logic [47:0] ob_a_pix, ob_b_pix;
     logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
     logic [3:0]  ob_a_be, ob_b_be;
@@ -302,7 +315,9 @@ module recon_top
     logic [2:0]  mk_d;                                       // wedge master direction
     logic [5:0]  mk_xoff, mk_yoff;
     logic        mk_inv;
+    logic        filt_free;                                  // no run in flight and the blend pipelines drained
     logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
+    assign filt_free = !mc_busy && !run_v && !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v;   // fm2: three read stages
     logic [135:0] mb_a_pair, mb_a2_pair;
     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
     logic [3:0]  mb_a_be, mb_a2_be, mb_b_be;
@@ -381,8 +396,8 @@ module recon_top
         .fb_re(ff_fb_re), .fb_plane(ff_fb_plane), .fb_x(ff_fb_x), .fb_y(ff_fb_y), .fb_rdata4,
         .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
-        .patch_we(pw_we), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
-        .start(mc_start), .lst(mc_l), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
+        .patch_we(pw_we), .patch_buf(pbuf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
+        .start(mc_start), .lst(mc_l), .rbuf(run_buf), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
         .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
         .warp(mc_warp), .w_alpha(w_al[mc_l]), .w_beta(w_be[mc_l]), .w_gamma(w_ga[mc_l]), .w_delta(w_de[mc_l]), .w_sx4(mc_wsx), .w_sy4(mc_wsy),
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
@@ -444,8 +459,8 @@ module recon_top
         R_IDLE, R_SETUP,
         R_PAL, R_PAL_LAST,
         R_EDGE, R_IP_START, R_IP_W,
-        R_CFL_L, R_CFL_D, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3,
+        R_CFL_L, R_CFL_D, R_CFL_D2, R_CFL_START, R_CFL_W,
+        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4,
         R_FIN, R_MIW
     } rst_t;
     rst_t rs;
@@ -508,8 +523,9 @@ module recon_top
     always_ff @(posedge clk) begin
         mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0;
         if (mc_done) mc_fin <= 1'b1;
+        if (mc_busy) run_v <= 1'b0;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0;
+            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
@@ -754,10 +770,18 @@ module recon_top
                     if (rf_done) rf_wait <= 1'b0;
                     if (ff_done) ff_wait <= 1'b0;
                     if (ff_pend && !(rf_wait && !rf_done)) begin ff_req_valid <= 1'b1; ff_pend <= 1'b0; end
-                    if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done)) begin mc_start <= 1'b1; bst <= B_MC_FILT; end
+                    // the patch is in: once the previous run has drained, start this strip's run (the output path switches to its
+                    // run record), give the other buffer to the next fetch, and move on without waiting for the run
+                    if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done) && filt_free) begin
+                        mc_start <= 1'b1; run_v <= 1'b1; run_buf <= pbuf; pbuf <= !pbuf; mc_fin <= 1'b0;
+                        r_px <= mc_px; r_py <= mc_py; r_bx <= mc_bx; r_by <= mc_by; r_pl <= mc_pl; r_sx <= mc_sx; r_sy <= mc_sy; r_l <= mc_l;
+                        r_ob_active <= ob_active; r_ob_pass <= ob_pass; r_ob_mlen <= ob_mlen;
+                        r_ii_active <= ii_active; r_ii_wedge <= ii_wedge; r_ii_mode <= ii_mode; r_ii_lsh <= ii_lsh;
+                        r_mb_active <= mb_active; r_mb_diff <= mb_diff; r_post <= mc_post;
+                        bst <= B_MC_NEXT;
+                    end
                 end
-                B_MC_FILT: if ((mc_done || mc_fin) && !ob_rd_v && !ob_rd2_v && !ob_wr_v && !mb_a_v && !mb_b_v) begin   // the run finished and the blend pipelines drained
-                    mc_fin <= 1'b0;
+                B_MC_NEXT: begin
                     // all strips of the unit first (an OBMC neighbour unit is up to 64 tall / wide: two strips in a frame
                     // with scaled references), then the other list, the next OBMC neighbour, the next unit
                     if (mc_comp && !mc_l) begin mc_l <= 1'b1; bst <= B_MC_STRIP; end
@@ -773,9 +797,10 @@ module recon_top
                     else begin
                         ob_done <= 1'b0; ob_active <= 1'b0;
                         if (mc_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin mc_pl <= mc_pl + 2'd1; bst <= B_MC_PL; end
-                        else begin blk_ready <= 1'b1; bst <= B_IDLE; end
+                        else bst <= B_MC_DRAIN;
                     end
                 end
+                B_MC_DRAIN: if (filt_free) begin blk_ready <= 1'b1; bst <= B_IDLE; end   // the block's last run has written its samples
                 B_MC_OB: begin
                     // the next overlap neighbour of this pass (above: entries 0 .. 3, needs the plane block >= BLOCK_8X8; left: 4 .. 7)
                     logic [50:0] e;
@@ -863,10 +888,11 @@ module recon_top
                 bst <= B_IBC_R0;
             end
             B_IBC_R0: bst <= B_IBC_R1;
-            B_IBC_R1: begin ib_s0 <= fb_rdata; bst <= B_IBC_R2; end
-            B_IBC_R2: begin ib_s1 <= fb_rdata; bst <= B_IBC_R3; end
-            B_IBC_R3: begin ib_s2 <= fb_rdata; bst <= B_IBC_R4; end
-            B_IBC_R4: begin ib_s3 <= fb_rdata; bst <= B_IBC_WR; end     // the fourth sample lands here, the filter and the
+            B_IBC_R1: bst <= B_IBC_R2;                                      // sample reads land two cycles after they are issued
+            B_IBC_R2: begin ib_s0 <= fb_rdata; bst <= B_IBC_R3; end
+            B_IBC_R3: begin ib_s1 <= fb_rdata; bst <= B_IBC_R4; end
+            B_IBC_R4: begin ib_s2 <= fb_rdata; bst <= B_IBC_R5; end
+            B_IBC_R5: begin ib_s3 <= fb_rdata; bst <= B_IBC_WR; end     // the fourth sample lands here, the filter and the
                                                                        // write run from registers (the UltraRAM read into the
                                                                        // bilinear filter and the write capture was 22 levels)
             B_IBC_WR: begin
@@ -901,40 +927,41 @@ module recon_top
     // OBMC read-modify-write pipeline: A = the prediction group and its mask values (the frame memory read is issued
     // from these registers), B = the blended group to write. One group per cycle.
     logic [PXW-1:0] mb_bx, mb_by;                            // block-relative position of the output group (plane samples)
-    assign mb_bx = mc_px - mc_bx + PXW'(mc_out_x);
-    assign mb_by = mc_py - mc_by + PXW'(mc_out_y);
+    assign mb_bx = r_px - r_bx + PXW'(mc_out_x);
+    assign mb_by = r_py - r_by + PXW'(mc_out_y);
     logic [6:0]  mb_wm [4];                                  // the mask values of the A group's lanes, from the banks
     always_ff @(posedge clk) begin
-        ob_rd_v <= 1'b0; ob_rd2_v <= 1'b0; ob_wr_v <= 1'b0;
+        ob_rd_v <= 1'b0; ob_rd2_v <= 1'b0; ob_rd3_v <= 1'b0; ob_wr_v <= 1'b0;
         if (!rst) begin
-            if (mc_out_valid && (ob_active || ii_active)) begin
+            if (mc_out_valid && (r_ob_active || r_ii_active)) begin
                 ob_rd_v <= 1'b1;
                 ob_a_pix <= mc_out_pix4 << (12 * mc_osh);
                 ob_a_be <= mc_out_mask << mc_osh;
-                ob_a_x <= {mc_ox[PXW-1:2], 2'b00}; ob_a_y <= mc_py + PXW'(mc_out_y);
+                ob_a_x <= {mc_ox[PXW-1:2], 2'b00}; ob_a_y <= r_py + PXW'(mc_out_y);
                 for (int l = 0; l < 4; l++) begin
                     logic [6:0] i, j;
                     i = 7'(mb_by); j = 7'(mb_bx) + 7'(l) - 7'(mc_osh);                     // block-relative position (plane samples)
-                    if (ob_active) ob_a_m[l] <= ob_pass ? obmc_mask(ob_mlen, 6'(mc_out_x + 7'(l) - 7'(mc_osh))) : obmc_mask(ob_mlen, 6'(mc_out_y));
-                    else if (ii_wedge) ob_a_m[l] <= 7'd0;                                  // from the wedge buffer, in the A cycle
-                    else case (ii_mode)
-                        4'd1: ob_a_m[l] <= ii_weight(i << ii_lsh);                          // II_V_PRED
-                        4'd2: ob_a_m[l] <= ii_weight(j << ii_lsh);                          // II_H_PRED
-                        4'd9: ob_a_m[l] <= ii_weight(((i < j) ? i : j) << ii_lsh);          // II_SMOOTH_PRED
+                    if (r_ob_active) ob_a_m[l] <= r_ob_pass ? obmc_mask(r_ob_mlen, 6'(mc_out_x + 7'(l) - 7'(mc_osh))) : obmc_mask(r_ob_mlen, 6'(mc_out_y));
+                    else if (r_ii_wedge) ob_a_m[l] <= 7'd0;                                  // from the wedge buffer, in the A cycle
+                    else case (r_ii_mode)
+                        4'd1: ob_a_m[l] <= ii_weight(i << r_ii_lsh);                          // II_V_PRED
+                        4'd2: ob_a_m[l] <= ii_weight(j << r_ii_lsh);                          // II_H_PRED
+                        4'd9: ob_a_m[l] <= ii_weight(((i < j) ? i : j) << r_ii_lsh);          // II_SMOOTH_PRED
                         default: ob_a_m[l] <= 7'd32;                                        // II_DC_PRED
                     endcase
                 end
             end
-            // the frame memory read issued from the A registers lands one cycle later (registered read): A2 holds the
-            // group meanwhile, and the blend uses fb_rdata4 in the A2 cycle
+            // the frame memory read issued from the A registers lands two cycles later (two-cycle read since 2026-10-31):
+            // A2 and A3 hold the group meanwhile, and the blend uses fb_rdata4 in the A3 cycle
             ob_rd2_v <= ob_rd_v; ob_a2_pix <= ob_a_pix; ob_a2_x <= ob_a_x; ob_a2_y <= ob_a_y; ob_a2_be <= ob_a_be;
-            if (ii_active && ii_wedge) ob_a2_m <= mb_wm;                                   // the wedge buffer's values for the A group
+            if (r_ii_active && r_ii_wedge) ob_a2_m <= mb_wm;                                   // the wedge buffer's values for the A group
             else ob_a2_m <= ob_a_m;
-            if (ob_rd2_v) begin
-                ob_wr_v <= 1'b1; ob_b_x <= ob_a2_x; ob_b_y <= ob_a2_y; ob_b_be <= ob_a2_be;
+            ob_rd3_v <= ob_rd2_v; ob_a3_pix <= ob_a2_pix; ob_a3_x <= ob_a2_x; ob_a3_y <= ob_a2_y; ob_a3_be <= ob_a2_be; ob_a3_m <= ob_a2_m;
+            if (ob_rd3_v) begin
+                ob_wr_v <= 1'b1; ob_b_x <= ob_a3_x; ob_b_y <= ob_a3_y; ob_b_be <= ob_a3_be;
                 for (int l = 0; l < 4; l++) begin
                     logic [19:0] v;
-                    v = 20'(ob_a2_m[l]) * 20'(fb_rdata4[l*12 +: 12]) + (20'd64 - 20'(ob_a2_m[l])) * 20'(ob_a2_pix[l*12 +: 12]);
+                    v = 20'(ob_a3_m[l]) * 20'(fb_rdata4[l*12 +: 12]) + (20'd64 - 20'(ob_a3_m[l])) * 20'(ob_a3_pix[l*12 +: 12]);
                     ob_b_pix[l*12 +: 12] <= 12'((v + 20'd32) >> 6);
                 end
             end
@@ -960,21 +987,21 @@ module recon_top
                 mk_wdata[(mk_y[0] ? 4 : 0) + l] = mk_inv ? 7'd64 - wv[l] : wv[l];
             end
         end
-        if (mc_out_valid && (mb_active || (ii_active && ii_wedge))) begin
-            if (mc_pl == 2'd0 || !(mc_sx || mc_sy)) begin
+        if (mc_out_valid && (r_mb_active || (r_ii_active && r_ii_wedge))) begin
+            if (r_pl == 2'd0 || !(r_sx || r_sy)) begin
                 // luma (or 4:4:4 chroma): the row's parity banks, one lane per x bank
                 rowbase = 11'(mb_by[PXW-1:1]) * 11'd32 + 11'(mb_bx[PXW-1:2]);
                 for (int l = 0; l < 4; l++) begin
                     mk_ra0[(mb_by[0] ? 4 : 0) + l] = rowbase;
-                    if (mc_pl == 2'd0 && mb_active && mb_diff) begin
-                        mb_dm[l] = diff_mask(signed'(mc_out_pair[17*l +: 17]), signed'(mc_out_pair[68 + 17*l +: 17]), hdr.bit_depth, mc_post, b.mask_type);
+                    if (r_pl == 2'd0 && r_mb_active && r_mb_diff) begin
+                        mb_dm[l] = diff_mask(signed'(mc_out_pair[17*l +: 17]), signed'(mc_out_pair[68 + 17*l +: 17]), hdr.bit_depth, r_post, b.mask_type);
                         mk_we[(mb_by[0] ? 4 : 0) + l] = 1'b1; mk_waddr[(mb_by[0] ? 4 : 0) + l] = rowbase; mk_wdata[(mb_by[0] ? 4 : 0) + l] = mb_dm[l];
                     end
                 end
             end else begin
                 // subsampled chroma: luma columns 2x .. 2x + 7 = column words 2k and 2k + 1 of every x bank (k = x >> 2)
                 colw = 11'(mb_bx[PXW-1:2]) << 1;
-                if (mc_sy) begin                                   // 4:2:0: luma rows 2y and 2y + 1 = row word y, both parities
+                if (r_sy) begin                                   // 4:2:0: luma rows 2y and 2y + 1 = row word y, both parities
                     rowbase = 11'(mb_by) * 11'd32;
                     for (int k = 0; k < 8; k++) begin mk_ra0[k] = rowbase + colw; mk_ra1[k] = rowbase + colw + 11'd1; end
                 end else begin                                     // 4:2:2: luma row y, its parity's banks
@@ -1005,13 +1032,13 @@ module recon_top
     always_ff @(posedge clk) begin
         mb_a_v <= 1'b0; mb_b_v <= 1'b0;
         if (!rst) begin
-            if (mc_out_valid && (ii_active && ii_wedge)) begin                  // flags only: the RMW path blends
-                mb_a_sub <= (mc_pl != 2'd0) && (mc_sx || mc_sy); mb_a_sy <= mc_sy; mb_a_p <= mb_by[0];
+            if (mc_out_valid && (r_ii_active && r_ii_wedge)) begin                  // flags only: the RMW path blends
+                mb_a_sub <= (r_pl != 2'd0) && (r_sx || r_sy); mb_a_sy <= r_sy; mb_a_p <= mb_by[0];
             end
-            if (mc_out_valid && mb_active) begin
+            if (mc_out_valid && r_mb_active) begin
                 mb_a_v <= 1'b1; mb_a_pair <= mc_out_pair;
-                mb_a_x <= {mc_ox[PXW-1:2], 2'b00}; mb_a_y <= mc_py + PXW'(mc_out_y); mb_a_be <= mc_out_mask << mc_osh;
-                mb_a_sub <= (mc_pl != 2'd0) && (mc_sx || mc_sy); mb_a_sy <= mc_sy; mb_a_p <= mb_by[0];
+                mb_a_x <= {mc_ox[PXW-1:2], 2'b00}; mb_a_y <= r_py + PXW'(mc_out_y); mb_a_be <= mc_out_mask << mc_osh;
+                mb_a_sub <= (r_pl != 2'd0) && (r_sx || r_sy); mb_a_sy <= r_sy; mb_a_p <= mb_by[0];
                 mb_a_dm <= mb_dm;
             end
             if (mb_a_v) begin
@@ -1020,9 +1047,9 @@ module recon_top
                     logic [6:0] m;
                     logic signed [23:0] v;
                     logic signed [16:0] p0, p1;
-                    m = (mc_pl == 2'd0 && mb_diff) ? mb_a_dm[l] : mb_wm[l];
+                    m = (r_pl == 2'd0 && r_mb_diff) ? mb_a_dm[l] : mb_wm[l];
                     p0 = signed'(mb_a_pair[17*l +: 17]); p1 = signed'(mb_a_pair[68 + 17*l +: 17]);
-                    v = (24'(signed'({1'b0, m})) * 24'(p0) + 24'(signed'({1'b0, 7'd64 - m})) * 24'(p1) + (24'sd1 <<< (mc_post + 4'd5))) >>> (mc_post + 4'd6);
+                    v = (24'(signed'({1'b0, m})) * 24'(p0) + 24'(signed'({1'b0, 7'd64 - m})) * 24'(p1) + (24'sd1 <<< (r_post + 4'd5))) >>> (r_post + 4'd6);
                     mb_b_pix[l*12 +: 12] <= (v < 24'sd0) ? 12'd0 : (v > 24'(pix_max)) ? pix_max : 12'(v);
                 end
             end
@@ -1267,10 +1294,15 @@ module recon_top
     logic [8:0]  n_above;
     assign n_above = n_edges >> 1;                         // w + h: n_edges is registered in R_SETUP
     logic [1:0]  ep_side; logic [7:0] ep_idx; logic [11:0] ep_val;
+    logic        ep2_valid, ep2_const, ep2_grp, ep2_rep;   // the edge pipeline's second stage: the read lands two cycles after
+    logic [PXW-1:0] ep2_xb; logic [1:0] ep2_side; logic [7:0] ep2_idx; logic [11:0] ep2_val;   // its issue (2026-10-31)
     logic        px_valid;                                 // generic 1-deep read pipeline
     logic [6:0]  px_i, px_j;
+    logic        px2_valid, px_src, px2_src;               // second stage of the CfL loads (two-cycle read); px_src: 1 = the DC (chroma) read
+    logic [6:0]  px2_i, px2_j;
     logic        p_valid;                                  // dequant / add pipelines: previous position issued
     logic [6:0]  pci, pcj;
+    logic        p2_valid; logic [6:0] p2ci, p2cj;         // the add pipeline's extra stage (two-cycle read)
     // dequant walks the coded coefficients in scan order (k = 0 .. eob-1) instead of every position of the
     // block: scan ROM (registered) -> position -> Quant read (registered) -> dequant -> itx coefficient write
     logic [10:0] sk;                                       // next scan index to issue
@@ -1382,10 +1414,11 @@ module recon_top
     // to the UltraRAM address pin was the core build's worst clock-crossing path at 100 MHz).
     logic [FBX-1:0] padd_x_r;
     logic [FBY-1:0] padd_y_r;
+    logic [FBX-1:0] p2add_x_r; logic [FBY-1:0] p2add_y_r;
     // The sum is registered too and written the cycle after: the residual read out of the transform engine's
     // banks, the add, the clamp and the frame memory's write-port mux and capture were one path (0.00 ns at 80 MHz,
     // 2026-10-18). Groups of a block are each written once and read (for the prediction) before their own add, so
-    // the later landing changes nothing; R_ADD_LAST2 / R_ADD_LAST3 drain the last write before R_FIN.
+    // the later landing changes nothing; R_ADD_LAST2 .. R_ADD_LAST4 drain the last write before R_FIN.
     // Stages: R_ADD issues the reads of (ci, cj) -> p: (pci, pcj) issued, res_addr out, prediction fb_rdata4 in ->
     // q: prediction held in fb4_q, residual res_data4 in, sum -> a: add_r written.
     logic           q_valid;
@@ -1409,8 +1442,10 @@ module recon_top
         end
     end
     always_ff @(posedge clk) begin                            // residual stage: the prediction group read last cycle waits
-        q_valid <= p_valid && (rs == R_ADD || rs == R_ADD_LAST) && !rst;   // for the residual (itx2d answers a cycle
-        fb4_q <= fb_rdata4; qadd_x_r <= padd_x_r; qadd_y_r <= padd_y_r;   // after res_addr since 2026-10-26)
+        p2_valid <= p_valid && (rs == R_ADD || rs == R_ADD_LAST) && !rst;  // the prediction read lands two cycles after the
+        p2add_x_r <= padd_x_r; p2add_y_r <= padd_y_r; p2ci <= pci; p2cj <= pcj;   // issue (2026-10-31): one more stage, res_addr from p2
+        q_valid <= p2_valid && (rs == R_ADD || rs == R_ADD_LAST || rs == R_ADD_LAST2) && !rst;   // for the residual (itx2d answers a cycle
+        fb4_q <= fb_rdata4; qadd_x_r <= p2add_x_r; qadd_y_r <= p2add_y_r;   // after res_addr since 2026-10-26)
     end
     always_ff @(posedge clk) begin                            // add stage: the sum, written the cycle after
         a_valid <= q_valid && !rst;
@@ -1422,20 +1457,25 @@ module recon_top
         fb_re = 1'b0; fb_we = 1'b0; fb_plane = t.plane; fb_x = '0; fb_y = '0; fb_wdata = 12'd0;
         fb2_we = 1'b0; fb2_plane = t.plane; fb2_x = '0; fb2_y = '0; fb2_wdata = 12'd0;
         fb4_we = 1'b0; fb4_plane = t.plane; fb4_x = '0; fb4_y = '0; fb4_wdata = 48'd0; fb4_be = 4'hF;
-        edge_we = 1'b0; edge_side = ep_side; edge_idx = ep_idx; edge_data = ep_const ? ep_val : fb_rdata;
+        edge_we = 1'b0; edge_side = ep2_side; edge_idx = ep2_idx; edge_data = ep2_const ? ep2_val : fb_rdata;
         edge_we4 = 1'b0;
         for (int l = 0; l < 4; l++) begin                                    // group lanes with the clamp to above_lim
             logic [PXW-1:0] gx;
-            gx = ep_xb + PXW'(l);
-            if (ep_const) edge_data4[l * 12 +: 12] = ep_val;
-            else if (ep_rep) edge_data4[l * 12 +: 12] = fb_rdata;
+            gx = ep2_xb + PXW'(l);
+            if (ep2_const) edge_data4[l * 12 +: 12] = ep2_val;
+            else if (ep2_rep) edge_data4[l * 12 +: 12] = fb_rdata;
             else if (gx <= above_lim_r) edge_data4[l * 12 +: 12] = fb_rdata4[l * 12 +: 12];
-            else if (above_lim_r >= ep_xb) edge_data4[l * 12 +: 12] = fb_rdata4[(above_lim_r - ep_xb) * 12 +: 12];
+            else if (above_lim_r >= ep2_xb) edge_data4[l * 12 +: 12] = fb_rdata4[(above_lim_r - ep2_xb) * 12 +: 12];
             else edge_data4[l * 12 +: 12] = last_above;
         end
         itx_we = 1'b0; itx_addr = 10'd0; itx_data = '0;
         cl_lwe = 1'b0; cl_dwe = 1'b0; cl_laddr = 10'd0; cl_ldata = fb_rdata; cl_daddr = 10'd0; cl_ddata = fb_rdata;
-        res_addr = 12'({pci[5:0], pcj[5:0]});                 // residual of the position read last cycle
+        // CfL loads land two cycles after their read (px2), in R_CFL_L / R_CFL_D / R_CFL_D2 whichever the FSM is in by then
+        if (px2_valid && (rs == R_CFL_L || rs == R_CFL_D || rs == R_CFL_D2)) begin
+            if (!px2_src) begin cl_lwe = 1'b1; cl_laddr = {px2_i[4:0], px2_j[4:0]}; end
+            else begin cl_dwe = 1'b1; cl_daddr = {px2_i[4:0], px2_j[4:0]}; end
+        end
+        res_addr = 12'({p2ci[5:0], p2cj[5:0]});               // residual of the position whose prediction lands this cycle (two-cycle read)
         pm_plane = (t.plane != 2'd0); pm_x = 6'(t.x - base_x + PXW'(cj)); pm_y = 6'(t.y - base_y + PXW'(ci));
         q_addr = (10'(sc_ci) << tw_cl2) + 10'(sc_cj);    // registered read in coef_rd: data lands the next cycle
         qm_addr = qm_lvl_base(qm_lvl) + ((t.plane != 2'd0) ? 17'(QM_PLANE_STRIDE) : 17'd0) + 17'(qm_offset(t.txsz)) + (17'(sc_ci) << tw_cl2) + 17'(sc_cj);
@@ -1453,25 +1493,23 @@ module recon_top
                     if (have_a_r) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(ek)); fb_y = FBY'(t.y - PXW'(1)); end
                     else if (have_l_r) begin fb_re = 1'b1; fb_x = FBX'(t.x - PXW'(1)); fb_y = FBY'(t.y); end
                 end else if (ek <= n_edges && !e_const) begin fb_re = 1'b1; fb_x = FBX'(e_rx); fb_y = FBY'(e_ry); end
-                if (ep_valid && !ep_grp) edge_we = 1'b1;
-                if (ep_valid && ep_grp) edge_we4 = 1'b1;
+                if (ep2_valid && !ep2_grp) edge_we = 1'b1;
+                if (ep2_valid && ep2_grp) edge_we4 = 1'b1;
             end
             R_IP_W: if (ip_ov) begin fb4_we = 1'b1; fb4_x = FBX'(t.x + PXW'(ip_ox)); fb4_y = FBY'(t.y + PXW'(ip_oy)); fb4_wdata = ip_pix4; end
             R_CFL_L: begin
                 // read luma (plane 0) at (lx0 + cj, ly0 + ci); write the previously read pixel into cfl
                 fb_plane = 2'd0;
                 if (ci < 7'(th_px << sub_y)) begin fb_re = 1'b1; fb_x = FBX'(lx0 + PXW'(cj)); fb_y = FBY'(ly0 + PXW'(ci)); end
-                if (px_valid) begin cl_lwe = 1'b1; cl_laddr = {px_i[4:0], px_j[4:0]}; end
             end
             R_CFL_D: begin
                 if (ci < 7'(th_px)) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(cj)); fb_y = FBY'(t.y + PXW'(ci)); end
-                if (px_valid) begin cl_dwe = 1'b1; cl_daddr = {px_i[4:0], px_j[4:0]}; end
             end
             R_CFL_W: if (cl_ov) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + PXW'(cl_ox)); fb2_y = FBY'(t.y + PXW'(cl_oy)); fb2_wdata = cl_pix; end
             // dequant: one coefficient per clock (address (ci, cj) out, the previous position's data in)
             R_DQ, R_DQ_LAST, R_ITX_START: if (dq_v2) begin itx_we = 1'b1; itx_addr = {dq_ci2[4:0], dq_cj2[4:0]}; itx_data = dq_out; end
             // residual add: read the group at (ci, cj) through port 1, write the previous group through port 4
-            R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3: begin
+            R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4: begin
                 if (rs == R_ADD) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(add_xx)); fb_y = FBY'(t.y + PXW'(add_yy)); end
                 if (a_valid) begin fb4_we = 1'b1; fb4_x = aadd_x_r; fb4_y = aadd_y_r; fb4_wdata = add_r; end
             end
@@ -1490,17 +1528,17 @@ module recon_top
         endcase
         // motion compensation output: 4 samples at (strip origin + out_x, + out_y); a 2-wide unit at an x offset of 2
         // within its 4-group is lane-shifted (the frame memory's 4-wide port is aligned)
-        mc_ox = mc_px + PXW'(mc_out_x);
+        mc_ox = r_px + PXW'(mc_out_x);
         mc_osh = mc_ox[1:0];
-        if (mc_out_valid && !ob_active && !ii_active && !(mb_active && mc_l)) begin
-            fb4_we = 1'b1; fb4_plane = mc_pl;
-            fb4_x = FBX'({mc_ox[PXW-1:2], 2'b00}); fb4_y = FBY'(mc_py + PXW'(mc_out_y));
+        if (mc_out_valid && !r_ob_active && !r_ii_active && !(r_mb_active && r_l)) begin
+            fb4_we = 1'b1; fb4_plane = r_pl;
+            fb4_x = FBX'({mc_ox[PXW-1:2], 2'b00}); fb4_y = FBY'(r_py + PXW'(mc_out_y));
             fb4_wdata = mc_out_pix4 << (12 * mc_osh); fb4_be = mc_out_mask << mc_osh;
         end
         // OBMC: read the group to blend (stage A), write the blended group (stage B)
-        if (ob_rd_v) begin fb_re = 1'b1; fb_plane = mc_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
-        if (ob_wr_v) begin fb4_we = 1'b1; fb4_plane = mc_pl; fb4_x = FBX'(ob_b_x); fb4_y = FBY'(ob_b_y); fb4_wdata = ob_b_pix; fb4_be = ob_b_be; end
-        if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = mc_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
+        if (ob_rd_v) begin fb_re = 1'b1; fb_plane = r_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
+        if (ob_wr_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(ob_b_x); fb4_y = FBY'(ob_b_y); fb4_wdata = ob_b_pix; fb4_be = ob_b_be; end
+        if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
 `ifndef SYNTHESIS
@@ -1533,6 +1571,9 @@ module recon_top
     // ---------------------------------------------------------------- sequential
     always_ff @(posedge clk) begin
         tx_ack <= 1'b0; itx_start <= 1'b0; ip_start <= 1'b0; cl_start <= 1'b0; mi_tx_we <= 1'b0; ii_done <= 1'b0;
+        ep2_valid <= ep_valid && !rst; ep2_const <= ep_const; ep2_grp <= ep_grp; ep2_rep <= ep_rep;   // second stages (two-cycle read)
+        ep2_xb <= ep_xb; ep2_side <= ep_side; ep2_idx <= ep_idx; ep2_val <= ep_val;
+        px2_valid <= px_valid && !rst; px2_i <= px_i; px2_j <= px_j; px2_src <= px_src;
         if (rst) begin
             rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0); ii_run <= 1'b0;
             bdf_wr <= '0; fy <= '0; l_sb_r <= '0; l_sb_c <= '0;
@@ -1569,8 +1610,8 @@ module recon_top
                 R_PAL_LAST: begin px_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; rs <= R_RESID; end
                 // ---- edge preparation (7.11.2.1), pipelined: issue entry ek, write entry ek-1
                 R_EDGE: begin
-                    if (ep_valid && ep_grp && !ep_const && !ep_rep && above_lim_r >= ep_xb && above_lim_r <= ep_xb + PXW'(3))
-                        last_above <= fb_rdata4[(above_lim_r - ep_xb) * 12 +: 12];
+                    if (ep2_valid && ep2_grp && !ep2_const && !ep2_rep && above_lim_r >= ep2_xb && above_lim_r <= ep2_xb + PXW'(3))
+                        last_above <= fb_rdata4[(above_lim_r - ep2_xb) * 12 +: 12];
                     if (ek < n_above) begin                                  // above row, groups of 4
                         ep_valid <= 1'b1; ep_grp <= 1'b1; ep_side <= 2'd0; ep_idx <= 8'(ek); ep_xb <= t.x + PXW'(ek);
                         ep_const <= !have_a && !have_l; ep_val <= mid_m1; ep_rep <= !have_a && have_l;
@@ -1580,7 +1621,7 @@ module recon_top
                         ek <= ek + 9'd1;
                     end else begin
                         ep_valid <= 1'b0;
-                        if (!ep_valid) begin ip_start <= 1'b1; rs <= R_IP_W; end
+                        if (!ep_valid && !ep2_valid) begin ip_start <= 1'b1; rs <= R_IP_W; end   // the last edge write has landed
                     end
                 end
                 R_IP_W: if (ip_done) begin
@@ -1590,7 +1631,7 @@ module recon_top
                 end
                 // ---- CfL: load the luma region, then the DC prediction, run, write back
                 R_CFL_L: begin
-                    px_valid <= (ci < 7'(th_px << sub_y)); px_i <= ci; px_j <= cj;
+                    px_valid <= (ci < 7'(th_px << sub_y)); px_i <= ci; px_j <= cj; px_src <= 1'b0;
                     if (ci < 7'(th_px << sub_y)) begin
                         if (cj + 7'd1 < 7'(tw_px << sub_x)) cj <= cj + 7'd1;
                         else begin cj <= 7'd0; ci <= ci + 7'd1; end
@@ -1599,14 +1640,15 @@ module recon_top
                     end
                 end
                 R_CFL_D: begin
-                    px_valid <= (ci < 7'(th_px)); px_i <= ci; px_j <= cj;
+                    px_valid <= (ci < 7'(th_px)); px_i <= ci; px_j <= cj; px_src <= 1'b1;
                     if (ci < 7'(th_px)) begin
                         if (cj + 7'd1 < tw_px) cj <= cj + 7'd1;
                         else begin cj <= 7'd0; ci <= ci + 7'd1; end
                     end else begin
-                        cl_start <= 1'b1; rs <= R_CFL_W;
+                        rs <= R_CFL_D2;                                   // the last DC read lands in R_CFL_D2 (two-cycle read)
                     end
                 end
+                R_CFL_D2: begin cl_start <= 1'b1; rs <= R_CFL_W; end
                 R_CFL_W: if (cl_done) begin ci <= 7'd0; cj <= 7'd0; rs <= R_RESID; end
                 // ---- residual
                 R_RESID: begin                           // itx coefficient array cleared this cycle (itx_clr)
@@ -1634,7 +1676,8 @@ module recon_top
                 end
                 R_ADD_LAST: begin p_valid <= 1'b0; rs <= R_ADD_LAST2; end
                 R_ADD_LAST2: begin rs <= R_ADD_LAST3; end
-                R_ADD_LAST3: begin rs <= R_FIN; end
+                R_ADD_LAST3: begin rs <= R_ADD_LAST4; end
+                R_ADD_LAST4: begin rs <= R_FIN; end          // one more drain state: the last prediction lands a cycle later
                 // ---- bookkeeping + ack
                 R_FIN: begin
                     // mark the block's area: one row per clock, rows sb_row_p+1 .. sb_row_p+step_y (the RAM write

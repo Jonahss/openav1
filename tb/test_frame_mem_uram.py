@@ -57,6 +57,7 @@ async def fuzz_vs_model(dut):
     pending = None          # expectations for the reads issued last cycle: [(port, plane, x, y, exp_sample, exp_group)]
     host_pending = None
     checked = 0
+    prev_exp, prev_hexp = None, None                     # two-cycle read (2026-10-31): a cycle's reads land after the NEXT edge
     for it in range(iters):
         cyc["n"] = it
         # ---- drive this cycle's requests (randomly, with bursts of locality)
@@ -108,9 +109,10 @@ async def fuzz_vs_model(dut):
             hist.pop(0)
         await RisingEdge(dut.clk)
         await ReadOnly()
-        # ---- check this cycle's reads: their data is valid after the edge that ends the cycle (one-cycle latency)
-        pending = exp
-        host_pending = hexp
+        # ---- check the PREVIOUS cycle's reads: their data is valid after the edge that ends this cycle (two-cycle latency)
+        pending = prev_exp
+        host_pending = prev_hexp
+        prev_exp, prev_hexp = exp, hexp
         if pending:
             rd = int(dut.rdata.value); rd4 = int(dut.rdata4.value)
             for (i, p, x, y, es, eg) in pending:

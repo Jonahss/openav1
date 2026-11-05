@@ -114,3 +114,34 @@ update and started from defaults). Per frame:
 Register traffic per 1080p inter frame drops from ~500 k writes (motion-field band 227 k, CDF rows 13.5 k, segment map
 8 k, plus the 1501-row read-back) to the frame's own headers and ~40 loader / table words. The stage A path
 (`--card-state`) stays as the fallback and the cross-check: both must produce identical pictures.
+
+## 6. The loader group's throughput (2026-11-03)
+
+The 1080p measurement (`docs/reference-prefetch.md` §3) found the stage B loader group past 460k cycles a frame:
+5 ms at 100 MHz, 15 % of a 33 ms frame, all of it before the first tile. Three terms, all in the first version of
+the engines:
+
+- the field clear wrote one entry a cycle: 7 x w8 x h8 = 227k cycles at 1080p;
+- each valid cell took 11 cycles (test, projection, position, seven destination writes one after another): up to
+  356k cycles a source when most cells carry a reference;
+- the reads of both engines went one burst at a time: ~64 cycles per 16 beats at the card's latency, 65k cycles a
+  source for the MV words, the same for a 1080p segment map (16k beats).
+
+What changed:
+
+- `mf_band` holds one memory per reference (`we[6:0]`, `w_row` / `w_col` per reference), so one write touches every
+  reference of a position: the host's register path writes one (`we = 1 << ref`), the engine all seven. Same BRAM.
+- `mf_project` clears the field at one position a cycle (w8 x h8 = 32k cycles at 1080p) and starts with `ld_start`, so
+  the clear overlaps `fs_load`'s reads (`src_go = !fsl_busy` holds its reads until the channel is free; `dec_top`
+  muxes the read channel fs_load → engine → ref_fetch). The reads run `OUT = 8` bursts ahead into a 32-beat FIFO
+  whose room is reserved at issue (`rready` never drops). The cells go through a six-stage pipeline at one a cycle:
+  the source's constants and posValid; K = clip3(-31, 31, num) x Div_Mult[den] for the current frame and the seven
+  destinations (the product is associative, so this is the spec's arithmetic exactly); the sixteen products mv x K;
+  round2signed and the clip; block_position; the seven-reference write. Raster order is kept, so a later cell still
+  wins at a shared target.
+- `fs_load` issues up to `OUT = 8` bursts ahead through a descriptor queue `{job, line, first beat}`; the data side
+  takes the in-order beats straight into the bands, as before.
+
+Expected at 1080p with 48-cycle reads: clear 32k (hidden behind the segment map / CDF load), ~16k + 32k cycles a
+source (reads, then cells; the two overlap), segment map ~17k, CDF rows ~6k: a P-frame with one source ~60k
+cycles, 0.6 ms, from ~500k. `test_dec_host_inter` reports the loader group's wait as `ld_cycles` in its summary.

@@ -29,6 +29,8 @@ COMP_MODES = [tm.NEAREST_NEARESTMV, tm.NEAR_NEARMV, tm.NEAREST_NEWMV, tm.NEW_NEA
               tm.GLOBAL_GLOBALMV, tm.NEW_NEWMV]
 
 
+rep7 = lambda v: sum(v << (16 * i) for i in range(7))     # mf_band: the same vector for every reference's memory
+
 def to_signed(v, bits):
     return v - (1 << bits) if v >> (bits - 1) else v
 
@@ -162,7 +164,7 @@ async def wait_busy_low(dut, sig, tag):
 @cocotb.test()
 async def mv_stack_vs_model(dut):
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("rst", "mvm_we", "mvm_r", "mvm_c", "mvm_bw4", "mvm_bh4", "mvm_data", "mvm_clr", "clr_row", "clr_n", "mf_we", "mf_wref",
+    for s in ("rst", "mvm_we", "mvm_r", "mvm_c", "mvm_bw4", "mvm_bh4", "mvm_data", "mvm_clr", "clr_row", "clr_n", "mf_we",
               "mf_wy8", "mf_wx8", "mf_wvalid", "mf_wrow", "mf_wcol", "start", "r", "c", "bs", "ref0", "ref1", "is_comp", "hdr", "ihdr"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
@@ -187,13 +189,12 @@ async def mv_stack_vs_model(dut):
                     valid = rnd.random() < 0.7
                     mv = [rand_mv(rnd, h), rand_mv(rnd, h)] if valid else [tm.MV_INVALID, tm.MV_INVALID]
                     m.MotionFieldMvs[ref][y8][x8] = mv
-                    dut.mf_we.value = 1
-                    dut.mf_wref.value = ref - 1
+                    dut.mf_we.value = 1 << (ref - 1)                 # one memory per reference
                     dut.mf_wy8.value = y8
                     dut.mf_wx8.value = x8
                     dut.mf_wvalid.value = int(valid)
-                    dut.mf_wrow.value = mv[0] & 0xFFFF if valid else 0
-                    dut.mf_wcol.value = mv[1] & 0xFFFF if valid else 0
+                    dut.mf_wrow.value = rep7(mv[0] & 0xFFFF) if valid else 0
+                    dut.mf_wcol.value = rep7(mv[1] & 0xFFFF) if valid else 0
                     await RisingEdge(dut.clk)
         dut.mf_we.value = 0
         sb4 = 32 if h.use_128x128_superblock else 16

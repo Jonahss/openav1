@@ -18,6 +18,8 @@ from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, Timer
+from cocotb.utils import get_sim_time
+CLK_NS = 10                                                  # Clock(dut.clk, 10, unit="ns") below
 
 os.environ["TS_STAGE"] = "lr"
 os.environ["TS_PIPE"] = os.environ["TS_WIN"] = os.environ["TS_DMA"] = "1"
@@ -312,6 +314,7 @@ async def dec_host_inter_vs_model(dut):
                     assert (ctx.prev_segment_ids is None) == (seg_ld is None), f"{tag}: the model has a previous segment map but no slot area holds one"
                     assert ctx.cdfs is None or cdf_ld is not None or (prim and isinstance(prim.get("cdf"), tuple)), f"{tag}: the model inherits CDFs but no slot area holds them"
                     await write_seq(ax, HR.ld_regs(seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra), mf=mf_tab))
+                    t_ld = get_sim_time("ns")
                     await ax.write(R_START, HR.START_LOAD)
                     for _ in range(400000):          # a 1080p frame: zero map + CDF rows + motion-field projection ran past 460k cycles (2026-11-02)
                         stv = await ax.read(HR.R_FS_STATUS)
@@ -320,6 +323,7 @@ async def dec_host_inter_vs_model(dut):
                         await ClockCycles(dut.clk, 20)
                     else:
                         raise AssertionError(f"{tag}: the frame-state loader never finished (FS_STATUS 0x{stv:08x})")
+                    stats["ld_cycles"] = stats.get("ld_cycles", 0) + int((get_sim_time("ns") - t_ld) / CLK_NS)   # the loader group's wait, polled every ~20 cycles
                     assert not (stv & HR.FS_LD_ERR), f"{tag}: the frame-state loader reported a read error"
                     loaded_cdf = cdf_ld is not None
                     stats["ld_frames"] = stats.get("ld_frames", 0) + 1

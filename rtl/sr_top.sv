@@ -42,7 +42,7 @@ module sr_top
     localparam int SUPERRES_EXTRA_BITS = 8;
     localparam int FILTER_BITS = 7;
 
-    typedef enum logic [3:0] {S_IDLE, S_PLANE, S_DIV, S_INIT1, S_INIT2, S_RD, S_RD_LAST, S_OUT, S_NEXT, S_DRAIN, S_DONE} st_t;
+    typedef enum logic [3:0] {S_IDLE, S_PLANE, S_DIV, S_INIT1, S_INIT2, S_RD, S_RD_LAST, S_RD_LAST2, S_OUT, S_NEXT, S_DRAIN, S_DONE} st_t;
     st_t st;
     logic        sub_x, sub_y;
     logic [PXW-1:0] up_w, plane_h, max_x;
@@ -167,15 +167,16 @@ module sr_top
                                 - ((sr_err < 0) ? -$signed(32'(-sr_err) >> 1) : $signed(32'(sr_err) >> 1))) & 32'sd16383;
                 st <= S_RD;
             end
-            // copy row y into the line buffer (the read lands one cycle after its address): all MiCols * 4
+            // copy row y into the line buffer (the read lands two cycles after its address): all MiCols * 4
             // decoded samples, not just FrameWidth of them -- the filter clamps to maxX = miW * MI_SIZE - 1 and
             // reads the decoded margin beyond the picture edge
             S_RD: begin
-                if (x != PXW'(0)) line[x[FBX-1:0] - FBX'(1)] <= s_rdata;
+                if (x >= PXW'(2)) line[x[FBX-1:0] - FBX'(2)] <= s_rdata;
                 if (x < max_x) x <= x + PXW'(1);
                 else st <= S_RD_LAST;
             end
-            S_RD_LAST: begin
+            S_RD_LAST: begin line[x[FBX-1:0] - FBX'(1)] <= s_rdata; st <= S_RD_LAST2; end
+            S_RD_LAST2: begin
                 line[x[FBX-1:0]] <= s_rdata;
                 xo <= PXW'(0); src_x <= -(32'sd1 <<< SUPERRES_SCALE_BITS) + init_subpel;
                 st <= S_OUT;

@@ -38,11 +38,10 @@ module tile_syntax
     input  logic [CDF_AW-1:0] rb_addr,
     output logic [245:0]      rb_data,
     // motion field band (spec 7.9 MotionFieldMvs): written by the host / projection engine, read by the MV stacks
-    input  logic              mf_we,
-    input  logic [2:0]        mf_wref,
+    input  logic [6:0]        mf_we,               // one per reference: the host writes one, the projection engine all seven
     input  logic [MIW-2:0]    mf_wy8, mf_wx8,
     input  logic              mf_wvalid,
-    input  logic signed [15:0] mf_wrow, mf_wcol,
+    input  logic [111:0]      mf_wrow, mf_wcol,    // per reference at [16r +: 16]
     // segmentation map band (PrevSegmentIds): 16 ids per 48-bit word, written by the host / reference engine
     input  logic              sp_we,
     input  logic [MIW-1:0]    sp_wrow,
@@ -189,7 +188,7 @@ module tile_syntax
     // the motion field (temporal MV candidates) and the previous segment ids serve inter frames only: the
     // intra-only build (INTER = 0) leaves both bands out
     generate if (INTER != 0) begin : g_bands
-        mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_ref(mf_wref), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
+        mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
                                                       .w_row(mf_wrow), .w_col(mf_wcol), .rd_ref(mf_ref), .rd_y8(mf_y8), .rd_x8(mf_x8),
                                                       .rd_valid(mf_valid), .rd_row(mf_row), .rd_col(mf_col));
         seg_band #(.SPL2R(SPL2R), .SPL2W(SPL2W)) u_sp (.clk, .we(sp_we), .w_row(sp_wrow), .w_wc(sp_wwc), .w_data(sp_wdata), .rd_row(sp_row), .rd_wc(sp_wc), .rd_data(sp_data));

@@ -41,11 +41,10 @@ module dec_top
     input  logic [$clog2(TE > 1 ? TE : 2)-1:0] rb_sel,   // the engine read back
     output logic [245:0]      rb_data,
     // inter frames: the motion field band and the previous segmentation map band (host-written in stage 1)
-    input  logic              mf_we,
-    input  logic [2:0]        mf_wref,
+    input  logic [6:0]        mf_we,               // one per reference: the host writes one, the projection engine all seven
     input  logic [MIW-2:0]    mf_wy8, mf_wx8,
     input  logic              mf_wvalid,
-    input  logic signed [15:0] mf_wrow, mf_wcol,
+    input  logic [111:0]      mf_wrow, mf_wcol,    // per reference at [16r +: 16]
     input  logic              sp_we,
     input  logic [MIW-1:0]    sp_wrow,
     input  logic [MIW-5:0]    sp_wwc,
@@ -168,52 +167,47 @@ module dec_top
     logic [39:0]    rf_araddr, ld_araddr; logic [7:0] rf_arlen, ld_arlen; logic [2:0] rf_arsize, ld_arsize; logic [1:0] rf_arburst, ld_arburst;
     logic [3:0]     rf_arcache, ld_arcache; logic [2:0] rf_arprot, ld_arprot; logic rf_arvalid, ld_arvalid, rf_arready, ld_arready, rf_rvalid, ld_rvalid, rf_rready, ld_rready;
     logic           ld_sp_we, ld_def_we; logic [MIW-1:0] ld_sp_wrow; logic [MIW-5:0] ld_sp_wwc; logic [47:0] ld_sp_wdata; logic [CDF_AW-1:0] ld_def_addr; logic [245:0] ld_def_data;
-    // the loader group: fs_load (segment map, CDF rows) then, with ld_cfg[3], mf_project; one busy / done to the host
-    logic           fsl_busy, fsl_done, fsl_err, pj_busy, pj_done, pj_err, pj_start, pj_pend;
+    // the loader group: fs_load (segment map, CDF rows) and, with ld_cfg[3], mf_project, started together: the engine clears the
+    // band while fs_load reads, then takes the read channel once fs_load is idle (src_go); one busy / done to the host
+    logic           fsl_busy, fsl_done, fsl_err, pj_busy, pj_done, pj_err, pj_start;
     logic [39:0]    pj_araddr; logic [7:0] pj_arlen; logic [2:0] pj_arsize; logic [1:0] pj_arburst; logic [3:0] pj_arcache; logic [2:0] pj_arprot;
     logic           pj_arvalid, pj_arready, pj_rvalid, pj_rready;
-    logic           pj_we; logic [2:0] pj_wref; logic [MIW-2:0] pj_wy8, pj_wx8; logic pj_wvalid; logic signed [15:0] pj_wrow, pj_wcol;
+    logic [6:0]     pj_we; logic [MIW-2:0] pj_wy8, pj_wx8; logic pj_wvalid; logic [111:0] pj_wrow, pj_wcol;
     if (INTER != 0 && FRAME_WIN > 0) begin : g_fsl
         fs_load u_fsl (.clk, .rst, .hdr, .ld_start, .ld_cfg(ld_cfg[2:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy(fsl_busy), .ld_done(fsl_done), .ld_err(fsl_err),
             .m_axi_araddr(ld_araddr), .m_axi_arlen(ld_arlen), .m_axi_arsize(ld_arsize), .m_axi_arburst(ld_arburst), .m_axi_arcache(ld_arcache), .m_axi_arprot(ld_arprot),
             .m_axi_arvalid(ld_arvalid), .m_axi_arready(ld_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(ld_rvalid), .m_axi_rready(ld_rready),
             .sp_we(ld_sp_we), .sp_wrow(ld_sp_wrow), .sp_wwc(ld_sp_wwc), .sp_wdata(ld_sp_wdata), .def_we(ld_def_we), .def_addr(ld_def_addr), .def_data(ld_def_data));
-        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
+        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(!fsl_busy), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
             .src_tocur(mf_src_tocur), .src_off(mf_src_off), .dst_dist(mf_dst_dist), .mf_busy(pj_busy), .mf_done(pj_done), .mf_err(pj_err),
             .m_axi_araddr(pj_araddr), .m_axi_arlen(pj_arlen), .m_axi_arsize(pj_arsize), .m_axi_arburst(pj_arburst), .m_axi_arcache(pj_arcache), .m_axi_arprot(pj_arprot),
             .m_axi_arvalid(pj_arvalid), .m_axi_arready(pj_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(pj_rvalid), .m_axi_rready(pj_rready),
-            .mf_we(pj_we), .mf_wref(pj_wref), .mf_wy8(pj_wy8), .mf_wx8(pj_wx8), .mf_wvalid(pj_wvalid), .mf_wrow(pj_wrow), .mf_wcol(pj_wcol));
-        always_ff @(posedge clk) begin
-            pj_start <= 1'b0;
-            if (rst) pj_pend <= 1'b0;
-            else begin
-                if (ld_start) pj_pend <= ld_cfg[3];
-                if (fsl_done && pj_pend) begin pj_start <= 1'b1; pj_pend <= 1'b0; end
-            end
-        end
-        assign ld_busy = fsl_busy || pj_busy || pj_pend || pj_start;
-        assign ld_done = pj_busy ? 1'b0 : (fsl_done && !pj_pend) || pj_done;
+            .mf_we(pj_we), .mf_wy8(pj_wy8), .mf_wx8(pj_wx8), .mf_wvalid(pj_wvalid), .mf_wrow(pj_wrow), .mf_wcol(pj_wcol));
+        assign pj_start = ld_start && ld_cfg[3];
+        assign ld_busy = fsl_busy || pj_busy;
+        assign ld_done = pj_done || (fsl_done && !pj_busy);   // the engine's reads wait for fs_load, so its done is the later one (its done pulse lands the cycle its busy drops)
         assign ld_err  = fsl_err || pj_err;
     end else begin : g_nofsl
         assign ld_busy = 1'b0; assign ld_done = 1'b0; assign ld_err = 1'b0; assign fsl_busy = 1'b0; assign fsl_done = 1'b0; assign fsl_err = 1'b0;
-        assign pj_busy = 1'b0; assign pj_done = 1'b0; assign pj_err = 1'b0; assign pj_start = 1'b0; assign pj_pend = 1'b0;
+        assign pj_busy = 1'b0; assign pj_done = 1'b0; assign pj_err = 1'b0; assign pj_start = 1'b0;
         assign ld_araddr = '0; assign ld_arlen = '0; assign ld_arsize = '0; assign ld_arburst = '0; assign ld_arcache = '0; assign ld_arprot = '0;
         assign ld_arvalid = 1'b0; assign ld_rready = 1'b0;
         assign pj_araddr = '0; assign pj_arlen = '0; assign pj_arsize = '0; assign pj_arburst = '0; assign pj_arcache = '0; assign pj_arprot = '0;
         assign pj_arvalid = 1'b0; assign pj_rready = 1'b0;
         assign ld_sp_we = 1'b0; assign ld_sp_wrow = '0; assign ld_sp_wwc = '0; assign ld_sp_wdata = '0; assign ld_def_we = 1'b0; assign ld_def_addr = '0; assign ld_def_data = '0;
-        assign pj_we = 1'b0; assign pj_wref = '0; assign pj_wy8 = '0; assign pj_wx8 = '0; assign pj_wvalid = 1'b0; assign pj_wrow = '0; assign pj_wcol = '0;
+        assign pj_we = '0; assign pj_wy8 = '0; assign pj_wx8 = '0; assign pj_wvalid = 1'b0; assign pj_wrow = '0; assign pj_wcol = '0;
     end
-    assign m_axi_araddr  = pj_busy ? pj_araddr  : ld_busy ? ld_araddr  : rf_araddr;
-    assign m_axi_arlen   = pj_busy ? pj_arlen   : ld_busy ? ld_arlen   : rf_arlen;
-    assign m_axi_arsize  = pj_busy ? pj_arsize  : ld_busy ? ld_arsize  : rf_arsize;
-    assign m_axi_arburst = pj_busy ? pj_arburst : ld_busy ? ld_arburst : rf_arburst;
-    assign m_axi_arcache = pj_busy ? pj_arcache : ld_busy ? ld_arcache : rf_arcache;
-    assign m_axi_arprot  = pj_busy ? pj_arprot  : ld_busy ? ld_arprot  : rf_arprot;
-    assign m_axi_arvalid = pj_busy ? pj_arvalid : ld_busy ? ld_arvalid : rf_arvalid;
-    assign m_axi_rready  = pj_busy ? pj_rready  : ld_busy ? ld_rready  : rf_rready;
-    assign pj_arready = pj_busy && m_axi_arready;  assign ld_arready = !pj_busy && ld_busy && m_axi_arready;  assign rf_arready = !ld_busy && m_axi_arready;
-    assign pj_rvalid  = pj_busy && m_axi_rvalid;   assign ld_rvalid  = !pj_busy && ld_busy && m_axi_rvalid;   assign rf_rvalid  = !ld_busy && m_axi_rvalid;
+    // the read channel: fs_load while it runs, then the projection engine, else ref_fetch (neither loader overlaps a tile)
+    assign m_axi_araddr  = fsl_busy ? ld_araddr  : pj_busy ? pj_araddr  : rf_araddr;
+    assign m_axi_arlen   = fsl_busy ? ld_arlen   : pj_busy ? pj_arlen   : rf_arlen;
+    assign m_axi_arsize  = fsl_busy ? ld_arsize  : pj_busy ? pj_arsize  : rf_arsize;
+    assign m_axi_arburst = fsl_busy ? ld_arburst : pj_busy ? pj_arburst : rf_arburst;
+    assign m_axi_arcache = fsl_busy ? ld_arcache : pj_busy ? pj_arcache : rf_arcache;
+    assign m_axi_arprot  = fsl_busy ? ld_arprot  : pj_busy ? pj_arprot  : rf_arprot;
+    assign m_axi_arvalid = fsl_busy ? ld_arvalid : pj_busy ? pj_arvalid : rf_arvalid;
+    assign m_axi_rready  = fsl_busy ? ld_rready  : pj_busy ? pj_rready  : rf_rready;
+    assign ld_arready = fsl_busy && m_axi_arready;  assign pj_arready = !fsl_busy && pj_busy && m_axi_arready;  assign rf_arready = !ld_busy && m_axi_arready;
+    assign ld_rvalid  = fsl_busy && m_axi_rvalid;   assign pj_rvalid  = !fsl_busy && pj_busy && m_axi_rvalid;   assign rf_rvalid  = !ld_busy && m_axi_rvalid;
     assign def_we_i   = def_we | ld_def_we;
     assign def_addr_i = ld_def_we ? ld_def_addr : def_addr;
     assign def_data_i = ld_def_we ? ld_def_data : def_data;
@@ -225,8 +219,8 @@ module dec_top
                    .SPL2R((FRAME_WIN > 0 && INTER == 0) ? 5 + SB128 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
                    .clk, .rst, .hdr, .ihdr, .eng_mask, .col_start, .col_end,
                    .in_data, .in_valid, .in_ready, .in_eos, .def_we(def_we_i), .def_addr(def_addr_i), .def_data(def_data_i), .rb_en, .rb_addr, .rb_sel, .rb_data,
-                   .mf_we(mf_we | pj_we), .mf_wref(pj_we ? pj_wref : mf_wref), .mf_wy8(pj_we ? pj_wy8 : mf_wy8), .mf_wx8(pj_we ? pj_wx8 : mf_wx8),
-                   .mf_wvalid(pj_we ? pj_wvalid : mf_wvalid), .mf_wrow(pj_we ? pj_wrow : mf_wrow), .mf_wcol(pj_we ? pj_wcol : mf_wcol),
+                   .mf_we(mf_we | pj_we), .mf_wy8(pj_we != 7'd0 ? pj_wy8 : mf_wy8), .mf_wx8(pj_we != 7'd0 ? pj_wx8 : mf_wx8),
+                   .mf_wvalid(pj_we != 7'd0 ? pj_wvalid : mf_wvalid), .mf_wrow(pj_we != 7'd0 ? pj_wrow : mf_wrow), .mf_wcol(pj_we != 7'd0 ? pj_wcol : mf_wcol),
                    .sp_we(sp_we_i), .sp_wrow(sp_wrow_i), .sp_wwc(sp_wwc_i), .sp_wdata(sp_wdata_i),
                    .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                    .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight, .rc_busy, .rc_col_start, .rc_col_end,

@@ -200,3 +200,29 @@ are the verification; the cycle counts of the recordings grow by the bubbles and
 51,764).
  Verilator gives one VCD identifier to nets it finds equal (the write and read channels' constant size
 and burst), and `vcd2vec` kept one name per identifier, so the write channel's constants were recorded as zero.
+
+## Two-cycle read (2026-10-31)
+
+The double-pumped UltraRAM memory read at the clk-aligned clk2x edge and a fabric register captured the data at the
+mid-cycle edge, which left half a clk cycle (5 ns at 100 MHz) for the output mux over the RAMs and for every hop from
+the memory into a consumer. That half cycle was placement-bound: 4.3 to 4.9 ns of routing per build between the RAM
+columns and the readers (-0.214 ns on the stage B image, +0.079 after registering the intra predictor's edge port, -0.040
+on a rerun with another strategy), and the sb128 image, with twice the RAMs, missed by -0.354 ns on 2,710 endpoints in
+exactly these families (the output mux, the enable fan-out, the hop into the super-resolution line buffer).
+
+Now (rtl/frame_mem_uram.sv) a request presented in cycle k is captured into clk2x registers at E_b(k); the RAMs read at
+E_a(k+1) (a half cycle of pure routing from replicable registers to the enables); each RAM's own output register
+captures the read at E_b(k+1), clock-enabled at E_b only so it holds through the write at that edge; the select of the
+RAM that was read is loaded at the same E_b; the data is valid for the whole of cycle k+2, so the output mux and the
+consumer's logic have a full clk cycle. Writes captured at E_b(k) land at E_b(k+1). A write issued in cycle t is visible
+to the reads issued in t+1 and a read issued in the same cycle as a write to the same word sees the old data: the same
+ordering as before, so tb/ and the model see only the extra cycle. The simulation model (rtl/frame_mem.sv) registers
+its outputs twice. fpga/kv260/pre_opt.tcl excepts the RAM / select -> clk paths as two clk2x cycles (honest: those
+registers change only at E_b) and the write-request registers -> RAM paths likewise; the read-request paths stay
+single-cycle.
+
+Every reader shifted its landing by one cycle: lf_top (rd_pend2), cdef_top (wpend2, C_WIN_LAST2, C_COPY_RDW), lr_top
+(ld_pend2, L_LOAD_LAST2), sr_top (line[x - 2], S_RD_LAST2), fb_fetch (rd_v2, F_RDW2), recon_top (the edge pipeline's
+ep2 stage, the CfL loads' px2 stage with R_CFL_D2 before cl_start, the add pipeline's p2 stage with res_addr from it
+and R_ADD_LAST4, OBMC's A3 stage, the intra-only block copy's B_IBC_R5) and the host read path in dec_host (D_F0W
+keeps both groups of a beat in flight; HL 4). test_frame_mem_uram checks the previous cycle's reads after each edge.

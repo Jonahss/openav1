@@ -49,11 +49,10 @@ module tile_engines
     input  logic [$clog2(TE > 1 ? TE : 2)-1:0] rb_sel,
     output logic [245:0]      rb_data,
     // the previous frame's bands (broadcast)
-    input  logic              mf_we,
-    input  logic [2:0]        mf_wref,
+    input  logic [6:0]        mf_we,               // one per reference: the host writes one, the projection engine all seven
     input  logic [MIW-2:0]    mf_wy8, mf_wx8,
     input  logic              mf_wvalid,
-    input  logic signed [15:0] mf_wrow, mf_wcol,
+    input  logic [111:0]      mf_wrow, mf_wcol,    // per reference at [16r +: 16]
     input  logic              sp_we,
     input  logic [MIW-1:0]    sp_wrow,
     input  logic [MIW-5:0]    sp_wwc,
@@ -127,7 +126,7 @@ module tile_engines
             .clk, .rst, .hdr(hdr_e[e]), .ihdr,
             .in_data(in_data[e * 8 +: 8]), .in_valid(in_valid[e]), .in_ready(e_in_ready[e]), .in_eos(in_eos[e]),
             .def_we, .def_addr, .def_data, .rb_en(rb_en && (EW'(e) == rb_sel)), .rb_addr, .rb_data(e_rb_data[e]),
-            .mf_we, .mf_wref, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
+            .mf_we, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
             .tile_start(e_start[e]), .tile_busy(e_busy[e]), .tile_done(e_done[e]), .unsupported(e_unsup[e]),
             .sb_start_o(e_sb_start[e]), .sb_r_o(e_sb_r[e]), .sb_c_o(e_sb_c[e]), .blk_info(e_blk_info[e]), .blk_done(e_blk_done[e]), .blk_rec(e_blk_rec[e]),
             .tx_done(e_tx_done[e]), .tx_rec(e_tx_rec[e]), .tx_ack(e_tx_ack[e]), .lr_done(e_lr_done[e]), .lr_rec(e_lr_rec[e]),

@@ -41,7 +41,7 @@ module fb_fetch #(
 );
     localparam int LINE = 80;                             // line buffer samples (a row covers at most 19 groups = 76)
 
-    typedef enum logic [2:0] {F_IDLE, F_ROW, F_RD, F_RDW, F_WR, F_NEXT} st_t;
+    typedef enum logic [2:0] {F_IDLE, F_ROW, F_RD, F_RDW, F_RDW2, F_WR, F_NEXT} st_t;
     st_t st;
 
     logic        q_lst;
@@ -55,8 +55,8 @@ module fb_fetch #(
     logic [6:0]  r;                                       // patch row
     logic [15:0] src_y;
     logic [4:0]  g, ng;                                   // group being read / groups in the row
-    logic        rd_v;                                    // a read issued last cycle lands now
-    logic [4:0]  rd_g;
+    logic        rd_v, rd_v2;                             // a read issued two cycles ago lands now (rd_v: one cycle ago)
+    logic [4:0]  rd_g, rd_g2;
     logic [PW-1:0] line [0:LINE-1];
     logic [4:0]  w4;                                      // patch word being written
 
@@ -72,13 +72,14 @@ module fb_fetch #(
     assign fb_x     = FBX'(cx_al + {11'd0, g, 2'b00});
     assign fb_y     = FBY'(src_y);
 
-    // the read data: group rd_g of the row lands the cycle after its read
+    // the read data: group rd_g2 of the row lands two cycles after its read
     always_ff @(posedge clk) begin
         rd_v <= !rst && (st == F_RD);
         rd_g <= g;
-        if (rd_v)
+        rd_v2 <= rd_v && !rst; rd_g2 <= rd_g;
+        if (rd_v2)
             for (int l = 0; l < 4; l++)
-                if (({2'd0, rd_g} << 2) + 7'(l) < 7'(LINE)) line[({2'd0, rd_g} << 2) + 7'(l)] <= fb_rdata4[l*PW +: PW];
+                if (({2'd0, rd_g2} << 2) + 7'(l) < 7'(LINE)) line[({2'd0, rd_g2} << 2) + 7'(l)] <= fb_rdata4[l*PW +: PW];
     end
 
     // patch word lanes: column of lane l clamped into the region's range, read from the line buffer
@@ -127,7 +128,8 @@ module fb_fetch #(
                 if (g == ng - 5'd1) st <= F_RDW;
                 else g <= g + 5'd1;
             end
-            F_RDW: begin w4 <= 5'd0; st <= F_WR; end                           // the last group lands during this cycle
+            F_RDW: st <= F_RDW2;
+            F_RDW2: begin w4 <= 5'd0; st <= F_WR; end                          // the last group lands during this cycle (two-cycle read)
             F_WR: begin
                 if (w4 == q_nw - 5'd1) st <= F_NEXT;
                 else w4 <= w4 + 5'd1;

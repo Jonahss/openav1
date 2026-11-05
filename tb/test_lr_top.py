@@ -93,6 +93,7 @@ async def run_and_compare(dut, hdr, pre, post, tag, stats):
                 dut.h_x.value = x
                 dut.h_y.value = y
                 await RisingEdge(dut.clk)
+                await RisingEdge(dut.clk)   # two-cycle frame-memory read (2026-10-31)
                 await ReadOnly()
                 v = int(dut.h_rdata.value)
                 if v != post[plane][y][x]:
