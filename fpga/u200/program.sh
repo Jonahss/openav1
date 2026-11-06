@@ -35,4 +35,8 @@ done
 sleep 1
 echo 1 | sudo tee /sys/bus/pci/rescan >/dev/null
 sleep 1
+# bind the XDMA driver to the new function (its ID table lacks a710; the udev rule does the same on the add event):
+# /usr/local/sbin/openav1-xdma-bind.sh on atium (modprobe, new_id, bind, chmod), allowed without a password
+[ -x /usr/local/sbin/openav1-xdma-bind.sh ] && sudo /usr/local/sbin/openav1-xdma-bind.sh
+ls /dev/xdma0_user >/dev/null 2>&1 && echo "xdma bound: /dev/xdma0_user" || echo "no /dev/xdma0_user: bind the driver (echo 10ee a710 > /sys/bus/pci/drivers/xdma/new_id)"
 lspci -d 10ee: -vv 2>/dev/null | grep -E "^[0-9a-f]|LnkSta:|Region 0" || echo "no Xilinx PCIe function visible (reboot the host with the card programmed)"
