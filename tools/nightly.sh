@@ -31,6 +31,36 @@ run() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the suites 
     rc=1
   fi
 }
+# runsh: like run, but the streams of TS_IVF are split round-robin over NIGHTLY_SHARDS processes (default 4) after one
+# build (TS_BUILD_ONLY=1), each shard in its own run directory (TS_TEST_DIR). The suites that loop over many streams
+# (dec_inter 3 h, corpus_full_rtl 2 h, argon_features 1 h) were the nightly's wall; 2026-11-07. PASS needs every shard OK.
+#   runsh name env... TS_IVF="a,b,c" python tb/runner.py top [test]
+runsh() {
+  local name="$1"; shift
+  [[ -n "${NIGHTLY_ONLY:-}" && ! "$name" =~ ${NIGHTLY_ONLY} ]] && return 0
+  local t0=$(date +%s) n=${NIGHTLY_SHARDS:-4} envs=() ivf="" cmd=()
+  while [[ $# -gt 0 ]]; do case "$1" in TS_IVF=*) ivf="${1#TS_IVF=}";; python) cmd=("$@"); break;; *) envs+=("$1");; esac; shift; done
+  IFS=, read -r -a list <<< "$ivf"
+  [[ ${#list[@]} -lt $n ]] && n=${#list[@]}
+  local log="logs/nightly-$tag-$name.log" step_rc=0
+  env "${envs[@]}" TS_IVF="${list[0]}" TS_BUILD_ONLY=1 "${cmd[@]}" > "$log" 2>&1 || step_rc=$?
+  if [[ $step_rc -ne 0 ]]; then printf "FAIL %-22s %5ss  build: %s\n" "$name" "$(( $(date +%s) - t0 ))" "$(grep -m1 '%Error' "$log" | cut -c1-140)" >> "$out"; rc=1; return; fi
+  local i pids=() shard_ivf
+  for ((i = 0; i < n; i++)); do
+    shard_ivf=$(for ((j = i; j < ${#list[@]}; j += n)); do echo -n "${list[j]},"; done | sed 's/,$//')
+    mkdir -p "logs/shards/$tag-$name-$i"
+    ( timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "${envs[@]}" TS_IVF="$shard_ivf" TS_TEST_DIR="$PWD/logs/shards/$tag-$name-$i" "${cmd[@]}" > "$log.$i" 2>&1 ) &
+    pids+=($!); sleep 2
+  done
+  local fails=0 oks=""
+  for ((i = 0; i < n; i++)); do
+    wait "${pids[i]}" || fails=$((fails + 1))
+    grep -q "OK:" "$log.$i" || fails=$((fails + 1))
+    oks="$oks $i:$(grep -o 'OK: {.*}' "$log.$i" | tail -1 | grep -oE "'frames': [0-9]+" | grep -oE '[0-9]+' || echo FAIL)"
+  done
+  if [[ $fails -eq 0 ]]; then printf "PASS %-22s %5ss  OK: %d shards, frames per shard:%s\n" "$name" "$(( $(date +%s) - t0 ))" "$n" "$oks" >> "$out"
+  else local why; why=$(grep -h -m1 'AssertionError\|%Error\|fatal' "$log".[0-9]* | head -1 | cut -c1-150); printf "FAIL %-22s %5ss  %d of %d shards failed: %s\n" "$name" "$(( $(date +%s) - t0 ))" "$fails" "$n" "$why" >> "$out"; rc=1; fi
+}
 run tile_syntax_plain  TS_SCREEN=0 TS_SEEDS=12 python tb/runner.py tile_syntax
 run tile_syntax_screen TS_SCREEN=1 TS_SEEDS=24 python tb/runner.py tile_syntax
 run dec_top_small      TS_SEEDS=12 python tb/runner.py dec_top
@@ -48,12 +78,12 @@ run dec_host_ring_tall FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WI
 # inter streams through dec_host (registers, sequencer, flush; references = the flushed pictures, as on the board): tb/test_dec_host_inter.py
 run dec_host_inter     FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
-run corpus_full_rtl    TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
+runsh corpus_full_rtl  TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
 ARGON=$PWD/streams/argon/profile0_core/streams
 if [ -d "$ARGON" ]; then
   AIVFS=$(for s in 4592 8304 5297 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
-  run argon_features     TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
+  runsh argon_features   TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
   # inter frames through the RTL tile syntax vs the model (the frame sequence: inherited CDFs, segmentation map, motion field)
   IIVFS=$(for s in 10046 10001 10041; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
   run tile_syntax_inter  TS_IVF="$IIVFS" python tb/runner.py tile_syntax
@@ -71,7 +101,7 @@ if [ -d "$ARGON" ]; then
 fi
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
 GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
-run dec_inter            TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
+runsh dec_inter          TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
 echo "DONE rc=$rc $(date -Is)" >> "$out"
 cat "$out"
 exit $rc
