@@ -612,7 +612,12 @@ module recon_top
                         ii_pl <= mc_pl; ii_x <= PXW'((PXW'(b.c) >> sx) << 2); ii_y <= PXW'((PXW'(b.r) >> sy) << 2);
                         ii_txsz <= max_tx_size_rect(psz);
                         ii_lsh <= ii_scale_shift(8'(num4x4w(psz)) << 2, 8'(num4x4h(psz)) << 2);
-                        ii_req <= 1'b1; bst <= B_MC_II;
+                        // The intra prediction writes the frame memory on fb4, the port the previous plane's run and its
+                        // blend pipelines (ob_wr_v / mb_b_v, which take the port) may still be writing: since the block-ahead
+                        // fetch (fc34a84) the sequencer gets here while that run is in flight, and an intra write that lost
+                        // the port was dropped (Argon test7588_6663 frame 8, plane 2 (0,79): the census-7 narrow-chroma
+                        // diffs, 2026-11-07). The request waits for the filter and its blends to drain.
+                        if (filt_free) begin ii_req <= 1'b1; bst <= B_MC_II; end
                     end else bst <= B_MC_UNIT;
                 end
                 B_MC_II: if (ii_done) bst <= B_MC_UNIT;                              // the intra prediction is in the frame memory
