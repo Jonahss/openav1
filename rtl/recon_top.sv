@@ -1547,6 +1547,28 @@ module recon_top
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
 `ifndef SYNTHESIS
+    // Shared-port claims (simulation only). The frame-memory ports fb4 / fb2 (writes) and fb (reads) are driven from
+    // several places in the combinational block above, last assignment wins, so two claims in one cycle are one access
+    // silently dropped. 2026-11-07: since the block-ahead fetch (fc34a84) the next plane's inter-intra intra write (R_IP_W)
+    // could meet the previous plane's blend write (ob_wr_v) on fb4; Argon test7588_6663 frame 8 lost chroma (0,79) that
+    // way (fixed in B_MC_PL). Fatal, so a twin or the nightly fails on the first collision whatever the pixels do.
+    logic [4:0] pc_fb4; logic [2:0] pc_fb2; logic [9:0] pc_fb;
+    always_comb begin
+        pc_fb4 = {(rs == R_IP_W) && ip_ov,
+                  (rs == R_ADD || rs == R_ADD_LAST || rs == R_ADD_LAST2 || rs == R_ADD_LAST3 || rs == R_ADD_LAST4) && a_valid,
+                  mc_out_valid && !r_ob_active && !r_ii_active && !(r_mb_active && r_l),
+                  ob_wr_v, mb_b_v};
+        pc_fb2 = {(rs == R_PAL || rs == R_PAL_LAST) && px_valid, (rs == R_CFL_W) && cl_ov, bst == B_IBC_WR};
+        pc_fb  = {(rs == R_EDGE) && ((ek < n_above) ? (have_a_r || have_l_r) : (ek <= n_edges && !e_const)),
+                  (rs == R_CFL_L) && (ci < 7'(th_px << sub_y)), (rs == R_CFL_D) && (ci < 7'(th_px)), rs == R_ADD,
+                  (INTER != 0) && ff_fb_re, bst == B_IBC_R0, (bst == B_IBC_R1) && ib_fx[3], (bst == B_IBC_R2) && ib_fy[3],
+                  (bst == B_IBC_R3) && ib_fx[3] && ib_fy[3], ob_rd_v};
+    end
+    always_ff @(posedge clk) if (!rst) begin
+        if ($countones(pc_fb4) > 1) $fatal(1, "[rc] t=%0t fb4 write port claimed twice: ip %0d add %0d mc %0d ob %0d mb %0d (rs %0d bst %0d)", $time, pc_fb4[4], pc_fb4[3], pc_fb4[2], pc_fb4[1], pc_fb4[0], rs, bst);
+        if ($countones(pc_fb2) > 1) $fatal(1, "[rc] t=%0t fb2 write port claimed twice: pal %0d cfl %0d ibc %0d (rs %0d bst %0d)", $time, pc_fb2[2], pc_fb2[1], pc_fb2[0], rs, bst);
+        if ($countones(pc_fb) > 1)  $fatal(1, "[rc] t=%0t fb read port claimed twice: claims %b (edge cfl_l cfl_d add ff ibc0..3 ob_rd; rs %0d bst %0d)", $time, pc_fb, rs, bst);
+    end
     // heartbeat (simulation only): where reconstruction stands every 2^18 cycles while busy, for a twin that stalls silently
     int rc_hb;
     always_ff @(posedge clk) begin
