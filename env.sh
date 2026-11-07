@@ -16,3 +16,8 @@ if [ -f "$OPENAV1_ROOT/venv/bin/activate" ]; then
   source "$OPENAV1_ROOT/venv/bin/activate"
 fi
 unset _openav1_lib
+
+# Verilator model builds through ccache when it is installed (OBJCACHE is what Verilator's generated Makefile honours):
+# a repeated build of the same RTL + parameters in any worktree compiles nothing. 2026-11-07 probe on atium: 61 s -> 39 s
+# for the frame-8 inter twin including the run (the compile itself ~25 s -> ~3 s).
+if command -v ccache >/dev/null 2>&1; then export OBJCACHE=ccache; export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache-verilator}"; fi

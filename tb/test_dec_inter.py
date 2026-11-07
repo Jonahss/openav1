@@ -96,6 +96,23 @@ async def ar_trace(dut):
             dut._log.info(f"AR 0x{int(dut.m_axi_araddr.value):x} len {int(dut.m_axi_arlen.value) + 1}")
 
 
+async def fb_trace(dut, rc, plane=None):
+    """TD_FBTRACE[=plane]: every prediction write of the reconstruction into the frame buffer (fb4 port: plane, x, y,
+    byte enables, data) plus the run starts and busy edges of the motion-compensation filter, to see which run wrote
+    (or failed to write) a sample. 2026-11-07, the census-7 narrow-chroma diff."""
+    busy = 0
+    while True:
+        await RisingEdge(dut.clk)
+        b = int(rc.mc_busy.value)
+        if b != busy:
+            dut._log.info(f"FB busy {b} bst {int(rc.bst.value)}")
+            busy = b
+        if int(rc.mc_start.value):
+            dut._log.info(f"FB start pl{int(rc.mc_pl.value)} at ({int(rc.mc_px.value)},{int(rc.mc_py.value)}) {int(rc.mc_sw.value)}x{int(rc.mc_sh.value)}")
+        if int(rc.fb4_we.value) and (plane is None or int(rc.fb4_plane.value) == plane):
+            dut._log.info(f"FB4 pl{int(rc.fb4_plane.value)} ({int(rc.fb4_x.value)},{int(rc.fb4_y.value)}) be 0x{int(rc.fb4_be.value):x} data 0x{int(rc.fb4_wdata.value):x} live pl{int(rc.mc_pl.value)} bst {int(rc.bst.value)} mcv {int(rc.mc_out_valid.value)} obw {int(rc.ob_wr_v.value)} mbb {int(rc.mb_b_v.value)}")
+
+
 @cocotb.test()
 async def dec_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))

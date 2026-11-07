@@ -222,6 +222,8 @@ async def dec_host_inter_vs_model(dut):
         cocotb.start_soon(TI.mc_trace(dut, dut.u_dec.u_rc))      # the same MC launch trace as test_dec_inter
     if os.environ.get("TD_ARTRACE"):
         cocotb.start_soon(TI.ar_trace(dut))
+    if os.environ.get("TD_FBTRACE"):
+        _pl = os.environ["TD_FBTRACE"]; cocotb.start_soon(TI.fb_trace(dut, dut.u_dec.u_rc, int(_pl) if _pl.isdigit() else None))
     if os.environ.get("TS_ILA_LOG"):
         cocotb.start_soon(ila_log(dut, os.environ["TS_ILA_LOG"]))
     if hasattr(dut, "clk2x"):
