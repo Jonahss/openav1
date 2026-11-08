@@ -61,6 +61,7 @@ runsh() {
   if [[ $fails -eq 0 ]]; then printf "PASS %-22s %5ss  OK: %d shards, frames per shard:%s\n" "$name" "$(( $(date +%s) - t0 ))" "$n" "$oks" >> "$out"
   else local why; why=$(grep -h -m1 'AssertionError\|%Error\|fatal' "$log".[0-9]* | head -1 | cut -c1-150); printf "FAIL %-22s %5ss  %d of %d shards failed: %s\n" "$name" "$(( $(date +%s) - t0 ))" "$fails" "$n" "$why" >> "$out"; rc=1; fi
 }
+run mc_filt_unit       python tb/runner.py mc_filt          # the motion-compensation filter vs the model: fuzz + back-to-back (overlapped) runs
 run tile_syntax_plain  TS_SCREEN=0 TS_SEEDS=12 python tb/runner.py tile_syntax
 run tile_syntax_screen TS_SCREEN=1 TS_SEEDS=24 python tb/runner.py tile_syntax
 run dec_top_small      TS_SEEDS=12 python tb/runner.py dec_top
