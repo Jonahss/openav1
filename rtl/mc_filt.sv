@@ -177,6 +177,14 @@ module mc_filt
             default: st = (hst == H_IDLE && !pend) ? S_IDLE : (hst == H_PRE) ? S_PRE : (hst == H_RUNS) ? S_HS : S_H;
         endcase
     end
+    // cycle counter per state (simulation profiling, TS_PERF=1; read through the hierarchy by the testbench; not in the netlist)
+`ifndef SYNTHESIS
+    logic [31:0] perf_st [0:31];
+    always_ff @(posedge clk) begin
+        if (rst) perf_st <= '{default: 32'd0};
+        else perf_st[5'(st)] <= perf_st[5'(st)] + 32'd1;
+    end
+`endif
     logic [6:0] hr;                                      // horizontal: patch row
     logic [4:0] hk;                                      // horizontal: next word of the row to read
     logic [4:0] hg;                                      // horizontal, scaled: the group being completed

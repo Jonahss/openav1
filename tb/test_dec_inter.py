@@ -175,6 +175,8 @@ async def dec_inter_vs_model(dut):
     cocotb.start_soon(mem.run_read())
     dut.rst.value = 1
     TD.run_tile._perf_prev = None
+    TD.perf_report._perf_prev = None
+    TD.perf_report._perf_prev_syn = None
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
