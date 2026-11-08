@@ -13,6 +13,8 @@
 set root $::env(U200_ROOT)
 set out  $::env(U200_OUT)
 set mhz  $::env(U200_MHZ)
+# U200_TWIN=1: the Tiny Tapeout twin (tt_twin_v behind an AXI GPIO) in place of the decoder; tt-msac fpga/u200/build.sh
+set twin [expr {[info exists ::env(U200_TWIN)] && $::env(U200_TWIN) eq "1"}]
 set part xcu200-fsgd2104-2-e
 set_param general.maxThreads [expr {[info exists ::env(U200_THREADS)] ? $::env(U200_THREADS) : 8}]   ;# U200_THREADS: Vivado caps most phases at 8; 16 helps synthesis
 set_param board.repoPaths [list $::env(U200_BOARD_REPO)]
@@ -136,20 +138,36 @@ set rst_dec [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_
 connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins rst_dec/slowest_sync_clk]
 connect_bd_net [get_bd_pins xdma/axi_aresetn] [get_bd_pins rst_dec/ext_reset_in]
 connect_bd_net [get_bd_pins clkgen/locked] [get_bd_pins rst_dec/dcm_locked]
-set host [create_bd_cell -type module -reference dec_host_v host]
-set fbx $::env(U200_FBX); set fby $::env(U200_FBY); set win $::env(U200_WIN); set inter $::env(U200_INTER)
-set win1 $::env(U200_WIN1); set win2 $::env(U200_WIN2)
-set sb128 [expr {[info exists ::env(U200_SB128)] ? $::env(U200_SB128) : 0}]
-set te [expr {[info exists ::env(U200_TE)] ? $::env(U200_TE) : 1}]
-set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win \
-                         CONFIG.FRAME_WIN1 $win1 CONFIG.FRAME_WIN2 $win2 CONFIG.INTER $inter CONFIG.SB128 $sb128 CONFIG.TE $te] $host
-puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win fb1 $win1 fb2 $win2 INTER $inter SB128 $sb128 TE $te"
-set pg [create_bd_cell -type module -reference phase_gen_v pg]
-connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins host/clk] [get_bd_pins pg/clk]
-connect_bd_net [get_bd_pins clkgen/clk_out2] [get_bd_pins host/clk2x] [get_bd_pins pg/clk2x]
-connect_bd_net [get_bd_pins rst_dec/peripheral_aresetn] [get_bd_pins host/aresetn]
-connect_bd_net [get_bd_pins rst_dec/peripheral_reset] [get_bd_pins pg/rst_in]
-connect_bd_net [get_bd_pins pg/phase] [get_bd_pins host/phase]
+if {$twin} {
+    # The Tiny Tapeout twin instead of the decoder (U200_TWIN=1, driven by tt-msac fpga/u200/build.sh): tt_twin_v, the chip
+    # behind its 24 pins on two 32-bit GPIO words exactly as fpga/kv260/build.tcl of the chip repo wires it on the KV260,
+    # chip clock and GPIO clock = clkgen/clk_out1 (U200_MHZ=50: the chip's 50 MHz), at BAR0 offset 0 (twin.py --dev
+    # /dev/xdma0_user --base 0). 2026-11-07, the KV260 having died the same day.
+    set gpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio:2.0 gpio]
+    set_property -dict [list CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO_WIDTH {32} CONFIG.C_ALL_OUTPUTS {1} CONFIG.C_DOUT_DEFAULT {0x00000000} \
+        CONFIG.C_GPIO2_WIDTH {32} CONFIG.C_ALL_INPUTS_2 {1}] $gpio
+    set tt [create_bd_cell -type module -reference tt_twin_v tt]
+    connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins gpio/s_axi_aclk] [get_bd_pins tt/chip_clk]
+    connect_bd_net [get_bd_pins rst_dec/peripheral_aresetn] [get_bd_pins gpio/s_axi_aresetn]
+    connect_bd_net [get_bd_pins gpio/gpio_io_o] [get_bd_pins tt/gpio_o]
+    connect_bd_net [get_bd_pins tt/gpio_i] [get_bd_pins gpio/gpio2_io_i]
+    puts "tiny tapeout twin: tt_twin_v and its GPIO on clk_out1 ($mhz MHz), BAR0 offset 0"
+} else {
+    set host [create_bd_cell -type module -reference dec_host_v host]
+    set fbx $::env(U200_FBX); set fby $::env(U200_FBY); set win $::env(U200_WIN); set inter $::env(U200_INTER)
+    set win1 $::env(U200_WIN1); set win2 $::env(U200_WIN2)
+    set sb128 [expr {[info exists ::env(U200_SB128)] ? $::env(U200_SB128) : 0}]
+    set te [expr {[info exists ::env(U200_TE)] ? $::env(U200_TE) : 1}]
+    set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win \
+                             CONFIG.FRAME_WIN1 $win1 CONFIG.FRAME_WIN2 $win2 CONFIG.INTER $inter CONFIG.SB128 $sb128 CONFIG.TE $te] $host
+    puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win fb1 $win1 fb2 $win2 INTER $inter SB128 $sb128 TE $te"
+    set pg [create_bd_cell -type module -reference phase_gen_v pg]
+    connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins host/clk] [get_bd_pins pg/clk]
+    connect_bd_net [get_bd_pins clkgen/clk_out2] [get_bd_pins host/clk2x] [get_bd_pins pg/clk2x]
+    connect_bd_net [get_bd_pins rst_dec/peripheral_aresetn] [get_bd_pins host/aresetn]
+    connect_bd_net [get_bd_pins rst_dec/peripheral_reset] [get_bd_pins pg/rst_in]
+    connect_bd_net [get_bd_pins pg/phase] [get_bd_pins host/phase]
+}
 
 # JTAG-to-AXI master: the register file from the Vivado hardware manager (bring-up without the PCIe driver)
 set jtag [create_bd_cell -type ip -vlnv xilinx.com:ip:jtag_axi:1.2 jtag]
@@ -170,25 +188,34 @@ connect_bd_net [get_bd_pins ddr/c0_ddr4_ui_clk] [get_bd_pins sc_regs/aclk2]
 connect_bd_net [get_bd_pins xdma/axi_aresetn] [get_bd_pins sc_regs/aresetn]
 connect_bd_intf_net [get_bd_intf_pins xdma/M_AXI_LITE] [get_bd_intf_pins sc_regs/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins jtag/M_AXI] [get_bd_intf_pins sc_regs/S01_AXI]
-connect_bd_intf_net [get_bd_intf_pins sc_regs/M00_AXI] [get_bd_intf_pins host/s_axi]
+connect_bd_intf_net [get_bd_intf_pins sc_regs/M00_AXI] [get_bd_intf_pins [expr {$twin ? "gpio/S_AXI" : "host/s_axi"}]]
 connect_bd_intf_net [get_bd_intf_pins sc_regs/M01_AXI] [get_bd_intf_pins ddr/C0_DDR4_S_AXI_CTRL]
 set sc_mem [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc_mem]
-set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1} CONFIG.NUM_CLKS {3}] $sc_mem
+set_property -dict [list CONFIG.NUM_SI [expr {$twin ? 1 : 2}] CONFIG.NUM_MI {1} CONFIG.NUM_CLKS [expr {$twin ? 2 : 3}]] $sc_mem
 connect_bd_net [get_bd_pins xdma/axi_aclk] [get_bd_pins sc_mem/aclk]
-connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins sc_mem/aclk1]
-connect_bd_net [get_bd_pins ddr/c0_ddr4_ui_clk] [get_bd_pins sc_mem/aclk2]
+if {$twin} {
+    connect_bd_net [get_bd_pins ddr/c0_ddr4_ui_clk] [get_bd_pins sc_mem/aclk1]    ;# one master (XDMA) at axi_aclk -> DDR at ui_clk
+} else {
+    connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins sc_mem/aclk1]
+    connect_bd_net [get_bd_pins ddr/c0_ddr4_ui_clk] [get_bd_pins sc_mem/aclk2]
+}
 connect_bd_net [get_bd_pins xdma/axi_aresetn] [get_bd_pins sc_mem/aresetn]
 connect_bd_intf_net [get_bd_intf_pins xdma/M_AXI] [get_bd_intf_pins sc_mem/S00_AXI]
-connect_bd_intf_net [get_bd_intf_pins host/m_axi] [get_bd_intf_pins sc_mem/S01_AXI]
+if {!$twin} { connect_bd_intf_net [get_bd_intf_pins host/m_axi] [get_bd_intf_pins sc_mem/S01_AXI] }
 connect_bd_intf_net [get_bd_intf_pins sc_mem/M00_AXI] [get_bd_intf_pins ddr/C0_DDR4_S_AXI]
 
 # Address maps
-assign_bd_address -offset 0x00000000 -range 4K -target_address_space [get_bd_addr_spaces xdma/M_AXI_LITE] [get_bd_addr_segs host/s_axi/reg0]
-assign_bd_address -offset 0x00000000 -range 4K -target_address_space [get_bd_addr_spaces jtag/Data] [get_bd_addr_segs host/s_axi/reg0]
+if {$twin} {
+    assign_bd_address -offset 0x00000000 -range 64K -target_address_space [get_bd_addr_spaces xdma/M_AXI_LITE] [get_bd_addr_segs gpio/S_AXI/Reg]
+    assign_bd_address -offset 0x00000000 -range 64K -target_address_space [get_bd_addr_spaces jtag/Data] [get_bd_addr_segs gpio/S_AXI/Reg]
+} else {
+    assign_bd_address -offset 0x00000000 -range 4K -target_address_space [get_bd_addr_spaces xdma/M_AXI_LITE] [get_bd_addr_segs host/s_axi/reg0]
+    assign_bd_address -offset 0x00000000 -range 4K -target_address_space [get_bd_addr_spaces jtag/Data] [get_bd_addr_segs host/s_axi/reg0]
+}
 assign_bd_address -offset 0x00010000 -range 64K -target_address_space [get_bd_addr_spaces xdma/M_AXI_LITE] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP_CTRL/C0_REG]
 assign_bd_address -offset 0x00010000 -range 64K -target_address_space [get_bd_addr_spaces jtag/Data] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP_CTRL/C0_REG]
 assign_bd_address -offset 0x00000000 -range 16G -target_address_space [get_bd_addr_spaces xdma/M_AXI] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK]
-assign_bd_address -offset 0x00000000 -range 16G -target_address_space [get_bd_addr_spaces host/m_axi] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK]
+if {!$twin} { assign_bd_address -offset 0x00000000 -range 16G -target_address_space [get_bd_addr_spaces host/m_axi] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK] }
 validate_bd_design
 puts "clk = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out1]] Hz, clk2x = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out2]] Hz, ui_clk = [get_property CONFIG.FREQ_HZ [get_bd_pins ddr/c0_ddr4_ui_clk]] Hz, axi_aclk = [get_property CONFIG.FREQ_HZ [get_bd_pins xdma/axi_aclk]] Hz"
 save_bd_design
