@@ -268,6 +268,9 @@ module recon_top
     assign blk_inter = (INTER != 0) && b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_out_valid;
+    logic        mc_h_ready;                                 // mc_filt can take the next run (its horizontal side is free)
+    logic        mc_out_tag;                                 // the run record the outputs belong to
+    logic        srun;                                       // run record written by the next start (toggles per run)
     logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
     // Block-ahead fetch (docs/reference-prefetch.md step B, 2026-11-03): a strip's reference patch is fetched into one of
     // mc_filt's two patch buffers while the filter still runs the previous strip from the other, so a fetch's round trip
@@ -276,11 +279,26 @@ module recon_top
     logic        pbuf;                                       // patch buffer of the strip being fetched (then run)
     logic        run_buf;                                    // patch buffer of the run being started (sampled by mc_filt with start)
     logic        run_v;                                      // a run was started and mc_busy has not risen yet (it does the cycle after start)
-    logic [PXW-1:0] r_px, r_py, r_bx, r_by;                  // run record: strip origin, plane block origin
+    // Two run records (2026-11-08): mc_filt overlaps the horizontal pass of run n + 1 with the vertical pass of run n, so a
+    // start may come while the previous run still outputs. The record of a start goes to rq_*[srun]; the output path reads
+    // r_* = the record of the run whose outputs arrive (mc_out_tag, which mc_filt returns with every output word).
+    // Between runs the tag keeps the last run's value, so the blend pipelines draining after its last word still see it
+    // (the next run's first word comes at least 13 cycles later: the vertical drain and pipeline fill).
+    logic [PXW-1:0] rq_px [0:1], rq_py [0:1], rq_bx [0:1], rq_by [0:1];
+    logic [1:0]  rq_pl [0:1]; logic rq_sx [0:1], rq_sy [0:1], rq_l [0:1];
+    logic        rq_ob_active [0:1], rq_ob_pass [0:1]; logic [5:0] rq_ob_mlen [0:1];
+    logic        rq_ii_active [0:1], rq_ii_wedge [0:1]; logic [3:0] rq_ii_mode [0:1]; logic [2:0] rq_ii_lsh [0:1];
+    logic        rq_mb_active [0:1], rq_mb_diff [0:1]; logic [3:0] rq_post [0:1];
+    logic [PXW-1:0] r_px, r_py, r_bx, r_by;                  // run record of the outputs: strip origin, plane block origin
     logic [1:0]  r_pl; logic r_sx, r_sy, r_l;
     logic        r_ob_active, r_ob_pass; logic [5:0] r_ob_mlen;
     logic        r_ii_active, r_ii_wedge; logic [3:0] r_ii_mode; logic [2:0] r_ii_lsh;
     logic        r_mb_active, r_mb_diff; logic [3:0] r_post;
+    assign r_px = rq_px[mc_out_tag]; assign r_py = rq_py[mc_out_tag]; assign r_bx = rq_bx[mc_out_tag]; assign r_by = rq_by[mc_out_tag];
+    assign r_pl = rq_pl[mc_out_tag]; assign r_sx = rq_sx[mc_out_tag]; assign r_sy = rq_sy[mc_out_tag]; assign r_l = rq_l[mc_out_tag];
+    assign r_ob_active = rq_ob_active[mc_out_tag]; assign r_ob_pass = rq_ob_pass[mc_out_tag]; assign r_ob_mlen = rq_ob_mlen[mc_out_tag];
+    assign r_ii_active = rq_ii_active[mc_out_tag]; assign r_ii_wedge = rq_ii_wedge[mc_out_tag]; assign r_ii_mode = rq_ii_mode[mc_out_tag]; assign r_ii_lsh = rq_ii_lsh[mc_out_tag];
+    assign r_mb_active = rq_mb_active[mc_out_tag]; assign r_mb_diff = rq_mb_diff[mc_out_tag]; assign r_post = rq_post[mc_out_tag];
     logic [9:0]  mc_xf0, mc_yf0;                             // startX & 1023, startY & 1023 of the strip
     logic [2:0]  mc_mode;
     logic [135:0] mc_out_pair;                               // 2 lists x 4 lanes x 17-bit signed
@@ -399,18 +417,18 @@ module recon_top
         .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
         .patch_we(pw_we), .patch_buf(pbuf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
-        .start(mc_start), .lst(mc_l), .rbuf(run_buf), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
+        .start(mc_start), .run_tag(srun), .lst(mc_l), .rbuf(run_buf), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
         .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
         .warp(mc_warp), .w_alpha(w_al[mc_l]), .w_beta(w_be[mc_l]), .w_gamma(w_ga[mc_l]), .w_delta(w_de[mc_l]), .w_sx4(mc_wsx), .w_sy4(mc_wsy),
-        .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .done(mc_done),
-        .out_valid(mc_out_valid), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
+        .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .done(mc_done),
+        .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
     end else begin : g_nointer
         assign rf_req_ready = 1'b1; assign rf_done = 1'b0; assign rf_err = 1'b0;
         assign ff_req_ready = 1'b1; assign ff_done = 1'b0; assign ff_fb_re = 1'b0; assign ff_fb_plane = 2'd0; assign ff_fb_x = '0; assign ff_fb_y = '0;
         assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
         assign pw_we = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0;
-        assign mc_busy = 1'b0; assign mc_done = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
+        assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
         assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0;
     end endgenerate
 
@@ -527,7 +545,7 @@ module recon_top
         if (mc_done) mc_fin <= 1'b1;
         if (mc_busy) run_v <= 1'b0;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0;
+            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
@@ -779,12 +797,14 @@ module recon_top
                     if (ff_pend && !(rf_wait && !rf_done)) begin ff_req_valid <= 1'b1; ff_pend <= 1'b0; end
                     // the patch is in: once the previous run has drained, start this strip's run (the output path switches to its
                     // run record), give the other buffer to the next fetch, and move on without waiting for the run
-                    if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done) && filt_free) begin
-                        mc_start <= 1'b1; run_v <= 1'b1; run_buf <= pbuf; pbuf <= !pbuf; mc_fin <= 1'b0;
-                        r_px <= mc_px; r_py <= mc_py; r_bx <= mc_bx; r_by <= mc_by; r_pl <= mc_pl; r_sx <= mc_sx; r_sy <= mc_sy; r_l <= mc_l;
-                        r_ob_active <= ob_active; r_ob_pass <= ob_pass; r_ob_mlen <= ob_mlen;
-                        r_ii_active <= ii_active; r_ii_wedge <= ii_wedge; r_ii_mode <= ii_mode; r_ii_lsh <= ii_lsh;
-                        r_mb_active <= mb_active; r_mb_diff <= mb_diff; r_post <= mc_post;
+                    // (since 2026-11-08 the previous run may still be in its vertical pass: mc_filt's horizontal side free is enough)
+                    if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done) && mc_h_ready && !run_v) begin
+                        mc_start <= 1'b1; run_v <= 1'b1; run_buf <= pbuf; pbuf <= !pbuf; mc_fin <= 1'b0; srun <= !srun;
+                        rq_px[srun] <= mc_px; rq_py[srun] <= mc_py; rq_bx[srun] <= mc_bx; rq_by[srun] <= mc_by; rq_pl[srun] <= mc_pl;
+                        rq_sx[srun] <= mc_sx; rq_sy[srun] <= mc_sy; rq_l[srun] <= mc_l;
+                        rq_ob_active[srun] <= ob_active; rq_ob_pass[srun] <= ob_pass; rq_ob_mlen[srun] <= ob_mlen;
+                        rq_ii_active[srun] <= ii_active; rq_ii_wedge[srun] <= ii_wedge; rq_ii_mode[srun] <= ii_mode; rq_ii_lsh[srun] <= ii_lsh;
+                        rq_mb_active[srun] <= mb_active; rq_mb_diff[srun] <= mb_diff; rq_post[srun] <= mc_post;
                         bst <= B_MC_NEXT;
                     end
                 end

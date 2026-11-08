@@ -50,6 +50,7 @@ module mc_filt
     input  logic [4*PW-1:0] patch_d4,
     // ---- run (parameters sampled at start) ----
     input  logic          start,
+    input  logic          run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
     input  logic          lst,                 // the patch list to filter
     input  logic          rbuf,                // the patch buffer to filter from
     input  logic [6:0]    w,                   // 2, 4, 8, .. 64 (<= 32 when scaled)
@@ -70,9 +71,11 @@ module mc_filt
     input  logic [4:0]    wt0,                 // distance weights (Quant_Dist_Lookup): parked list, this list
     input  logic [4:0]    wt1,
     output logic          busy,
+    output logic          h_ready,             // the horizontal side can take a run: idle, previous run handed to the vertical side
     output logic          done,
     // ---- output stream (modes 0, 2, 3) ----
     output logic          out_valid,
+    output logic          out_tag,
     output logic [6:0]    out_x,
     output logic [6:0]    out_y,
     output logic [4*PW-1:0] out_pix4,
@@ -88,7 +91,8 @@ module mc_filt
 
     // ================================================================ memories
     logic [4*PW-1:0] patch_ram [0:PATCH_N-1];
-    logic [63:0]     strip_ram [0:STRIP_ROWS*GRP-1];      // intermediate: 4 x 16-bit signed per word
+    logic [63:0]     strip_ram [0:2*STRIP_ROWS*GRP-1];    // intermediate: 4 x 16-bit signed per word; two buffers: the
+                                                          // horizontal pass of run n + 1 writes one while the vertical pass of run n reads the other
     logic [67:0]     pred_ram  [0:64*GRP-1];              // parked list-0 prediction: 4 x 17-bit signed per word
 
     function automatic logic [12:0] patch_addr(input logic bf, input logic l, input logic [6:0] r, input logic [4:0] w4);
@@ -119,6 +123,25 @@ module mc_filt
     logic [11:0] p_xs, p_ys;
     logic signed [8:0] tx [0:7];                         // taps of the two passes, unscaled (one phase per run)
     logic signed [8:0] ty [0:7];
+    // The two passes of consecutive runs overlap (2026-11-08): the horizontal side runs on p_* (sampled at start); when its
+    // last strip word has landed the run is handed over (q_*: one pending run) and the vertical side copies it into v_*
+    // when it is free. At most one run in each side, so the filter holds two runs in flight.
+    logic        p_tag, q_tag, v_tag;
+    logic        q_sb;                                   // strip buffer of the pending run
+    logic        q_scaled, v_scaled, q_warp, v_warp;
+    logic signed [15:0] q_wg, q_wd, v_wg, v_wd;
+    logic [15:0] q_wsy, v_wsy;
+    logic [4:0]  q_ngrp, v_ngrp;
+    logic [6:0]  q_h, v_h, q_nrow, v_nrow;
+    logic [3:0]  q_bd, v_bd;
+    logic [2:0]  q_mode, v_mode;
+    logic [4:0]  q_wt0, q_wt1, v_wt0, v_wt1;
+    logic [3:0]  q_r1, v_r1, q_post, v_post, q_mask, v_mask;
+    logic [2:0]  q_fidy, v_fidy;
+    logic [9:0]  q_yf0, v_yf0;
+    logic [11:0] q_ys, v_ys;
+    logic signed [8:0] qty [0:7];
+    logic signed [8:0] vty [0:7];
     // scaled: per output group, the four lanes' patch sample offsets and phases, and the last patch word they need
     logic [6:0]  g_int [0:GRP-1][0:3];
     logic [3:0]  g_ph  [0:GRP-1][0:3];
@@ -134,8 +157,25 @@ module mc_filt
     endfunction
 
     // ================================================================ control
+    typedef enum logic [2:0] {H_IDLE, H_PRE, H_RUN, H_RUNS, H_DRAIN} hst_t;   // horizontal side
+    typedef enum logic [1:0] {V_IDLE, V_RUN, V_RUNS, V_DRAIN} vst_t;         // vertical side
+    hst_t hst;
+    vst_t vst;
+    logic        pend;                                   // a run waits between the sides (its strip is complete)
+    logic        hb, vb;                                 // strip buffer written by the horizontal side / read by the vertical side
+    logic [2:0]  hdrain;                                 // horizontal pipeline drain after the last word issued
+    // the testbench's profiler reads `st` through the hierarchy: the vertical side's state, S_H while the horizontal side
+    // runs and the vertical side idles (so S_IDLE still means the filter is doing nothing)
     typedef enum logic [2:0] {S_IDLE, S_PRE, S_H, S_HS, S_V, S_VS, S_DRAIN} st_t;
     st_t st;
+    always_comb begin
+        case (vst)
+            V_RUN:   st = S_V;
+            V_RUNS:  st = S_VS;
+            V_DRAIN: st = S_DRAIN;
+            default: st = (hst == H_IDLE && !pend) ? S_IDLE : (hst == H_PRE) ? S_PRE : (hst == H_RUNS) ? S_HS : S_H;
+        endcase
+    end
     logic [6:0] hr;                                      // horizontal: patch row
     logic [4:0] hk;                                      // horizontal: next word of the row to read
     logic [4:0] hg;                                      // horizontal, scaled: the group being completed
@@ -147,12 +187,13 @@ module mc_filt
     logic [2:0] vt;                                      // vertical, scaled: tap row of the output row (0 .. 7)
     logic [16:0] vpos;                                   // vertical, scaled: q_i = y_frac0 + y_step i
     logic [3:0] drain;
-    assign busy = st != S_IDLE;
+    assign busy = (hst != H_IDLE) || pend || (vst != V_IDLE);
+    assign h_ready = (hst == H_IDLE) && !pend;
 
     // ---------------------------------------------------------------- memory ports
     logic [12:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
-    logic [10:0] srd_addr;  logic [63:0] srd_q, srd_q1;  // strip read (q1 with the v1 tags)
-    logic [10:0] swr_addr;  logic [63:0] swr_d;  logic swr_we;
+    logic [11:0] srd_addr;  logic [63:0] srd_q, srd_q1;  // strip read (q1 with the v1 tags)
+    logic [11:0] swr_addr;  logic [63:0] swr_d;  logic swr_we;
     logic [9:0]  pdr_addr;  logic [67:0] pdr_q, pdr_q1;  // parked prediction read (q1 with the v1 tags)
     logic [9:0]  pwr_addr;  logic [67:0] pwr_d;  logic pwr_we;
     logic [6:0]  srd_row;
@@ -166,9 +207,9 @@ module mc_filt
     end
     always_comb begin
         prd_addr = patch_addr(p_buf, p_list, hr, hk);
-        srd_row  = p_scaled ? 7'(vpos[16:10]) + 7'(vt) : vk;
-        srd_addr = 11'(srd_row) * 11'(GRP) + 11'(vg);
-        pdr_addr = (p_scaled ? 10'(vi) : 10'(vk - 7'd7)) * 10'(GRP) + 10'(vg);
+        srd_row  = v_scaled ? 7'(vpos[16:10]) + 7'(vt) : vk;
+        srd_addr = {vb, 11'(srd_row) * 11'(GRP) + 11'(vg)};
+        pdr_addr = (v_scaled ? 10'(vi) : 10'(vk - 7'd7)) * 10'(GRP) + 10'(vg);
     end
 
     // ---------------------------------------------------------------- horizontal pass pipeline
@@ -224,7 +265,7 @@ module mc_filt
     logic        v4_v;  logic [6:0] v4_i;  logic [4:0] v4_g;  logic [67:0] v4_pred;
     logic signed [16:0] vs [0:3];                       // the vertical output: 17 bits (compound intermediates)
     logic [PW-1:0] pix_max;
-    assign pix_max = PW'((13'd1 << p_bd) - 13'd1);
+    assign pix_max = PW'((13'd1 << v_bd) - 13'd1);      // the vertical side clips
 
     // rows the passes cover: (((h - 1) y_step + 1023) >> 10) + 8
     logic [18:0] nrow_calc;
@@ -236,12 +277,17 @@ module mc_filt
         out_valid <= 1'b0;
         h0_v <= 1'b0; v0_v <= 1'b0;
         if (rst) begin
-            st <= S_IDLE; h1_v <= 1'b0; h2_v <= 1'b0; h3_v <= 1'b0; h4_v <= 1'b0;
+            hst <= H_IDLE; vst <= V_IDLE; pend <= 1'b0; hb <= 1'b0; vb <= 1'b0; hdrain <= 3'd0;
+            h1_v <= 1'b0; h2_v <= 1'b0; h3_v <= 1'b0; h4_v <= 1'b0;
             v1_v <= 1'b0; v2_v <= 1'b0; v3_v <= 1'b0; v4_v <= 1'b0;
         end else begin
-            // ---------------- FSM: the address streams
-            case (st)
-                S_IDLE: if (start) begin
+            // ---------------- horizontal side: patch words in, strip words out. A run may start while the vertical side
+            // still runs the previous one (the passes of consecutive runs overlap); it is handed over once its strip is complete
+`ifndef SYNTHESIS
+            if (start && !(hst == H_IDLE && !pend)) $fatal(1, "mc_filt: start while not h_ready");
+`endif
+            case (hst)
+                H_IDLE: if (start) begin
                     p_list <= lst; p_buf <= rbuf;
                     p_scaled <= !warp && ((x_step != 12'd1024) || (y_step != 12'd1024));
                     p_warp <= warp; p_wa <= w_alpha; p_wb <= w_beta; p_wg <= w_gamma; p_wd <= w_delta; p_wsx <= w_sx4; p_wsy <= w_sy4;
@@ -259,12 +305,13 @@ module mc_filt
                         tx[t] <= subpel_tap(filt_id(interp_x, w <= 7'd4), x_frac0[9:6], 3'(t));
                         ty[t] <= subpel_tap(filt_id(interp_y, h <= 7'd4), y_frac0[9:6], 3'(t));
                     end
+                    p_tag <= run_tag;
                     hr <= 7'd0; hk <= 5'd0; hg <= 5'd0;
                     if (!warp && ((x_step != 12'd1024) || (y_step != 12'd1024))) begin
-                        pg <= 5'd0; ppos <= 17'(x_frac0); st <= S_PRE;
-                    end else st <= S_H;
+                        pg <= 5'd0; ppos <= 17'(x_frac0); hst <= H_PRE;
+                    end else hst <= H_RUN;
                 end
-                S_PRE: begin                             // one group per cycle: lane positions p = ppos + l x_step
+                H_PRE: begin                             // one group per cycle: lane positions p = ppos + l x_step
                     for (int l = 0; l < 4; l++) begin
                         logic [16:0] p;
                         p = ppos + 17'(p_xs) * 17'(l);
@@ -272,17 +319,17 @@ module mc_filt
                         if (l == 3) g_lw[pg[3:0]] <= 5'((8'(p[16:10]) + 8'd7) >> 2);
                     end
                     ppos <= ppos + 17'(p_xs) * 17'd4;
-                    if (pg == 5'(GRP - 1)) st <= S_HS; else pg <= pg + 5'd1;
+                    if (pg == 5'(GRP - 1)) hst <= H_RUNS; else pg <= pg + 5'd1;
                 end
-                S_H: begin                               // unscaled: one word per cycle, group g emitted at word g + 2
+                H_RUN: begin                               // unscaled: one word per cycle, group g emitted at word g + 2
                     h0_v <= 1'b1; h0_rd <= 1'b1; h0_em <= (hk >= 5'd2); h0_r <= hr; h0_k <= hk; h0_g <= hk - 5'd2;
                     if (hk == p_ngrp + 5'd1) begin
                         hk <= 5'd0;
-                        if (hr == p_nrow - 7'd1) begin vg <= 5'd0; vk <= 7'd0; st <= S_V; end
+                        if (hr == p_nrow - 7'd1) begin hdrain <= 3'd4; hst <= H_DRAIN; end
                         else hr <= hr + 7'd1;
                     end else hk <= hk + 5'd1;
                 end
-                S_HS: begin                              // scaled: read until group hg's last word is in, emit, next group
+                H_RUNS: begin                              // scaled: read until group hg's last word is in, emit, next group
                     h0_v <= 1'b1; h0_r <= hr; h0_g <= hg;
                     if (hk <= g_lw[hg[3:0]]) begin
                         h0_rd <= 1'b1; h0_k <= hk; h0_em <= (hk == g_lw[hg[3:0]]);
@@ -293,36 +340,56 @@ module mc_filt
                     if (hk >= g_lw[hg[3:0]]) begin            // this cycle completes group hg
                         if (hg == p_ngrp - 5'd1) begin
                             hg <= 5'd0; hk <= 5'd0;
-                            if (hr == p_nrow - 7'd1) begin
-                                vg <= 5'd0; vi <= 7'd0; vt <= 3'd0; vpos <= 17'(p_yf0); st <= S_VS;
-                            end else hr <= hr + 7'd1;
+                            if (hr == p_nrow - 7'd1) begin hdrain <= 3'd4; hst <= H_DRAIN; end
+                            else hr <= hr + 7'd1;
                         end else hg <= hg + 5'd1;
                     end
                 end
-                S_V: begin
+                H_DRAIN: if (hdrain == 3'd0) begin                  // the last strip words have landed (h1 .. h4 + the write)
+                    pend <= 1'b1; hb <= !hb; q_sb <= hb; q_tag <= p_tag;
+                    q_scaled <= p_scaled; q_warp <= p_warp; q_wg <= p_wg; q_wd <= p_wd; q_wsy <= p_wsy;
+                    q_ngrp <= p_ngrp; q_h <= p_h; q_nrow <= p_nrow; q_bd <= p_bd; q_mode <= p_mode; q_wt0 <= p_wt0; q_wt1 <= p_wt1;
+                    q_r1 <= p_r1; q_post <= p_post; q_mask <= p_mask; q_fidy <= p_fidy; q_yf0 <= p_yf0; q_ys <= p_ys;
+                    for (int t = 0; t < 8; t++) qty[t] <= ty[t];
+                    hst <= H_IDLE;
+                end else hdrain <= hdrain - 3'd1;
+                default: hst <= H_IDLE;
+            endcase
+            // ---------------- vertical side: strip words in, prediction out
+            case (vst)
+                V_IDLE: if (pend) begin                             // take the pending run
+                    pend <= 1'b0; vb <= q_sb; v_tag <= q_tag;
+                    v_scaled <= q_scaled; v_warp <= q_warp; v_wg <= q_wg; v_wd <= q_wd; v_wsy <= q_wsy;
+                    v_ngrp <= q_ngrp; v_h <= q_h; v_nrow <= q_nrow; v_bd <= q_bd; v_mode <= q_mode; v_wt0 <= q_wt0; v_wt1 <= q_wt1;
+                    v_r1 <= q_r1; v_post <= q_post; v_mask <= q_mask; v_fidy <= q_fidy; v_yf0 <= q_yf0; v_ys <= q_ys;
+                    for (int t = 0; t < 8; t++) vty[t] <= qty[t];
+                    vg <= 5'd0; vk <= 7'd0; vi <= 7'd0; vt <= 3'd0; vpos <= 17'(q_yf0);
+                    vst <= q_scaled ? V_RUNS : V_RUN;
+                end
+                V_RUN: begin
                     // the strip is complete before any read of it that matters: the last horizontal write lands 4
                     // cycles after its issue, and the vertical pass reads rows 0 .. 6 of group 0 first (written long
                     // before); the last-written word is read at the earliest nrow cycles into S_V
-                    v0_v <= 1'b1; v0_k <= vk; v0_g <= vg; v0_c <= (vk >= 7'd7); v0_i <= vk - 7'd7; v0_ph <= p_yf0[9:6];
-                    if (vk == p_nrow - 7'd1) begin
+                    v0_v <= 1'b1; v0_k <= vk; v0_g <= vg; v0_c <= (vk >= 7'd7); v0_i <= vk - 7'd7; v0_ph <= v_yf0[9:6];
+                    if (vk == v_nrow - 7'd1) begin
                         vk <= 7'd0;
-                        if (vg == p_ngrp - 5'd1) begin drain <= 4'd8; st <= S_DRAIN; end
+                        if (vg == v_ngrp - 5'd1) begin drain <= 4'd8; vst <= V_DRAIN; end
                         else vg <= vg + 5'd1;
                     end else vk <= vk + 7'd1;
                 end
-                S_VS: begin                              // scaled: 8 tap rows per output row, compute on the eighth
+                V_RUNS: begin                              // scaled: 8 tap rows per output row, compute on the eighth
                     v0_v <= 1'b1; v0_k <= srd_row; v0_g <= vg; v0_c <= (vt == 3'd7); v0_i <= vi; v0_ph <= vpos[9:6];
                     if (vt == 3'd7) begin
                         vt <= 3'd0;
-                        if (vi == p_h - 7'd1) begin
-                            vi <= 7'd0; vpos <= 17'(p_yf0);
-                            if (vg == p_ngrp - 5'd1) begin drain <= 4'd8; st <= S_DRAIN; end
+                        if (vi == v_h - 7'd1) begin
+                            vi <= 7'd0; vpos <= 17'(v_yf0);
+                            if (vg == v_ngrp - 5'd1) begin drain <= 4'd8; vst <= V_DRAIN; end
                             else vg <= vg + 5'd1;
-                        end else begin vi <= vi + 7'd1; vpos <= vpos + 17'(p_ys); end
+                        end else begin vi <= vi + 7'd1; vpos <= vpos + 17'(v_ys); end
                     end else vt <= vt + 3'd1;
                 end
-                S_DRAIN: if (drain == 4'd0) begin done <= 1'b1; st <= S_IDLE; end else drain <= drain - 4'd1;
-                default: st <= S_IDLE;
+                V_DRAIN: if (drain == 4'd0) begin done <= 1'b1; vst <= V_IDLE; end else drain <= drain - 4'd1;
+                default: vst <= V_IDLE;
             endcase
 
             // ---------------- horizontal pipeline
@@ -356,7 +423,7 @@ module mc_filt
                 hs[l] <= 16'((s + (24'sd1 <<< (p_r0 - 4'd1))) >>> p_r0);
             end
             if (h4_v) begin
-                swr_we <= 1'b1; swr_addr <= 11'(h4_r) * 11'(GRP) + 11'(h4_g);
+                swr_we <= 1'b1; swr_addr <= {hb, 11'(h4_r) * 11'(GRP) + 11'(h4_g)};
                 swr_d <= {hs[3], hs[2], hs[1], hs[0]};
             end
 
@@ -373,8 +440,8 @@ module mc_filt
                     vsamp[l][t] <= signed'((t < 7) ? vwin[t][l*16 +: 16] : srd_q1[l*16 +: 16]);
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++)
-                    vtap[l][t] <= p_warp ? 9'(warp_tap(warp_offs(p_wsy, p_wg, p_wd, v1_g, l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t)))
-                                : p_scaled ? subpel_tap(p_fidy, v1_ph, 3'(t)) : ty[t];
+                    vtap[l][t] <= v_warp ? 9'(warp_tap(warp_offs(v_wsy, v_wg, v_wd, v1_g, l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t)))
+                                : v_scaled ? subpel_tap(v_fidy, v1_ph, 3'(t)) : vty[t];
             v3_v <= v2_v; v3_i <= v2_i; v3_g <= v2_g; v3_pred <= v2_pred;
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++)
@@ -384,24 +451,24 @@ module mc_filt
                 logic signed [27:0] s;
                 s = 28'sd0;
                 for (int t = 0; t < 8; t++) s = s + 28'(vp[l][t]);
-                vs[l] <= 17'((s + (28'sd1 <<< (p_r1 - 4'd1))) >>> p_r1);
+                vs[l] <= 17'((s + (28'sd1 <<< (v_r1 - 4'd1))) >>> v_r1);
             end
             // v5: park, or blend / clip / output
             if (v4_v) begin
-                if (p_mode == 3'd1) begin
+                if (v_mode == 3'd1) begin
                     pwr_we <= 1'b1; pwr_addr <= 10'(v4_i) * 10'(GRP) + 10'(v4_g);
                     pwr_d <= {vs[3], vs[2], vs[1], vs[0]};
                 end else begin
-                    out_valid <= 1'b1; out_x <= {v4_g, 2'b00}; out_y <= v4_i; out_mask <= p_mask;
+                    out_valid <= 1'b1; out_tag <= v_tag; out_x <= {v4_g, 2'b00}; out_y <= v4_i; out_mask <= v_mask;
                     out_pair <= {vs[3], vs[2], vs[1], vs[0], v4_pred};
                     for (int l = 0; l < 4; l++) begin
                         logic signed [21:0] b, p0, p1, w0s, w1s;
-                        w0s = 22'(signed'({1'b0, p_wt0})); w1s = 22'(signed'({1'b0, p_wt1}));
+                        w0s = 22'(signed'({1'b0, v_wt0})); w1s = 22'(signed'({1'b0, v_wt1}));
                         p0 = 22'(signed'(v4_pred[l*17 +: 17]));
                         p1 = 22'(vs[l]);
-                        case (p_mode)
-                            3'd2: b = (p0 + p1 + (22'sd1 <<< p_post)) >>> (p_post + 4'd1);
-                            3'd3: b = (w0s * p0 + w1s * p1 + (22'sd1 <<< (p_post + 4'd3))) >>> (p_post + 4'd4);   // weights as signed: an unsigned operand would make the product unsigned
+                        case (v_mode)
+                            3'd2: b = (p0 + p1 + (22'sd1 <<< v_post)) >>> (v_post + 4'd1);
+                            3'd3: b = (w0s * p0 + w1s * p1 + (22'sd1 <<< (v_post + 4'd3))) >>> (v_post + 4'd4);   // weights as signed: an unsigned operand would make the product unsigned
                             default: b = p1;
                         endcase
                         out_pix4[l*PW +: PW] <= (b < 22'sd0) ? PW'(0) : (b > 22'(pix_max)) ? pix_max : PW'(b);
