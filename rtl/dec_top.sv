@@ -15,8 +15,9 @@ module dec_top
     parameter int FRAME_WIN2 = -1,           //   picture; -1: no fb1 / fb2 at all, the core build); fb2 (LrFrame) likewise (docs/picture-memory.md)
     parameter int INTER = 1,                 // 0: the intra-only build (no ref_fetch / mc_filt / warp_setup, no inter syntax): the K26 board
     parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks too (128-line window rows, deeper mode-info rings)
-    parameter int TE = 1                     // tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
+    parameter int TE = 1,                     // tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
                                              //    phase); fb1 / fb2 are left out, so only the core build (no CDEF / LR / SR) can use it
+    parameter int REF_RING = 16              // ref_fetch line buffers (recon_top REF_RING; the U200 build's U200_REF_RING)
 ) (
     input  logic              clk,
     input  logic              clk2x,             // 2x clk, phase-aligned (FRAME_URAM = 1 only; tie low otherwise)
@@ -249,7 +250,7 @@ module dec_top
     logic [MIW-1:0] rc_col_start, rc_col_end;
     hdr_t hdr_rc;
     always_comb begin hdr_rc = hdr; hdr_rc.mi_col_start = rc_col_start; hdr_rc.mi_col_end = rc_col_end; end
-    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER), .FRAME_WIN(FRAME_WIN)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
+    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER), .FRAME_WIN(FRAME_WIN), .REF_RING(REF_RING)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
                                             .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,

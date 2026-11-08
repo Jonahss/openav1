@@ -103,7 +103,8 @@ module dec_host
     parameter int FIFO_LW = 10,              // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
     parameter int INTER = 1,                 // 0: the intra-only decoder (dec_top INTER)
     parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks (dec_top SB128; CFG bit 1)
-    parameter int TE = 1                     // tile engines (dec_top TE; CFG[27:24]): the tile columns of a tile row decoded at once
+    parameter int TE = 1,                     // tile engines (dec_top TE; CFG[27:24]): the tile columns of a tile row decoded at once
+    parameter int REF_RING = 16              // ref_fetch line buffers (dec_top REF_RING)
 ) (
     input  logic        clk,
     input  logic        clk2x,
@@ -270,7 +271,7 @@ module dec_host
     logic [55:0]    mf_dst_dist;
     logic [215:0]   cur_planes;                              // the current picture's flush layout for intra block copy
     logic           fmt16;                                  // DMA_CFG bit 0, declared ahead of the core instance that takes it (cur_fmt16)
-    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE)) u_dec (
+    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE), .REF_RING(REF_RING)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_rb_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,

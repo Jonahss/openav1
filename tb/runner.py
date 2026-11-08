@@ -67,6 +67,9 @@ if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN"):
 # TE=N: N tile engines (the tile columns of a tile row decoded at once, rtl/tile_engines.sv)
 if top in ("dec_top", "dec_host") and os.environ.get("TE"):
     params["TE"] = int(os.environ["TE"])
+# REF_RING=N: ref_fetch line buffers (reference rows in flight ahead of the writer; the U200 image's U200_REF_RING)
+if top in ("dec_top", "dec_host") and os.environ.get("REF_RING"):
+    params["REF_RING"] = int(os.environ["REF_RING"])
 # SB128=1: the window build takes 128x128 superblocks (128-line window rows, deeper mode-info rings)
 if top in ("dec_top", "dec_host") and os.environ.get("SB128"):
     params["SB128"] = int(os.environ["SB128"])

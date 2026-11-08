@@ -26,8 +26,10 @@ module recon_top
     parameter int FBY = 9,
     parameter int ML2R = 8,                  // mode map capacity: log2(MI rows), log2(MI cols)
     parameter int ML2C = 8,
-    parameter int FRAME_WIN = 0              // window build: superblock rows of the fb0 ring (0 = the whole picture); an intra
+    parameter int FRAME_WIN = 0,              // window build: superblock rows of the fb0 ring (0 = the whole picture); an intra
                                              //    block copy source row still in the ring is read from fb0, an older one from DDR
+    parameter int REF_RING = 16              // ref_fetch line buffers: reference rows in flight ahead of the writer (16 for
+                                             //    speed on one engine; 8 closes two engines at 100 MHz on the U200, 2026-11-08)
 ) (
     input  logic        clk,
     input  logic        rst,
@@ -383,7 +385,7 @@ module recon_top
     assign pw_we = rf_pw_we || ff_pw_we;
     assign pw_list = ff_pw_we ? ff_pw_list : rf_pw_list; assign pw_row = ff_pw_we ? ff_pw_row : rf_pw_row;
     assign pw_w4 = ff_pw_we ? ff_pw_w4 : rf_pw_w4; assign pw_d4 = ff_pw_we ? ff_pw_d4 : rf_pw_d4;
-    ref_fetch #(.PW(12)) u_rf (.clk, .rst,
+    ref_fetch #(.PW(12), .RING(REF_RING)) u_rf (.clk, .rst,
         .req_valid(rf_req_valid), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(mc_ibc ? cur_fmt16 : ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
         .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .done(rf_done), .err(rf_err),
