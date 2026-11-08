@@ -87,6 +87,7 @@ module mc_filt
     localparam int PATCH_LN = 2 * PATCH_ROWS * PATCH_WPR; // 2592: a buffer (two lists)
     localparam int PATCH_N = 2 * PATCH_LN;                // two buffers: the fetch of strip n + 1 fills one while strip n runs from the other
     localparam int STRIP_ROWS = 71;                       // nrow <= 71
+    localparam int STRIP_LN = STRIP_ROWS * 16;            // 1136: one strip buffer (GRP words a row)
     localparam int GRP = 16;                              // groups per row (64 / 4)
 
     // ================================================================ memories
@@ -208,7 +209,7 @@ module mc_filt
     always_comb begin
         prd_addr = patch_addr(p_buf, p_list, hr, hk);
         srd_row  = v_scaled ? 7'(vpos[16:10]) + 7'(vt) : vk;
-        srd_addr = {vb, 11'(srd_row) * 11'(GRP) + 11'(vg)};
+        srd_addr = 12'(vb) * 12'(STRIP_LN) + 12'(srd_row) * 12'(GRP) + 12'(vg);
         pdr_addr = (v_scaled ? 10'(vi) : 10'(vk - 7'd7)) * 10'(GRP) + 10'(vg);
     end
 
@@ -423,7 +424,7 @@ module mc_filt
                 hs[l] <= 16'((s + (24'sd1 <<< (p_r0 - 4'd1))) >>> p_r0);
             end
             if (h4_v) begin
-                swr_we <= 1'b1; swr_addr <= {hb, 11'(h4_r) * 11'(GRP) + 11'(h4_g)};
+                swr_we <= 1'b1; swr_addr <= 12'(hb) * 12'(STRIP_LN) + 12'(h4_r) * 12'(GRP) + 12'(h4_g);
                 swr_d <= {hs[3], hs[2], hs[1], hs[0]};
             end
 
