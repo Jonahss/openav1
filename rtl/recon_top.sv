@@ -271,6 +271,7 @@ module recon_top
     logic        mc_h_ready;                                 // mc_filt can take the next run (its horizontal side is free)
     logic        mc_out_tag;                                 // the run record the outputs belong to
     logic        srun;                                       // run record written by the next start (toggles per run)
+    logic        mc_tag;                                     // the record of the run being started (registered with mc_start, as run_buf is)
     logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
     // Block-ahead fetch (docs/reference-prefetch.md step B, 2026-11-03): a strip's reference patch is fetched into one of
     // mc_filt's two patch buffers while the filter still runs the previous strip from the other, so a fetch's round trip
@@ -417,7 +418,7 @@ module recon_top
         .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
         .patch_we(pw_we), .patch_buf(pbuf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
-        .start(mc_start), .run_tag(srun), .lst(mc_l), .rbuf(run_buf), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
+        .start(mc_start), .run_tag(mc_tag), .lst(mc_l), .rbuf(run_buf), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
         .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
         .warp(mc_warp), .w_alpha(w_al[mc_l]), .w_beta(w_be[mc_l]), .w_gamma(w_ga[mc_l]), .w_delta(w_de[mc_l]), .w_sx4(mc_wsx), .w_sy4(mc_wsy),
         .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .done(mc_done),
@@ -545,7 +546,7 @@ module recon_top
         if (mc_done) mc_fin <= 1'b1;
         if (mc_busy) run_v <= 1'b0;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0;
+            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
@@ -799,7 +800,7 @@ module recon_top
                     // run record), give the other buffer to the next fetch, and move on without waiting for the run
                     // (since 2026-11-08 the previous run may still be in its vertical pass: mc_filt's horizontal side free is enough)
                     if (!(rf_wait && !rf_done) && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done) && mc_h_ready && !run_v) begin
-                        mc_start <= 1'b1; run_v <= 1'b1; run_buf <= pbuf; pbuf <= !pbuf; mc_fin <= 1'b0; srun <= !srun;
+                        mc_start <= 1'b1; run_v <= 1'b1; run_buf <= pbuf; pbuf <= !pbuf; mc_fin <= 1'b0; mc_tag <= srun; srun <= !srun;
                         rq_px[srun] <= mc_px; rq_py[srun] <= mc_py; rq_bx[srun] <= mc_bx; rq_by[srun] <= mc_by; rq_pl[srun] <= mc_pl;
                         rq_sx[srun] <= mc_sx; rq_sy[srun] <= mc_sy; rq_l[srun] <= mc_l;
                         rq_ob_active[srun] <= ob_active; rq_ob_pass[srun] <= ob_pass; rq_ob_mlen[srun] <= ob_mlen;
