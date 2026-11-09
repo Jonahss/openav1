@@ -276,6 +276,7 @@ def main():
                                           dma=(stage.base, stage.read) if stage else None, pipe=args.pipe,
                                           want_planes=bool(out or ref or y4m) or stage is None, window=args.window)
     pending = {}                                 # coded frame -> (hdr, planes, from the model?) until its last display
+    phase = {"tiles": 0.0, "finish": 0.0, "lf": 0.0, "read": 0.0, "n": 0}   # host phase totals over the board-decoded frames
     ev_next = 0                                  # the next output picture to emit
     n_model_bad = 0
 
@@ -347,6 +348,10 @@ def main():
             fmt = "mono" if hdr.NumPlanes == 1 else ("444" if not hdr.subsampling_x else ("420" if hdr.subsampling_y else "422"))
             line = (f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}, {len(d.frames[fi])} tile(s): "
                     f"tiles {t['tiles']:.2f}s, lf {t['lf']:.2f}s, read-back {t['read']:.2f}s")
+            if not t.get("model_only"):
+                for k in ("tiles", "finish", "lf", "read"):
+                    phase[k] += t.get(k, 0.0)
+                phase["n"] += 1
             if t.get("model_only"):
                 # the image could not take this frame: the model decoded it and the card got its picture as a reference
                 line = f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}: model only ({t['model_only']})"
@@ -386,6 +391,11 @@ def main():
           f"{ev_next} of {len(shown)} pictures output"
           + (f"; card-side state: {s.get('ld_frames', 0)} loads, {s.get('sv_frames', 0)} CDF saves, {s.get('mf_srcs', 0)} projected sources; host waits: loads {s.get('ld_time', 0.0):.2f}s, CDF saves {s.get('sv_time', 0.0):.2f}s" if args.card_load else "")
           + (f"; {n_bad_frames} board picture(s) and {n_model_bad} model picture(s) differ from the reference" if ref is not None else ""))
+    if phase["n"]:
+        n = phase["n"]; other = dt_all - phase["tiles"] - phase["lf"] - phase["read"]
+        print(f"host phases per board frame ({n}): tiles {1000 * phase['tiles'] / n:.1f} ms, filter tail {1000 * phase['lf'] / n:.1f} ms "
+              f"(frame done {1000 * phase['finish'] / n:.1f} + flush {1000 * (phase['lf'] - phase['finish']) / n:.1f}), "
+              f"read-back {1000 * phase['read'] / n:.1f} ms, other host work {1000 * other / n:.1f} ms = {1000 * dt_all / n:.1f} ms a frame")
     sys.exit(1 if (n_bad_frames or n_model_bad) else 0)
 
 

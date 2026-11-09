@@ -1102,8 +1102,9 @@ class HostDecoder:
                 del mdec
             if not model_only:
                 self.frame_pipe_finish(tag)
+                t["finish"] = time.monotonic() - t0                  # the trailing filter rows after the last tile
                 self.flush_wait(tag)
-            t["filters"] = time.monotonic() - t0
+            t["filters"] = time.monotonic() - t0                     # finish + the DDR flush of the released rows
             t0 = time.monotonic()
             if want_planes and not model_only and getattr(self, "overlap_read", False):
                 # the read-back runs in a thread (pread releases the GIL) while the card decodes the next frame; the caller
