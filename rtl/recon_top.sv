@@ -42,6 +42,14 @@ module recon_top
     input  blk_rec_t    ev_blk,
     input  tx_rec_t     ev_tx,
     output logic        ev_pop,
+    // early block take (rec_fifo, 2026-11-09): the head's block parity, a taken head, the next untaken block record
+    input  logic        ev_par,
+    input  logic        ev_taken,
+    input  logic        nb_valid,
+    input  blk_rec_t    nb_blk,
+    input  logic        nb_par,
+    input  logic        nb_at_head,
+    output logic        nb_pop,
     output logic        tx_rel,               // a transform block is fully written (R_MIW): its coefficient slot is free
     output logic [2:0]  q_slot,
     output logic [9:0]  q_addr,
@@ -432,12 +440,12 @@ module recon_top
         end else begin
             if (mc_start) runs_started[mc_tag_par] <= runs_started[mc_tag_par] + 8'd1;
             if (mc_done) runs_done[rq_par[mc_done_tag]] <= runs_done[rq_par[mc_done_tag]] + 8'd1;
-            if (blk_take) begin blk_ready_q[!cur_par] <= 1'b0; blk_last_started[!cur_par] <= 1'b0; end
+            if (blk_take) begin blk_ready_q[nb_par] <= 1'b0; blk_last_started[nb_par] <= 1'b0; end
             if (blk_last_run) blk_last_started[cur_par] <= 1'b1;
             if (blk_last_run_q) blk_last_started[blk_last_par_q] <= 1'b1;
             if (blk_ready_set) blk_ready_q[cur_par] <= 1'b1;
             for (int p = 0; p < 2; p++)
-                if (blk_last_started[p] && pred_done[p] && !(blk_take && (1'(p) == !cur_par))) blk_ready_q[p] <= 1'b1;
+                if (blk_last_started[p] && pred_done[p] && !(blk_take && (1'(p) == nb_par))) blk_ready_q[p] <= 1'b1;
         end
     end
     logic [135:0] mb_a_pair, mb_a2_pair;
@@ -1020,7 +1028,7 @@ module recon_top
             endcase
         end else case (bst)
             B_IDLE: if (blk_take) begin
-                b <= ev_blk; bq[!cur_par] <= ev_blk; cur_par <= !cur_par; bst <= B_FT0;
+                b <= nb_blk; bq[nb_par] <= nb_blk; cur_par <= nb_par; bst <= B_FT0;
             end
             // four neighbour-mode reads (issued by the combinational mm_addr; captured in the following state):
             // above Y, left Y, above UV, left UV
@@ -1463,11 +1471,15 @@ module recon_top
     logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
     assign sb_r = ev_sb_r; assign sb_c = ev_sb_c;
-    assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE) && blk_ready_q[!cur_par];   // one block ahead at most
-    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready && !tx_ack && !mc_v_active && out_drained;
+    // the block FSM takes the next untaken block record, past the transform events still queued for the current block
+    // (early block take, 2026-11-09); one block ahead at most: the parity it reuses must have landed. A transform event
+    // waits for ITS block's prediction (the record's parity), not the block FSM's current block.
+    assign blk_take = ev_valid && nb_valid && (bst == B_IDLE) && blk_ready_q[nb_par];
+    assign nb_pop = blk_take && !nb_at_head;
+    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && !mc_v_active && out_drained;
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)
     assign tx_rel = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;   // the slot release stays at the end (rec_fifo's in-flight count)
-    assign ev_pop = sb_start || blk_take || tx_pop;
+    assign ev_pop = sb_start || (blk_take && nb_at_head) || tx_pop || (ev_valid && ev_taken);   // a taken block record at the head pops as a no-op
     assign q_slot = t.slot;
     logic [6:0]  ci, cj;                                   // generic pixel / coefficient counters (row, col)
     logic [8:0]  ek, n_edges;                              // edge entry counter: 0..2(w+h)
@@ -1790,7 +1802,7 @@ module recon_top
             if (sb_start) begin bdf_wr <= '0; l_sb_r <= sb_r; l_sb_c <= sb_c; end
             case (rs)
                 R_IDLE: if (tx_take) begin
-                    t <= ev_tx; t_par <= cur_par; rs <= R_SETUP;
+                    t <= ev_tx; t_par <= ev_par; rs <= R_SETUP;
                 end else if (ii_req) begin
                     // inter-intra: the intra prediction of the plane block through the edge / ipred flow
                     t <= '{plane: ii_pl, x: ii_x, y: ii_y, txsz: ii_txsz, txtype: 4'd0, eob: 11'd0, skip: 1'b1, lossless: 1'b0, slot: 3'd0};
