@@ -138,7 +138,15 @@ module recon_top
     endfunction
 
     // ================================================================ block state (latched on blk_info)
-    blk_rec_t    b;
+    blk_rec_t    b;                                          // the block FSM's block (latched at blk_take)
+    // Block-ahead MC step 1 (2026-11-08): transform events are popped when taken, so the block FSM can take the next
+    // block while the transform FSM still works on the previous one. Two copies of the record, by block parity: the
+    // block FSM reads b (= bq[cur_par]); the transform FSM reads bt = bq[t_par], t_par latched when it takes an event
+    // (the most recently taken block is the event's block: the next block record sits behind the event in the queue).
+    blk_rec_t    bq [0:1];
+    logic        cur_par, t_par;
+    blk_rec_t    bt;
+    assign bt = bq[t_par];
     logic        blk_ready;
     logic [5:0]  bw4, bh4;
     logic        av_u, av_l, av_uc, av_lc;
@@ -289,7 +297,7 @@ module recon_top
     logic [1:0]  rq_pl [0:1]; logic rq_sx [0:1], rq_sy [0:1], rq_l [0:1];
     logic        rq_ob_active [0:1], rq_ob_pass [0:1]; logic [5:0] rq_ob_mlen [0:1];
     logic        rq_ii_active [0:1], rq_ii_wedge [0:1]; logic [3:0] rq_ii_mode [0:1]; logic [2:0] rq_ii_lsh [0:1];
-    logic        rq_mb_active [0:1], rq_mb_diff [0:1]; logic [3:0] rq_post [0:1];
+    logic        rq_mb_active [0:1], rq_mb_diff [0:1]; logic [3:0] rq_post [0:1]; logic rq_mask_type [0:1];
     logic [PXW-1:0] r_px, r_py, r_bx, r_by;                  // run record of the outputs: strip origin, plane block origin
     logic [1:0]  r_pl; logic r_sx, r_sy, r_l;
     logic        r_ob_active, r_ob_pass; logic [5:0] r_ob_mlen;
@@ -300,6 +308,7 @@ module recon_top
     assign r_ob_active = rq_ob_active[mc_out_tag]; assign r_ob_pass = rq_ob_pass[mc_out_tag]; assign r_ob_mlen = rq_ob_mlen[mc_out_tag];
     assign r_ii_active = rq_ii_active[mc_out_tag]; assign r_ii_wedge = rq_ii_wedge[mc_out_tag]; assign r_ii_mode = rq_ii_mode[mc_out_tag]; assign r_ii_lsh = rq_ii_lsh[mc_out_tag];
     assign r_mb_active = rq_mb_active[mc_out_tag]; assign r_mb_diff = rq_mb_diff[mc_out_tag]; assign r_post = rq_post[mc_out_tag];
+    logic r_mask_type; assign r_mask_type = rq_mask_type[mc_out_tag];
     logic [9:0]  mc_xf0, mc_yf0;                             // startX & 1023, startY & 1023 of the strip
     logic [2:0]  mc_mode;
     logic [135:0] mc_out_pair;                               // 2 lists x 4 lanes x 17-bit signed
@@ -546,7 +555,7 @@ module recon_top
         if (mc_done) mc_fin <= 1'b1;
         if (mc_busy) run_v <= 1'b0;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0;
+            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0; cur_par <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
@@ -805,7 +814,7 @@ module recon_top
                         rq_sx[srun] <= mc_sx; rq_sy[srun] <= mc_sy; rq_l[srun] <= mc_l;
                         rq_ob_active[srun] <= ob_active; rq_ob_pass[srun] <= ob_pass; rq_ob_mlen[srun] <= ob_mlen;
                         rq_ii_active[srun] <= ii_active; rq_ii_wedge[srun] <= ii_wedge; rq_ii_mode[srun] <= ii_mode; rq_ii_lsh[srun] <= ii_lsh;
-                        rq_mb_active[srun] <= mb_active; rq_mb_diff[srun] <= mb_diff; rq_post[srun] <= mc_post;
+                        rq_mb_active[srun] <= mb_active; rq_mb_diff[srun] <= mb_diff; rq_post[srun] <= mc_post; rq_mask_type[srun] <= b.mask_type;
                         bst <= B_MC_NEXT;
                     end
                 end
@@ -863,7 +872,7 @@ module recon_top
             endcase
         end else case (bst)
             B_IDLE: if (blk_take) begin
-                b <= ev_blk; blk_ready <= 1'b0; bst <= B_FT0;
+                b <= ev_blk; bq[!cur_par] <= ev_blk; cur_par <= !cur_par; blk_ready <= 1'b0; bst <= B_FT0;
             end
             // four neighbour-mode reads (issued by the combinational mm_addr; captured in the following state):
             // above Y, left Y, above UV, left UV
@@ -1022,7 +1031,7 @@ module recon_top
                 for (int l = 0; l < 4; l++) begin
                     mk_ra0[(mb_by[0] ? 4 : 0) + l] = rowbase;
                     if (r_pl == 2'd0 && r_mb_active && r_mb_diff) begin
-                        mb_dm[l] = diff_mask(signed'(mc_out_pair[17*l +: 17]), signed'(mc_out_pair[68 + 17*l +: 17]), hdr.bit_depth, r_post, b.mask_type);
+                        mb_dm[l] = diff_mask(signed'(mc_out_pair[17*l +: 17]), signed'(mc_out_pair[68 + 17*l +: 17]), hdr.bit_depth, r_post, r_mask_type);
                         mk_we[(mb_by[0] ? 4 : 0) + l] = 1'b1; mk_waddr[(mb_by[0] ? 4 : 0) + l] = rowbase; mk_wdata[(mb_by[0] ? 4 : 0) + l] = mb_dm[l];
                     end
                 end
@@ -1210,15 +1219,15 @@ module recon_top
         sb_col_p = 6'((mi_col & MIW'(hdr.sb128 ? 31 : 15)) >> sub_x);
         max_x = PXW'(((PXW'(hdr.mi_cols) << 2) >> sub_x) - PXW'(1));
         max_y = PXW'(((PXW'(hdr.mi_rows) << 2) >> sub_y) - PXW'(1));
-        base_x = PXW'((PXW'(b.c) >> sub_x) << 2); base_y = PXW'((PXW'(b.r) >> sub_y) << 2);
-        is_pal = !ii_run && ((t.plane == 2'd0) ? (b.pal_y != 4'd0) : (b.pal_uv != 4'd0));
-        is_cfl = !ii_run && (t.plane != 2'd0) && (b.uvmode == UV_CFL_PRED);
-        mode = ii_run ? ii_mode : (t.plane == 2'd0) ? b.ymode[3:0] : (is_cfl ? DC_PRED : b.uvmode);
+        base_x = PXW'((PXW'(bt.c) >> sub_x) << 2); base_y = PXW'((PXW'(bt.r) >> sub_y) << 2);
+        is_pal = !ii_run && ((t.plane == 2'd0) ? (bt.pal_y != 4'd0) : (bt.pal_uv != 4'd0));
+        is_cfl = !ii_run && (t.plane != 2'd0) && (bt.uvmode == UV_CFL_PRED);
+        mode = ii_run ? ii_mode : (t.plane == 2'd0) ? bt.ymode[3:0] : (is_cfl ? DC_PRED : bt.uvmode);
         have_l = ((t.plane == 2'd0) ? av_l : av_lc) || (t.x > base_x);
         have_a = ((t.plane == 2'd0) ? av_u : av_uc) || (t.y > base_y);
         above_px = (PXW'(tw_px) < max_x - t.x + PXW'(1)) ? tw_px : 7'(max_x - t.x + PXW'(1));
         left_px  = (PXW'(th_px) < max_y - t.y + PXW'(1)) ? th_px : 7'(max_y - t.y + PXW'(1));
-        pal_cols = (t.plane == 2'd0) ? b.col_y : (t.plane == 2'd1) ? b.col_u : b.col_v;
+        pal_cols = (t.plane == 2'd0) ? bt.col_y : (t.plane == 2'd1) ? bt.col_u : bt.col_v;
     end
 
     // ---------------------------------------------------------------- dequant parameters (per tx block)
@@ -1231,8 +1240,8 @@ module recon_top
     logic signed [10:0] q_base;
     logic signed [6:0] d_dc, d_ac;
     always_comb begin
-        q_base = 11'(signed'({3'b0, hdr.delta_q_present ? b.qidx : hdr.base_q_idx}));
-        if (hdr.seg_enabled && rh.seg_altq_en[b.seg]) qindex = clip255(q_base + 11'(signed'(rh.seg_altq[9 * b.seg +: 9])));
+        q_base = 11'(signed'({3'b0, hdr.delta_q_present ? bt.qidx : hdr.base_q_idx}));
+        if (hdr.seg_enabled && rh.seg_altq_en[bt.seg]) qindex = clip255(q_base + 11'(signed'(rh.seg_altq[9 * bt.seg +: 9])));
         else qindex = 8'(q_base);
         case (t.plane)
             2'd0: begin d_dc = rh.dq_ydc; d_ac = 7'sd0; end
@@ -1244,7 +1253,7 @@ module recon_top
         bd_idx = 2'((hdr.bit_depth - 4'd8) >> 1);
         dc_q = dc_qlookup(bd_idx, dc_qi);
         ac_q = ac_qlookup(bd_idx, ac_qi);
-        qm_lvl = rh.qm_level[(int'(t.plane) * 8 + int'(b.seg)) * 4 +: 4];
+        qm_lvl = rh.qm_level[(int'(t.plane) * 8 + int'(bt.seg)) * 4 +: 4];
         use_qm = rh.using_qmatrix && (t.txtype < IDTX) && (qm_lvl < 4'd15);
         case (t.txsz)
             5'd3, 5'd9, 5'd10, 5'd17, 5'd18: dq_shift = 2'd1;    // TX_32X32, 16X32, 32X16, 16X64, 64X16
@@ -1267,10 +1276,10 @@ module recon_top
     // ipred
     logic edge_we, edge_we4, ip_start, ip_busy, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data; logic [47:0] edge_data4; logic [47:0] ip_pix4; logic [5:0] ip_ox, ip_oy;
     logic ft_sel;
-    assign ft_sel = (is_dir(mode) && !((t.plane == 2'd0) && b.use_fi)) ? ((t.plane == 2'd0) ? ft_y : ft_uv) : 1'b0;
+    assign ft_sel = (is_dir(mode) && !((t.plane == 2'd0) && bt.use_fi)) ? ((t.plane == 2'd0) ? ft_y : ft_uv) : 1'b0;
     ipred #(.PW(12)) u_ip (.clk, .rst, .edge_we, .edge_side, .edge_idx, .edge_data, .edge_we4, .edge_data4,
-                           .start(ip_start), .mode, .use_filter_intra(!ii_run && (t.plane == 2'd0) && b.use_fi), .filter_intra_mode(b.fi_mode),
-                           .angle_delta(ii_run ? 3'sd0 : (t.plane == 2'd0) ? b.angle_y : b.angle_uv), .log2w(l2w), .log2h(l2h), .bit_depth(hdr.bit_depth),
+                           .start(ip_start), .mode, .use_filter_intra(!ii_run && (t.plane == 2'd0) && bt.use_fi), .filter_intra_mode(bt.fi_mode),
+                           .angle_delta(ii_run ? 3'sd0 : (t.plane == 2'd0) ? bt.angle_y : bt.angle_uv), .log2w(l2w), .log2h(l2h), .bit_depth(hdr.bit_depth),
                            .have_left(have_l), .have_above(have_a), .filter_type(ft_sel), .edge_filter_en(rh.enable_intra_edge_filter),
                            .above_px, .left_px, .busy(ip_busy), .done(ip_done),
                            .out_valid(ip_ov), .out_x(ip_ox), .out_y(ip_oy), .out_pix4(ip_pix4));
@@ -1281,7 +1290,7 @@ module recon_top
     logic [6:0] l_av_w, l_av_h;
     assign l_av_w = 7'(max_luma_w - lx0); assign l_av_h = 7'(max_luma_h - ly0);
     cfl #(.PW(12)) u_cfl (.clk, .rst, .luma_we(cl_lwe), .luma_addr(cl_laddr), .luma_data(cl_ldata), .dc_we(cl_dwe), .dc_addr(cl_daddr), .dc_data(cl_ddata),
-                          .start(cl_start), .log2w(l2w), .log2h(l2h), .sub_x, .sub_y, .alpha((t.plane == 2'd1) ? b.cfl_u : b.cfl_v),
+                          .start(cl_start), .log2w(l2w), .log2h(l2h), .sub_x, .sub_y, .alpha((t.plane == 2'd1) ? bt.cfl_u : bt.cfl_v),
                           .bit_depth(hdr.bit_depth), .luma_avail_w(l_av_w), .luma_avail_h(l_av_h), .busy(cl_busy), .done(cl_done),
                           .out_valid(cl_ov), .out_x(cl_ox), .out_y(cl_oy), .out_pix(cl_pix));
     // quantizer matrix ROM
@@ -1308,7 +1317,7 @@ module recon_top
     assign sb_r = ev_sb_r; assign sb_c = ev_sb_c;
     assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE);
     assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready && !tx_ack;
-    assign tx_pop = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;
+    assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)
     assign ev_pop = sb_start || blk_take || tx_pop;
     assign q_slot = t.slot;
     logic [6:0]  ci, cj;                                   // generic pixel / coefficient counters (row, col)
@@ -1632,7 +1641,7 @@ module recon_top
             if (sb_start) begin bdf_wr <= '0; l_sb_r <= sb_r; l_sb_c <= sb_c; end
             case (rs)
                 R_IDLE: if (tx_take) begin
-                    t <= ev_tx; rs <= R_SETUP;
+                    t <= ev_tx; t_par <= cur_par; rs <= R_SETUP;
                 end else if (ii_req) begin
                     // inter-intra: the intra prediction of the plane block through the edge / ipred flow
                     t <= '{plane: ii_pl, x: ii_x, y: ii_y, txsz: ii_txsz, txtype: 4'd0, eob: 11'd0, skip: 1'b1, lossless: 1'b0, slot: 3'd0};
@@ -1643,7 +1652,7 @@ module recon_top
                     n_edges <= 2 * (9'(tw_px) + 9'(th_px));
                     above_lim_r <= above_lim; left_lim_r <= left_lim;
                     if (ii_run) rs <= R_EDGE;                           // inter-intra: the intra prediction of the block
-                    else if (b.intrabc || blk_inter) rs <= R_RESID;    // predicted whole by the block copy / motion compensation
+                    else if (bt.intrabc || bt.is_inter) rs <= R_RESID;  // predicted whole by the block copy / motion compensation (this event's block)
                     else if (is_pal) rs <= R_PAL;
                     else rs <= R_EDGE;
                 end
