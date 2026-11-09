@@ -1474,7 +1474,10 @@ module recon_top
     // the block FSM takes the next untaken block record, past the transform events still queued for the current block
     // (early block take, 2026-11-09); one block ahead at most: the parity it reuses must have landed. A transform event
     // waits for ITS block's prediction (the record's parity), not the block FSM's current block.
-    assign blk_take = ev_valid && nb_valid && (bst == B_IDLE) && blk_ready_q[nb_par];
+    // and never into the record slot the transform FSM is still reading: with the early take the next-but-one block (same
+    // parity) becomes visible as soon as the current block's last transform event is popped, while that event is still in
+    // progress on bq[par] (2026-11-09: the left-column availability flipped mid-edge-preparation, dec_top seed 3 444)
+    assign blk_take = ev_valid && nb_valid && (bst == B_IDLE) && blk_ready_q[nb_par] && !((rs != R_IDLE) && (tx_par == nb_par));
     assign nb_pop = blk_take && !nb_at_head;
     assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && !mc_v_active && out_drained;
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)

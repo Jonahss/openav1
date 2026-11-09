@@ -82,8 +82,11 @@ module rec_fifo
             logic [AW-1:0] i;
             i = rd + AW'(k);
             if (!nb_found && !stop && (AW + 1)'(k) < count) begin
-                if (kind_q[i] == 2'd2) stop = 1'b1;
-                else if (kind_q[i] == 2'd1 && !taken_q[i]) begin nb_found = 1'b1; nb_scan = i; end
+                // stop at a superblock event, and at a block record already taken early: the transform events before it
+                // belong to the block whose parity the next record would reuse (bq[par]), so that record may be taken
+                // only once the head has passed them (one block ahead of event consumption at most)
+                if (kind_q[i] == 2'd2 || (kind_q[i] == 2'd1 && taken_q[i])) stop = 1'b1;
+                else if (kind_q[i] == 2'd1) begin nb_found = 1'b1; nb_scan = i; end
             end
         end
     end
