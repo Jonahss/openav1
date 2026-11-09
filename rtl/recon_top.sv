@@ -42,6 +42,7 @@ module recon_top
     input  blk_rec_t    ev_blk,
     input  tx_rec_t     ev_tx,
     output logic        ev_pop,
+    output logic        tx_rel,               // a transform block is fully written (R_MIW): its coefficient slot is free
     output logic [2:0]  q_slot,
     output logic [9:0]  q_addr,
     input  logic signed [20:0] q_data,
@@ -1333,6 +1334,7 @@ module recon_top
     assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE);
     assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready && !tx_ack;
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)
+    assign tx_rel = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;   // the slot release stays at the end (rec_fifo's in-flight count)
     assign ev_pop = sb_start || blk_take || tx_pop;
     assign q_slot = t.slot;
     logic [6:0]  ci, cj;                                   // generic pixel / coefficient counters (row, col)
