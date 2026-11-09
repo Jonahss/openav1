@@ -156,7 +156,11 @@ module recon_top
     logic        cur_par, t_par;
     blk_rec_t    bt;
     logic        tx_par;                                     // the block the transform side works for: its event's block, or the
-    assign tx_par = ii_run ? cur_par : t_par;                //   block FSM's block during an inter-intra intra prediction (ii_run)
+    assign tx_par = ii_run ? cur_par : t_par;
+    // a transform event of an earlier block still queued at the head (early block take, 2026-11-09): the block FSM's
+    // paths that read the reconstructed picture (inter-intra prediction, block copy) wait for it to be processed
+    logic        tx_pending_other;
+    assign tx_pending_other = ev_valid && (ev_kind == 2'd0) && (ev_par != cur_par);                //   block FSM's block during an inter-intra intra prediction (ii_run)
     assign bt = bq[tx_par];
     // Block-ahead MC step 2 (2026-11-08): the block FSM leaves a block once its last run has STARTED; the block is ready
     // for its transform events when every run of its parity has finished (mc_filt done, counted per parity through the
@@ -682,7 +686,7 @@ module recon_top
             // motion compensation states (inter blocks): compiled out at INTER = 0
             case (bst)
                 // ---- inter prediction (stage 2a): see the declarations above
-                B_MC_INIT: if (!b.intrabc || (rs == R_IDLE && pred_done[!cur_par])) begin   // a block copy reads the current frame
+                B_MC_INIT: if (!b.intrabc || (rs == R_IDLE && pred_done[!cur_par] && !tx_pending_other)) begin   // a block copy reads the current frame
                     logic comp;
                     comp = !b.intrabc && (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7);
                     mc_comp <= comp; mc_ibc <= b.intrabc;
@@ -768,7 +772,7 @@ module recon_top
                         // fetch (fc34a84) the sequencer gets here while that run is in flight, and an intra write that lost
                         // the port was dropped (Argon test7588_6663 frame 8, plane 2 (0,79): the census-7 narrow-chroma
                         // diffs, 2026-11-07). The request waits for the filter and its blends to drain.
-                        if (filt_free && pq_empty && rs == R_IDLE && pred_done[!cur_par]) begin ii_req <= 1'b1; bst <= B_MC_II; end
+                        if (filt_free && pq_empty && rs == R_IDLE && pred_done[!cur_par] && !tx_pending_other) begin ii_req <= 1'b1; bst <= B_MC_II; end
                     end else bst <= B_MC_UNIT;
                 end
                 B_MC_II: if (ii_done) bst <= B_MC_UNIT;                              // the intra prediction is in the frame memory
