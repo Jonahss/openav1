@@ -29,6 +29,7 @@ module rec_fifo
     output blk_rec_t    ev_blk,
     output tx_rec_t     ev_tx,
     input  logic        ev_pop,
+    input  logic        tx_rel,               // reconstruction finished a transform block: its coefficient slot is free
     output logic [3:0]  tx_inflight
 );
     localparam int AW = $clog2(DEPTH);
@@ -68,7 +69,9 @@ module rec_fifo
             end
             if (ev_pop) rd <= rd + 1'b1;
             count <= count + (push ? (AW + 1)'(1) : (AW + 1)'(0)) - (ev_pop ? (AW + 1)'(1) : (AW + 1)'(0));
-            tx_inflight <= tx_inflight + ((push && push_kind == 2'd0) ? 4'd1 : 4'd0) - ((ev_pop && ev_kind == 2'd0) ? 4'd1 : 4'd0);
+            // in flight = pushed and not yet released by reconstruction (since 2026-11-08 the event is popped when taken, so the
+            // pop no longer means the slot is free; before, the pop came at the end of the transform block)
+            tx_inflight <= tx_inflight + ((push && push_kind == 2'd0) ? 4'd1 : 4'd0) - (tx_rel ? 4'd1 : 4'd0);
         end
     end
 endmodule

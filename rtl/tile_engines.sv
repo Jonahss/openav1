@@ -69,6 +69,7 @@ module tile_engines
     output blk_rec_t          ev_blk,
     output tx_rec_t           ev_tx,
     input  logic              ev_pop,
+    input  logic              tx_rel,         // reconstruction finished a transform block (to the current engine's queue)
     output logic [3:0]        tx_inflight,
     input  logic              rc_busy,        // reconstruction busy: engines are switched only between blocks
     output logic [MIW-1:0]    rc_col_start, rc_col_end,   // tile column bounds of the engine feeding reconstruction (its is_inside / superblock clip)
@@ -110,6 +111,7 @@ module tile_engines
     blk_rec_t    h_blk [TE];
     tx_rec_t     h_tx [TE];
     logic [3:0]  h_infl [TE];
+    logic [TE-1:0] h_rel;
     logic [TE-1:0] h_pop;
     logic [TE-1:0] mask;                                      // the engines of this tile row (eng_mask, or engine 0)
     assign mask = (TE == 1 || eng_mask == '0) ? TE'(1) : eng_mask;
@@ -136,7 +138,7 @@ module tile_engines
                       .blk_info(e_blk_info[e]), .blk_rec(e_blk_rec[e]), .tx_done(e_tx_done[e]), .tx_rec(e_tx_rec[e]), .tx_ack(e_tx_ack[e]),
                       .w_slot(e_slot_w[e]),
                       .ev_valid(h_valid[e]), .ev_kind(h_kind[e]), .ev_sb_r(h_sb_r[e]), .ev_sb_c(h_sb_c[e]), .ev_blk(h_blk[e]), .ev_tx(h_tx[e]),
-                      .ev_pop(h_pop[e]), .tx_inflight(h_infl[e]));
+                      .ev_pop(h_pop[e]), .tx_rel(h_rel[e]), .tx_inflight(h_infl[e]));
     end
     assign in_ready = e_in_ready;
     assign rb_data  = e_rb_data[rb_sel];
@@ -235,6 +237,7 @@ module tile_engines
     assign tx_inflight = h_infl[cur];
     always_comb begin
         h_pop = '0; h_pop[cur] = ev_pop && ev_valid;
+        h_rel = '0; h_rel[cur] = tx_rel;
         // a held palette block (its colour map lives in the syntax stage) is released once ITS engine's queue has
         // drained and reconstruction is idle (the pop's busy may follow a cycle later). dec_top's old engine-blind
         // "queue drained" (!ev_valid) also held while the head was a next-row superblock start kept back from

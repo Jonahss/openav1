@@ -224,14 +224,14 @@ module dec_top
                    .mf_wvalid(pj_we != 7'd0 ? pj_wvalid : mf_wvalid), .mf_wrow(pj_we != 7'd0 ? pj_wrow : mf_wrow), .mf_wcol(pj_we != 7'd0 ? pj_wcol : mf_wcol),
                    .sp_we(sp_we_i), .sp_wrow(sp_wrow_i), .sp_wwc(sp_wwc_i), .sp_wdata(sp_wdata_i),
                    .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
-                   .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_inflight, .rc_busy, .rc_col_start, .rc_col_end,
+                   .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_rel, .tx_inflight, .rc_busy, .rc_col_start, .rc_col_end,
                    .q_slot_r, .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx,
                    .lr_done, .lr_rec, .blk_done, .blk_rec, .tx_done, .tx_rec, .tx_ack);
     // event queue (inside tile_engines, one per engine): the syntax decoder runs ahead of reconstruction; a palette
     // block is released (blk_ack, per engine inside tile_engines) only once its engine's queue has drained and
     // reconstruction is idle, because its colour map lives in the syntax stage
     logic ev_valid_rc;                              // ev_valid as the reconstruction stage sees it (held by the window)
-    logic ev_valid, ev_pop; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
+    logic ev_valid, ev_pop, tx_rel; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
     logic rc_busy, cdef_en, sr_sub;
     logic [MIW-1:0] cd_rd_row, cd_rd_col; logic [SBW-1:0] cdr_row64, cdr_col64; logic [3:0] cdr_val; mi_lf_t cd_rd_info;
@@ -251,7 +251,7 @@ module dec_top
     hdr_t hdr_rc;
     always_comb begin hdr_rc = hdr; hdr_rc.mi_col_start = rc_col_start; hdr_rc.mi_col_end = rc_col_end; end
     recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER), .FRAME_WIN(FRAME_WIN), .REF_RING(REF_RING)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
-                                            .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop,
+                                            .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_rel,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
                                             .mi_tx_we, .mi_tx_plane, .mi_tx_row, .mi_tx_col, .mi_tx_w4, .mi_tx_h4, .mi_tx_sz, .mi_tx_busy,
