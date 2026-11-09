@@ -147,13 +147,15 @@ module recon_top
     blk_rec_t    bq [0:1];
     logic        cur_par, t_par;
     blk_rec_t    bt;
-    assign bt = bq[t_par];
+    logic        tx_par;                                     // the block the transform side works for: its event's block, or the
+    assign tx_par = ii_run ? cur_par : t_par;                //   block FSM's block during an inter-intra intra prediction (ii_run)
+    assign bt = bq[tx_par];
     logic        blk_ready;
     logic [5:0]  bw4, bh4;
     logic        av_u, av_l, av_uc, av_lc;
     logic        ftq_y [0:1], ftq_uv [0:1];                 // intra filter type per plane class, per block parity (step 1)
     logic        ft_y, ft_uv;                              // the transform FSM's view: its block's
-    assign ft_y = ftq_y[t_par]; assign ft_uv = ftq_uv[t_par];
+    assign ft_y = ftq_y[tx_par]; assign ft_uv = ftq_uv[tx_par];
     // the transform FSM's neighbour availability, from its block (the block FSM may already hold the next block)
     logic        tav_u, tav_l, tav_uc, tav_lc; logic [5:0] tbw4, tbh4;
     always_comb begin
