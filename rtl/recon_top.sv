@@ -150,7 +150,18 @@ module recon_top
     logic        tx_par;                                     // the block the transform side works for: its event's block, or the
     assign tx_par = ii_run ? cur_par : t_par;                //   block FSM's block during an inter-intra intra prediction (ii_run)
     assign bt = bq[tx_par];
-    logic        blk_ready;
+    // Block-ahead MC step 2 (2026-11-08): the block FSM leaves a block once its last run has STARTED; the block is ready
+    // for its transform events when every run of its parity has finished (mc_filt done, counted per parity through the
+    // run record) and the blend pipelines have drained. An intra block (or a block copy / inter-intra, which read the
+    // current frame) waits for the previous block to have landed. At most one block ahead: a block is taken only when
+    // the block two back (same parity) is ready.
+    logic [7:0]  runs_started [0:1], runs_done [0:1];
+    logic        blk_last_started [0:1];                     // the block of this parity has issued its last run
+    logic        blk_ready_q [0:1];                          // its prediction is complete: transform events may be taken
+    logic        pred_done [0:1];
+    logic        out_drained;
+    logic        blk_ready;                                  // = blk_ready_q[cur_par] (the block FSM's current block)
+    assign blk_ready = blk_ready_q[cur_par];
     logic [5:0]  bw4, bh4;
     logic        av_u, av_l, av_uc, av_lc;
     logic        ftq_y [0:1], ftq_uv [0:1];                 // intra filter type per plane class, per block parity (step 1)
@@ -293,7 +304,7 @@ module recon_top
     logic        blk_inter;                                  // b.is_inter, constant 0 in the INTER = 0 build
     assign blk_inter = (INTER != 0) && b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
-    logic        mc_start, mc_busy, mc_done, mc_out_valid;
+    logic        mc_start, mc_busy, mc_done, mc_done_tag, mc_v_active, mc_out_valid;
     logic        mc_h_ready;                                 // mc_filt can take the next run (its horizontal side is free)
     logic        mc_out_tag;                                 // the run record the outputs belong to
     logic        srun;                                       // run record written by the next start (toggles per run)
@@ -315,7 +326,7 @@ module recon_top
     logic [1:0]  rq_pl [0:1]; logic rq_sx [0:1], rq_sy [0:1], rq_l [0:1];
     logic        rq_ob_active [0:1], rq_ob_pass [0:1]; logic [5:0] rq_ob_mlen [0:1];
     logic        rq_ii_active [0:1], rq_ii_wedge [0:1]; logic [3:0] rq_ii_mode [0:1]; logic [2:0] rq_ii_lsh [0:1];
-    logic        rq_mb_active [0:1], rq_mb_diff [0:1]; logic [3:0] rq_post [0:1]; logic rq_mask_type [0:1];
+    logic        rq_mb_active [0:1], rq_mb_diff [0:1]; logic [3:0] rq_post [0:1]; logic rq_mask_type [0:1]; logic rq_par [0:1];
     logic [PXW-1:0] r_px, r_py, r_bx, r_by;                  // run record of the outputs: strip origin, plane block origin
     logic [1:0]  r_pl; logic r_sx, r_sy, r_l;
     logic        r_ob_active, r_ob_pass; logic [5:0] r_ob_mlen;
@@ -365,7 +376,27 @@ module recon_top
     logic        mk_inv;
     logic        filt_free;                                  // no run in flight and the blend pipelines drained
     logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
-    assign filt_free = !mc_busy && !run_v && !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v;   // fm2: three read stages
+    assign out_drained = !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v;   // fm2: three read stages
+    assign filt_free = !mc_busy && !run_v && out_drained;
+    assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained;
+    assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained;
+    logic blk_last_run, blk_ready_set, mc_tag_par;
+    assign mc_tag_par = rq_par[mc_tag];
+    // the tracker: runs started per parity (with the start pulse), runs finished per parity (mc_filt done, the run's
+    // record says which block); the block is ready once its last run has started and all of its runs are done
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            runs_started <= '{default: 8'd0}; runs_done <= '{default: 8'd0}; blk_last_started <= '{default: 1'b0}; blk_ready_q <= '{default: 1'b1};
+        end else begin
+            if (mc_start) runs_started[mc_tag_par] <= runs_started[mc_tag_par] + 8'd1;
+            if (mc_done) runs_done[rq_par[mc_done_tag]] <= runs_done[rq_par[mc_done_tag]] + 8'd1;
+            if (blk_take) begin blk_ready_q[!cur_par] <= 1'b0; blk_last_started[!cur_par] <= 1'b0; end
+            if (blk_last_run) blk_last_started[cur_par] <= 1'b1;
+            if (blk_ready_set) blk_ready_q[cur_par] <= 1'b1;
+            for (int p = 0; p < 2; p++)
+                if (blk_last_started[p] && pred_done[p] && !(blk_take && (1'(p) == !cur_par))) blk_ready_q[p] <= 1'b1;
+        end
+    end
     logic [135:0] mb_a_pair, mb_a2_pair;
     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
     logic [3:0]  mb_a_be, mb_a2_be, mb_b_be;
@@ -448,7 +479,7 @@ module recon_top
         .start(mc_start), .run_tag(mc_tag), .lst(mc_l), .rbuf(run_buf), .w(mc_sw), .h(mc_sh), .interp_x(u_i1), .interp_y(u_i0),
         .x_frac0(mc_xf0), .y_frac0(mc_yf0), .x_step(sc_xs), .y_step(sc_ys),
         .warp(mc_warp), .w_alpha(w_al[mc_l]), .w_beta(w_be[mc_l]), .w_gamma(w_ga[mc_l]), .w_delta(w_de[mc_l]), .w_sx4(mc_wsx), .w_sy4(mc_wsy),
-        .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .done(mc_done),
+        .bit_depth(hdr.bit_depth), .mode(mc_mode), .wt0(mc_wt0), .wt1(mc_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .v_hold(rs != R_IDLE),
         .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
     end else begin : g_nointer
         assign rf_req_ready = 1'b1; assign rf_done = 1'b0; assign rf_err = 1'b0;
@@ -456,7 +487,7 @@ module recon_top
         assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
         assign pw_we = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0;
-        assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
+        assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 1'b0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
         assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0;
     end endgenerate
 
@@ -569,18 +600,18 @@ module recon_top
     assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf, ref0: 3'(b.ref0),
                            mode_type: (b.ymode >= 5'd13 && b.ymode != 5'd15 && b.ymode != 5'd23)};   // 7.14.4 modeType
     always_ff @(posedge clk) begin
-        mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0;
+        mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0; blk_last_run <= 1'b0; blk_ready_set <= 1'b0;
         if (mc_done) mc_fin <= 1'b1;
         if (mc_busy) run_v <= 1'b0;
         if (rst) begin
-            bst <= B_IDLE; blk_ready <= 1'b0; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0; cur_par <= 1'b0;
+            bst <= B_IDLE; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0; cur_par <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
             // motion compensation states (inter blocks): compiled out at INTER = 0
             case (bst)
                 // ---- inter prediction (stage 2a): see the declarations above
-                B_MC_INIT: if (rs == R_IDLE) begin
+                B_MC_INIT: if (!b.intrabc || (rs == R_IDLE && pred_done[!cur_par])) begin   // a block copy reads the current frame
                     logic comp;
                     comp = !b.intrabc && (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7);
                     mc_comp <= comp; mc_ibc <= b.intrabc;
@@ -665,7 +696,7 @@ module recon_top
                         // fetch (fc34a84) the sequencer gets here while that run is in flight, and an intra write that lost
                         // the port was dropped (Argon test7588_6663 frame 8, plane 2 (0,79): the census-7 narrow-chroma
                         // diffs, 2026-11-07). The request waits for the filter and its blends to drain.
-                        if (filt_free) begin ii_req <= 1'b1; bst <= B_MC_II; end
+                        if (filt_free && rs == R_IDLE && pred_done[!cur_par]) begin ii_req <= 1'b1; bst <= B_MC_II; end
                     end else bst <= B_MC_UNIT;
                 end
                 B_MC_II: if (ii_done) bst <= B_MC_UNIT;                              // the intra prediction is in the frame memory
@@ -832,7 +863,7 @@ module recon_top
                         rq_sx[srun] <= mc_sx; rq_sy[srun] <= mc_sy; rq_l[srun] <= mc_l;
                         rq_ob_active[srun] <= ob_active; rq_ob_pass[srun] <= ob_pass; rq_ob_mlen[srun] <= ob_mlen;
                         rq_ii_active[srun] <= ii_active; rq_ii_wedge[srun] <= ii_wedge; rq_ii_mode[srun] <= ii_mode; rq_ii_lsh[srun] <= ii_lsh;
-                        rq_mb_active[srun] <= mb_active; rq_mb_diff[srun] <= mb_diff; rq_post[srun] <= mc_post; rq_mask_type[srun] <= b.mask_type;
+                        rq_mb_active[srun] <= mb_active; rq_mb_diff[srun] <= mb_diff; rq_post[srun] <= mc_post; rq_mask_type[srun] <= b.mask_type; rq_par[srun] <= cur_par;
                         bst <= B_MC_NEXT;
                     end
                 end
@@ -855,7 +886,7 @@ module recon_top
                         else bst <= B_MC_DRAIN;
                     end
                 end
-                B_MC_DRAIN: if (filt_free) begin blk_ready <= 1'b1; bst <= B_IDLE; end   // the block's last run has written its samples
+                B_MC_DRAIN: begin blk_last_run <= 1'b1; bst <= B_IDLE; end   // the last run has started; the tracker marks the block ready when it lands
                 B_MC_OB: begin
                     // the next overlap neighbour of this pass (above: entries 0 .. 3, needs the plane block >= BLOCK_8X8; left: 4 .. 7)
                     logic [50:0] e;
@@ -890,7 +921,7 @@ module recon_top
             endcase
         end else case (bst)
             B_IDLE: if (blk_take) begin
-                b <= ev_blk; bq[!cur_par] <= ev_blk; cur_par <= !cur_par; blk_ready <= 1'b0; bst <= B_FT0;
+                b <= ev_blk; bq[!cur_par] <= ev_blk; cur_par <= !cur_par; bst <= B_FT0;
             end
             // four neighbour-mode reads (issued by the combinational mm_addr; captured in the following state):
             // above Y, left Y, above UV, left UV
@@ -920,8 +951,8 @@ module recon_top
                     bst <= (INTER != 0) ? B_MC_INIT : B_IBC_INIT;        // with inter built: through the MC path (patch loaders)
                 end else if (blk_inter) begin
                     bst <= B_MC_INIT;
-                end else begin
-                    blk_ready <= 1'b1; bst <= B_IDLE;
+                end else if (pred_done[!cur_par]) begin         // intra: its edge reads need the previous block landed
+                    blk_ready_set <= 1'b1; bst <= B_IDLE;
                 end
             end
             // ---- intra block copy prediction, one plane at a time, one output sample per 4-5 cycles
@@ -954,7 +985,7 @@ module recon_top
                 if (ib_j + 8'd1 < ib_w) begin ib_j <= ib_j + 8'd1; bst <= B_IBC_R0; end
                 else if (ib_i + 8'd1 < ib_h) begin ib_j <= 8'd0; ib_i <= ib_i + 8'd1; bst <= B_IBC_R0; end
                 else if (ib_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin ib_pl <= ib_pl + 2'd1; bst <= B_IBC_PL; end
-                else begin blk_ready <= 1'b1; bst <= B_IDLE; end
+                else if (pred_done[!cur_par]) begin blk_ready_set <= 1'b1; bst <= B_IDLE; end
             end
             default: bst <= B_IDLE;
         endcase
@@ -1333,8 +1364,8 @@ module recon_top
     logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
     assign sb_r = ev_sb_r; assign sb_c = ev_sb_c;
-    assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE);
-    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready && !tx_ack;
+    assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE) && blk_ready_q[!cur_par];   // one block ahead at most
+    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready && !tx_ack && !mc_v_active && out_drained;
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)
     assign tx_rel = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;   // the slot release stays at the end (rec_fifo's in-flight count)
     assign ev_pop = sb_start || blk_take || tx_pop;
@@ -1596,7 +1627,7 @@ module recon_top
         if (ob_wr_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(ob_b_x); fb4_y = FBY'(ob_b_y); fb4_wdata = ob_b_pix; fb4_be = ob_b_be; end
         if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
     end
-    assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready || mi_blk_busy || mi_tx_busy;
+    assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready_q[0] || !blk_ready_q[1] || mi_blk_busy || mi_tx_busy;
 `ifndef SYNTHESIS
     // Shared-port claims (simulation only). The frame-memory ports fb4 / fb2 (writes) and fb (reads) are driven from
     // several places in the combinational block above, last assignment wins, so two claims in one cycle are one access

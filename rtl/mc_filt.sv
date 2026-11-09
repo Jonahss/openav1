@@ -51,6 +51,7 @@ module mc_filt
     // ---- run (parameters sampled at start) ----
     input  logic          start,
     input  logic          run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
+    input  logic          v_hold,              // hold the vertical side in V_IDLE (recon_top: while the transform FSM writes the frame buffer)
     input  logic          lst,                 // the patch list to filter
     input  logic          rbuf,                // the patch buffer to filter from
     input  logic [6:0]    w,                   // 2, 4, 8, .. 64 (<= 32 when scaled)
@@ -73,6 +74,8 @@ module mc_filt
     output logic          busy,
     output logic          h_ready,             // the horizontal side can take a run: idle, previous run handed to the vertical side
     output logic          done,
+    output logic          done_tag,            // the tag of the run that just finished (with done)
+    output logic          v_active,            // a run is in or waiting for the vertical side (it will write the frame buffer)
     // ---- output stream (modes 0, 2, 3) ----
     output logic          out_valid,
     output logic          out_tag,
@@ -198,6 +201,7 @@ module mc_filt
     logic [3:0] drain;
     assign busy = (hst != H_IDLE) || pend || (vst != V_IDLE);
     assign h_ready = (hst == H_IDLE) && !pend;
+    assign v_active = pend || (vst != V_IDLE);
 
     // ---------------------------------------------------------------- memory ports
     logic [12:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
@@ -366,7 +370,7 @@ module mc_filt
             endcase
             // ---------------- vertical side: strip words in, prediction out
             case (vst)
-                V_IDLE: if (pend) begin                             // take the pending run
+                V_IDLE: if (pend && !v_hold) begin                  // take the pending run (not while the transform FSM owns the write port)
                     pend <= 1'b0; vb <= q_sb; v_tag <= q_tag;
                     v_scaled <= q_scaled; v_warp <= q_warp; v_wg <= q_wg; v_wd <= q_wd; v_wsy <= q_wsy;
                     v_ngrp <= q_ngrp; v_h <= q_h; v_nrow <= q_nrow; v_bd <= q_bd; v_mode <= q_mode; v_wt0 <= q_wt0; v_wt1 <= q_wt1;
@@ -397,7 +401,7 @@ module mc_filt
                         end else begin vi <= vi + 7'd1; vpos <= vpos + 17'(v_ys); end
                     end else vt <= vt + 3'd1;
                 end
-                V_DRAIN: if (drain == 4'd0) begin done <= 1'b1; vst <= V_IDLE; end else drain <= drain - 4'd1;
+                V_DRAIN: if (drain == 4'd0) begin done <= 1'b1; done_tag <= v_tag; vst <= V_IDLE; end else drain <= drain - 4'd1;
                 default: vst <= V_IDLE;
             endcase
 
