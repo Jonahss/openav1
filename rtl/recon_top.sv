@@ -150,7 +150,22 @@ module recon_top
     logic        blk_ready;
     logic [5:0]  bw4, bh4;
     logic        av_u, av_l, av_uc, av_lc;
-    logic        ft_y, ft_uv;                              // intra filter type per plane class
+    logic        ftq_y [0:1], ftq_uv [0:1];                 // intra filter type per plane class, per block parity (step 1)
+    logic        ft_y, ft_uv;                              // the transform FSM's view: its block's
+    assign ft_y = ftq_y[t_par]; assign ft_uv = ftq_uv[t_par];
+    // the transform FSM's neighbour availability, from its block (the block FSM may already hold the next block)
+    logic        tav_u, tav_l, tav_uc, tav_lc; logic [5:0] tbw4, tbh4;
+    always_comb begin
+        tbw4 = num4x4w(bt.bsize); tbh4 = num4x4h(bt.bsize);
+        tav_u = is_inside(bt.r - MIW'(1), bt.c);
+        tav_l = is_inside(bt.r, bt.c - MIW'(1));
+        tav_uc = 1'b0; tav_lc = 1'b0;
+        if (bt.has_chroma) begin
+            tav_uc = tav_u; tav_lc = tav_l;
+            if (hdr.ssy && tbh4 == 6'd1) tav_uc = is_inside(bt.r - MIW'(2), bt.c);
+            if (hdr.ssx && tbw4 == 6'd1) tav_lc = is_inside(bt.r, bt.c - MIW'(2));
+        end
+    end
     always_comb begin
         bw4 = num4x4w(b.bsize); bh4 = num4x4h(b.bsize);
         av_u = is_inside(b.r - MIW'(1), b.c);
@@ -882,12 +897,12 @@ module recon_top
             B_FT3: begin nb_auv <= mm_rdata[8 * a_c_uv[3:0] +: 8]; bst <= B_FT4; end
             B_FT4: begin
                 nb_luv <= mm_rdata[8 * l_c_uv[3:0] +: 8];
-                ft_y <= (av_u && is_smooth(nb_ay[3:0])) || (av_l && is_smooth(nb_ly[3:0]));
+                ftq_y[cur_par] <= (av_u && is_smooth(nb_ay[3:0])) || (av_l && is_smooth(nb_ly[3:0]));
                 wr_i <= 6'd0; wr_j <= 1'b0;
                 bst <= B_WR;                             // mm_addr = first word to merge into; read lands in B_WR
             end
             B_WR: begin
-                if (wr_i == 6'd0 && !wr_j) ft_uv <= (av_uc && is_smooth(nb_auv[7:4])) || (av_lc && is_smooth(nb_luv[7:4]));
+                if (wr_i == 6'd0 && !wr_j) ftq_uv[cur_par] <= (av_uc && is_smooth(nb_auv[7:4])) || (av_lc && is_smooth(nb_luv[7:4]));
                 mm_we <= 1'b1; mm_waddr <= mm_addr;
                 mm_wdata <= mm_merge(mm_rdata, wr_j ? 4'd0 : b.c[3:0], wr_n, {b.uvmode, b.ymode[3:0]});
                 bst <= B_WR_W;
@@ -1223,8 +1238,8 @@ module recon_top
         is_pal = !ii_run && ((t.plane == 2'd0) ? (bt.pal_y != 4'd0) : (bt.pal_uv != 4'd0));
         is_cfl = !ii_run && (t.plane != 2'd0) && (bt.uvmode == UV_CFL_PRED);
         mode = ii_run ? ii_mode : (t.plane == 2'd0) ? bt.ymode[3:0] : (is_cfl ? DC_PRED : bt.uvmode);
-        have_l = ((t.plane == 2'd0) ? av_l : av_lc) || (t.x > base_x);
-        have_a = ((t.plane == 2'd0) ? av_u : av_uc) || (t.y > base_y);
+        have_l = ((t.plane == 2'd0) ? tav_l : tav_lc) || (t.x > base_x);
+        have_a = ((t.plane == 2'd0) ? tav_u : tav_uc) || (t.y > base_y);
         above_px = (PXW'(tw_px) < max_x - t.x + PXW'(1)) ? tw_px : 7'(max_x - t.x + PXW'(1));
         left_px  = (PXW'(th_px) < max_y - t.y + PXW'(1)) ? th_px : 7'(max_y - t.y + PXW'(1));
         pal_cols = (t.plane == 2'd0) ? bt.col_y : (t.plane == 2'd1) ? bt.col_u : bt.col_v;
