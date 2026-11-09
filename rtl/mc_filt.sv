@@ -54,6 +54,7 @@ module mc_filt
     input  logic          v_hold,              // hold the vertical side in V_IDLE (recon_top: while the transform FSM writes the frame buffer)
     input  logic          lst,                 // the patch list to filter
     input  logic          rbuf,                // the patch buffer to filter from
+    output logic [1:0]    h_buf_busy,          // per patch buffer: the horizontal side reads it (or a start claims it this cycle); ref_fetch's writer waits
     input  logic [6:0]    w,                   // 2, 4, 8, .. 64 (<= 32 when scaled)
     input  logic [6:0]    h,
     input  logic [1:0]    interp_x,            // interp_filter[1]
@@ -201,6 +202,7 @@ module mc_filt
     logic [3:0] drain;
     assign busy = (hst != H_IDLE) || pend || (vst != V_IDLE);
     assign h_ready = (hst == H_IDLE) && !pend;
+    assign h_buf_busy = ((hst != H_IDLE) ? (2'b01 << p_buf) : 2'b00) | (start ? (2'b01 << rbuf) : 2'b00);
     assign v_active = pend || (vst != V_IDLE);
 
     // ---------------------------------------------------------------- memory ports
