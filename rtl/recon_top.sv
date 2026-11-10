@@ -378,7 +378,15 @@ module recon_top
     assign pq_empty = (pq_n == 2'd0); assign pq_full = (pq_n == 2'd2);
     assign qh_d = done_cnt - pq_seq[pq_h[0]];
     assign qh_ready = !pq_has_rf[pq_h[0]] || (qh_d == 3'd1) || (qh_d == 3'd2);
-    assign run_go = !pq_empty && qh_ready && mc_h_ready && !run_v;
+    // A run record is reused by the run after next (the one-bit tag), and the blend pipelines (OBMC, inter-intra, masked)
+    // read the record of their words for a few cycles after the run's last word and its done. mc_filt's done comes one
+    // cycle after the last word since the output FIFO (rung B), so a start right behind it took the record while those
+    // words were still in the pipelines and they were written with the next run's plane and origin (2026-11-10, card
+    // census 15: 30 Argon streams; test211 frame 1, the last two words of an inter-intra chroma run landed in the other
+    // chroma plane). The start waits while words of the record it would take are still on their way.
+    logic        rec_held;
+    assign rec_held = (mc_out_valid || !out_drained) && (mc_out_tag == srun);
+    assign run_go = !pq_empty && qh_ready && mc_h_ready && !run_v && !rec_held;
     assign pq_pend[0] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b0) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b0);
     assign pq_pend[1] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b1) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b1);
     // Two run records (2026-11-08): mc_filt overlaps the horizontal pass of run n + 1 with the vertical pass of run n, so a
@@ -528,6 +536,7 @@ module recon_top
         endcase
     endfunction
     logic        pw_we, pw_buf, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4; logic [47:0] pw_d4;
+    logic        pw_we2, rf_pw_we2; logic [47:0] pw_d4b, rf_pw_d4b;   // ref_fetch writes word pairs (two words a cycle, 2026-11-09); the ring loader single words
 
     generate if (INTER != 0) begin : g_inter
     logic rf_pw_we, ff_pw_we, rf_pw_list, ff_pw_list; logic [6:0] rf_pw_row, ff_pw_row; logic [4:0] rf_pw_w4, ff_pw_w4; logic [47:0] rf_pw_d4, ff_pw_d4;
@@ -536,31 +545,33 @@ module recon_top
     assign pw_buf = ff_pw_we ? ibc_buf : rf_pw_buf;                 // ref_fetch names its buffer per request; the ring loader writes the copy's
     assign pw_list = ff_pw_we ? ff_pw_list : rf_pw_list; assign pw_row = ff_pw_we ? ff_pw_row : rf_pw_row;
     assign pw_w4 = ff_pw_we ? ff_pw_w4 : rf_pw_w4; assign pw_d4 = ff_pw_we ? ff_pw_d4 : rf_pw_d4;
+    assign pw_we2 = rf_pw_we2 && !ff_pw_we; assign pw_d4b = rf_pw_d4b;
     ref_fetch #(.PW(12), .RING(REF_RING)) u_rf (.clk, .rst,
         .req_valid(rf_req_valid && !pq_full), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(mc_ibc ? cur_fmt16 : ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
         .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .req_buf(pbuf), .buf_busy(mc_buf_busy), .done(rf_done), .err(rf_err),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
-        .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_d4(rf_pw_d4));
+        .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_d4(rf_pw_d4),
+        .patch_we2(rf_pw_we2), .patch_d4b(rf_pw_d4b));
     fb_fetch #(.PW(12), .FBX(FBX), .FBY(FBY)) u_ff (.clk, .rst,
         .req_valid(ff_req_valid), .req_ready(ff_req_ready), .req_lst(rf_lst), .req_plane(mc_pl), .req_lastx(rf_lastx), .req_lasty(rf_lasty),
         .req_x0(rf_x0), .req_y0(rf_y0), .req_w(rf_w), .req_r_lo(ff_r_lo), .req_r_hi(ff_r_hi), .done(ff_done),
         .fb_re(ff_fb_re), .fb_plane(ff_fb_plane), .fb_x(ff_fb_x), .fb_y(ff_fb_y), .fb_rdata4,
         .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
-        .patch_we(pw_we), .patch_buf(pw_buf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4),
+        .patch_we(pw_we), .patch_buf(pw_buf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4), .patch_we2(pw_we2), .patch_d4b(pw_d4b),
         .start(mc_start), .run_tag(mc_tag), .lst(st_l), .rbuf(run_buf), .w(st_sw), .h(st_sh), .interp_x(st_i1), .interp_y(st_i0),
         .x_frac0(st_xf0), .y_frac0(st_yf0), .x_step(st_xs), .y_step(st_ys),
         .warp(st_warp), .w_alpha(st_wa), .w_beta(st_wb), .w_gamma(st_wg), .w_delta(st_wd), .w_sx4(st_wsx), .w_sy4(st_wsy),
         .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .v_hold(rs != R_IDLE),
-        .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
+        .out_wait(!out_drained), .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
     end else begin : g_nointer
         assign rf_req_ready = 1'b1; assign rf_done = 1'b0; assign rf_err = 1'b0;
         assign ff_req_ready = 1'b1; assign ff_done = 1'b0; assign ff_fb_re = 1'b0; assign ff_fb_plane = 2'd0; assign ff_fb_x = '0; assign ff_fb_y = '0;
         assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
-        assign pw_we = 1'b0; assign pw_buf = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0;
+        assign pw_we = 1'b0; assign pw_buf = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0; assign pw_we2 = 1'b0; assign pw_d4b = '0;
         assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 1'b0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
         assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0;
     end endgenerate

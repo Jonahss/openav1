@@ -78,16 +78,27 @@ def patch_extent(w, h, xs, ys):
 
 
 async def write_patch(dut, lst, ref, refW, refH, x0, y0, w, h, xs=1024, ys=1024):
+    """The clamped patch, the way the two writers deliver it: word pairs (ref_fetch: patch_we2 / patch_d4b beside an
+    even word) or single words (the block-copy loader), chosen per row; a row of an odd word count ends with a single."""
     rows, words = patch_extent(w, h, xs, ys)
+    def word(srow, w4):
+        v = 0
+        for l in range(4):
+            v |= srow[im.clip3(0, refW - 1, x0 - 3 + 4 * w4 + l)] << (12 * l)
+        return v
     for r in range(rows):
         srow = ref[im.clip3(0, refH - 1, y0 - 3 + r)]
-        for w4 in range(words):
-            v = 0
-            for l in range(4):
-                v |= srow[im.clip3(0, refW - 1, x0 - 3 + 4 * w4 + l)] << (12 * l)
+        pairs = random.random() < 0.7
+        w4 = 0
+        while w4 < words:
+            two = pairs and w4 % 2 == 0 and w4 + 1 < words
             dut.patch_we.value = 1; dut.patch_list.value = lst; dut.patch_row.value = r; dut.patch_w4.value = w4
-            dut.patch_d4.value = v
+            dut.patch_d4.value = word(srow, w4)
+            dut.patch_we2.value = 1 if two else 0
+            dut.patch_d4b.value = word(srow, w4 + 1) if two else random.getrandbits(48)
             await RisingEdge(dut.clk)
+            w4 += 2 if two else 1
+    dut.patch_we2.value = 0
     dut.patch_we.value = 0
     await Timer(1, "ns")
 
@@ -147,7 +158,7 @@ async def mc_filt_vs_model(dut):
     rng = random.Random(seed)
     cocotb.start_soon(Clock(dut.clk, 10, "ns").start())
     dut.rst.value = 1
-    dut.patch_we.value = 0; dut.start.value = 0
+    dut.patch_we.value = 0; dut.patch_we2.value = 0; dut.start.value = 0
     for _ in range(3):
         await RisingEdge(dut.clk)
     dut.rst.value = 0
@@ -358,7 +369,7 @@ async def mc_filt_overlap(dut):
     rng = random.Random(seed)
     cocotb.start_soon(Clock(dut.clk, 10, "ns").start())
     dut.rst.value = 1
-    dut.patch_we.value = 0; dut.start.value = 0; dut.patch_buf.value = 0; dut.rbuf.value = 0; dut.run_tag.value = 0
+    dut.patch_we.value = 0; dut.patch_we2.value = 0; dut.start.value = 0; dut.patch_buf.value = 0; dut.rbuf.value = 0; dut.run_tag.value = 0
     for _ in range(3):
         await RisingEdge(dut.clk)
     dut.rst.value = 0
