@@ -378,7 +378,15 @@ module recon_top
     assign pq_empty = (pq_n == 2'd0); assign pq_full = (pq_n == 2'd2);
     assign qh_d = done_cnt - pq_seq[pq_h[0]];
     assign qh_ready = !pq_has_rf[pq_h[0]] || (qh_d == 3'd1) || (qh_d == 3'd2);
-    assign run_go = !pq_empty && qh_ready && mc_h_ready && !run_v;
+    // A run record is reused by the run after next (the one-bit tag), and the blend pipelines (OBMC, inter-intra, masked)
+    // read the record of their words for a few cycles after the run's last word and its done. mc_filt's done comes one
+    // cycle after the last word since the output FIFO (rung B), so a start right behind it took the record while those
+    // words were still in the pipelines and they were written with the next run's plane and origin (2026-11-10, card
+    // census 15: 30 Argon streams; test211 frame 1, the last two words of an inter-intra chroma run landed in the other
+    // chroma plane). The start waits while words of the record it would take are still on their way.
+    logic        rec_held;
+    assign rec_held = (mc_out_valid || !out_drained) && (mc_out_tag == srun);
+    assign run_go = !pq_empty && qh_ready && mc_h_ready && !run_v && !rec_held;
     assign pq_pend[0] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b0) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b0);
     assign pq_pend[1] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b1) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b1);
     // Two run records (2026-11-08): mc_filt overlaps the horizontal pass of run n + 1 with the vertical pass of run n, so a
