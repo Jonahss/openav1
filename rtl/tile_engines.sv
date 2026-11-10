@@ -69,6 +69,13 @@ module tile_engines
     output blk_rec_t          ev_blk,
     output tx_rec_t           ev_tx,
     input  logic              ev_pop,
+    output logic              ev_par,         // early block take (rec_fifo): the head's block parity, a taken head, the next block record
+    output logic              ev_taken,
+    output logic              nb_valid,
+    output blk_rec_t          nb_blk,
+    output logic              nb_par,
+    output logic              nb_at_head,
+    input  logic              nb_pop,
     input  logic              tx_rel,         // reconstruction finished a transform block (to the current engine's queue)
     output logic [3:0]        tx_inflight,
     input  logic              rc_busy,        // reconstruction busy: engines are switched only between blocks
@@ -113,6 +120,8 @@ module tile_engines
     logic [3:0]  h_infl [TE];
     logic [TE-1:0] h_rel;
     logic [TE-1:0] h_pop;
+    logic [TE-1:0] h_par, h_taken, h_nb_valid, h_nb_par, h_nb_at_head, h_nb_pop;
+    blk_rec_t    h_nb_blk [TE];
     logic [TE-1:0] mask;                                      // the engines of this tile row (eng_mask, or engine 0)
     assign mask = (TE == 1 || eng_mask == '0) ? TE'(1) : eng_mask;
     for (genvar e = 0; e < TE; e++) begin : g_e
@@ -138,7 +147,9 @@ module tile_engines
                       .blk_info(e_blk_info[e]), .blk_rec(e_blk_rec[e]), .tx_done(e_tx_done[e]), .tx_rec(e_tx_rec[e]), .tx_ack(e_tx_ack[e]),
                       .w_slot(e_slot_w[e]),
                       .ev_valid(h_valid[e]), .ev_kind(h_kind[e]), .ev_sb_r(h_sb_r[e]), .ev_sb_c(h_sb_c[e]), .ev_blk(h_blk[e]), .ev_tx(h_tx[e]),
-                      .ev_pop(h_pop[e]), .tx_rel(h_rel[e]), .tx_inflight(h_infl[e]));
+                      .ev_pop(h_pop[e]), .ev_par(h_par[e]), .ev_taken(h_taken[e]),
+                      .nb_valid(h_nb_valid[e]), .nb_blk(h_nb_blk[e]), .nb_par(h_nb_par[e]), .nb_at_head(h_nb_at_head[e]), .nb_pop(h_nb_pop[e]),
+                      .tx_rel(h_rel[e]), .tx_inflight(h_infl[e]));
     end
     assign in_ready = e_in_ready;
     assign rb_data  = e_rb_data[rb_sel];
@@ -234,9 +245,16 @@ module tile_engines
     assign ev_sb_c  = h_sb_c[cur];
     assign ev_blk   = h_blk[cur];
     assign ev_tx    = h_tx[cur];
+    assign ev_par   = h_par[cur];
+    assign ev_taken = h_taken[cur];
+    assign nb_valid = h_nb_valid[cur] && !(TE > 1 && (new_row || exhausted[cur]));
+    assign nb_blk   = h_nb_blk[cur];
+    assign nb_par   = h_nb_par[cur];
+    assign nb_at_head = h_nb_at_head[cur];
     assign tx_inflight = h_infl[cur];
     always_comb begin
         h_pop = '0; h_pop[cur] = ev_pop && ev_valid;
+        h_nb_pop = '0; h_nb_pop[cur] = nb_pop && nb_valid;
         h_rel = '0; h_rel[cur] = tx_rel;
         // a held palette block (its colour map lives in the syntax stage) is released once ITS engine's queue has
         // drained and reconstruction is idle (the pop's busy may follow a cycle later). dec_top's old engine-blind

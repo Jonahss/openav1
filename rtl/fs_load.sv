@@ -84,6 +84,9 @@ module fs_load
     logic           issue, retire;
     assign issue  = (st == L_AR) && m_axi_arready;
     assign retire = m_axi_rvalid && m_axi_rlast;
+    logic [15:0]    d_beat;                                  // beat index within the run
+    logic [MIW-1:0] d_line;
+    logic           d_job, d_sp_we, d_last;
     always_ff @(posedge clk) begin
         ld_done <= 1'b0; sp_we <= 1'b0;
         if (rst) begin
@@ -134,9 +137,6 @@ module fs_load
 
     // ---------------------------------------------------------------- the data side: beats into the bands, in order
     logic [3:0]     bcnt;                                    // beat index within the burst
-    logic [15:0]    d_beat;                                  // beat index within the run
-    logic [MIW-1:0] d_line;
-    logic           d_job, d_sp_we, d_last;
     logic [47:0]    acc;                                     // 16 segment ids being gathered
     logic [255:0]   row_acc;                                 // a CDF row's four beats
     logic [1:0]     row_q;

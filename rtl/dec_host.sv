@@ -474,6 +474,7 @@ module dec_host
     assign m_axi_wlast   = fs_active ? fs_wlast : (d_cnt == d_len - 5'd1);
     assign m_axi_wvalid  = fs_active ? fs_wvalid : (ds == D_W);
     assign m_axi_bready  = fs_active ? fs_bready : (ds == D_B);
+    logic           fs_go, fs_pend, fs_sel;
     // the read channels belong to ref_fetch (dec_top)
 
     always_ff @(posedge clk) begin
@@ -564,7 +565,6 @@ module dec_host
     typedef enum logic [3:0] {FS_IDLE, FS_SEL, FS_LINE, FS_LEN, FS_AW, FS_RD, FS_W, FS_B, FS_DONE,
                               SV_RB, SV_WAIT, SV_LEN, SV_AW, SV_W, SV_DRAIN, SV_DONE} fsstate_t;
     fsstate_t       fss;
-    logic           fs_go, fs_pend, fs_sel;
     logic [SBW-1:0] fs_row;
     logic [39:0]    fs_mv_cur, fs_seg_cur;                   // the next line's address per area
     logic [15:0]    fs_lines, fs_line;                       // lines of this row in the current area, the current line

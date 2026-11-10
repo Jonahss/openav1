@@ -23,6 +23,8 @@ for path in sys.argv[1:]:
             if '*/' in s: s = s[:s.index('/*')] + s[s.index('*/') + 2:]
             else: s = s[:s.index('/*')]; in_block = True
         s = s.split('//')[0]
+        s = re.sub(r"\d*'[sS]?[bdhoBDHO][0-9a-fA-F_xzXZ?]+", "0", s)   # sized literals: 6'd0 is not a use of d0
+        if re.match(r'^\s*typedef\s+struct\b.*\}\s*\w+\s*;', s): s = ''   # one-line struct typedef: its fields are not uses
         code.append(s)
     # find module-scope declarations (indent of 4 spaces = module scope in this repo) and typedef names/enum members
     decl = {}

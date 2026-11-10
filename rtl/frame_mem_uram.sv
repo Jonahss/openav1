@@ -111,6 +111,14 @@ module frame_mem_uram #(
     logic [AW-1:0]  a_addr, b_addr;
     logic [71:0]    a_d, b_d;
     logic [71:0]    a_q, b_q;
+    // read and write requests captured at E_b (the clk edge); reads applied at E_a, writes at the next E_b
+    logic           wq_we [2];
+    logic [8:0]     wq_bwe [2];
+    logic [AW-1:0]  wq_addr [2];
+    logic [71:0]    wq_d [2];
+    logic           rq_en [2];
+    logic [AW-1:0]  rq_addr [2];
+    logic [SW-1:0]  rq_sel [2];
 `ifdef SYNTHESIS
     // The UltraRAMs instantiated directly (2026-10-27), not through the XPM macro: NU independent URAM288s (no cascade),
     // each enabled by its own address decode, and an output mux whose select is a register loaded at E_b only. With
@@ -192,14 +200,6 @@ module frame_mem_uram #(
     logic host_slot;                                         // the host read takes read-port 1's slot when idle
     logic h_ok1;
     assign host_slot = !re[1];
-    // read and write requests captured at E_b (the clk edge); reads applied at E_a, writes at the next E_b
-    logic           wq_we [2];
-    logic [8:0]     wq_bwe [2];
-    logic [AW-1:0]  wq_addr [2];
-    logic [71:0]    wq_d [2];
-    logic           rq_en [2];
-    logic [AW-1:0]  rq_addr [2];
-    logic [SW-1:0]  rq_sel [2];
     always_ff @(posedge clk2x) if (!phase) begin
         wq_we[0] <= we[0]; wq_we[1] <= we[1];
         rq_en[0] <= re[0];               rq_addr[0] <= waddr(r_plane[1:0], rx0, ry0);

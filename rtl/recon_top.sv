@@ -42,6 +42,14 @@ module recon_top
     input  blk_rec_t    ev_blk,
     input  tx_rec_t     ev_tx,
     output logic        ev_pop,
+    // early block take (rec_fifo, 2026-11-09): the head's block parity, a taken head, the next untaken block record
+    input  logic        ev_par,
+    input  logic        ev_taken,
+    input  logic        nb_valid,
+    input  blk_rec_t    nb_blk,
+    input  logic        nb_par,
+    input  logic        nb_at_head,
+    output logic        nb_pop,
     output logic        tx_rel,               // a transform block is fully written (R_MIW): its coefficient slot is free
     output logic [2:0]  q_slot,
     output logic [9:0]  q_addr,
@@ -138,6 +146,18 @@ module recon_top
         clip255 = (v < 0) ? 8'd0 : (v > 11'sd255) ? 8'd255 : 8'(v);
     endfunction
 
+    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
+    typedef enum logic [4:0] {
+        R_IDLE, R_SETUP,
+        R_PAL, R_PAL_LAST,
+        R_EDGE, R_IP_START, R_IP_W,
+        R_CFL_L, R_CFL_D, R_CFL_D2, R_CFL_START, R_CFL_W,
+        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4,
+        R_FIN, R_MIW
+    } rst_t;
+    rst_t rs;
+    logic sb_start, blk_take;
+    logic ii_run;                                            // the transform FSM runs an inter-intra intra prediction
     // ================================================================ block state (latched on blk_info)
     blk_rec_t    b;                                          // the block FSM's block (latched at blk_take)
     // Block-ahead MC step 1 (2026-11-08): transform events are popped when taken, so the block FSM can take the next
@@ -148,7 +168,11 @@ module recon_top
     logic        cur_par, t_par;
     blk_rec_t    bt;
     logic        tx_par;                                     // the block the transform side works for: its event's block, or the
-    assign tx_par = ii_run ? cur_par : t_par;                //   block FSM's block during an inter-intra intra prediction (ii_run)
+    assign tx_par = ii_run ? cur_par : t_par;
+    // a transform event of an earlier block still queued at the head (early block take, 2026-11-09): the block FSM's
+    // paths that read the reconstructed picture (inter-intra prediction, block copy) wait for it to be processed
+    logic        tx_pending_other;
+    assign tx_pending_other = ev_valid && (ev_kind == 2'd0) && (ev_par != cur_par);                //   block FSM's block during an inter-intra intra prediction (ii_run)
     assign bt = bq[tx_par];
     // Block-ahead MC step 2 (2026-11-08): the block FSM leaves a block once its last run has STARTED; the block is ready
     // for its transform events when every run of its parity has finished (mc_filt done, counted per parity through the
@@ -420,10 +444,15 @@ module recon_top
     logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
     assign out_drained = !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v;   // fm2: three read stages
     assign filt_free = !mc_busy && !run_v && out_drained;
-    assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained && !pq_pend[0];
-    assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained && !pq_pend[1];
-    logic blk_last_run, blk_ready_set, mc_tag_par;
-    assign mc_tag_par = rq_par[mc_tag];
+    logic mc_tag_par;                                        // the block parity of the run being started (declared before its use:
+    assign mc_tag_par = rq_par[mc_tag];                      // Vivado binds an identifier used before its declaration to an implicit net, Synth 8-6901)
+    // a run in its start cycle has left the queue (pq_pend) but is not counted yet (runs_started follows mc_start): without
+    // the mc_start term the block read as landed for that one cycle, and the next block's wedge mask fill, which only
+    // holds its first write, started under a queued inter-intra run of the previous block and overwrote its mask
+    // (2026-11-09, Argon test6641 frame 1: the early block take puts the next block in B_MC_MASK at that moment)
+    assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained && !pq_pend[0] && !(mc_start && (mc_tag_par == 1'b0));
+    assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained && !pq_pend[1] && !(mc_start && (mc_tag_par == 1'b1));
+    logic blk_last_run, blk_ready_set;
     // the tracker: runs started per parity (with the start pulse), runs finished per parity (mc_filt done, the run's
     // record says which block); the block is ready once its last run has started and all of its runs are done
     always_ff @(posedge clk) begin
@@ -432,12 +461,12 @@ module recon_top
         end else begin
             if (mc_start) runs_started[mc_tag_par] <= runs_started[mc_tag_par] + 8'd1;
             if (mc_done) runs_done[rq_par[mc_done_tag]] <= runs_done[rq_par[mc_done_tag]] + 8'd1;
-            if (blk_take) begin blk_ready_q[!cur_par] <= 1'b0; blk_last_started[!cur_par] <= 1'b0; end
+            if (blk_take) begin blk_ready_q[nb_par] <= 1'b0; blk_last_started[nb_par] <= 1'b0; end
             if (blk_last_run) blk_last_started[cur_par] <= 1'b1;
             if (blk_last_run_q) blk_last_started[blk_last_par_q] <= 1'b1;
             if (blk_ready_set) blk_ready_q[cur_par] <= 1'b1;
             for (int p = 0; p < 2; p++)
-                if (blk_last_started[p] && pred_done[p] && !(blk_take && (1'(p) == !cur_par))) blk_ready_q[p] <= 1'b1;
+                if (blk_last_started[p] && pred_done[p] && !(blk_take && (1'(p) == nb_par))) blk_ready_q[p] <= 1'b1;
         end
     end
     logic [135:0] mb_a_pair, mb_a2_pair;
@@ -457,7 +486,7 @@ module recon_top
     // a virtual transform record of the block size, written into the frame memory first), then the single inter
     // prediction blended in through the OBMC read-modify-write path: fb = Round2(m intra + (64 - m) inter, 6), m from
     // Ii_Weights_1d (sizeScale = 128 / max(w, h) of the plane block) or the wedge buffer (wedge_interintra)
-    logic        ii_active, ii_wedge, ii_req, ii_run, ii_done;
+    logic        ii_active, ii_wedge, ii_req, ii_done;
     logic [1:0]  ii_pl;
     logic [PXW-1:0] ii_x, ii_y;
     logic [4:0]  ii_txsz;
@@ -578,17 +607,6 @@ module recon_top
         return ih.gm_type[2 * (int'(r) - 1) +: 2];
     endfunction
 
-    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
-    typedef enum logic [4:0] {
-        R_IDLE, R_SETUP,
-        R_PAL, R_PAL_LAST,
-        R_EDGE, R_IP_START, R_IP_W,
-        R_CFL_L, R_CFL_D, R_CFL_D2, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4,
-        R_FIN, R_MIW
-    } rst_t;
-    rst_t rs;
-    logic sb_start, blk_take;
     logic [MIW-1:0] sb_r, sb_c;
     logic [5:0] sb_size4;
     logic [11:0] pix_max;
@@ -674,7 +692,7 @@ module recon_top
             // motion compensation states (inter blocks): compiled out at INTER = 0
             case (bst)
                 // ---- inter prediction (stage 2a): see the declarations above
-                B_MC_INIT: if (!b.intrabc || (rs == R_IDLE && pred_done[!cur_par])) begin   // a block copy reads the current frame
+                B_MC_INIT: if (!b.intrabc || (rs == R_IDLE && pred_done[!cur_par] && !tx_pending_other)) begin   // a block copy reads the current frame
                     logic comp;
                     comp = !b.intrabc && (b.ref1 >= 4'd1) && (b.ref1 <= 4'd7);
                     mc_comp <= comp; mc_ibc <= b.intrabc;
@@ -760,7 +778,7 @@ module recon_top
                         // fetch (fc34a84) the sequencer gets here while that run is in flight, and an intra write that lost
                         // the port was dropped (Argon test7588_6663 frame 8, plane 2 (0,79): the census-7 narrow-chroma
                         // diffs, 2026-11-07). The request waits for the filter and its blends to drain.
-                        if (filt_free && pq_empty && rs == R_IDLE && pred_done[!cur_par]) begin ii_req <= 1'b1; bst <= B_MC_II; end
+                        if (filt_free && pq_empty && rs == R_IDLE && pred_done[!cur_par] && !tx_pending_other) begin ii_req <= 1'b1; bst <= B_MC_II; end
                     end else bst <= B_MC_UNIT;
                 end
                 B_MC_II: if (ii_done) bst <= B_MC_UNIT;                              // the intra prediction is in the frame memory
@@ -1020,7 +1038,7 @@ module recon_top
             endcase
         end else case (bst)
             B_IDLE: if (blk_take) begin
-                b <= ev_blk; bq[!cur_par] <= ev_blk; cur_par <= !cur_par; bst <= B_FT0;
+                b <= nb_blk; bq[nb_par] <= nb_blk; cur_par <= nb_par; bst <= B_FT0;
             end
             // four neighbour-mode reads (issued by the combinational mm_addr; captured in the following state):
             // above Y, left Y, above UV, left UV
@@ -1463,11 +1481,18 @@ module recon_top
     logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
     assign sb_r = ev_sb_r; assign sb_c = ev_sb_c;
-    assign blk_take = ev_valid && (ev_kind == 2'd1) && (bst == B_IDLE) && blk_ready_q[!cur_par];   // one block ahead at most
-    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready && !tx_ack && !mc_v_active && out_drained;
+    // the block FSM takes the next untaken block record, past the transform events still queued for the current block
+    // (early block take, 2026-11-09); one block ahead at most: the parity it reuses must have landed. A transform event
+    // waits for ITS block's prediction (the record's parity), not the block FSM's current block.
+    // and never into the record slot the transform FSM is still reading: with the early take the next-but-one block (same
+    // parity) becomes visible as soon as the current block's last transform event is popped, while that event is still in
+    // progress on bq[par] (2026-11-09: the left-column availability flipped mid-edge-preparation, dec_top seed 3 444)
+    assign blk_take = ev_valid && nb_valid && (bst == B_IDLE) && blk_ready_q[nb_par] && !((rs != R_IDLE) && (tx_par == nb_par));
+    assign nb_pop = blk_take && !nb_at_head;
+    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && !mc_v_active && out_drained;
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)
     assign tx_rel = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;   // the slot release stays at the end (rec_fifo's in-flight count)
-    assign ev_pop = sb_start || blk_take || tx_pop;
+    assign ev_pop = sb_start || (blk_take && nb_at_head) || tx_pop || (ev_valid && ev_taken);   // a taken block record at the head pops as a no-op
     assign q_slot = t.slot;
     logic [6:0]  ci, cj;                                   // generic pixel / coefficient counters (row, col)
     logic [8:0]  ek, n_edges;                              // edge entry counter: 0..2(w+h)
@@ -1790,7 +1815,7 @@ module recon_top
             if (sb_start) begin bdf_wr <= '0; l_sb_r <= sb_r; l_sb_c <= sb_c; end
             case (rs)
                 R_IDLE: if (tx_take) begin
-                    t <= ev_tx; t_par <= cur_par; rs <= R_SETUP;
+                    t <= ev_tx; t_par <= ev_par; rs <= R_SETUP;
                 end else if (ii_req) begin
                     // inter-intra: the intra prediction of the plane block through the edge / ipred flow
                     t <= '{plane: ii_pl, x: ii_x, y: ii_y, txsz: ii_txsz, txtype: 4'd0, eob: 11'd0, skip: 1'b1, lossless: 1'b0, slot: 3'd0};
