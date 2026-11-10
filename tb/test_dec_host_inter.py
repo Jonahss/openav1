@@ -214,6 +214,47 @@ async def ila_log(dut, path):
     dut._log.info(f"ila_log: {n} cycles -> {path}")
 
 
+async def win_trace(dut, rc, spec):
+    from cocotb.triggers import RisingEdge
+    """TD_WINTRACE=<araddr hex>[,<min cycle>[,<before>[,<after>]]]: a ring of per-cycle snapshots of the reconstruction's
+    scheduling state, dumped when the decoder issues a reference read at that address (after <min cycle>), with <after>
+    more cycles. For a netlist replay that diverges in time at a known AR: what the RTL was waiting for just before it.
+    2026-11-09, the mc-take gate rung (shard q2a: one fetch 36 cycles earlier in the netlist)."""
+    import collections
+    parts = spec.split(",")
+    target = int(parts[0], 16); cmin = int(parts[1]) if len(parts) > 1 else 0
+    before = int(parts[2]) if len(parts) > 2 else 120; after = int(parts[3]) if len(parts) > 3 else 60
+    names = ["bst", "rs", "cur_par", "t_par", "ii_run", "blk_take", "tx_take", "ev_valid", "ev_kind", "ev_par", "ev_taken", "nb_valid", "nb_par",
+             "nb_at_head", "pq_n", "run_go", "mc_start", "mc_busy", "mc_h_ready", "mc_v_active", "mc_done", "out_drained", "filt_free",
+             "mk_hold", "tx_pending_other", "rf_req_valid", "rf_req_ready", "rf_done", "acc_cnt", "done_cnt", "run_v", "mc_out_valid"]
+    sigs = [(n, getattr(rc, n)) for n in names if hasattr(rc, n)]
+    arrs = [(n, getattr(rc, n)) for n in ("blk_ready_q", "pred_done", "blk_last_started", "runs_started", "runs_done") if hasattr(rc, n)]
+    ring = collections.deque(maxlen=before); cyc = 0; left = -1
+    try:
+        q = dut.u_dec.u_ts.g_e[0].u_q                    # the event queue of engine 0 (rec_fifo)
+    except Exception:
+        q = None
+    qn = ["sb_start", "blk_info", "tx_ack", "ev_valid", "ev_kind", "ev_pop", "ev_par", "ev_taken", "nb_valid", "nb_par", "nb_at_head",
+          "nb_pop", "count", "nb_idx", "nb_q_valid", "flush", "rst"]
+    qs = [(n, getattr(q, n)) for n in qn] if q is not None else []
+    def snap():
+        v = " ".join(f"{n} {int(h.value)}" for n, h in sigs)
+        a = " ".join(f"{n} {int(h[0].value)}/{int(h[1].value)}" for n, h in arrs)
+        qq = " ".join(f"{n}={int(h.value):x}" for n, h in qs)        # the netlist harness's TP format (vector n = cycle - 1)
+        return f"WT {cyc} ar {int(dut.m_axi_arvalid.value)}{int(dut.m_axi_arready.value)} 0x{int(dut.m_axi_araddr.value):x} | {v} | {a} | TPQ n={cyc - 1} {qq}"
+    while True:
+        await RisingEdge(dut.clk)
+        cyc += 1
+        line = snap()
+        if left > 0:
+            dut._log.info(line); left -= 1
+            continue
+        ring.append(line)
+        if left < 0 and cyc >= cmin and int(dut.m_axi_arvalid.value) and int(dut.m_axi_araddr.value) == target:
+            for l in ring: dut._log.info(l)
+            ring.clear(); left = after
+
+
 @cocotb.test()
 async def dec_host_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
@@ -222,6 +263,8 @@ async def dec_host_inter_vs_model(dut):
         cocotb.start_soon(TI.mc_trace(dut, dut.u_dec.u_rc))      # the same MC launch trace as test_dec_inter
     if os.environ.get("TD_ARTRACE"):
         cocotb.start_soon(TI.ar_trace(dut))
+    if os.environ.get("TD_WINTRACE"):
+        cocotb.start_soon(win_trace(dut, dut.u_dec.u_rc, os.environ["TD_WINTRACE"]))
     if os.environ.get("TD_FBTRACE"):
         _pl = os.environ["TD_FBTRACE"]; cocotb.start_soon(TI.fb_trace(dut, dut.u_dec.u_rc, int(_pl) if _pl.isdigit() else None))
     if os.environ.get("TS_ILA_LOG"):

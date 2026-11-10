@@ -167,6 +167,8 @@ module frame_state_w
     logic [MIW-1:0] mv_r0, mv_c0;                            // the block's first odd row / column
     assign mv_r0 = cur.r | MIW'(1);
     assign mv_c0 = cur.c | MIW'(1);
+    // the DMA's busy, tracked here from ready / done
+    logic dma_busy_q;
     always_ff @(posedge clk) begin
         fs_row_ready <= 1'b0;
         if (rst || frame_start) begin
@@ -213,8 +215,6 @@ module frame_state_w
             if (!fs_row_ready && !dma_busy_q && (pend[dma_buf])) begin fs_row_ready <= 1'b1; fs_row_idx <= pend_row[dma_buf]; end
         end
     end
-    // the DMA's busy, tracked here from ready / done
-    logic dma_busy_q;
     always_ff @(posedge clk) begin
         if (rst || frame_start) begin dma_busy_q <= 1'b0; dma_buf <= 1'b0; end
         else if (fs_row_ready) dma_busy_q <= 1'b1;

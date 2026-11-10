@@ -146,6 +146,18 @@ module recon_top
         clip255 = (v < 0) ? 8'd0 : (v > 11'sd255) ? 8'd255 : 8'(v);
     endfunction
 
+    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
+    typedef enum logic [4:0] {
+        R_IDLE, R_SETUP,
+        R_PAL, R_PAL_LAST,
+        R_EDGE, R_IP_START, R_IP_W,
+        R_CFL_L, R_CFL_D, R_CFL_D2, R_CFL_START, R_CFL_W,
+        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4,
+        R_FIN, R_MIW
+    } rst_t;
+    rst_t rs;
+    logic sb_start, blk_take;
+    logic ii_run;                                            // the transform FSM runs an inter-intra intra prediction
     // ================================================================ block state (latched on blk_info)
     blk_rec_t    b;                                          // the block FSM's block (latched at blk_take)
     // Block-ahead MC step 1 (2026-11-08): transform events are popped when taken, so the block FSM can take the next
@@ -432,14 +444,15 @@ module recon_top
     logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
     assign out_drained = !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v;   // fm2: three read stages
     assign filt_free = !mc_busy && !run_v && out_drained;
+    logic mc_tag_par;                                        // the block parity of the run being started (declared before its use:
+    assign mc_tag_par = rq_par[mc_tag];                      // Vivado binds an identifier used before its declaration to an implicit net, Synth 8-6901)
     // a run in its start cycle has left the queue (pq_pend) but is not counted yet (runs_started follows mc_start): without
     // the mc_start term the block read as landed for that one cycle, and the next block's wedge mask fill, which only
     // holds its first write, started under a queued inter-intra run of the previous block and overwrote its mask
     // (2026-11-09, Argon test6641 frame 1: the early block take puts the next block in B_MC_MASK at that moment)
     assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained && !pq_pend[0] && !(mc_start && (mc_tag_par == 1'b0));
     assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained && !pq_pend[1] && !(mc_start && (mc_tag_par == 1'b1));
-    logic blk_last_run, blk_ready_set, mc_tag_par;
-    assign mc_tag_par = rq_par[mc_tag];
+    logic blk_last_run, blk_ready_set;
     // the tracker: runs started per parity (with the start pulse), runs finished per parity (mc_filt done, the run's
     // record says which block); the block is ready once its last run has started and all of its runs are done
     always_ff @(posedge clk) begin
@@ -473,7 +486,7 @@ module recon_top
     // a virtual transform record of the block size, written into the frame memory first), then the single inter
     // prediction blended in through the OBMC read-modify-write path: fb = Round2(m intra + (64 - m) inter, 6), m from
     // Ii_Weights_1d (sizeScale = 128 / max(w, h) of the plane block) or the wedge buffer (wedge_interintra)
-    logic        ii_active, ii_wedge, ii_req, ii_run, ii_done;
+    logic        ii_active, ii_wedge, ii_req, ii_done;
     logic [1:0]  ii_pl;
     logic [PXW-1:0] ii_x, ii_y;
     logic [4:0]  ii_txsz;
@@ -594,17 +607,6 @@ module recon_top
         return ih.gm_type[2 * (int'(r) - 1) +: 2];
     endfunction
 
-    // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
-    typedef enum logic [4:0] {
-        R_IDLE, R_SETUP,
-        R_PAL, R_PAL_LAST,
-        R_EDGE, R_IP_START, R_IP_W,
-        R_CFL_L, R_CFL_D, R_CFL_D2, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4,
-        R_FIN, R_MIW
-    } rst_t;
-    rst_t rs;
-    logic sb_start, blk_take;
     logic [MIW-1:0] sb_r, sb_c;
     logic [5:0] sb_size4;
     logic [11:0] pix_max;
