@@ -432,8 +432,12 @@ module recon_top
     logic        mb_a_v, mb_b_v;                             // masked blend pipeline: A (the mask data lands, blend), B (write)
     assign out_drained = !ob_rd_v && !ob_rd2_v && !ob_rd3_v && !ob_wr_v && !mb_a_v && !mb_b_v;   // fm2: three read stages
     assign filt_free = !mc_busy && !run_v && out_drained;
-    assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained && !pq_pend[0];
-    assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained && !pq_pend[1];
+    // a run in its start cycle has left the queue (pq_pend) but is not counted yet (runs_started follows mc_start): without
+    // the mc_start term the block read as landed for that one cycle, and the next block's wedge mask fill, which only
+    // holds its first write, started under a queued inter-intra run of the previous block and overwrote its mask
+    // (2026-11-09, Argon test6641 frame 1: the early block take puts the next block in B_MC_MASK at that moment)
+    assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained && !pq_pend[0] && !(mc_start && (mc_tag_par == 1'b0));
+    assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained && !pq_pend[1] && !(mc_start && (mc_tag_par == 1'b1));
     logic blk_last_run, blk_ready_set, mc_tag_par;
     assign mc_tag_par = rq_par[mc_tag];
     // the tracker: runs started per parity (with the start pulse), runs finished per parity (mc_filt done, the run's

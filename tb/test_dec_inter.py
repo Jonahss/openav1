@@ -113,6 +113,37 @@ async def fb_trace(dut, rc, plane=None):
             dut._log.info(f"FB4 pl{int(rc.fb4_plane.value)} ({int(rc.fb4_x.value)},{int(rc.fb4_y.value)}) be 0x{int(rc.fb4_be.value):x} data 0x{int(rc.fb4_wdata.value):x} live pl{int(rc.mc_pl.value)} bst {int(rc.bst.value)} mcv {int(rc.mc_out_valid.value)} obw {int(rc.ob_wr_v.value)} mbb {int(rc.mb_b_v.value)}")
 
 
+async def take_trace(dut, rc):
+    """TD_TAKETRACE: the event order of the reconstruction: block takes (position, parity, early or at the head), transform
+    takes (the parity of the event), the inter-intra request / done, and the edge reads of an inter-intra intra
+    prediction (which samples it saw). 2026-11-09, the early block take: which block an FSM was working for, and when."""
+    cyc = 0
+    while True:
+        await RisingEdge(dut.clk)
+        cyc += 1
+        if int(rc.blk_take.value):
+            bb = TT.unpack(TT.BLK_FIELDS, int(rc.nb_blk.value))
+            dut._log.info(f"TK {cyc} blk r{bb['r']} c{bb['c']} bs{bb['bsize']} par {int(rc.nb_par.value)} head {int(rc.nb_at_head.value)} "
+                          f"ii {bb['interintra']} skip {bb['skip']} inter {bb['is_inter']} rs {int(rc.rs.value)} "
+                          f"ready {int(rc.blk_ready_q[0].value)}{int(rc.blk_ready_q[1].value)}")
+        if int(rc.tx_take.value):
+            dut._log.info(f"TK {cyc} tx par {int(rc.ev_par.value)} bst {int(rc.bst.value)} cur_par {int(rc.cur_par.value)}")
+        if int(rc.ii_req.value):
+            dut._log.info(f"TK {cyc} ii_req pl{int(rc.ii_pl.value)} ({int(rc.ii_x.value)},{int(rc.ii_y.value)}) cur_par {int(rc.cur_par.value)} "
+                          f"rs {int(rc.rs.value)} tx_take {int(rc.tx_take.value)} ev_valid {int(rc.ev_valid.value)} kind {int(rc.ev_kind.value)}")
+        if int(rc.mc_start.value):
+            dut._log.info(f"TK {cyc} mc_start par {int(rc.mc_tag_par.value)} pred_done {int(rc.pred_done[0].value)}{int(rc.pred_done[1].value)}")
+        if int(rc.run_go.value):
+            dut._log.info(f"TK {cyc} run_go pred_done {int(rc.pred_done[0].value)}{int(rc.pred_done[1].value)}")
+        if int(rc.bst.value) == 29 and not int(rc.mk_hold.value) and int(rc.mk_x.value) == 0 and int(rc.mk_y.value) == 0:
+            dut._log.info(f"TK {cyc} mask fill starts cur_par {int(rc.cur_par.value)} pred_done {int(rc.pred_done[0].value)}{int(rc.pred_done[1].value)}")
+        if int(rc.ii_done.value):
+            dut._log.info(f"TK {cyc} ii_done")
+        if int(rc.ii_run.value) and int(rc.fb_re.value):
+            dut._log.info(f"TK {cyc} ii edge read ({int(rc.fb_x.value)},{int(rc.fb_y.value)}) have_a {int(rc.have_a_r.value)} "
+                          f"have_l {int(rc.have_l_r.value)} tx_par {int(rc.tx_par.value)} rs {int(rc.rs.value)}")
+
+
 @cocotb.test()
 async def dec_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
@@ -120,6 +151,10 @@ async def dec_inter_vs_model(dut):
         cocotb.start_soon(mc_trace(dut, dut.u_rc))
     if os.environ.get("TD_ARTRACE"):
         cocotb.start_soon(ar_trace(dut))
+    if os.environ.get("TD_TAKETRACE"):
+        cocotb.start_soon(take_trace(dut, dut.u_rc))
+    if os.environ.get("TD_FBTRACE"):
+        _pl = os.environ["TD_FBTRACE"]; cocotb.start_soon(fb_trace(dut, dut.u_rc, int(_pl) if _pl.isdigit() else None))
     if os.environ.get("TD_MVTRACE"):
         async def mv_trace():
             # every find_mv_stack result of the syntax block: position, refs, NumMvFound, RefStackMv[0..1], GlobalMvs
