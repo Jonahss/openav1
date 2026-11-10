@@ -121,6 +121,11 @@ async def ref_fetch_regions(dut):
                 key = (int(dut.patch_list.value), int(dut.patch_row.value), int(dut.patch_w4.value))
                 assert key not in got, f"iter {it}: patch word {key} written twice"
                 got[key] = int(dut.patch_d4.value)
+                if int(dut.patch_we2.value):                 # the pair's second word (two words a cycle, 2026-11-09)
+                    assert key[2] % 2 == 0, f"iter {it}: pair write at odd word {key}"
+                    key2 = (key[0], key[1], key[2] + 1)
+                    assert key2 not in got, f"iter {it}: patch word {key2} written twice"
+                    got[key2] = int(dut.patch_d4b.value)
             if int(dut.done.value):
                 break
             await Timer(1, "ns")
@@ -217,6 +222,11 @@ async def ref_fetch_pipelined(dut):
                 key = (int(dut.patch_list.value), int(dut.patch_row.value), int(dut.patch_w4.value))
                 assert key not in got[dones], f"group {stats['groups']} request {dones}: patch word {key} written twice"
                 got[dones][key] = int(dut.patch_d4.value)
+                if int(dut.patch_we2.value):
+                    assert key[2] % 2 == 0, f"group {stats['groups']} request {dones}: pair write at odd word {key}"
+                    key2 = (key[0], key[1], key[2] + 1)
+                    assert key2 not in got[dones], f"group {stats['groups']} request {dones}: patch word {key2} written twice"
+                    got[dones][key2] = int(dut.patch_d4b.value)
             if int(dut.done.value):
                 dones += 1
                 state["dones"] = dones
