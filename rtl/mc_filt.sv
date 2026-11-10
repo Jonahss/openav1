@@ -252,7 +252,11 @@ module mc_filt
     assign f_stall = (f_cnt >= FCW'(OUT_FIFO - 12));   // the vertical pipeline holds up to 6 entries in flight
     assign f_empty = (f_cnt == '0) && !f_qv && !f_curv && !f_we;
     assign busy = (hst != H_IDLE) || pend || (vst != V_IDLE) || !f_empty;
-    assign h_ready = (hst == H_IDLE) && !pend;
+    // At most two runs alive (started, done not yet pulsed): recon_top keeps two run records, selected by the one-bit
+    // tag, and a run's output words stay in the FIFO after the vertical side has moved on, so a third run started
+    // then would take the record its words still need (2026-11-09: every inter suite failed without this)
+    logic [1:0]  alive;
+    assign h_ready = (hst == H_IDLE) && !pend && (alive < 2'd2);
     assign h_buf_busy = ((hst != H_IDLE) ? (2'b01 << p_buf) : 2'b00) | (start ? (2'b01 << rbuf) : 2'b00);
     assign v_active = pend || (vst != V_IDLE) || !f_empty;
 
@@ -385,7 +389,7 @@ module mc_filt
         h0_v <= 1'b0; h0_two <= 1'b0; h0_b <= 1'b0; v0_v <= 1'b0; v0_two <= 1'b0; v0_b <= 1'b0;
         if (f_we) fifo_ram[f_wp] <= f_d;
         if (rst) begin
-            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 1'b0;
+            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 1'b0; alive <= 2'd0;
             hst <= H_IDLE; vst <= V_IDLE; pend <= 1'b0; hb <= 1'b0; vb <= 1'b0; hdrain <= 3'd0;
             h1_v <= 1'b0; h2_v <= 1'b0; h3_v <= 1'b0; h4_v <= 1'b0;
             v1_v <= 1'b0; v2_v <= 1'b0; v3_v <= 1'b0; v4_v <= 1'b0;
@@ -394,7 +398,9 @@ module mc_filt
             // still runs the previous one (the passes of consecutive runs overlap); it is handed over once its strip is complete
 `ifndef SYNTHESIS
             if (start && !(hst == H_IDLE && !pend)) $fatal(1, "mc_filt: start while not h_ready");
+            if (start && alive == 2'd2 && !done) $fatal(1, "mc_filt: a third run started while two are alive");
 `endif
+            alive <= alive + 2'(start) - 2'(done);       // done is registered: the pulse visible this cycle
             case (hst)
                 H_IDLE: if (start) begin
                     p_list <= lst; p_buf <= rbuf;
