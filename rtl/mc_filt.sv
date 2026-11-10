@@ -94,6 +94,7 @@ module mc_filt
     output logic          done_tag,            // the tag of the run that just finished (with done)
     output logic          v_active,            // a run is in or waiting for the vertical side (it will write the frame buffer)
     // ---- output stream (modes 0, 2, 3) ----
+    input  logic          out_wait,            // recon_top's blend pipelines hold words of an earlier run: the first word of a run waits
     output logic          out_valid,
     output logic          out_tag,
     output logic [6:0]    out_x,
@@ -246,6 +247,7 @@ module mc_filt
     fent_t       fifo_ram [0:OUT_FIFO-1];
     fent_t       f_d, f_q, f_cur;                        // entry being written / read ahead / being emitted
     logic        f_we, f_qv, f_curv, f_sel;
+    logic        f_first;                                // the next output word is the first of its run
     logic [$clog2(OUT_FIFO)-1:0] f_wp, f_rp;
     logic [FCW-1:0] f_cnt;                  // entries in the memory, not yet read ahead
     logic        f_stall, f_empty;
@@ -389,7 +391,7 @@ module mc_filt
         h0_v <= 1'b0; h0_two <= 1'b0; h0_b <= 1'b0; v0_v <= 1'b0; v0_two <= 1'b0; v0_b <= 1'b0;
         if (f_we) fifo_ram[f_wp] <= f_d;
         if (rst) begin
-            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 1'b0; alive <= 2'd0;
+            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 1'b0; alive <= 2'd0; f_first <= 1'b1;
             hst <= H_IDLE; vst <= V_IDLE; pend <= 1'b0; hb <= 1'b0; vb <= 1'b0; hdrain <= 3'd0;
             h1_v <= 1'b0; h2_v <= 1'b0; h3_v <= 1'b0; h4_v <= 1'b0;
             v1_v <= 1'b0; v2_v <= 1'b0; v3_v <= 1'b0; v4_v <= 1'b0;
@@ -635,9 +637,14 @@ module mc_filt
             begin
                 logic fin, take, rd;
                 fin = 1'b0;
-                if (f_curv) begin
-                    if (f_cur.fin) begin done <= 1'b1; done_tag <= f_cur.tag; fin = 1'b1; end
+                // A run's words used to start at least 15 cycles after the previous run's last one (drain + warm-up), so the
+                // read-modify-write blends of an OBMC / inter-intra / masked run (a few cycles behind their words) never met
+                // the direct writes of the next run on the frame-memory port; out of the FIFO the runs are back to back,
+                // so the first word of a run waits for those pipelines (2026-11-09: 'fb4 write port claimed twice: mc 1 ob 1')
+                if (f_curv && !(!f_cur.fin && f_first && out_wait)) begin
+                    if (f_cur.fin) begin done <= 1'b1; done_tag <= f_cur.tag; fin = 1'b1; f_first <= 1'b1; end
                     else begin
+                        f_first <= 1'b0;
                         out_valid <= 1'b1; out_tag <= f_cur.tag; out_y <= f_cur.y; out_mask <= f_cur.mask;
                         if (!f_sel) begin
                             out_x <= {f_cur.g, 2'b00}; out_pix4 <= f_cur.pixa; out_pair <= f_cur.paira;
