@@ -167,7 +167,7 @@ def main():
     ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
     ap.add_argument("--dma", action="store_true", help="the picture through the DMA engine into the framebuffer's spare lines")
     ap.add_argument("--overlap", action="store_true", help="with --inter: read each picture back while the card decodes the next frame (output lags one frame; --show shows the newest)")
-    ap.add_argument("--show", action="store_true", help="with --dma / --dma-base: also put each picture on the screen (8-bit 4:2:0, RGB565 fb0)")
+    ap.add_argument("--show", action="store_true", help="with --dma / --dma-base: also put each picture on the screen (8-bit 4:2:0, RGB565 fb0); with --xdma: every output picture on the host's /dev/fb0 (32 bpp, 1:1 from the top-left corner)")
     ap.add_argument("--flip", action="store_true", help="with --show: the picture turned by 180 degrees (panel mounted upside down)")
     ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
     ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma --pipe")
@@ -252,6 +252,14 @@ def main():
     elif args.dma:
         stage = FbStage()
         print(f"framebuffer {stage.xres}x{stage.yres} ({stage.bpp} bpp) at 0x{stage.smem_start:x}; staging {stage.stage_len} bytes at 0x{stage.base:x}")
+    screen = None                                # the host's own screen for the card path (--xdma --show): tools/host/fbshow.py
+    if args.show and args.xdma is not None:
+        try:
+            from fbshow import Screen
+            screen = Screen()
+            print(f"screen /dev/fb0 {screen.xres}x{screen.yres} ({screen.bpp} bpp): output pictures 1:1 from the top-left corner")
+        except (OSError, ImportError) as e:
+            print(f"--show: no screen ({e})")
     cfg = host.identify()
     where = regs.path if args.xdma is not None else f"0x{args.base:08x}"
     print(f"decoder at {where} ({'libhostregs.so' if fast else 'python'} traffic): FBX {cfg['fbx']} FBY {cfg['fby']} lanes {cfg['lanes']} uram {cfg['uram']} sb128 {int(cfg['sb128'])}; "
@@ -264,7 +272,7 @@ def main():
     def frames():
         if args.inter:
             for fi, hdr, planes, mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read, stage.write), name=Path(args.stream).name, card_state=args.card_state,
-                                                                   card_load=args.card_load, pool=args.pool, want_planes=bool(out or ref or y4m)):
+                                                                   card_load=args.card_load, pool=args.pool, want_planes=bool(out or ref or y4m or screen)):
                 t["lf"] = t.get("filters", 0.0)
                 t["tiles"] = t.get("tiles", 0.0) + t.get("model", 0.0) + t.get("setup", 0.0)
                 t["read"] = t.get("read", 0.0)
@@ -274,7 +282,7 @@ def main():
         else:
             yield from host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
                                           dma=(stage.base, stage.read) if stage else None, pipe=args.pipe,
-                                          want_planes=bool(out or ref or y4m) or stage is None, window=args.window)
+                                          want_planes=bool(out or ref or y4m or screen) or stage is None, window=args.window)
     pending = {}                                 # coded frame -> (hdr, planes, from the model?) until its last display
     phase = {"tiles": 0.0, "finish": 0.0, "lf": 0.0, "read": 0.0, "n": 0}   # host phase totals over the board-decoded frames
     ev_next = 0                                  # the next output picture to emit
@@ -288,6 +296,8 @@ def main():
             k = shown[ev_next]
             hdr_k, planes_k, from_model = pending[k]
             line = f"  shown #{ev_next} = coded frame {k}" + (" (model picture)" if from_model else "")
+            if screen is not None:
+                screen.show(hdr_k, planes_k)
             if ref is not None and planes_k is not None:
                 lo, hi = ref_events[ev_next]
                 bad = compare(ref[lo:hi], hdr_k, planes_k)
