@@ -468,10 +468,10 @@ async def dec_host_inter_vs_model(dut):
                     cur = {n: int(cd.perf_st[i].value) for i, n in enumerate(names)}
                     cur["blocks filtered"], cur["blocks copied"] = int(cd.perf_filt.value), int(cd.perf_copy.value)
                     prev = getattr(dut_perf_prev, "cdef", {})
-                    d = {n: v - (prev.get(n, 0) if v >= prev.get(n, 0) else 0) for n, v in cur.items()}   # a decoder reset zeroes them
+                    cd_d = {n: v - (prev.get(n, 0) if v >= prev.get(n, 0) else 0) for n, v in cur.items()}   # a decoder reset zeroes them
                     dut_perf_prev.cdef = cur
-                    busy = sum(v for n, v in d.items() if n != "IDLE" and not n.startswith("blocks"))
-                    dut._log.info(f"{tag}: cdef-FSM cycles (busy {busy}) " + ", ".join(f"{n} {v}" for n, v in sorted(d.items(), key=lambda kv: -kv[1]) if v))
+                    busy = sum(v for n, v in cd_d.items() if n != "IDLE" and not n.startswith("blocks"))
+                    dut._log.info(f"{tag}: cdef-FSM cycles (busy {busy}) " + ", ".join(f"{n} {v}" for n, v in sorted(cd_d.items(), key=lambda kv: -kv[1]) if v))
                 dut._log.info(f"{tag}: identical ({len(tile_idx)} tiles, {th0.UpscaledWidth}x{th0.FrameHeight} bd{th0.BitDepth}, "
                               f"{'inter' if not ph.FrameIsIntra else 'intra'}, {sum(1 for dd in decs for b in dd.blocks if b.get('inter'))} inter blocks)")
             else:
