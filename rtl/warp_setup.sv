@@ -73,7 +73,7 @@ module warp_setup
 
     // ---------------------------------------------------------------- state
     typedef enum logic [4:0] {W_IDLE, W_DET, W_DIV, W_DIVR, W_N2, W_N3, W_N4, W_N5, W_M2, W_M3, W_M4, W_M5,
-                              W_Q2, W_Q3, W_Q4, W_Q5, W_V, W_SH0, W_SG, W_SD1, W_SD2, W_FIN} st_t;
+                              W_Q2, W_Q3, W_Q4, W_Q5, W_T, W_V, W_SH0, W_SG, W_SD1, W_SD2, W_FIN} st_t;
     st_t st;
     // The shared multiplier: 64 x 32 (every second operand is a 32-bit sum, divFactor, a parameter or a LUT factor; the
     // low 64 bits of the product are what the 64 x 64 version kept), its product REGISTERED: a state that consumes it
@@ -137,15 +137,15 @@ module warp_setup
             W_Q2: begin q[2] <= clip24(r2s(prod, dsh), 24'sd57345, 24'sd73727); m_a <= num3; m_b <= dfac; st <= W_Q3; end
             W_Q3: begin q[3] <= clip24(r2s(prod, dsh), -24'sd8191, 24'sd8191); m_a <= num4; m_b <= dfac; st <= W_Q4; end
             W_Q4: begin q[4] <= clip24(r2s(prod, dsh), -24'sd8191, 24'sd8191); m_a <= num5; m_b <= dfac; st <= W_Q5; end
-            W_Q5: begin
-                logic signed [23:0] p5;
-                p5 = clip24(r2s(prod, dsh), 24'sd57345, 24'sd73727);
-                q[5] <= p5;
-                // p0 / p1 from Mv[0] and the block centre: the four products this cycle, the sums and clamps the next
+            W_Q5: begin q[5] <= clip24(r2s(prod, dsh), 24'sd57345, 24'sd73727); st <= W_T; end
+            // p0 / p1 from Mv[0] and the block centre: the four products this cycle, the sums and clamps the next. From the
+            // registered q[5] (timing rung 5): the product register through the rounding shift and the clamp straight into
+            // t_yb's multiplier was 32 logic levels, 26 failing endpoints of the ring-16 image of f9bfa6e and 91 of ring 12.
+            W_T: begin
                 t_xa <= 41'(signed'({1'b0, mid_x})) * 41'(signed'(25'(q[2]) - 25'sd65536));
                 t_xb <= 41'(signed'({1'b0, mid_y})) * 41'(q[3]);
                 t_ya <= 41'(signed'({1'b0, mid_x})) * 41'(q[4]);
-                t_yb <= 41'(signed'({1'b0, mid_y})) * 41'(signed'(25'(p5) - 25'sd65536));
+                t_yb <= 41'(signed'({1'b0, mid_y})) * 41'(signed'(25'(q[5]) - 25'sd65536));
                 st <= W_V;
             end
             W_V: begin
