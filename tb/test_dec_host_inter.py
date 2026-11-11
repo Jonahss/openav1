@@ -36,6 +36,21 @@ from host_regs import (R_START, HostDecoder, R_ID, R_CTRL, R_CFG, R_DMA_STATUS, 
 from axil import AxiLite                                     # noqa: E402
 from axi_mem import AxiMem                                   # noqa: E402
 
+class _PerfPrev:                                             # TS_PERF: the previous frame's cumulative counters
+    pass
+
+
+dut_perf_prev = _PerfPrev()
+
+
+def TD_enum_names(fname, tname):
+    import re
+    src = (Path(__file__).resolve().parent.parent / "rtl" / fname).read_text()
+    m = re.search(r"typedef enum[^{]*\{([^}]*)\}\s*" + tname + r"\s*;", src, re.S)
+    return [x.strip() for x in re.sub(r"//[^\n]*", "", m.group(1)).replace("\n", " ").split(",") if x.strip()]
+
+
+
 FLUSH_BASE = 0x80_0000_0000                                  # frame fi's picture at FLUSH_BASE + fi * FLUSH_STRIDE (40-bit space), or buffer k of TS_POOL
 FLUSH_STRIDE = TI.SLOT_STRIDE
 
@@ -447,6 +462,16 @@ async def dec_host_inter_vs_model(dut):
                                              blocks=[b for dd in decs for b in dd.blocks], visible=not th0.allow_intrabc)
                 fi_global += 1
                 stats["frames"] += 1
+                if os.environ.get("TS_PERF"):                # the CDEF stage's state histogram of this frame (cumulative counters: deltas)
+                    cd = dut.u_dec.u_cdef
+                    names = [n[2:] for n in TD_enum_names("cdef_top.sv", "st_t")]
+                    cur = {n: int(cd.perf_st[i].value) for i, n in enumerate(names)}
+                    cur["blocks filtered"], cur["blocks copied"] = int(cd.perf_filt.value), int(cd.perf_copy.value)
+                    prev = getattr(dut_perf_prev, "cdef", {})
+                    d = {n: v - (prev.get(n, 0) if v >= prev.get(n, 0) else 0) for n, v in cur.items()}   # a decoder reset zeroes them
+                    dut_perf_prev.cdef = cur
+                    busy = sum(v for n, v in d.items() if n != "IDLE" and not n.startswith("blocks"))
+                    dut._log.info(f"{tag}: cdef-FSM cycles (busy {busy}) " + ", ".join(f"{n} {v}" for n, v in sorted(d.items(), key=lambda kv: -kv[1]) if v))
                 dut._log.info(f"{tag}: identical ({len(tile_idx)} tiles, {th0.UpscaledWidth}x{th0.FrameHeight} bd{th0.BitDepth}, "
                               f"{'inter' if not ph.FrameIsIntra else 'intra'}, {sum(1 for dd in decs for b in dd.blocks if b.get('inter'))} inter blocks)")
             else:

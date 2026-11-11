@@ -519,4 +519,19 @@ module cdef_top
             default: st <= C_IDLE;
         endcase
     end
+    // cycle counter per state (simulation profiling, TS_PERF=1; read through the hierarchy by the testbench; not in the netlist).
+    // perf_filt / perf_copy: 8x8 blocks filtered / copied unfiltered.
+`ifndef SYNTHESIS
+    logic [31:0] perf_st [0:31];
+    logic [31:0] perf_filt, perf_copy;
+    always_ff @(posedge clk) begin
+        if (rst) begin perf_st <= '{default: 32'd0}; perf_filt <= 32'd0; perf_copy <= 32'd0; end
+        else begin
+            perf_st[5'(st)] <= perf_st[5'(st)] + 32'd1;
+            if (st == C_DECIDE) begin
+                if (!cidx[3] || (skips[0] && skips[1] && skips[2] && rd_info.skip)) perf_copy <= perf_copy + 32'd1; else perf_filt <= perf_filt + 32'd1;
+            end
+        end
+    end
+`endif
 endmodule
