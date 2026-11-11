@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif">
+<rect width="1200" height="675" fill="#fcfcfb"/>
+<text x="70" y="40" font-size="24" font-weight="700" fill="#0b0b0b">openav1 on the Alveo U200: 1080p decode speed</text>
+<text x="70" y="66" font-size="15" fill="#52514e">Frames per second on the same 548-frame clip, every picture checked against the reference decoder</text>
+<line x1="70" x2="950" y1="605.0" y2="605.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="610.0" font-size="13" fill="#52514e" text-anchor="end">0</text>
+<line x1="70" x2="950" y1="477.8" y2="477.8" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="482.8" font-size="13" fill="#52514e" text-anchor="end">5</text>
+<line x1="70" x2="950" y1="350.5" y2="350.5" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="355.5" font-size="13" fill="#52514e" text-anchor="end">10</text>
+<line x1="70" x2="950" y1="223.2" y2="223.2" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="228.2" font-size="13" fill="#52514e" text-anchor="end">15</text>
+<line x1="70" x2="950" y1="96.0" y2="96.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="101.0" font-size="13" fill="#52514e" text-anchor="end">20</text>
+<text x="60" y="82" font-size="13" fill="#52514e" text-anchor="end">fps</text>
+<line x1="70.0" x2="70.0" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="70.0" y="627" font-size="13" fill="#52514e" text-anchor="middle">Oct 30</text>
+<line x1="210.9" x2="210.9" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="210.9" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 1</text>
+<line x1="351.7" x2="351.7" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="351.7" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 3</text>
+<line x1="492.6" x2="492.6" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="492.6" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 5</text>
+<line x1="633.5" x2="633.5" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="633.5" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 7</text>
+<line x1="774.3" x2="774.3" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="774.3" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 9</text>
+<line x1="915.2" x2="915.2" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="915.2" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 11</text>
+<path d="M134.4,574.5 L147.5,574.5 L147.5,528.6 L307.1,528.6 L307.1,515.9 L399.2,515.9 L399.2,429.4 L409.9,429.4 L409.9,370.9 L410.9,370.9 L410.9,350.5 L455.4,350.5 L455.4,304.7 L786.3,304.7 L786.3,279.2 L860.5,279.2 L860.5,228.3 L906.0,228.3 L906.0,190.2" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="134.4" cy="574.5" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C01 2026-10-30 21:57: 1.2 fps checked. first full 548-frame decode; the host loads every frame's state through registers</title></circle>
+<circle cx="147.5" cy="528.6" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C02 2026-10-31 02:24: 3.0 fps checked. the card loads and saves its own frame state (stage B)</title></circle>
+<circle cx="307.1" cy="515.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C03 2026-11-02 08:48: 3.5 fps checked. raw-row read-back on the host</title></circle>
+<circle cx="399.2" cy="429.4" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C04 2026-11-03 16:11: 6.9 fps checked. reference prefetch</title></circle>
+<circle cx="409.9" cy="370.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C05 2026-11-03 19:49: 9.2 fps checked. block-ahead prefetch and a second tile engine</title></circle>
+<circle cx="410.9" cy="350.5" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C06 2026-11-03 20:09: 10.0 fps checked. faster motion-field loader and burst CDF save</title></circle>
+<circle cx="455.4" cy="304.7" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C07 2026-11-04 11:20: 11.8 fps checked. reference ring of 8</title></circle>
+<circle cx="786.3" cy="279.2" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C08 2026-11-09 04:06: 12.8 fps checked. filter passes pipelined (one tile engine image)</title></circle>
+<circle cx="860.5" cy="228.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C09 2026-11-10 05:23: 14.8 fps checked. two patch words and two vertical groups a cycle (rungs A and B); kept on the card as u200-fm2rf8te2e90p-d3ba9fd after the run-record fix</title></circle>
+<circle cx="906.0" cy="190.2" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C10 2026-11-10 20:52: 16.3 fps checked. four registers on old paths; 100 MHz closes with 0 failing endpoints</title></circle>
+<text x="158.4" y="579.5" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">1.2</text>
+<text x="198.9" y="579.5" font-size="12.5" fill="#52514e">first full clip on the card</text>
+<text x="143.5" y="476.6" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">3.0</text>
+<text x="143.5" y="493.6" font-size="12.5" fill="#52514e" text-anchor="start">frame state kept on the card</text>
+<text x="396.9" y="300.5" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">10.0</text>
+<text x="396.9" y="317.5" font-size="12.5" fill="#52514e" text-anchor="end">reference prefetch, second tile</text>
+<text x="396.9" y="334.5" font-size="12.5" fill="#52514e" text-anchor="end">engine, faster state loading</text>
+<text x="465.4" y="274.7" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">11.8</text>
+<text x="465.4" y="291.7" font-size="12.5" fill="#52514e" text-anchor="start">shorter reference queue</text>
+<text x="848.5" y="180.3" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">14.8</text>
+<text x="848.5" y="197.3" font-size="12.5" fill="#52514e" text-anchor="end">filter: two patch words and two</text>
+<text x="848.5" y="214.3" font-size="12.5" fill="#52514e" text-anchor="end">vertical groups a cycle (90 MHz)</text>
+<text x="922.0" y="195.2" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">16.3</text>
+<text x="972.0" y="195.2" font-size="12.5" fill="#52514e">timing fixes: back to 100 MHz</text>
+<circle cx="909.0" cy="149.4" r="5" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"><title>C10: 17.9 fps unchecked</title></circle>
+<text x="925.0" y="141.4" font-size="15" font-weight="700" fill="#0b0b0b">17.9</text>
+<text x="925.0" y="158.4" font-size="12.5" fill="#52514e">same image, checking off</text>
+<text x="70" y="661" font-size="12" fill="#52514e">Each dot is a card image measured end to end, host included. The line holds a speed until the next image. Table: docs/checkpoints/checkpoints.csv</text>
+</svg>

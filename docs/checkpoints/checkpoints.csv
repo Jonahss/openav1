@@ -1,0 +1,11 @@
+id,date_pt,fps_unchecked,fps_checked,identical,clock_mhz,image,commit,lut_pct,ff_pct,bram_pct,uram_pct,dsp_pct,layout,label,what_changed
+C01,2026-10-30 21:57,,1.2,500/500,100,,,,,,,,,24;5;start;first full clip on the card,first full 548-frame decode; the host loads every frame's state through registers
+C02,2026-10-31 02:24,,3.0,500/500,100,,,,,,,,,-4;-52;start;frame state kept on the card,the card loads and saves its own frame state (stage B)
+C03,2026-11-02 08:48,,3.5,500/500,100,u200-fm2s100p-0fd3b46,0fd3b46,26.27,6.69,38.96,56.15,12.30,,,raw-row read-back on the host
+C04,2026-11-03 16:11,,6.9,500/500,100,u200-fm2pfs100p-91c481f,91c481f,29.85,6.87,38.96,56.15,12.62,,,reference prefetch
+C05,2026-11-03 19:49,,9.2,500/500,100,u200-fm2pfbte2s100p-fc34a84,fc34a84,33.58,7.56,64.31,57.92,13.04,,,block-ahead prefetch and a second tile engine
+C06,2026-11-03 20:09,,10.0,500/500,100,u200-fm2mfs100p-0890cc6,0890cc6,29.63,7.01,36.18,56.25,13.19,,"-14;-50;end;reference prefetch, second tile|engine, faster state loading",faster motion-field loader and burst CDF save
+C07,2026-11-04 11:20,,11.8,500/500,100,u200-fm2rf8s100p-6b16192,6b16192,31.72,7.16,36.20,56.25,13.20,,10;-30;start;shorter reference queue,reference ring of 8
+C08,2026-11-09 04:06,,12.8,500/500,100,u200-fm2rf16s100p-40872d2,40872d2,34.97,7.50,36.02,56.35,13.19,,,filter passes pipelined (one tile engine image)
+C09,2026-11-10 05:23,,14.8,500/500,90,u200-fm2rf8te2s90p-86c2847,86c2847,35.81,7.96,59.12,57.92,14.69,,-12;-48;end;filter: two patch words and two|vertical groups a cycle (90 MHz),two patch words and two vertical groups a cycle (rungs A and B); kept on the card as u200-fm2rf8te2e90p-d3ba9fd after the run-record fix
+C10,2026-11-10 20:52,17.9,16.3,500/500,100,u200-fm2rf8te2s100p-88e3499,88e3499,35.59,7.97,59.12,57.92,14.69,C10-layout.png,16;5;start;timing fixes: back to 100 MHz,four registers on old paths; 100 MHz closes with 0 failing endpoints
