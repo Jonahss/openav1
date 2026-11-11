@@ -553,9 +553,18 @@ module lr_top
     logic ld_pend;                                      // a load read is in flight (lands this cycle)
     logic [PXW-1:0] ld_x;                                  // its x (aligned group of 4)
     logic ld_pend2; logic [PXW-1:0] ld_x2; logic [PXW:0] k_rule_r2; logic [3:0] k_slot_r2;   // the landing: two cycles after the read (2026-10-31)
+    // the load's write is registered (timing rung 1, 2026-11-10): the frame memories' read data went through the source
+    // mux straight into the line buffer (65 failing endpoints at 100 MHz, 96 % routing). The last group of a row now
+    // lands in the L_ROWS cycle after L_LOAD_LAST2; the first read of the ring is at least four cycles later
+    // (L_UNIT, L_REC, L_DECIDE, L_WPRO), and a following load writes another slot.
+    logic        lb_we_c;
+    logic [3:0]  lb_wslot_c;
+    logic [GW-1:0] lb_waddr_c;
+    logic [47:0] lb_wdata_c;
+    always_ff @(posedge clk) begin lb_we <= lb_we_c && !rst; lb_wslot <= lb_wslot_c; lb_waddr <= lb_waddr_c; lb_wdata <= lb_wdata_c; end
     always_comb begin
-        lb_we = ld_pend2; lb_wslot = k_slot_r2; lb_waddr = GW'(ld_x2 >> 2);
-        for (int l = 0; l < 4; l++) lb_wdata[l * 12 +: 12] = k_rule_r2[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
+        lb_we_c = ld_pend2; lb_wslot_c = k_slot_r2; lb_waddr_c = GW'(ld_x2 >> 2);
+        for (int l = 0; l < 4; l++) lb_wdata_c[l * 12 +: 12] = k_rule_r2[PXW] ? s0_rdata4[l * 12 +: 12] : s1_rdata4[l * 12 +: 12];
         // the compute phases move to the next group: output states every clock, the box phase at a group's last column
         win_shift = out_issue || (st == L_AB && ax[1:0] == 2'd3);
         s0_re = 1'b0; s1_re = 1'b0; s_plane = plane; s_x = FBX'(lx); s_y = FBY'(k_rule_r[PXW-1:0]);
