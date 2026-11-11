@@ -137,7 +137,7 @@ module blk_syntax
         S_LIT, S_LIT_W,
         S_NBW, S_MVFR, S_MVFR_GO, S_MVFR_W, S_MVHP, S_MVHP_GO, S_MVHP_W,   // shared with the intra block copy path (kept out of the inter group below)
         // inter frames (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33)
-        S_NBA, S_NBA_W, S_NBA_W2, S_NBL, S_NBL_W, S_NBL_W2, S_ISEG, S_SP_RD, S_SP_W, S_SP_END, S_SEGP_GO, S_SEGP_W,
+        S_NBA, S_NBA_W, S_NBA_W2, S_NBL, S_NBL_W, S_NBL_W2, S_ISEG, S_SP_RD, S_SP_W, S_SP_W1, S_SP_W2, S_SP_END, S_SEGP_GO, S_SEGP_W,
         S_SKM, S_SKM_GO, S_SKM_W, S_ISI, S_ISI_GO, S_ISI_W, S_RF, S_RFS_GO, S_RFS_W,
         S_MODE, S_CMODE_GO, S_CMODE_W, S_NEWMV_GO, S_NEWMV_W, S_ZEROMV_GO, S_ZEROMV_W, S_REFMV_GO, S_REFMV_W,
         S_DRL, S_DRL_IT, S_DRL_GO, S_DRL_W, S_AMV, S_AMV_NEXT,
@@ -572,14 +572,20 @@ module blk_syntax
         else if (if_at == 2'd3) ctx_interp = ctx_interp + 4'(if_lt);
         else ctx_interp = ctx_interp + 4'd3;
     end
-    // the segmentation map band word: minimum of the ids of the block's columns in it
+    // the segmentation map band word: minimum of the ids of the block's columns in it. Two registers on the way (timing
+    // rung 5): the band memory's word (sp_dq, S_SP_W) and the word's minimum (sp_wm_q, S_SP_W1); the running minimum
+    // takes it in S_SP_W2. The memory output through the 16 masked compares into sp_min's enable was 40 logic levels,
+    // the worst failing path of the ring-16 image of f9bfa6e. Two more cycles per band word of a block; only frames that
+    // read the segmentation map from the previous one take this path.
+    logic [47:0] sp_dq;
+    logic [2:0] sp_wm_q;
     logic [2:0] sp_word_min;
     always_comb begin
         sp_word_min = 3'd7;
         for (int k = 0; k < 16; k++) begin
             logic [MIW-1:0] gcol;
             gcol = {sp_w, 4'(k)};
-            if (gcol >= bc && gcol < bc + MIW'(sp_xmis) && sp_data[3 * k +: 3] < sp_word_min) sp_word_min = sp_data[3 * k +: 3];
+            if (gcol >= bc && gcol < bc + MIW'(sp_xmis) && sp_dq[3 * k +: 3] < sp_word_min) sp_word_min = sp_dq[3 * k +: 3];
         end
     end
     // needs_interp_filter (5.11.23)
@@ -843,8 +849,10 @@ module blk_syntax
                         sp_w_end <= (MIW-4)'((bc + ((MIW'(bw4) < hdr.mi_cols - bc) ? MIW'(bw4) : hdr.mi_cols - bc) - MIW'(1)) >> 4);
                     end
                     S_SP_RD: st <= S_SP_W;
-                    S_SP_W: begin
-                        if (sp_word_min < sp_min) sp_min <= sp_word_min;
+                    S_SP_W: begin sp_dq <= sp_data; st <= S_SP_W1; end          // the band word lands
+                    S_SP_W1: begin sp_wm_q <= sp_word_min; st <= S_SP_W2; end    // its minimum over the block's columns
+                    S_SP_W2: begin
+                        if (sp_wm_q < sp_min) sp_min <= sp_wm_q;
                         if (sp_w < sp_w_end) begin sp_w <= sp_w + 1'b1; st <= S_SP_RD; end
                         else if (sp_y + 6'd1 < sp_ymis) begin sp_y <= sp_y + 6'd1; sp_w <= sp_w0; st <= S_SP_RD; end
                         else st <= S_SP_END;
