@@ -184,6 +184,8 @@ def main():
                     "through /dev/xdmaN_c2h_0 (--dma-base is then a card address, default 0x10000000); implies --dma")
     ap.add_argument("--max-bad", type=int, default=8)
     ap.add_argument("--poll-timeout", type=float, default=30.0)
+    ap.add_argument("--perf-tiles", metavar="FILE", help="per tile (row): bytes, host seconds to the last byte pushed and to tile done, and the card's "
+                    "PERF_SYN / PERF_REC cycle counters, as CSV; a summary line on stdout (is the byte push on the critical path?)")
     args = ap.parse_args()
     if args.inter:
         args.window = True
@@ -240,6 +242,8 @@ def main():
             from hostlib import HostLib
             fast = HostLib(args.base)
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
+    if args.perf_tiles:
+        host.perf_tiles = []
     host.raw_planes = True                       # pictures as bytes / array rows: compare() and write_planes() take them as they are
     host.overlap_read = bool(args.overlap)
     stage = None
@@ -406,6 +410,16 @@ def main():
         print(f"host phases per board frame ({n}): tiles {1000 * phase['tiles'] / n:.1f} ms, filter tail {1000 * phase['lf'] / n:.1f} ms "
               f"(frame done {1000 * phase['finish'] / n:.1f} + flush {1000 * (phase['lf'] - phase['finish']) / n:.1f}), "
               f"read-back {1000 * phase['read'] / n:.1f} ms, other host work {1000 * other / n:.1f} ms = {1000 * dt_all / n:.1f} ms a frame")
+    if args.perf_tiles and host.perf_tiles:
+        pt = host.perf_tiles
+        with open(args.perf_tiles, "w") as f:
+            f.write("tag,bytes,push_ms,tile_ms,syn_stall_cycles,rec_idle_cycles\n")
+            for r in pt:
+                f.write(f"{r['tag']},{r['bytes']},{1000 * r['push_s']:.3f},{1000 * r['tile_s']:.3f},{r['syn_stall']},{r['rec_idle']}\n")
+        n = len(pt); tile = sum(r["tile_s"] for r in pt); push = sum(r["push_s"] for r in pt)
+        print(f"tiles ({n}): {1000 * tile / n:.1f} ms a tile on the host, the push ends after {1000 * push / n:.1f} ms; card counters a tile: "
+              f"syntax waited for reconstruction {sum(r['syn_stall'] for r in pt) / n:,.0f} cycles, reconstruction idle "
+              f"{sum(r['rec_idle'] for r in pt) / n:,.0f} cycles; {sum(r['bytes'] for r in pt) / n:,.0f} bytes a tile -> {args.perf_tiles}")
     sys.exit(1 if (n_bad_frames or n_model_bad) else 0)
 
 
