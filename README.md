@@ -12,7 +12,13 @@ This project is built by AI, though a human is involved.
 # current status
 
 *Argon profile-0 passing*
-*1080p at 3.6fps*
+*1080p at 17.9 fps (2026-11-10, Alveo U200 at 100 MHz)*
+
+![1080p decode speed on the Alveo U200 over time](docs/checkpoints/fps.png)
+
+![Placement of the decoder on the U200, checkpoint C10](docs/checkpoints/C10-layout.png)
+
+Speed, chip usage and a layout picture for every milestone: [docs/checkpoints](docs/checkpoints/).
 
 Verified against test videos on an FPGA:
 
