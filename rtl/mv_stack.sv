@@ -118,11 +118,18 @@ module mv_stack
     // ---------------------------------------------------------------- control
     typedef enum logic [3:0] {P_ROW1, P_COL1, P_TR, P_TPL, P_TL, P_ROW3, P_COL3, P_ROW5, P_COL5, P_END} phase_t;
     phase_t ph, ph_done;
-    typedef enum logic [5:0] {M_IDLE, M_GM_A, M_GM_B, M_GM_C, M_PH, M_ISSUE, M_WAIT, M_PROC, M_NEAR,
+    typedef enum logic [5:0] {M_IDLE, M_GM_A, M_GM_B, M_GM_C, M_PH, M_ISSUE, M_WAIT, M_WAIT2, M_PROC, M_NEAR,
                               M_TPL_ADV, M_TPL_ISSUE, M_TPL_WAIT0, M_TPL_PROC0, M_TPL_WAIT1, M_TPL_PROC1, M_TPL_ADD,
-                              M_SORT_END, M_SORT, M_EXTRA, M_EX_ISSUE, M_EX_WAIT, M_EX_P0, M_EX_P1, M_EX_NEXT, M_EX_COMB, M_FILL,
+                              M_SORT_END, M_SORT, M_EXTRA, M_EX_ISSUE, M_EX_WAIT, M_EX_WAIT2, M_EX_P0, M_EX_P1, M_EX_NEXT, M_EX_COMB, M_FILL,
                               M_CTX, M_CLAMP, M_SEL, M_DONE} st_t;
     st_t st;
+    // The scanned entry is registered before the candidate logic (timing rung 2b, 2026-11-10): mv_mem's data leaves its
+    // UltraRAM cascade 3.7 ns after the clock (fan-out 106) and the candidate compare / weight update behind it was the
+    // largest family left in the syntax stage at 100 MHz (st_row0, st_col0, weight: ~300 endpoints in the image of
+    // 86c2847). M_WAIT2 / M_EX_WAIT2 capture it; a scanned position takes four cycles, was three. On the 1080p clip
+    // the syntax stage waits on reconstruction for 65 % of a frame, so the stack's extra cycles are hidden.
+    mv_ent_t     ent_q;
+    logic        wr_q;
     logic        is_row, is_point;
     logic signed [MIS-1:0] d_row, d_col;         // scan offsets (after the odd-position adjustment)
     logic [5:0]  end4, i;
@@ -131,7 +138,7 @@ module mv_stack
     logic [5:0]  cand_len;
     logic [15:0] cand_w;
     logic [7:0]  hit;                         // stack match (idx < n_found)
-    // candidate of the current step (spatial: from rd_ent; temporal: tc*; extra: ex*)
+    // candidate of the current step (spatial: from ent_q; temporal: tc*; extra: ex*)
     logic signed [17:0] cand_r0, cand_c0, cand_r1, cand_c1;
     logic        sp_ok;                       // spatial: the neighbour is a candidate
     logic [1:0]  sp_cl;                       // single: which of the neighbour's lists matches (2 = none)
@@ -162,13 +169,13 @@ module mv_stack
     logic signed [17:0] ex_r0, ex_c0;         // single: the (sign-flipped) candidate
 
     logic        use_g, big;                  // spatial single-reference candidate: GLOBALMV substitution
-    logic signed [17:0] e_mv0r, e_mv0c, e_mv1r, e_mv1c;      // rd_ent MVs sign-extended
-    assign e_mv0r = 18'(signed'(rd_ent.mv_row));  assign e_mv0c = 18'(signed'(rd_ent.mv_col));
-    assign e_mv1r = 18'(signed'(rd_ent.mv1_row)); assign e_mv1c = 18'(signed'(rd_ent.mv1_col));
+    logic signed [17:0] e_mv0r, e_mv0c, e_mv1r, e_mv1c;      // ent_q MVs sign-extended
+    assign e_mv0r = 18'(signed'(ent_q.mv_row));  assign e_mv0c = 18'(signed'(ent_q.mv_col));
+    assign e_mv1r = 18'(signed'(ent_q.mv1_row)); assign e_mv1c = 18'(signed'(ent_q.mv1_col));
 
     always_comb begin
         // extra search: the neighbour's reference / MV of the list being processed, sign-flipped for a single reference
-        ex_ref = (st == M_EX_P1) ? rd_ent.ref1 : rd_ent.ref0;
+        ex_ref = (st == M_EX_P1) ? ent_q.ref1 : ent_q.ref0;
         ex_mr  = (st == M_EX_P1) ? e_mv1r : e_mv0r;
         ex_mc  = (st == M_EX_P1) ? e_mv1c : e_mv0c;
         if (sbias(ex_ref) != sbias(ref0)) begin ex_r0 = -ex_mr; ex_c0 = -ex_mc; end else begin ex_r0 = ex_mr; ex_c0 = ex_mc; end
@@ -181,31 +188,31 @@ module mv_stack
         else if (is_row) begin mv_r = MIS'(signed'({2'b0, r})) + d_row; mv_c = MIS'(signed'({2'b0, c})) + d_col + MIS'(signed'({7'b0, i})); end
         else begin mv_r = MIS'(signed'({2'b0, r})) + d_row + MIS'(signed'({7'b0, i})); mv_c = MIS'(signed'({2'b0, c})) + d_col; end
         // mv_mem address: the extra search holds its own
-        if (st == M_EX_ISSUE || st == M_EX_WAIT || st == M_EX_P0 || st == M_EX_P1 || st == M_EX_NEXT) begin
+        if (st == M_EX_ISSUE || st == M_EX_WAIT || st == M_EX_WAIT2 || st == M_EX_P0 || st == M_EX_P1 || st == M_EX_NEXT) begin
             rd_row = MIW'(ex_row); rd_col = MIW'(ex_col);
         end else begin rd_row = MIW'(mv_r); rd_col = MIW'(mv_c); end
         // step length from the entry just read
         if (is_point) cand_len = 6'd0;
-        else if (is_row) cand_len = (bw4 < num4x4w(rd_ent.bsize)) ? bw4 : num4x4w(rd_ent.bsize);
-        else cand_len = (bh4 < num4x4h(rd_ent.bsize)) ? bh4 : num4x4h(rd_ent.bsize);
+        else if (is_row) cand_len = (bw4 < num4x4w(ent_q.bsize)) ? bw4 : num4x4w(ent_q.bsize);
+        else cand_len = (bh4 < num4x4h(ent_q.bsize)) ? bh4 : num4x4h(ent_q.bsize);
         if (!is_point && far && cand_len < 6'd2) cand_len = 6'd2;
         if (!is_point && step16 && cand_len < 6'd4) cand_len = 6'd4;
         cand_w = is_point ? 16'd4 : 16'(cand_len) * 16'd2;
         // spatial candidate (add_ref_mv_candidate 7.10.2.7 -> search_stack 7.10.2.8 / compound_search_stack 7.10.2.9)
-        sp_cl = (rd_ent.ref0 == ref0) ? 2'd0 : (rd_ent.ref1 == ref0) ? 2'd1 : 2'd2;
-        big = (blk_w(rd_ent.bsize) >= 8'd8) && (blk_h(rd_ent.bsize) >= 8'd8);
-        use_g = rd_ent.globalmv_fam && (gmt(ref0) > TRANSLATION) && big;
+        sp_cl = (ent_q.ref0 == ref0) ? 2'd0 : (ent_q.ref1 == ref0) ? 2'd1 : 2'd2;
+        big = (blk_w(ent_q.bsize) >= 8'd8) && (blk_h(ent_q.bsize) >= 8'd8);
+        use_g = ent_q.globalmv_fam && (gmt(ref0) > TRANSLATION) && big;
         if (!comp) begin
-            sp_ok = rd_written && rd_ent.is_inter && (sp_cl != 2'd2);
+            sp_ok = wr_q && ent_q.is_inter && (sp_cl != 2'd2);
             cand_r0 = lower_prec(use_g ? g_row[0] : (sp_cl == 2'd1) ? e_mv1r : e_mv0r);
             cand_c0 = lower_prec(use_g ? g_col[0] : (sp_cl == 2'd1) ? e_mv1c : e_mv0c);
             cand_r1 = 18'sd0; cand_c1 = 18'sd0;
         end else begin
-            sp_ok = rd_written && rd_ent.is_inter && (rd_ent.ref0 == ref0) && (rd_ent.ref1 == ref1);
-            cand_r0 = lower_prec((rd_ent.globalmv_fam && gmt(ref0) > TRANSLATION) ? g_row[0] : e_mv0r);
-            cand_c0 = lower_prec((rd_ent.globalmv_fam && gmt(ref0) > TRANSLATION) ? g_col[0] : e_mv0c);
-            cand_r1 = lower_prec((rd_ent.globalmv_fam && gmt(ref1) > TRANSLATION) ? g_row[1] : e_mv1r);
-            cand_c1 = lower_prec((rd_ent.globalmv_fam && gmt(ref1) > TRANSLATION) ? g_col[1] : e_mv1c);
+            sp_ok = wr_q && ent_q.is_inter && (ent_q.ref0 == ref0) && (ent_q.ref1 == ref1);
+            cand_r0 = lower_prec((ent_q.globalmv_fam && gmt(ref0) > TRANSLATION) ? g_row[0] : e_mv0r);
+            cand_c0 = lower_prec((ent_q.globalmv_fam && gmt(ref0) > TRANSLATION) ? g_col[0] : e_mv0c);
+            cand_r1 = lower_prec((ent_q.globalmv_fam && gmt(ref1) > TRANSLATION) ? g_row[1] : e_mv1r);
+            cand_c1 = lower_prec((ent_q.globalmv_fam && gmt(ref1) > TRANSLATION) ? g_col[1] : e_mv1c);
         end
         // temporal / extra candidates replace the spatial one
         if (st == M_TPL_ADD) begin cand_r0 = tc_r0; cand_c0 = tc_c0; cand_r1 = tc_r1; cand_c1 = tc_c1; end
@@ -386,7 +393,7 @@ module mv_stack
                 endcase
             end
             // ---- one scanned position: address out, entry in, stack update (mv_mem answers two cycles after the
-            // address: M_ISSUE presents it, M_WAIT covers the latency, M_PROC consumes; the same for M_EX_*)
+            // address: M_ISSUE presents it, M_WAIT covers the latency, M_WAIT2 registers the entry, M_PROC consumes; the same for M_EX_*)
             M_ISSUE: begin
                 if (!is_inside(mv_r, mv_c)) begin
                     // scan row / col: stop the whole scan; point: nothing to add
@@ -394,11 +401,12 @@ module mv_stack
                     if (ph != P_TR) begin ph <= phase_t'(ph + 4'd1); ph_done <= ph; end
                 end else st <= M_WAIT;
             end
-            M_WAIT: st <= M_PROC;
+            M_WAIT: st <= M_WAIT2;
+            M_WAIT2: begin ent_q <= rd_ent; wr_q <= rd_written; st <= M_PROC; end
             M_PROC: begin
                 if (sp_ok) begin
                     fm <= 1'b1;
-                    if (rd_ent.newmv_fam) newmv_count <= newmv_count + 6'd1;
+                    if (ent_q.newmv_fam) newmv_count <= newmv_count + 6'd1;
                     if (|hit) begin
                         for (int k = 0; k < 8; k++) if (hit[k]) weight[k] <= weight[k] + cand_w;
                     end else if (n_found < 4'd8) begin
@@ -516,7 +524,8 @@ module mv_stack
                     end else st <= comp ? M_EX_COMB : M_FILL;
                 end else st <= M_EX_WAIT;
             end
-            M_EX_WAIT: st <= M_EX_P0;
+            M_EX_WAIT: st <= M_EX_WAIT2;
+            M_EX_WAIT2: begin ent_q <= rd_ent; wr_q <= rd_written; st <= M_EX_P0; end
             M_EX_P0, M_EX_P1: begin
                 if (INTER != 0 && ex_ref >= 4'd1 && ex_ref <= 4'd7) begin
                     if (!comp) begin
@@ -542,8 +551,8 @@ module mv_stack
                 st <= (st == M_EX_P0) ? M_EX_P1 : M_EX_NEXT;
             end
             M_EX_NEXT: begin
-                if (!ex_pass) begin ex_idx <= ex_idx + num4x4w(rd_ent.bsize); ex_col <= ex_col + MIS'(signed'({9'b0, num4x4w(rd_ent.bsize)})); end
-                else begin ex_idx <= ex_idx + num4x4h(rd_ent.bsize); ex_row <= ex_row + MIS'(signed'({9'b0, num4x4h(rd_ent.bsize)})); end
+                if (!ex_pass) begin ex_idx <= ex_idx + num4x4w(ent_q.bsize); ex_col <= ex_col + MIS'(signed'({9'b0, num4x4w(ent_q.bsize)})); end
+                else begin ex_idx <= ex_idx + num4x4h(ent_q.bsize); ex_row <= ex_row + MIS'(signed'({9'b0, num4x4h(ent_q.bsize)})); end
                 st <= M_EX_ISSUE;
             end
             M_EX_COMB: begin
