@@ -11,7 +11,23 @@ out="logs/nightly-$tag.txt"
 mkdir -p logs
 : > "$out"
 rc=0
-run() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the suites whose name matches: reruns after a fix)
+# NIGHTLY_PAR=<n> (default 1: one suite after another, as before): up to n suites at the same time, each with its own
+# build directory (TS_BUILD_TAG = the suite's name). The lines of the result file then come in the order the suites
+# finish; rc is counted from the FAIL lines at the end. The suites were sequential from habit and from the days the
+# CPU ran hot; 22 of them took 3.4 h on a 64-thread machine (2026-11-11).
+PAR=${NIGHTLY_PAR:-1}
+slot() { [[ $PAR -gt 1 ]] || return 0; while (( $(jobs -rp | wc -l) >= PAR )); do sleep 2; done; }
+run() {
+  [[ -n "${NIGHTLY_ONLY:-}" && ! "$1" =~ ${NIGHTLY_ONLY} ]] && return 0
+  if [[ $PAR -gt 1 ]]; then slot; local n="$1"; shift; ( run_one "$n" TS_BUILD_TAG="$n" "$@" ) & sleep 1
+  else run_one "$@"; fi
+}
+runsh() {
+  [[ -n "${NIGHTLY_ONLY:-}" && ! "$1" =~ ${NIGHTLY_ONLY} ]] && return 0
+  if [[ $PAR -gt 1 ]]; then slot; local n="$1"; shift; ( runsh_one "$n" TS_BUILD_TAG="$n" "$@" ) & sleep 1
+  else runsh_one "$@"; fi
+}
+run_one() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the suites whose name matches: reruns after a fix)
   local name="$1"; shift
   [[ -n "${NIGHTLY_ONLY:-}" && ! "$name" =~ ${NIGHTLY_ONLY} ]] && return 0
   local t0=$(date +%s)
@@ -35,7 +51,7 @@ run() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the suites 
 # build (TS_BUILD_ONLY=1), each shard in its own run directory (TS_TEST_DIR). The suites that loop over many streams
 # (dec_inter 3 h, corpus_full_rtl 2 h, argon_features 1 h) were the nightly's wall; 2026-11-07. PASS needs every shard OK.
 #   runsh name env... TS_IVF="a,b,c" python tb/runner.py top [test]
-runsh() {
+runsh_one() {
   local name="$1"; shift
   [[ -n "${NIGHTLY_ONLY:-}" && ! "$name" =~ ${NIGHTLY_ONLY} ]] && return 0
   local t0=$(date +%s) n=${NIGHTLY_SHARDS:-4} envs=() ivf="" cmd=()
@@ -110,6 +126,8 @@ fi
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
 GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
 runsh dec_inter          TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
+wait
+[[ $PAR -gt 1 ]] && rc=$(( $(grep -c '^FAIL' "$out") > 0 ? 1 : 0 ))
 echo "DONE rc=$rc $(date -Is)" >> "$out"
 cat "$out"
 exit $rc
