@@ -142,7 +142,7 @@ module blk_syntax
         S_MODE, S_CMODE_GO, S_CMODE_W, S_NEWMV_GO, S_NEWMV_W, S_ZEROMV_GO, S_ZEROMV_W, S_REFMV_GO, S_REFMV_W,
         S_DRL, S_DRL_IT, S_DRL_GO, S_DRL_W, S_AMV, S_AMV_NEXT,
         S_II, S_II_GO, S_II_W, S_IIM_GO, S_IIM_W, S_WII_GO, S_WII_W, S_WIDX_GO, S_WIDX_W,
-        S_MM, S_OV, S_OV_W, S_OV_W2, S_OV_P, S_WS, S_WS_W, S_WS_W2, S_WS_P, S_MM2, S_OBMC_GO, S_OBMC_W, S_MMS_GO, S_MMS_W,
+        S_MM, S_OV, S_OV_W, S_OV_W2, S_OV_P, S_WS, S_WS_W, S_WS_W2, S_WS_R, S_WS_P, S_MM2, S_OBMC_GO, S_OBMC_W, S_MMS_GO, S_MMS_W,
         S_OB_A, S_OB_A_W, S_OB_A_W2, S_OB_A_P, S_OB_L, S_OB_L_W, S_OB_L_W2, S_OB_L_P,
         S_CT, S_CGI_GO, S_CGI_W, S_CT2, S_CIDX_GO, S_CIDX_W, S_CTYPE_GO, S_CTYPE_W, S_CT3, S_WIDX2_GO, S_WIDX2_W, S_WSGN_W, S_MASK_W,
         S_IF, S_IF_D, S_IF_GO, S_IF_W, S_IF_END
@@ -252,6 +252,8 @@ module blk_syntax
     // first scanned sample alone (used when no sample is valid, spec: NumSamples = 1 then)
     logic [3:0]  ws_n, ws_nv;
     logic signed [31:0] ls_v [7], ls_1 [7];
+    mv_ent_t     ws_ent;                                 // the scanned neighbour's entry, registered (S_WS_R)
+    logic        ws_wr;
     logic [223:0] ls_rec;
     always_comb for (int i = 0; i < 7; i++) ls_rec[32 * i +: 32] = (ws_nv != 4'd0) ? ls_v[i] : ls_1[i];
     function automatic logic signed [31:0] ls_product(input logic signed [15:0] a, input logic signed [15:0] b);
@@ -426,7 +428,7 @@ module blk_syntax
         return 5'(n4);
     endfunction
     assign nb_rd = (INTER != 0) && ((st == S_NBA) || (st == S_NBA_W) || (st == S_NBA_W2) || (st == S_NBL) || (st == S_NBL_W) || (st == S_NBL_W2)
-                 || (st == S_OV_W) || (st == S_OV_W2) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_W2) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_W2) || (st == S_CMV_P)
+                 || (st == S_OV_W) || (st == S_OV_W2) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_W2) || (st == S_WS_R) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_W2) || (st == S_CMV_P)
                  || (st == S_OB_A_W) || (st == S_OB_A_W2) || (st == S_OB_A_P) || (st == S_OB_L_W) || (st == S_OB_L_W2) || (st == S_OB_L_P));
     always_comb begin
         if (st == S_NBA || st == S_NBA_W || st == S_NBA_W2) begin mvr_row = br - MIW'(1); mvr_col = bc; end
@@ -1012,15 +1014,19 @@ module blk_syntax
                         endcase
                     end
                     S_WS_W: st <= S_WS_W2;
-                    S_WS_W2: st <= S_WS_P;
+                    S_WS_W2: st <= S_WS_R;
+                    // the entry is registered before the sample's arithmetic (timing rung 2a, 2026-11-10): from the MV memory's
+                    // UltraRAM cascade through the centre / difference adders, a DSP product and the accumulator in one cycle
+                    // was 29 levels, 10.4 ns, -0.516 ns at 100 MHz (85 endpoints in ls_v). One more cycle per scanned sample.
+                    S_WS_R: begin ws_ent <= mvr_ent; ws_wr <= mvr_written; st <= S_WS_P; end
                     S_WS_P: begin
                         logic [5:0] srcw, srch;
                         logic in_tile;
-                        srcw = num4x4w(mvr_ent.bsize); srch = num4x4h(mvr_ent.bsize);
+                        srcw = num4x4w(ws_ent.bsize); srch = num4x4h(ws_ent.bsize);
                         // is_inside (a row / column above or left of 0 wraps to a large unsigned value and fails the end test)
                         in_tile = (nb_row >= hdr.mi_row_start) && (nb_row < hdr.mi_row_end) && (nb_col >= hdr.mi_col_start) && (nb_col < hdr.mi_col_end);
                         // add_sample: inside, written, RefFrames == [RefFrame[0], NONE]; at most 8 samples are scanned
-                        if (in_tile && mvr_written && mvr_ent.ref0 == rf0 && mvr_ent.ref1 == R_NONE && ws_n < 4'd8) begin
+                        if (in_tile && ws_wr && ws_ent.ref0 == rf0 && ws_ent.ref1 == R_NONE && ws_n < 4'd8) begin
                             // the candidate block's centre (aligned to its size) and the block's own, in 1/8 luma samples;
                             // the threshold on the MV difference; the sample's (sx, sy, dx, dy) relative to the block
                             logic [MIW-1:0] crow, ccol;
@@ -1037,7 +1043,7 @@ module blk_syntax
                             bmy = (20'(signed'({1'b0, br})) * 20'sd4 + 20'(signed'({1'b0, bh4})) * 20'sd2 - 20'sd1) * 20'sd8;
                             bmx = (20'(signed'({1'b0, bc})) * 20'sd4 + 20'(signed'({1'b0, bw4})) * 20'sd2 - 20'sd1) * 20'sd8;
                             sy = cmy - bmy; sx = cmx - bmx;
-                            dmr = 16'(mvr_ent.mv_row - 16'(mv_row)); dmc = 16'(mvr_ent.mv_col - 16'(mv_col));
+                            dmr = 16'(ws_ent.mv_row - 16'(mv_row)); dmc = 16'(ws_ent.mv_col - 16'(mv_col));
                             dy = sy + 20'(dmr); dx = sx + 20'(dmc);
                             ws_bw = 16'(bw4) << 2; ws_bh = 16'(bh4) << 2;
                             thr = (ws_bw > ws_bh) ? ((ws_bw < 16'd16) ? 8'd16 : (ws_bw > 16'd112) ? 8'd112 : 8'(ws_bw))
