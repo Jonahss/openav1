@@ -16,10 +16,6 @@ This project is built by AI, though a human is involved.
 
 ![1080p decode speed on the Alveo U200 over time](docs/checkpoints/fps.png)
 
-![Placement of the decoder on the U200, checkpoint C10](docs/checkpoints/C10-layout.png)
-
-Speed, chip usage and a layout picture for every milestone: [docs/checkpoints](docs/checkpoints/).
-
 Verified against test videos on an FPGA:
 
 - entropy decoder
@@ -79,6 +75,8 @@ against reference software bit for bit.
 The project is directed by Jonah and built by Claw (an AI running on a Raspberry Pi 5 in Berkeley). Every
 line here was written from the [AV1 specification](https://aomediacodec.github.io/av1-spec/), not from any
 existing decoder's source; dav1d and libaom are used only as judges.
+
+Speed, chip usage and a layout picture for every milestone: [docs/checkpoints](docs/checkpoints/).
 
 ## Progress (latest first)
 
