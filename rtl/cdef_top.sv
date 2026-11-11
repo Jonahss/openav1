@@ -47,7 +47,7 @@ module cdef_top
     typedef enum logic [4:0] {
         C_IDLE, C_BLK, C_RD_IDX, C_RD_S0, C_RD_S1, C_RD_S2, C_RD_S3, C_DECIDE,
         C_PLANE, C_WIN, C_WIN_LAST, C_WIN_LAST2, C_WIN_LAST3, C_DIR_A, C_DIR_B, C_DIR_B2, C_DIR_C, C_DIR, C_PIX,
-        C_COPY_RD, C_COPY_RDW, C_COPY_WR, C_NEXT
+        C_COPY_RD, C_NEXT
     } st_t;
     st_t st;
     logic done_pend;
@@ -371,37 +371,43 @@ module cdef_top
     endfunction
     logic [47:0] out4;                                 // samples (pi, pj .. pj+3) of the group in stage D
     always_comb for (int l = 0; l < 4; l++) out4[l * 12 +: 12] = cdef_out(l);
-    // copy path
+    // copy path (unfiltered blocks): one group read a cycle; a group lands two cycles after its read and is written from the
+    // tag that travelled with it (cp*1, cp*2). Was read / wait / write per group, three cycles: on a 1080p inter frame 97 % of
+    // the 8x8 blocks are copies, and those three states were 86 % of the stage's cycles (2026-11-11 histogram).
     logic [5:0] cpi;
+    logic        cpv1, cpv2; logic [1:0] cpp1, cpp2; logic [FBX-1:0] cpx1, cpx2; logic [FBY-1:0] cpy1, cpy2;
 
     // ---------------------------------------------------------------- memory ports
     // The write port is registered. A filtered group issued in C_PIX at cycle t reaches the port at t + 5 (stages A .. D,
-    // then this register); the copy path (unfiltered blocks) writes from C_COPY_WR directly. The two never overlap: a block
-    // is either filtered or copied, and the pipeline has drained (4 cycles) long before the next block's first copy write
-    // (C_NEXT, C_BLK, the cdef index and skip reads: 7 cycles). done and busy wait for the last write to land.
+    // then this register); a copied group read at cycle t reaches the port at t + 3 (two cycles of read latency, then this
+    // register). The two never overlap: a block is either filtered or copied, the filter pipeline has drained (4 cycles) long
+    // before the next block's first copy write (C_NEXT, C_BLK, the cdef index and skip reads: 7 cycles), and a block's last
+    // copy write lands 2 cycles after its C_NEXT, before the next block's window even starts loading. done and busy wait for
+    // the last write to land.
     logic        dst_we_c, dst4_we_c; logic [1:0] dst_plane_c, dst4_plane_c; logic [FBX-1:0] dst_x_c, dst4_x_c; logic [FBY-1:0] dst_y_c, dst4_y_c;
     logic [11:0] dst_wdata_c; logic [47:0] dst4_wdata_c; logic done_i, busy_q; logic [3:0] dsr;
     always_comb begin
         src_re = 1'b0; src_plane = fplane; src_x = FBX'(wx); src_y = FBY'(wy);
         dst_we_c = 1'b0; dst_plane_c = fplane; dst_x_c = FBX'(px0 + PXW'(pj)); dst_y_c = FBY'(py0 + PXW'(pi)); dst_wdata_c = 12'd0;
-        dst4_we_c = 1'b0; dst4_plane_c = fplane; dst4_x_c = FBX'(px0 + PXW'(cpi[2:0])); dst4_y_c = FBY'(py0 + PXW'(cpi[5:3])); dst4_wdata_c = src_rdata4;
+        dst4_we_c = cpv2; dst4_plane_c = cpp2; dst4_x_c = cpx2; dst4_y_c = cpy2; dst4_wdata_c = src_rdata4;
         case (st)
             C_WIN: src_re = w_row_in;                    // absent columns of a present row are masked at landing
             C_COPY_RD: begin src_re = 1'b1; src_x = FBX'(px0 + PXW'(cpi[2:0])); src_y = FBY'(py0 + PXW'(cpi[5:3])); end
-            C_COPY_WR: dst4_we_c = 1'b1;
             default: ;
         endcase
         if (vD) begin dst4_we_c = 1'b1; dst4_plane_c = plD; dst4_x_c = xD; dst4_y_c = yD; dst4_wdata_c = out4; end
     end
     always_ff @(posedge clk) begin
-        if (rst) begin dst_we <= 1'b0; dst4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; dsr <= 4'd0; end
+        if (rst) begin dst_we <= 1'b0; dst4_we <= 1'b0; done <= 1'b0; busy_q <= 1'b0; dsr <= 4'd0; cpv1 <= 1'b0; cpv2 <= 1'b0; end
         else begin
+            cpv1 <= (st == C_COPY_RD); cpv2 <= cpv1;         // the copy read's tag, two cycles behind the read
             dst_we <= dst_we_c; dst4_we <= dst4_we_c;
             dsr <= {dsr[2:0], done_i};                   // done_i is set in C_NEXT, one cycle after the last C_PIX: the last
             done <= dsr[3];                              // write lands 4 cycles after that; done follows it
-            busy_q <= (st != C_IDLE) || vA || vB || vC || vD;
+            busy_q <= (st != C_IDLE) || vA || vB || vC || vD || cpv1 || cpv2;
         end
         dst_plane <= dst_plane_c; dst_x <= dst_x_c; dst_y <= dst_y_c; dst_wdata <= dst_wdata_c;
+        cpp1 <= src_plane; cpx1 <= src_x; cpy1 <= src_y; cpp2 <= cpp1; cpx2 <= cpx1; cpy2 <= cpy1;
         dst4_plane <= dst4_plane_c; dst4_x <= dst4_x_c; dst4_y <= dst4_y_c; dst4_wdata <= dst4_wdata_c;
     end
     assign busy = (st != C_IDLE) || vA || vB || vC || vD || busy_q || (dsr != 4'd0) || done;
@@ -496,15 +502,13 @@ module cdef_top
                 end
             end
             // ---- unfiltered block: copy src -> dst for all planes
-            C_COPY_RD: st <= C_COPY_RDW;
-            C_COPY_RDW: st <= C_COPY_WR;                 // the group lands in C_COPY_WR, two cycles after the read
-            C_COPY_WR: begin
-                if (4'(cpi[2:0]) + 4'd4 < pw) begin cpi <= cpi + 6'd4; st <= C_COPY_RD; end
-                else if (4'(cpi[5:3]) + 4'd1 < ph) begin cpi <= {cpi[5:3] + 3'd1, 3'd0}; st <= C_COPY_RD; end
+            C_COPY_RD: begin                             // a read every cycle; the writes follow from the tags
+                if (4'(cpi[2:0]) + 4'd4 < pw) cpi <= cpi + 6'd4;
+                else if (4'(cpi[5:3]) + 4'd1 < ph) cpi <= {cpi[5:3] + 3'd1, 3'd0};
                 else begin
                     cpi <= 6'd0;
-                    if (fplane == 2'd0 && !hdr.mono) begin fplane <= 2'd1; st <= C_COPY_RD; end
-                    else if (fplane == 2'd1) begin fplane <= 2'd2; st <= C_COPY_RD; end
+                    if (fplane == 2'd0 && !hdr.mono) fplane <= 2'd1;
+                    else if (fplane == 2'd1) fplane <= 2'd2;
                     else st <= C_NEXT;
                 end
             end
