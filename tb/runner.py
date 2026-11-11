@@ -91,6 +91,11 @@ build_dir = ROOT / "build" / (top + (f"_fb{params['FBX']}x{params['FBY']}" if "F
                               + (f"_w{params['FRAME_WIN']}" if "FRAME_WIN" in params else "")
                               + (f"_q{params['FIFO_LW']}" if "FIFO_LW" in params else "")
                               + ("_uram" if params.get("FRAME_URAM") else ""))
+# TS_BUILD_TAG: a build directory of its own (build/<the usual name>_<tag>), so suites that run at the same time never
+# share one: the usual name leaves out INTER, TE, REF_RING, SB128 ..., and two builds in one directory collide
+# (tools/nightly.sh with NIGHTLY_PAR sets it to the suite's name)
+if os.environ.get("TS_BUILD_TAG"):
+    build_dir = build_dir.parent / (build_dir.name + "_" + os.environ["TS_BUILD_TAG"])
 r.build(sources=sources, hdl_toplevel=top, parameters=params,
         build_dir=build_dir, build_args=build_args, waves=waves)
 if os.environ.get("TS_BUILD_ONLY") == "1":
