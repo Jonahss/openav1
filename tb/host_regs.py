@@ -661,14 +661,29 @@ class HostDecoder:
                 else:
                     self.wr(R_DATA1, chunk[0])
                     pos += 1
+        t_pushed = time.monotonic()
         self.wr(R_CTRL, self.rd(R_CTRL) | CTRL_EOS)
         st = self.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, f"{tag}: tile done")
+        self.perf_note(tag, len(data), t0, t_pushed)
         if st & ST_UNSUP:
             raise HostError(f"{tag}: the decoder flagged unsupported syntax")
         if st & ST_FIFO_BAD:
             raise HostError(f"{tag}: FIFO overflow or a split register write (STATUS bit 14)")
         self.stats["tiles"] += 1
         self.stats["bytes"] += len(data)
+
+    perf_tiles = None                                # a list: perf_note appends one record per tile (row); None = off
+
+    def perf_note(self, tag, nbytes, t_start, t_pushed):
+        """With perf_tiles set (decode.py --perf-tiles): the host's view of one tile (seconds from the tile start to the
+        last byte pushed and to tile done) beside the card's own counters of that tile (PERF_SYN: cycles the syntax
+        decoder waited for reconstruction; PERF_REC: cycles reconstruction had nothing queued, i.e. waited for syntax,
+        which includes waiting for bytes). Two register reads per tile, after tile done: nothing in the timed part."""
+        if self.perf_tiles is None:
+            return
+        t_done = time.monotonic()
+        self.perf_tiles.append({"tag": tag, "bytes": nbytes, "push_s": t_pushed - t_start, "tile_s": t_done - t_start,
+                                "syn_stall": self.rd(R_PERF_SYN), "rec_idle": self.rd(R_PERF_REC)})
 
     def run_tile_row(self, tiles, tag, dec=None, rows=None, chunk=1024):
         """The tiles of one tile row ([(th, data), ...] in column order) through TE engines at once (rtl/tile_engines.sv):
@@ -746,7 +761,9 @@ class HostDecoder:
                 self.wr(R_CTRL, ctrl0 | (e << CTRL_ENG_SHIFT) | CTRL_EOS)   # (already out with each engine's last bytes)
         else:
             self.wr(R_CTRL, ctrl0 | CTRL_EOS)                             # older images: one global end of stream
+        t_pushed = time.monotonic()
         st = self.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, f"{tag}: tile row done")
+        self.perf_note(tag, sum(len(d) for _, d in tiles), t0, t_pushed)
         self.wr(R_TILE_ENG, 0)
         if st & ST_UNSUP:
             raise HostError(f"{tag}: the decoder flagged unsupported syntax")
