@@ -51,6 +51,13 @@ module sr_top
     logic [PXW-1:0] x, y;                                       // read column / row
     logic [PXW-1:0] xo;                                         // output column
     logic [11:0] line [0:(1 << FBX) - 1];
+    // the line buffer's write is registered (timing rung 1, 2026-11-10): the frame memory's read data reached the
+    // LUT-RAM data pins straight from the UltraRAM output mux, 3,222 of the 4,364 failing endpoints of the 100 MHz
+    // image of 86c2847 (9.5 ns, 87 % routing). The write lands one cycle later; the first read of a row is in the
+    // second S_OUT cycle, the cycle after the row's last write.
+    logic        lw_v;
+    logic [FBX-1:0] lw_a;
+    logic [11:0] lw_d;
     logic [11:0] pix_max;
     assign pix_max = 12'((13'd1 << hdr.bit_depth) - 13'd1);
 
@@ -135,6 +142,8 @@ module sr_top
 
     always_ff @(posedge clk) begin
         done <= 1'b0;
+        lw_v <= 1'b0;
+        if (lw_v) line[lw_a] <= lw_d;
         if (rst) st <= S_IDLE;
         else case (st)
             S_IDLE: if (start) begin plane <= 2'd0; st <= S_PLANE; end
@@ -171,13 +180,13 @@ module sr_top
             // decoded samples, not just FrameWidth of them -- the filter clamps to maxX = miW * MI_SIZE - 1 and
             // reads the decoded margin beyond the picture edge
             S_RD: begin
-                if (x >= PXW'(2)) line[x[FBX-1:0] - FBX'(2)] <= s_rdata;
+                lw_v <= (x >= PXW'(2)); lw_a <= x[FBX-1:0] - FBX'(2); lw_d <= s_rdata;
                 if (x < max_x) x <= x + PXW'(1);
                 else st <= S_RD_LAST;
             end
-            S_RD_LAST: begin line[x[FBX-1:0] - FBX'(1)] <= s_rdata; st <= S_RD_LAST2; end
+            S_RD_LAST: begin lw_v <= 1'b1; lw_a <= x[FBX-1:0] - FBX'(1); lw_d <= s_rdata; st <= S_RD_LAST2; end
             S_RD_LAST2: begin
-                line[x[FBX-1:0]] <= s_rdata;
+                lw_v <= 1'b1; lw_a <= x[FBX-1:0]; lw_d <= s_rdata;
                 xo <= PXW'(0); src_x <= -(32'sd1 <<< SUPERRES_SCALE_BITS) + init_subpel;
                 st <= S_OUT;
             end

@@ -42,6 +42,19 @@ module cfl #(
 
     typedef enum logic [1:0] { S_IDLE, S_L, S_OUT, S_DONE } state_t;
     state_t state;
+    // the stores' writes are registered (timing rung 1, 2026-11-10): luma_data / dc_data are the frame memory's read
+    // data, and the UltraRAM output mux ran straight into the LUT-RAM data pins (76 failing endpoints at 100 MHz, 96 %
+    // routing). A write lands one cycle later: start comes at the earliest the cycle after the last write, and the
+    // first read (S_L) the cycle after start.
+    logic            lq_we, dq_we;
+    logic [9:0]      lq_addr, dq_addr;
+    logic [PW-1:0]   lq_data, dq_data;
+    always_ff @(posedge clk) begin
+        lq_we <= luma_we && (state == S_IDLE) && !rst; lq_addr <= luma_addr; lq_data <= luma_data;
+        dq_we <= dc_we && (state == S_IDLE) && !rst;   dq_addr <= dc_addr;   dq_data <= dc_data;
+        if (lq_we) luma[lq_addr] <= lq_data;
+        if (dq_we) dc[dq_addr]   <= dq_data;
+    end
 
     logic [2:0]  l_log2w, l_log2h;
     logic [5:0]  w, h;
@@ -94,8 +107,6 @@ module cfl #(
         end else begin
             case (state)
             S_IDLE: begin
-                if (luma_we) luma[luma_addr] <= luma_data;
-                if (dc_we)   dc[dc_addr]     <= dc_data;
                 if (start) begin
                     l_log2w <= log2w; l_log2h <= log2h;
                     w <= 6'd1 << log2w; h <= 6'd1 << log2h;
