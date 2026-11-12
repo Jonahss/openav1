@@ -119,7 +119,7 @@ module mv_stack
     typedef enum logic [3:0] {P_ROW1, P_COL1, P_TR, P_TPL, P_TL, P_ROW3, P_COL3, P_ROW5, P_COL5, P_END} phase_t;
     phase_t ph, ph_done;
     typedef enum logic [5:0] {M_IDLE, M_GM_A, M_GM_B, M_GM_C, M_PH, M_ISSUE, M_WAIT, M_WAIT2, M_PROC, M_NEAR,
-                              M_TPL_ADV, M_TPL_ISSUE, M_TPL_WAIT0, M_TPL_PROC0, M_TPL_WAIT1, M_TPL_PROC1, M_TPL_ADD,
+                              M_TPL_ADV, M_TPL_ISSUE, M_TPL_WAIT0, M_TPL_CAP0, M_TPL_PROC0, M_TPL_WAIT1, M_TPL_CAP1, M_TPL_PROC1, M_TPL_ADD,
                               M_SORT_END, M_SORT, M_EXTRA, M_EX_ISSUE, M_EX_WAIT, M_EX_WAIT2, M_EX_P0, M_EX_P1, M_EX_NEXT, M_EX_COMB, M_FILL,
                               M_CTX, M_CLAMP, M_SEL, M_DONE} st_t;
     st_t st;
@@ -158,6 +158,8 @@ module mv_stack
     logic        t_zero;                      // the (0, 0) position
     logic signed [MIS-1:0] t_row, t_col;
     logic signed [17:0] tc_r0, tc_c0, tc_r1, tc_c1;
+    logic        mfq_valid;                              // the motion field's answer, captured (M_TPL_CAP0 / M_TPL_CAP1)
+    logic signed [15:0] mfq_row, mfq_col;
     // extra search
     logic        ex_pass;
     logic [5:0]  ex_idx, ex_num;
@@ -180,7 +182,7 @@ module mv_stack
         ex_mc  = (st == M_EX_P1) ? e_mv1c : e_mv0c;
         if (sbias(ex_ref) != sbias(ref0)) begin ex_r0 = -ex_mr; ex_c0 = -ex_mc; end else begin ex_r0 = ex_mr; ex_c0 = ex_mc; end
         // temporal read address
-        mf_ref = 3'((st == M_TPL_WAIT1 || st == M_TPL_PROC1 ? ref1 : ref0) - 4'd1);
+        mf_ref = 3'((st == M_TPL_WAIT1 || st == M_TPL_CAP1 ? ref1 : ref0) - 4'd1);
         mf_y8  = (MIW-1)'(t_row >>> 1);
         mf_x8  = (MIW-1)'(t_col >>> 1);
         // position of the current spatial scan step
@@ -452,20 +454,25 @@ module mv_stack
                     st <= M_TPL_WAIT0;
                 end
             end
-            M_TPL_WAIT0: st <= M_TPL_PROC0;
+            // The projected motion vector is captured before it is used (timing rung 7): the motion field band's output
+            // through the projection and lower_prec into tc_r* / tc_c* was 17-18 logic levels, among the last failing
+            // endpoints of the ring-16 100 MHz images of f9bfa6e and 9e125e3. One more cycle per temporal candidate and list.
+            M_TPL_WAIT0: st <= M_TPL_CAP0;
+            M_TPL_CAP0: begin mfq_valid <= mf_valid; mfq_row <= mf_row; mfq_col <= mf_col; st <= M_TPL_PROC0; end
             M_TPL_PROC0: begin
-                if (!mf_valid) st <= M_TPL_ADV;
+                if (!mfq_valid) st <= M_TPL_ADV;
                 else begin
-                    tc_r0 <= lower_prec(18'(signed'(mf_row))); tc_c0 <= lower_prec(18'(signed'(mf_col)));
+                    tc_r0 <= lower_prec(18'(signed'(mfq_row))); tc_c0 <= lower_prec(18'(signed'(mfq_col)));
                     tc_r1 <= 18'sd0; tc_c1 <= 18'sd0;
                     st <= comp ? M_TPL_WAIT1 : M_TPL_ADD;
                 end
             end
-            M_TPL_WAIT1: st <= M_TPL_PROC1;
+            M_TPL_WAIT1: st <= M_TPL_CAP1;
+            M_TPL_CAP1: begin mfq_valid <= mf_valid; mfq_row <= mf_row; mfq_col <= mf_col; st <= M_TPL_PROC1; end
             M_TPL_PROC1: begin
-                if (!mf_valid) st <= M_TPL_ADV;
+                if (!mfq_valid) st <= M_TPL_ADV;
                 else begin
-                    tc_r1 <= lower_prec(18'(signed'(mf_row))); tc_c1 <= lower_prec(18'(signed'(mf_col)));
+                    tc_r1 <= lower_prec(18'(signed'(mfq_row))); tc_c1 <= lower_prec(18'(signed'(mfq_col)));
                     st <= M_TPL_ADD;
                 end
             end
