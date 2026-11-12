@@ -119,8 +119,10 @@ module coef_rd
     // The scan position is read one coefficient ahead: while coefficient c is being worked on the ROM is addressed
     // with the coefficient that follows it in the pass (c - 1 in the level pass, c + 1 in the sign pass), so its
     // position is at the ROM output when c is finished and the next coefficient starts without the two lookup
-    // cycles. c_nx is the coefficient worked on in the next cycle; only the first coefficient of each pass goes
-    // through L_POS / P_POS (address c) and L_POS2 / P_POS2. sidx_q is the index the ROM output belongs to (the
+    // cycles. In the level pass every visit takes at least three cycles, so the address is simply c - 1 from the
+    // registered c. In the sign pass a zero coefficient is a single cycle and the address follows c_nx, the
+    // coefficient worked on in the next cycle. Only the first coefficient of each pass goes through L_POS / P_POS
+    // (address c) and L_POS2 / P_POS2. sidx_q is the index the ROM output belongs to (the
     // arithmetic Mrow / Mcol scans are computed from it).
     logic        in_l, pz, p_last;
     logic [10:0] c_nx, sidx, sidx_q;
@@ -129,10 +131,9 @@ module coef_rd
                   st == L_BR_W || st == L_STORE);
         p_last = (c + 11'd1 == eob);
         c_nx   = c;
-        if (st == L_STORE && c != 11'd0) c_nx = c - 11'd1;
         if ((st == P_STORE || (st == P_CHK && pz)) && !p_last) c_nx = c + 11'd1;
         if (st == L_POS || st == P_POS) sidx = c;
-        else if (in_l) sidx = (c_nx == 11'd0) ? 11'd0 : c_nx - 11'd1;
+        else if (in_l) sidx = (c == 11'd0) ? 11'd0 : c - 11'd1;    // registered c: a level-pass visit is >= 3 cycles
         else sidx = (c_nx + 11'd1 >= eob) ? c_nx : c_nx + 11'd1;
     end
     always_ff @(posedge clk) sidx_q <= sidx;
@@ -271,6 +272,8 @@ module coef_rd
         // eobPt = sym + 1; eob = eobPt < 2 ? eobPt : (1 << (eobPt - 2)) + 1
         eob_from_pt = (4'(sq_sym) + 4'd1) < 4'd2 ? 11'(4'(sq_sym) + 4'd1) : (11'd1 << (4'(sq_sym) + 4'd1 - 4'd2)) + 11'd1;
     end
+    logic [3:0] base_lv;                     // level after the base symbol (the eob coefficient's symbol is level - 1)
+    always_comb base_lv = (c == eob - 11'd1) ? 4'(sq_sym) + 4'd1 : 4'(sq_sym);
     logic [19:0] val20;
     always_comb val20 = (levv(pos) == 4'd15) ? 20'(gx + 32'd14) : 20'(levv(pos));
     logic [6:0] cul_sum;
@@ -324,9 +327,14 @@ module coef_rd
                     ctx_br <= ctx_br_now; st <= L_BASE_W;
                 end
                 L_BASE_W: if (sq_done) begin
-                    level <= (c == eob - 11'd1) ? 4'(sq_sym) + 4'd1 : 4'(sq_sym);
+                    level <= base_lv;
                     br_i <= 2'd0;
-                    st <= (((c == eob - 11'd1) ? 4'(sq_sym) + 4'd1 : 4'(sq_sym)) > 4'd2) ? L_BR : L_STORE;
+                    if (base_lv > 4'd2) st <= L_BR;
+                    else begin                                     // no range symbols: the level is stored here
+                        lev[pos] <= base_lv; lev_ok[pos] <= 1'b1;
+                        if (c == 11'd0) begin c <= 11'd0; st <= P_SCAN; end
+                        else begin c <= c - 11'd1; st <= L_CTX; end
+                    end
                 end
                 L_BR: st <= L_BR_W;
                 L_BR_W: if (sq_done) begin
@@ -389,7 +397,8 @@ module coef_rd
     // the pass moves to its next coefficient. pz: that coefficient's level is zero (the level map is complete and
     // unchanged during the sign pass, so the flag read at capture holds for the whole visit).
     always_ff @(posedge clk)
-        if (st == L_POS2 || st == P_POS2 || st == L_STORE || ((st == P_STORE || (st == P_CHK && pz)) && !p_last)) begin
+        if (st == L_POS2 || st == P_POS2 || st == L_STORE || (st == L_BASE_W && sq_done && base_lv <= 4'd2) ||
+            ((st == P_STORE || (st == P_CHK && pz)) && !p_last)) begin
             pos <= pos_now;
             row <= 5'(pos_now >> bwl);
             col <= 5'(pos_now & ((10'd1 << bwl) - 10'd1));
