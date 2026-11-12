@@ -116,13 +116,33 @@ module coef_rd
     // scan ROM (default zig-zag scans); Mrow/Mcol are arithmetic
     logic [SCAN_ROM_AW-1:0] scan_addr;
     logic [9:0] scan_data;
-    assign scan_addr = scan_base(cfg_tx) + SCAN_ROM_AW'(c);
+    // The scan position is read one coefficient ahead: while coefficient c is being worked on the ROM is addressed
+    // with the coefficient that follows it in the pass (c - 1 in the level pass, c + 1 in the sign pass), so its
+    // position is at the ROM output when c is finished and the next coefficient starts without the two lookup
+    // cycles. c_nx is the coefficient worked on in the next cycle; only the first coefficient of each pass goes
+    // through L_POS / P_POS (address c) and L_POS2 / P_POS2. sidx_q is the index the ROM output belongs to (the
+    // arithmetic Mrow / Mcol scans are computed from it).
+    logic        in_l, pz, p_last;
+    logic [10:0] c_nx, sidx, sidx_q;
+    always_comb begin
+        in_l   = (st == L_SCAN || st == L_POS || st == L_POS2 || st == L_CTX || st == L_BASE_W || st == L_BR ||
+                  st == L_BR_W || st == L_STORE);
+        p_last = (c + 11'd1 == eob);
+        c_nx   = c;
+        if (st == L_STORE && c != 11'd0) c_nx = c - 11'd1;
+        if ((st == P_STORE || (st == P_CHK && pz)) && !p_last) c_nx = c + 11'd1;
+        if (st == L_POS || st == P_POS) sidx = c;
+        else if (in_l) sidx = (c_nx == 11'd0) ? 11'd0 : c_nx - 11'd1;
+        else sidx = (c_nx + 11'd1 >= eob) ? c_nx : c_nx + 11'd1;
+    end
+    always_ff @(posedge clk) sidx_q <= sidx;
+    assign scan_addr = scan_base(cfg_tx) + SCAN_ROM_AW'(sidx);
     scan_rom u_scan (.clk(clk), .addr(scan_addr), .data(scan_data));
     logic [9:0] pos_now;
     always_comb begin
         case (cls)
-            CLS_V:   pos_now = c[9:0];                                                  // Mrow: row-major
-            CLS_H:   pos_now = ((c[9:0] & ((10'd1 << hlog) - 10'd1)) << bwl) | (c[9:0] >> hlog);   // Mcol
+            CLS_V:   pos_now = sidx_q[9:0];                                             // Mrow: row-major
+            CLS_H:   pos_now = ((sidx_q[9:0] & ((10'd1 << hlog) - 10'd1)) << bwl) | (sidx_q[9:0] >> hlog);   // Mcol
             default: pos_now = scan_data;
         endcase
         if (tx_type == 4'd9) pos_now = scan_data;                                       // IDTX: default scan
@@ -233,7 +253,7 @@ module coef_rd
             B_XBIT:  begin sq_go = 1'b1; sq_kind = 2'd2; end
             L_CTX:   begin sq_go = 1'b1; sq_addr = (c == eob - 11'd1) ? a_base_eob : a_base; sq_n = (c == eob - 11'd1) ? 4'd2 : 4'd3; end
             L_BR:    begin sq_go = 1'b1; sq_addr = a_br; sq_n = 4'd3; end
-            P_CHK:   if (levv(pos) != 4'd0) begin sq_go = 1'b1; if (c == 11'd0) begin sq_addr = a_dc_sign; sq_n = 4'd1; end else sq_kind = 2'd2; end
+            P_CHK:   if (!pz) begin sq_go = 1'b1; if (c == 11'd0) begin sq_addr = a_dc_sign; sq_n = 4'd1; end else sq_kind = 2'd2; end
             P_GLEN:  begin sq_go = 1'b1; sq_kind = 2'd2; end
             P_GDATA: begin sq_go = 1'b1; sq_kind = 2'd2; end
             default: ;
@@ -317,16 +337,17 @@ module coef_rd
                 L_STORE: begin
                     lev[pos] <= level; lev_ok[pos] <= 1'b1;
                     if (c == 11'd0) begin c <= 11'd0; st <= P_SCAN; end
-                    else begin c <= c - 11'd1; st <= L_POS; end
+                    else begin c <= c - 11'd1; st <= L_CTX; end    // the next position is at the ROM output already
                 end
                 // ---- sign / escape pass, c = 0 .. eob-1
                 P_SCAN: begin c <= 11'd0; st <= P_POS; end
                 P_POS:  st <= P_POS2;
                 P_POS2: st <= P_CHK;
-                P_CHK: begin
+                P_CHK: begin                                       // a zero coefficient takes this one cycle
                     sign <= 1'b0; gx <= 32'd1; glen <= 6'd0;
-                    if (levv(pos) != 4'd0) st <= P_SIGN_W;
-                    else st <= P_STORE;
+                    if (!pz) st <= P_SIGN_W;
+                    else if (p_last) st <= S_DONE;
+                    else c <= c + 11'd1;
                 end
                 P_SIGN_W: if (sq_done) begin
                     sign <= sq_sym[0];
@@ -355,8 +376,8 @@ module coef_rd
                         cul <= cul_sum > 7'd63 ? 6'd63 : cul_sum[5:0];
                         if (pos == 10'd0) dccat <= sign ? 2'd1 : 2'd2;      // from the level before the 20-bit mask (spec 5.11.39): a golomb value of 2^20 wraps to 0 but keeps its category
                     end
-                    if (c + 11'd1 == eob) st <= S_DONE;
-                    else begin c <= c + 11'd1; st <= P_POS; end
+                    if (p_last) st <= S_DONE;
+                    else begin c <= c + 11'd1; st <= P_CHK; end
                 end
                 S_DONE: begin done_b <= 1'b1; st <= S_IDLE; end
                 default: st <= S_IDLE;
@@ -364,12 +385,15 @@ module coef_rd
         end
     end
 
-    // pos/row/col: capture the scan result when leaving L_POS2 / P_POS2 (scan_data valid then)
+    // pos/row/col: capture the scan result when leaving L_POS2 / P_POS2 (first coefficient of a pass) and whenever
+    // the pass moves to its next coefficient. pz: that coefficient's level is zero (the level map is complete and
+    // unchanged during the sign pass, so the flag read at capture holds for the whole visit).
     always_ff @(posedge clk)
-        if (st == L_POS2 || st == P_POS2) begin
+        if (st == L_POS2 || st == P_POS2 || st == L_STORE || ((st == P_STORE || (st == P_CHK && pz)) && !p_last)) begin
             pos <= pos_now;
             row <= 5'(pos_now >> bwl);
             col <= 5'(pos_now & ((10'd1 << bwl) - 10'd1));
+            pz  <= (levv(pos_now) == 4'd0);
         end
 
     assign eob_o = eob;
