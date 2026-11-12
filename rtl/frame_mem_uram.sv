@@ -119,6 +119,12 @@ module frame_mem_uram #(
     logic           rq_en [2];
     logic [AW-1:0]  rq_addr [2];
     logic [SW-1:0]  rq_sel [2];
+    // The module's own phase (timing rung 6): the request capture (rq_* / wq_*, both builds) and the read select of the UltraRAM build were enabled by
+    // the clock generator's phase register directly, one clk2x period (5 ns) for a net from the shell to registers in
+    // every frame memory: 187 of the 191 failing endpoints of the ring-16 100 MHz image of 6fbf579 (CE pins, one logic
+    // level, 97 % wire). Two clk2x stages equal phase exactly (it alternates every cycle) and give the route two hops.
+    (* KEEP = "true" *) logic phm1, phm2;
+    always_ff @(posedge clk2x) begin phm1 <= phase; phm2 <= phm1; end
 `ifdef SYNTHESIS
     // The UltraRAMs instantiated directly (2026-10-27), not through the XPM macro: NU independent URAM288s (no cascade),
     // each enabled by its own address decode, and an output mux whose select is a register loaded at E_b only. With
@@ -139,12 +145,6 @@ module frame_mem_uram #(
     // edge and for the whole clk cycle; the select of the RAM that was read (a_sel_q, loaded at the same E_b) and
     // the output mux then have a full cycle to the consumers' registers (pre_opt.tcl excepts URAM -> clk as 2 clk2x).
     // (Before 2026-10-31 a fabric register captured DOUT at E_a and had half a cycle to the consumers.)
-    // The module's own phase (timing rung 6): the request capture (rq_* / wq_*) and the read select below were enabled by
-    // the clock generator's phase register directly, one clk2x period (5 ns) for a net from the shell to registers in
-    // every frame memory: 187 of the 191 failing endpoints of the ring-16 100 MHz image of 6fbf579 (CE pins, one logic
-    // level, 97 % wire). Two clk2x stages equal phase exactly (it alternates every cycle) and give the route two hops.
-    (* KEEP = "true" *) logic phm1, phm2;
-    always_ff @(posedge clk2x) begin phm1 <= phase; phm2 <= phm1; end
     logic [SW-1:0]  a_sel_q, b_sel_q;
     always_ff @(posedge clk2x) if (!phm2) begin a_sel_q <= rq_sel[0]; b_sel_q <= rq_sel[1]; end
     assign a_q = a_dout[a_sel_q];
