@@ -67,7 +67,12 @@ superblock sizes, identical to the frame-at-once models):
 All three stages chained are identical to the frame-at-once models on frame 0 of the natural, screen and synthetic
 streams (restoration on in three of them).
 
-Not yet modelled: super-res between CDEF and restoration, inter frames, the left-column context inside a row.
+Inter frames and super-res (`tb/filter_chain_model.py`, run on every frame a decoder test bench filters when
+`TS_CHAIN_CHECK=1`): the `dec_inter_lr` suite's 24 frames (13 inter; CDEF on in 22, restoration compared in 9, 5 with
+super-res, where the deblocked and CDEF lines are upscaled one by one on the way into the restoration stage) and 13
+frames of Argon test6641 / test8854 (CDEF and restoration in 10) are identical.
+
+Not yet modelled: the left-column context inside a row (the stage models still see whole lines).
 
 Because a stage's output for the bottom lines of row r depends on the top of row r + 1, each stage finishes a row
 shifted up by its context (deblock by 8 lines, CDEF by 2 more, restoration by 3 more). The context memories carry the
