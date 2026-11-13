@@ -12,7 +12,7 @@ import recon_model as rm, test_tile_syntax as TT, xcheck_frame as xf, lf_stream_
 seeds = [int(x) for x in (sys.argv[1] if len(sys.argv) > 1 else "1,2,3,4,5,6").split(",")]
 W = int(sys.argv[2]) if len(sys.argv) > 2 else 192
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 160
-fails = {0: 0, 1: 0, 2: 0, 3: 0}; runs = 0; total_changed = 0; skipped = 0; stage_runs = 0; stage_fail = 0
+fails = {0: 0, 1: 0, 2: 0, 3: 0}; runs = 0; total_changed = 0; skipped = 0; stage_runs = 0; stage_fail = 0; col_fail = {4: 0, 3: 0}
 for seed in seeds:
     fmt = random.Random(seed * 7).choice(["420", "444", "mono", "422"])
     try:
@@ -40,8 +40,19 @@ for seed in seeds:
                 except (IndexError, AssertionError) as e:
                     stage_ok = False; print(f"  stage: {type(e).__name__}: {e}")
                 stage_runs += 1; stage_fail += 0 if stage_ok else 1
+                for ncols in (4, 3):                         # the column window: 4 must be identical, 3 must not be enough
+                    lst.COLS = ncols
+                    try:
+                        got = lst.run_frame_cols(hdr, state, pre, sb)
+                        col_ok = all(got[p] == ref[p] for p in range(hdr.NumPlanes))
+                    except (IndexError, AssertionError) as e:
+                        col_ok = False
+                        if ncols == 4: print(f"  column stage: {type(e).__name__}: {e}")
+                    col_fail[ncols] += 0 if col_ok else 1
+                lst.COLS = 4
                 total_changed += changed if ok else 0
                 print(f"seed {seed} {fmt} bd{args['bd']} {W}x{H} sb{sb} lag 2: {'identical' if ok else 'DIFFERS ' + str(bad[:3])}, {changed if ok else '?'} samples changed by the filter, levels {hdr.loop_filter_level}")
 print(f"stage model (band by band, {lst.CTX} context lines): {stage_runs} runs, {stage_fail} differ or reach outside the window")
+print(f"column-window stage: frames failing with 4 columns {col_fail[4]}, with 3 columns {col_fail[3]} (of {stage_runs})")
 print(f"runs {runs}; seeds skipped {skipped}; frames differing by lag: {fails}; samples changed (lag 2 runs) {total_changed}")
-sys.exit(0 if fails[2] == 0 and fails[3] == 0 and total_changed > 0 and stage_fail == 0 else 1)
+sys.exit(0 if fails[2] == 0 and fails[3] == 0 and total_changed > 0 and stage_fail == 0 and col_fail[4] == 0 else 1)
