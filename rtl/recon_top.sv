@@ -84,6 +84,12 @@ module recon_top
     output logic [11:0] fb_wdata,
     input  logic [11:0] fb_rdata,
     input  logic [47:0] fb_rdata4,            // aligned group of 4 samples containing fb_x (with fb_re)
+    // intra edge reads: fb_edge marks one; a read of a superblock row's last line is answered from the unfiltered
+    // copy (edge_line: el_sel with the data, two cycles after the request like fb_rdata), 2026-11-13
+    output logic        fb_edge,
+    input  logic        el_sel,
+    input  logic [11:0] el_rdata,
+    input  logic [47:0] el_rdata4,
     // frame buffer write port (all of this stage's writes; fb_we stays 0)
     output logic        fb2_we,
     output logic [1:0]  fb2_plane,
@@ -1513,6 +1519,10 @@ module recon_top
     logic        ep_grp, ep_rep;                           // landing is a group; group replicates the left neighbour (no above)
     logic [PXW-1:0] ep_xb;                                    // x of the group's first sample
     logic [11:0] last_above;
+    logic [11:0] e_rd;                                     // an edge read's answer: the frame memory's, or the unfiltered
+    logic [47:0] e_rd4;                                    // last-line copy's for the line above a superblock row
+    assign e_rd  = el_sel ? el_rdata  : fb_rdata;
+    assign e_rd4 = el_sel ? el_rdata4 : fb_rdata4;
     logic [8:0]  n_above;
     assign n_above = n_edges >> 1;                         // w + h: n_edges is registered in R_SETUP
     logic [1:0]  ep_side; logic [7:0] ep_idx; logic [11:0] ep_val;
@@ -1676,18 +1686,18 @@ module recon_top
 
     // ---------------------------------------------------------------- combinational outputs
     always_comb begin
-        fb_re = 1'b0; fb_we = 1'b0; fb_plane = t.plane; fb_x = '0; fb_y = '0; fb_wdata = 12'd0;
+        fb_re = 1'b0; fb_we = 1'b0; fb_plane = t.plane; fb_x = '0; fb_y = '0; fb_wdata = 12'd0; fb_edge = 1'b0;
         fb2_we = 1'b0; fb2_plane = t.plane; fb2_x = '0; fb2_y = '0; fb2_wdata = 12'd0;
         fb4_we = 1'b0; fb4_plane = t.plane; fb4_x = '0; fb4_y = '0; fb4_wdata = 48'd0; fb4_be = 4'hF;
-        edge_we = 1'b0; edge_side = ep2_side; edge_idx = ep2_idx; edge_data = ep2_const ? ep2_val : fb_rdata;
+        edge_we = 1'b0; edge_side = ep2_side; edge_idx = ep2_idx; edge_data = ep2_const ? ep2_val : e_rd;
         edge_we4 = 1'b0;
         for (int l = 0; l < 4; l++) begin                                    // group lanes with the clamp to above_lim
             logic [PXW-1:0] gx;
             gx = ep2_xb + PXW'(l);
             if (ep2_const) edge_data4[l * 12 +: 12] = ep2_val;
-            else if (ep2_rep) edge_data4[l * 12 +: 12] = fb_rdata;
-            else if (gx <= above_lim_r) edge_data4[l * 12 +: 12] = fb_rdata4[l * 12 +: 12];
-            else if (above_lim_r >= ep2_xb) edge_data4[l * 12 +: 12] = fb_rdata4[(above_lim_r - ep2_xb) * 12 +: 12];
+            else if (ep2_rep) edge_data4[l * 12 +: 12] = e_rd;
+            else if (gx <= above_lim_r) edge_data4[l * 12 +: 12] = e_rd4[l * 12 +: 12];
+            else if (above_lim_r >= ep2_xb) edge_data4[l * 12 +: 12] = e_rd4[(above_lim_r - ep2_xb) * 12 +: 12];
             else edge_data4[l * 12 +: 12] = last_above;
         end
         itx_we = 1'b0; itx_addr = 10'd0; itx_data = '0;
@@ -1715,6 +1725,7 @@ module recon_top
                     if (have_a_r) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(ek)); fb_y = FBY'(t.y - PXW'(1)); end
                     else if (have_l_r) begin fb_re = 1'b1; fb_x = FBX'(t.x - PXW'(1)); fb_y = FBY'(t.y); end
                 end else if (ek <= n_edges && !e_const) begin fb_re = 1'b1; fb_x = FBX'(e_rx); fb_y = FBY'(e_ry); end
+                fb_edge = fb_re;
                 if (ep2_valid && !ep2_grp) edge_we = 1'b1;
                 if (ep2_valid && ep2_grp) edge_we4 = 1'b1;
             end
@@ -1739,12 +1750,12 @@ module recon_top
         endcase
         // intra block copy: the block FSM owns the frame-buffer ports while the transform FSM is idle (the ring loader's
         // reads on the MC path, the sample reads of the intra-only build's own path)
-        if (INTER != 0 && ff_fb_re) begin fb_re = 1'b1; fb_plane = ff_fb_plane; fb_x = ff_fb_x; fb_y = ff_fb_y; end
+        if (INTER != 0 && ff_fb_re) begin fb_edge = 1'b0; fb_re = 1'b1; fb_plane = ff_fb_plane; fb_x = ff_fb_x; fb_y = ff_fb_y; end
         case (bst)
-            B_IBC_R0: begin fb_re = 1'b1; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry0); end
-            B_IBC_R1: begin fb_re = ib_fx[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry0); end
-            B_IBC_R2: begin fb_re = ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry1); end
-            B_IBC_R3: begin fb_re = ib_fx[3] && ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry1); end
+            B_IBC_R0: begin fb_edge = 1'b0; fb_re = 1'b1; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry0); end
+            B_IBC_R1: begin fb_edge = 1'b0; fb_re = ib_fx[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry0); end
+            B_IBC_R2: begin fb_edge = 1'b0; fb_re = ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry1); end
+            B_IBC_R3: begin fb_edge = 1'b0; fb_re = ib_fx[3] && ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry1); end
             B_IBC_WR: begin fb2_we = 1'b1; fb2_plane = ib_pl; fb2_x = FBX'(ib_bx + PXW'(ib_j)); fb2_y = FBY'(ib_by + PXW'(ib_i)); fb2_wdata = ib_out; end
             default: ;
         endcase
@@ -1758,7 +1769,7 @@ module recon_top
             fb4_wdata = mc_out_pix4 << (12 * mc_osh); fb4_be = mc_out_mask << mc_osh;
         end
         // OBMC: read the group to blend (stage A), write the blended group (stage B)
-        if (ob_rd_v) begin fb_re = 1'b1; fb_plane = r_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
+        if (ob_rd_v) begin fb_edge = 1'b0; fb_re = 1'b1; fb_plane = r_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
         if (ob_wr_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(ob_b_x); fb4_y = FBY'(ob_b_y); fb4_wdata = ob_b_pix; fb4_be = ob_b_be; end
         if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
     end
@@ -1855,7 +1866,7 @@ module recon_top
                 // ---- edge preparation (7.11.2.1), pipelined: issue entry ek, write entry ek-1
                 R_EDGE: begin
                     if (ep2_valid && ep2_grp && !ep2_const && !ep2_rep && above_lim_r >= ep2_xb && above_lim_r <= ep2_xb + PXW'(3))
-                        last_above <= fb_rdata4[(above_lim_r - ep2_xb) * 12 +: 12];
+                        last_above <= e_rd4[(above_lim_r - ep2_xb) * 12 +: 12];
                     if (ek < n_above) begin                                  // above row, groups of 4
                         ep_valid <= 1'b1; ep_grp <= 1'b1; ep_side <= 2'd0; ep_idx <= 8'(ek); ep_xb <= t.x + PXW'(ek);
                         ep_const <= !have_a && !have_l; ep_val <= mid_m1; ep_rep <= !have_a && have_l;
