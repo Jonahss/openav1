@@ -80,13 +80,16 @@ module lf_stream #(
     logic [14*12-1:0] a_pix [4];
     logic [12*12-1:0] a_out [4];
     logic [11:0]      a_mod [4];
-    always_comb begin
-        n3 = a3; n2 = a2; n1 = a1; n0 = a0;
-        for (int l = 0; l < 4; l++) begin
+    always_comb begin                        // the edge unit's four lines (a block of its own: the results below read a_out)
+        for (int l = 0; l < 4; l++)
             a_pix[l] = {a0[(4*l+2)*12 +: 12], a0[(4*l+1)*12 +: 12], a0[(4*l+0)*12 +: 12],
                         a1[(4*l+3)*12 +: 12], a1[(4*l+2)*12 +: 12], a1[(4*l+1)*12 +: 12], a1[(4*l+0)*12 +: 12],
                         a2[(4*l+3)*12 +: 12], a2[(4*l+2)*12 +: 12], a2[(4*l+1)*12 +: 12], a2[(4*l+0)*12 +: 12],
                         a3[(4*l+3)*12 +: 12], a3[(4*l+2)*12 +: 12], a3[(4*l+1)*12 +: 12]};
+    end
+    always_comb begin
+        n3 = a3; n2 = a2; n1 = a1; n0 = a0;
+        for (int l = 0; l < 4; l++) begin
             if (v_apply) begin
                 n3[(4*l+2)*12 +: 12] = a_out[l][0*12 +: 12]; n3[(4*l+3)*12 +: 12] = a_out[l][1*12 +: 12];
                 for (int c = 0; c < 4; c++) begin
@@ -120,12 +123,15 @@ module lf_stream #(
     logic [12*12-1:0] b_out [4];
     logic [11:0]      b_mod [4];
     always_comb begin
-        w0n = w0; w1n = w1; w2n = w2; w3n = w3;
-        for (int c = 0; c < 4; c++) begin
+        for (int c = 0; c < 4; c++)
             b_pix[c] = {w3[(4*2+c)*12 +: 12], w3[(4*1+c)*12 +: 12], w3[(4*0+c)*12 +: 12],
                         w2[(4*3+c)*12 +: 12], w2[(4*2+c)*12 +: 12], w2[(4*1+c)*12 +: 12], w2[(4*0+c)*12 +: 12],
                         w1[(4*3+c)*12 +: 12], w1[(4*2+c)*12 +: 12], w1[(4*1+c)*12 +: 12], w1[(4*0+c)*12 +: 12],
                         w0[(4*3+c)*12 +: 12], w0[(4*2+c)*12 +: 12], w0[(4*1+c)*12 +: 12]};
+    end
+    always_comb begin
+        w0n = w0; w1n = w1; w2n = w2; w3n = w3;
+        for (int c = 0; c < 4; c++) begin
             if (hp[29]) begin
                 w0n[(4*2+c)*12 +: 12] = b_out[c][0*12 +: 12]; w0n[(4*3+c)*12 +: 12] = b_out[c][1*12 +: 12];
                 for (int l = 0; l < 4; l++) begin
