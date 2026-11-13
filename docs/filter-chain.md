@@ -116,3 +116,35 @@ the 11 superblock rows of picture buffer today.
 
 - It does not speed up the tile engines. Four engines and the MC path are the next items in the budget.
 - It does not need a clock change, but it removes the 200 MHz memory clock that stands in the way of one.
+
+## Deblock stage: first cut of the hardware (2026-11-13, not built)
+
+Unit of work: one 4x4 block of a plane per clock, so 16 samples a clock.
+
+- **Input**: the row store is read a column of 4x4 blocks at a time (4 samples wide, the band's height: 16 blocks of a
+  64-line row), left to right. One block a clock.
+- **Working window**: the last four block columns of the band plus the 8 context lines above them, in registers or
+  small distributed RAM (4 x 4 samples wide, 72 lines high at 64-line superblocks: under 14 kbit a plane).
+- **Vertical edges**: the edge on the left side of block column c is filtered when column c + 1 has arrived (the
+  widest filter changes six samples on each side and reads seven). Four filter datapaths side by side, one per sample
+  row of the 4x4 edge unit: one edge unit a clock.
+- **Horizontal edges**: block column c - 2, one edge unit a clock on four more datapaths (one per sample column),
+  reading and writing the window and, for the band's top edge, the 8 context lines.
+- **Context lines**: one small memory of 8 lines of the frame width per plane. A column's context is read when the
+  column enters the window; the column's last 8 lines are written back when it leaves.
+- **Output**: a block column leaves the window three columns after it entered, shifted up by 8 lines, 16 samples a
+  clock, to the CDEF stage.
+- **Edge parameters** (apply, filter size, limit, blimit, thresh): one mode-info read per 4x4 block, a clock or more
+  ahead of the filters. The left neighbour's values are the previous column's, kept in a 16-entry register file; the
+  above neighbour's are the previous entry of the column, or for the top block a line of saved values from the band
+  above. Both passes use the same values, so they are computed once and carried with the block.
+
+Arithmetic for 4K: a 64-line superblock row is 960 block columns x 16 blocks = 15,360 clocks of luma; 34 rows a frame
+and 60 frames a second is 31 M clocks a second, about a third of a 100 MHz clock. The chroma planes run beside luma
+on their own, smaller datapaths.
+
+Open points for this stage:
+- the row store's word: a 4x4 block (16 samples) read at once, written by reconstruction four samples at a time;
+- 128-line superblocks double the window height (or the band is taken as two 64-line halves: the stage model can
+  already be fed 64-line bands of a 128 superblock stream, and that case is identical too);
+- 4:2:2 and 4:4:4 chroma heights.
