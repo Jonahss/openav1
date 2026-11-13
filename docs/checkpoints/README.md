@@ -13,7 +13,8 @@ A checkpoint is a card image that decodes the reference clip faster than the one
   design (decoder + PCIe/DDR4 shell), from the routed build's utilization report. Empty where the build is gone.
 - **layout**: the placement picture of the routed build, coloured by decoder block (from C10 on).
 
-`fps.png` is drawn from the table: `python3 tools/checkpoints/chart.py docs/checkpoints` (SVG, and a PNG when a
+`fps.png` plots the unchecked speed from C10 on and the checked speed before it (the dagger on C10 marks the change of
+measurement). It is drawn from the table: `python3 tools/checkpoints/chart.py docs/checkpoints` (SVG, and a PNG when a
 headless Chromium is found). The `label` column places the few annotations: `dx;dy;anchor;text` with `|` between lines.
 
 To add one: measure with `pf_card2.sh` (checked pass, then unchecked), read the five utilization rows, dump the
