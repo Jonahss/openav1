@@ -355,6 +355,22 @@ module dec_top
                                             .we(w_rc_we), .be(w_rc_be), .wplane(w_rc_pl), .wx(w_rc_x), .wy(w_rc_y), .wdata(w_rc_d),
                                             .re(fb_re && fb_edge), .rplane(fb_plane), .rx(fb_x), .ry(fb_y),
                                             .sel(el_sel), .rdata(el_rdata), .rdata4(el_rdata4));
+`ifndef SYNTHESIS
+    // sim only: how many intra edge reads the copy answered in the frame, and how many of those differ from what the
+    // frame memory returned for the same request (= reads that would have seen a deblocked sample)
+    int el_n, el_diff;
+    always_ff @(posedge clk) begin
+        if (rst || frame_start) begin el_n <= 0; el_diff <= 0; end
+        else if (el_sel) begin
+            el_n <= el_n + 1;
+            if (el_rdata !== fb_rdata) begin
+                el_diff <= el_diff + 1;
+                if (el_diff < 3) $display("[el] t=%0t edge read: copy %h, frame memory %h", $time, el_rdata, fb_rdata);
+            end
+        end
+        if (frame_done && el_n != 0) $display("[el] t=%0t frame: %0d last-line edge reads, %0d differ from the frame memory", $time, el_n, el_diff);
+    end
+`endif
     assign fb0_we = {w_sr0_we, w_lf_we, w_rc_we}; assign fb0_be = {w_sr0_be, w_lf_be, w_rc_be}; assign fb0_wplane = {w_sr0_pl, w_lf_pl, w_rc_pl};
     assign fb0_wx = {w_sr0_x, w_lf_x, w_rc_x}; assign fb0_wy = {w_sr0_y, w_lf_y, w_rc_y}; assign fb0_wdata = {w_sr0_d, w_lf_d, w_rc_d};
     generate if (FRAME_URAM != 0) begin : g_fb0_uram
