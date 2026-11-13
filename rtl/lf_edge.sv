@@ -3,7 +3,7 @@
 // edge. The logic is lf_top's (strength(), the edge tests, the level fallback to the neighbour), lifted out so that the
 // streaming deblock stage (rtl/lf_stream.sv, docs/filter-chain.md) can take a block's two edges a clock.
 //   par = {apply, size[4:0], limit[7:0], blimit[7:0], thresh[7:0]}: apply = filtered at all (a transform edge that
-//         7.14.2 lets through, inside the frame, not the picture's left / top border, level > 0).
+//         7.14.2 lets through, in_pic the frame, not the picture's left / top border, level > 0).
 module lf_edge
   import blk_tables_pkg::*;
   import tx_tables_pkg::*;
@@ -69,7 +69,7 @@ module lf_edge
     endfunction
     logic [29:0] str_cur, str_prv, s;
     logic [4:0]  plane_size;
-    logic        is_blk_edge, is_tx_edge, apply_filter, inside;
+    logic        is_blk_edge, is_tx_edge, apply_filter, in_pic;
     logic [6:0]  base_size;
     logic [4:0]  fsize_c;
     always_comb begin
@@ -85,10 +85,10 @@ module lf_edge
             is_tx_edge  = (yp & (PXW'(tx_height(cur_tx)) - PXW'(1))) == PXW'(0);
             base_size = (tx_height(prv_tx) < tx_height(cur_tx)) ? tx_height(prv_tx) : tx_height(cur_tx);
         end
-        apply_filter = is_tx_edge && (is_blk_edge || !cur.skip || cur.ref0 == 3'd0);   // 7.14.2: tx edges inside a skipped INTER block are not filtered
+        apply_filter = is_tx_edge && (is_blk_edge || !cur.skip || cur.ref0 == 3'd0);   // 7.14.2: tx edges in_pic a skipped INTER block are not filtered
         fsize_c = (plane == 2'd0) ? ((base_size > 7'd16) ? 5'd16 : 5'(base_size)) : ((base_size > 7'd8) ? 5'd8 : 5'(base_size));
-        inside = (x < lh.frame_width) && (y < lh.frame_height) && !(!pss && x == PXW'(0)) && !(pss && y == PXW'(0));
+        in_pic = (x < lh.frame_width) && (y < lh.frame_height) && !(!pss && x == PXW'(0)) && !(pss && y == PXW'(0));
         s = (str_cur[29:24] != 6'd0) ? str_cur : str_prv;       // level 0 at the position: the neighbour's strength
-        par = {inside && apply_filter && (s[29:24] != 6'd0), fsize_c, s[23:0]};
+        par = {in_pic && apply_filter && (s[29:24] != 6'd0), fsize_c, s[23:0]};
     end
 endmodule
