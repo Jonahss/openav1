@@ -141,8 +141,8 @@ module mc_filt
     logic        p_list;
     logic        p_buf;
     logic        p_scaled;                               // x_step or y_step != 1024
-    logic        p_two;                                  // unscaled, not warp: the horizontal pass takes a word pair a cycle
-    logic        p_warp;                                 // block_warp: 15 x 8 horizontal, 8 x 8 vertical, per-sample taps
+    logic        p_two;                                  // unscaled or warp: the horizontal pass takes a word pair a cycle
+    logic        p_warp;                                 // block_warp: 15 x 8 horizontal, 8 x 8 vertical, per-sample taps; on the pair path since 2026-11-12
     logic signed [15:0] p_wa, p_wb, p_wg, p_wd;
     logic [15:0] p_wsx, p_wsy;
     logic [4:0]  p_ngrp;                                 // ceil(w / 4)
@@ -162,7 +162,7 @@ module mc_filt
     // last strip word has landed the run is handed over (q_*: one pending run) and the vertical side copies it into v_*
     // when it is free. At most one run in each side, so the filter holds two runs in flight.
     logic        p_tag, q_tag, v_tag;
-    logic        q_two, v_two;                           // unscaled, not warp: the vertical pass takes a strip pair a cycle
+    logic        q_two, v_two;                           // unscaled or warp: the vertical pass takes a strip pair a cycle
     logic        q_sb;                                   // strip buffer of the pending run
     logic        q_scaled, v_scaled, q_warp, v_warp;
     logic signed [15:0] q_wg, q_wd, v_wg, v_wd;
@@ -193,6 +193,8 @@ module mc_filt
     endfunction
 
     // ================================================================ control
+    // H_RUN and V_RUN (the warp path at one word / one group a cycle) are no longer entered: warp runs take the pair
+    // path since 2026-11-12. The enumerators stay so the profilers' state indices do not move.
     typedef enum logic [2:0] {H_IDLE, H_PRE, H_RUN, H_RUNS, H_DRAIN, H_RUN2} hst_t;   // horizontal side
     typedef enum logic [2:0] {V_IDLE, V_RUN, V_RUNS, V_DRAIN, V_RUN2} vst_t;         // vertical side
     hst_t hst;
@@ -310,6 +312,7 @@ module mc_filt
     logic [PW-1:0]      hsamp [0:3][0:7];
     logic [PW-1:0]      hsampb [0:3][0:7];
     logic signed [8:0]  htap  [0:3][0:7];
+    logic signed [8:0]  htapb [0:3][0:7];                // the odd group's taps (pair reads)
     logic        h3_v, h3_two, h3_b;  logic [6:0] h3_r;  logic [4:0] h3_g;
     logic signed [20:0] hp [0:3][0:7];
     logic signed [20:0] hpb [0:3][0:7];
@@ -353,6 +356,7 @@ module mc_filt
     logic signed [15:0] vsamp [0:3][0:7];
     logic signed [15:0] vsampb [0:3][0:7];
     logic signed [8:0]  vtap  [0:3][0:7];
+    logic signed [8:0]  vtapb [0:3][0:7];                // the odd group's taps (pair reads)
     logic        v3_v, v3_two, v3_b;  logic [6:0] v3_i;  logic [4:0] v3_g;  logic [67:0] v3_pred, v3_predb;
     logic signed [24:0] vp [0:3][0:7];
     logic signed [24:0] vpb [0:3][0:7];
@@ -407,7 +411,7 @@ module mc_filt
                 H_IDLE: if (start) begin
                     p_list <= lst; p_buf <= rbuf;
                     p_scaled <= !warp && ((x_step != 12'd1024) || (y_step != 12'd1024));
-                    p_two <= !warp && (x_step == 12'd1024) && (y_step == 12'd1024);
+                    p_two <= warp || ((x_step == 12'd1024) && (y_step == 12'd1024));
                     p_warp <= warp; p_wa <= w_alpha; p_wb <= w_beta; p_wg <= w_gamma; p_wd <= w_delta; p_wsx <= w_sx4; p_wsy <= w_sy4;
                     p_ngrp <= warp ? 5'd2 : 5'((w + 7'd3) >> 2); p_h <= warp ? 7'd8 : h;
                     p_nrow <= warp ? 7'd15 : 7'(nrow_calc[18:10] + 9'd8);
@@ -427,7 +431,7 @@ module mc_filt
                     hr <= 7'd0; hk <= 5'd0; hg <= 5'd0;
                     if (!warp && ((x_step != 12'd1024) || (y_step != 12'd1024))) begin
                         pg <= 5'd0; ppos <= 17'(x_frac0); hst <= H_PRE;
-                    end else hst <= warp ? H_RUN : H_RUN2;
+                    end else hst <= H_RUN2;
                 end
                 H_PRE: begin                             // one group per cycle: lane positions p = ppos + l x_step
                     for (int l = 0; l < 4; l++) begin
@@ -439,18 +443,10 @@ module mc_filt
                     ppos <= ppos + 17'(p_xs) * 17'd4;
                     if (pg == 5'(GRP - 1)) hst <= H_RUNS; else pg <= pg + 5'd1;
                 end
-                H_RUN2: begin                              // unscaled: one word pair per cycle, groups 2 hk - 2 and 2 hk - 1 emitted at pair hk
+                H_RUN2: begin                              // unscaled and warp: one word pair per cycle, groups 2 hk - 2 and 2 hk - 1 emitted at pair hk
                     h0_v <= 1'b1; h0_rd <= 1'b1; h0_two <= 1'b1; h0_em <= (hk != 5'd0); h0_r <= hr; h0_k <= hk;
                     h0_g <= 5'({hk, 1'b0} - 6'd2); h0_b <= (6'({hk, 1'b0}) - 6'd1 < 6'(p_ngrp));
                     if (hk == 5'((6'(p_ngrp) + 6'd1) >> 1)) begin               // the pair holding word ngrp + 1 (or ngrp, the last one group A needs)
-                        hk <= 5'd0;
-                        if (hr == p_nrow - 7'd1) begin hdrain <= 3'd4; hst <= H_DRAIN; end
-                        else hr <= hr + 7'd1;
-                    end else hk <= hk + 5'd1;
-                end
-                H_RUN: begin                               // warp: one word per cycle, group g emitted at word g + 2
-                    h0_v <= 1'b1; h0_rd <= 1'b1; h0_em <= (hk >= 5'd2); h0_r <= hr; h0_k <= hk; h0_g <= hk - 5'd2;
-                    if (hk == p_ngrp + 5'd1) begin
                         hk <= 5'd0;
                         if (hr == p_nrow - 7'd1) begin hdrain <= 3'd4; hst <= H_DRAIN; end
                         else hr <= hr + 7'd1;
@@ -491,26 +487,17 @@ module mc_filt
                     v_r1 <= q_r1; v_post <= q_post; v_mask <= q_mask; v_fidy <= q_fidy; v_yf0 <= q_yf0; v_ys <= q_ys;
                     for (int t = 0; t < 8; t++) vty[t] <= qty[t];
                     vg <= 5'd0; vk <= 7'd0; vi <= 7'd0; vt <= 3'd0; vpos <= 17'(q_yf0);
-                    vst <= q_scaled ? V_RUNS : q_two ? V_RUN2 : V_RUN;
+                    vst <= q_scaled ? V_RUNS : V_RUN2;
                 end
-                V_RUN2: if (!f_stall) begin                // unscaled: a strip pair per cycle, groups vg (even) and vg + 1
+                V_RUN2: if (!f_stall) begin                // unscaled and warp: a strip pair per cycle, groups vg (even) and vg + 1
+                    // the strip is complete before any read of it that matters: the last horizontal write lands 4
+                    // cycles after its issue, and the vertical pass reads rows 0 .. 6 first (written long before)
                     v0_v <= 1'b1; v0_two <= 1'b1; v0_b <= (6'(vg) + 6'd1 < 6'(v_ngrp));
                     v0_k <= vk; v0_g <= vg; v0_c <= (vk >= 7'd7); v0_i <= vk - 7'd7; v0_ph <= v_yf0[9:6];
                     if (vk == v_nrow - 7'd1) begin
                         vk <= 7'd0;
                         if (6'(vg) + 6'd2 >= 6'(v_ngrp)) begin drain <= 4'd8; vst <= V_DRAIN; end
                         else vg <= vg + 5'd2;
-                    end else vk <= vk + 7'd1;
-                end
-                V_RUN: if (!f_stall) begin                 // warp: one group per cycle
-                    // the strip is complete before any read of it that matters: the last horizontal write lands 4
-                    // cycles after its issue, and the vertical pass reads rows 0 .. 6 of group 0 first (written long
-                    // before); the last-written word is read at the earliest nrow cycles into S_V
-                    v0_v <= 1'b1; v0_k <= vk; v0_g <= vg; v0_c <= (vk >= 7'd7); v0_i <= vk - 7'd7; v0_ph <= v_yf0[9:6];
-                    if (vk == v_nrow - 7'd1) begin
-                        vk <= 7'd0;
-                        if (vg == v_ngrp - 5'd1) begin drain <= 4'd8; vst <= V_DRAIN; end
-                        else vg <= vg + 5'd1;
                     end else vk <= vk + 7'd1;
                 end
                 V_RUNS: if (!f_stall) begin                // scaled: 8 tap rows per output row, compute on the eighth
@@ -544,13 +531,11 @@ module mc_filt
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++)
                     if (h1_two) begin
-                        // pair reads: the even group's taps are samples l + t of words 2k - 2, 2k - 1, 2k = W3, W4, prde_q1
+                        // pair reads: the even group's taps are samples l + t of words 2k - 2, 2k - 1, 2k = W3, W4, prde_q1.
+                        // One phase per unscaled run; a warp run has a filter row per sample (lane l of groups g and g + 1)
                         hsamp[l][t] <= wsamp(W3, W4, prde_q1, prdo_q1, prdo_q1, 5'(l + t));
-                        htap[l][t]  <= tx[t];
-                    end else if (!p_scaled) begin
-                        // warp: lane l's taps are samples l + t of words k - 2, k - 1, k = W3, W4, prd_q1
-                        hsamp[l][t] <= wsamp(W1, W2, W3, W4, prd_q1, 5'(8 + l + t));
                         htap[l][t]  <= p_warp ? 9'(warp_tap(warp_offs(p_wsx, p_wa, p_wb, h1_g, l, 8'(signed'({1'b0, h1_r})) - 8'sd7), 3'(t))) : tx[t];
+                        htapb[l][t] <= p_warp ? 9'(warp_tap(warp_offs(p_wsx, p_wa, p_wb, h1_g + 5'd1, l, 8'(signed'({1'b0, h1_r})) - 8'sd7), 3'(t))) : tx[t];
                     end else begin
                         // scaled: window words kw - 4 .. kw = {W1 .. W4, prd_q1} on a read cycle (kw = h1_k), else
                         // {W0 .. W4}; lane l's first tap is sample g_int - 4 (kw - 4) of it
@@ -564,7 +549,7 @@ module mc_filt
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++) begin
                     hp[l][t]  <= 21'(signed'({1'b0, hsamp[l][t]})) * 21'(htap[l][t]);
-                    hpb[l][t] <= 21'(signed'({1'b0, hsampb[l][t]})) * 21'(tx[t]);   // one phase per unscaled run
+                    hpb[l][t] <= 21'(signed'({1'b0, hsampb[l][t]})) * 21'(htapb[l][t]);
                 end
             h4_v <= h3_v; h4_r <= h3_r; h4_g <= h3_g; h4_two <= h3_two; h4_b <= h3_b;
             for (int l = 0; l < 4; l++) begin
@@ -597,13 +582,16 @@ module mc_filt
                 end
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++)
+                begin
                     vtap[l][t] <= v_warp ? 9'(warp_tap(warp_offs(v_wsy, v_wg, v_wd, v1_g, l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t)))
                                 : v_scaled ? subpel_tap(v_fidy, v1_ph, 3'(t)) : vty[t];
+                    vtapb[l][t] <= v_warp ? 9'(warp_tap(warp_offs(v_wsy, v_wg, v_wd, v1_g + 5'd1, l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t))) : vty[t];
+                end
             v3_v <= v2_v; v3_i <= v2_i; v3_g <= v2_g; v3_pred <= v2_pred; v3_predb <= v2_predb; v3_two <= v2_two; v3_b <= v2_b;
             for (int l = 0; l < 4; l++)
                 for (int t = 0; t < 8; t++) begin
                     vp[l][t]  <= 25'(vsamp[l][t]) * 25'(vtap[l][t]);
-                    vpb[l][t] <= 25'(vsampb[l][t]) * 25'(vty[t]);                  // one phase per unscaled run
+                    vpb[l][t] <= 25'(vsampb[l][t]) * 25'(vtapb[l][t]);
                 end
             v4_v <= v3_v; v4_i <= v3_i; v4_g <= v3_g; v4_pred <= v3_pred; v4_predb <= v3_predb; v4_two <= v3_two; v4_b <= v3_b;
             for (int l = 0; l < 4; l++) begin
