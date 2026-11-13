@@ -243,6 +243,7 @@ module dec_top
     logic fb2_we; logic [1:0] fb2_plane; logic [FBX-1:0] fb2_x; logic [FBY-1:0] fb2_y; logic [11:0] fb2_wdata;
     logic fb4_we; logic [1:0] fb4_plane; logic [FBX-1:0] fb4_x; logic [FBY-1:0] fb4_y; logic [47:0] fb4_wdata, fb_rdata4;
     logic [3:0] fb4_be; logic mc_unsup;
+    logic fb_edge, el_sel; logic [11:0] el_rdata; logic [47:0] el_rdata4;   // intra edge reads from the unfiltered last-line copy (edge_line)
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
     logic mi_cd_clr, mi_cd_we; logic [SBW-1:0] mi_cd_row64, mi_cd_col64; logic [3:0] mi_cd_mask; logic [2:0] mi_cd_idx;
@@ -260,6 +261,7 @@ module dec_top
                                             .mi_tx_we, .mi_tx_plane, .mi_tx_row, .mi_tx_col, .mi_tx_w4, .mi_tx_h4, .mi_tx_sz, .mi_tx_busy,
                                             .mi_cd_clr, .mi_cd_we, .mi_cd_row64, .mi_cd_col64, .mi_cd_mask, .mi_cd_idx,
                                             .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata, .fb_rdata4,
+                                            .fb_edge, .el_sel, .el_rdata, .el_rdata4,
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
                                             .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
                                             .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .cur_planes, .cur_fmt16, .mc_unsup, .mem_err,
@@ -347,6 +349,28 @@ module dec_top
     frame_mem_w #(.FBX(FBX), .FBY(FBY)) u_w_sr0 (.we1(sr0 && sr_we), .plane1(sr_dplane), .x1(sr_dx), .y1(sr_dy), .d1(sr_wdata),
                                                  .we4(1'b0), .plane4(2'd0), .x4('0), .y4('0), .d4('0),
                                                  .we(w_sr0_we), .be(w_sr0_be), .plane(w_sr0_pl), .x(w_sr0_x), .y(w_sr0_y), .data(w_sr0_d));
+    // the unfiltered copy of every superblock row's last line, for the intra edge reads of the row below (so that
+    // deblocking of a row need not wait for the next row's reconstruction: lf_ok)
+    edge_line #(.FBX(FBX), .FBY(FBY)) u_el (.clk, .sb128(hdr.sb128), .ssy(hdr.ssy),
+                                            .we(w_rc_we), .be(w_rc_be), .wplane(w_rc_pl), .wx(w_rc_x), .wy(w_rc_y), .wdata(w_rc_d),
+                                            .re(fb_re && fb_edge), .rplane(fb_plane), .rx(fb_x), .ry(fb_y),
+                                            .sel(el_sel), .rdata(el_rdata), .rdata4(el_rdata4));
+`ifndef SYNTHESIS
+    // sim only: how many intra edge reads the copy answered in the frame, and how many of those differ from what the
+    // frame memory returned for the same request (= reads that would have seen a deblocked sample)
+    int el_n, el_diff;
+    always_ff @(posedge clk) begin
+        if (rst || frame_start) begin el_n <= 0; el_diff <= 0; end
+        else if (el_sel) begin
+            el_n <= el_n + 1;
+            if (el_rdata !== fb_rdata) begin
+                el_diff <= el_diff + 1;
+                if (el_diff < 3) $display("[el] t=%0t edge read: copy %h, frame memory %h", $time, el_rdata, fb_rdata);
+            end
+        end
+        if (frame_done && el_n != 0) $display("[el] t=%0t frame: %0d last-line edge reads, %0d differ from the frame memory", $time, el_n, el_diff);
+    end
+`endif
     assign fb0_we = {w_sr0_we, w_lf_we, w_rc_we}; assign fb0_be = {w_sr0_be, w_lf_be, w_rc_be}; assign fb0_wplane = {w_sr0_pl, w_lf_pl, w_rc_pl};
     assign fb0_wx = {w_sr0_x, w_lf_x, w_rc_x}; assign fb0_wy = {w_sr0_y, w_lf_y, w_rc_y}; assign fb0_wdata = {w_sr0_d, w_lf_d, w_rc_d};
     generate if (FRAME_URAM != 0) begin : g_fb0_uram
@@ -457,8 +481,9 @@ module dec_top
     // row of a two-engine tile row passes once and counts twice, while tiles fed one at a time (run_tile) pass it once
     // per column (2026-10-28: counting one pass per row started LF on a row whose other column was still undecoded,
     // seed 9 of the dec_host pipe suite: the tile edge deblocked against stale samples).
-    // Rules (see notes/projects/open-av1-decoder-throughput.md, step 7): LF(r) after row r+1 is decoded [vertical
-    // edges of row r change its last line, which row r+1 predicts from]; CDEF(r) after LF(r+1) [window reads 2 lines
+    // Rules (see notes/projects/open-av1-decoder-throughput.md, step 7): LF(r) after row r is decoded [its vertical
+    // edges change row r's last line, which row r+1 predicts from: since 2026-11-13 those intra edge reads come from the
+    // unfiltered copy in edge_line, before that LF(r) waited for row r+1]; CDEF(r) after LF(r+1) [window reads 2 lines
     // into row r+1, and LF(r+1)'s boundary edge changes row r's last lines]; SR(r) after CDEF(r+1) [CDEF reads row r's
     // last 2 lines at frame width] (or after LF(r+1) without CDEF); LR(stripe s) after CDEF and SR of the rows the
     // stripe touches. The last row takes "r+1" as already done.
@@ -611,7 +636,7 @@ module dec_top
     logic [SBW-1:0] lr_row;                                   // superblock row holding the stripe's last line
     always_comb begin
         logic [SBW-1:0] r;
-        r = lf_next; lf_ok = (r < n_rows) && row_dec(r) && row_dec(r + SBW'(1)) && !mi_blk_busy && !mi_tx_busy;
+        r = lf_next; lf_ok = (r < n_rows) && row_dec(r) && !mi_blk_busy && !mi_tx_busy;
         r = cd_next; cd_ok = cdef_en && (r < n_rows) && (lf_next > r) && ((r + SBW'(1) >= n_rows) || (lf_next > r + SBW'(1))) && !hold_cd;
         r = sr_next; sr_ok = sr_en && (r < n_rows) && (cdef_en ? ((cd_next > r) && ((r + SBW'(1) >= n_rows) || (cd_next > r + SBW'(1))))
                                                             : ((lf_next > r) && ((r + SBW'(1) >= n_rows) || (lf_next > r + SBW'(1))))) && !hold_sr;
