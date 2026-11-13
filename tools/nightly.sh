@@ -81,6 +81,7 @@ runsh_one() {
 # v_hold was tied to 0 in three netlists while every suite and gate rung passed)
 run decl_order         bash -c 'python3 tools/check_decl_order.py rtl/*.sv && echo "OK: {decl_order: clean}" || { echo "%Error: identifiers used before their declaration"; exit 1; }'
 run lf_filt_unit       python tb/runner.py lf_filt          # the deblocking sample filter of the streaming chain vs lf_model (one line across an edge)
+run lf_stream_unit     TS_SEEDS=2,3,8,9,10,11,12,13 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the streaming deblock stage vs lf_model, band by band
 run edge_line_unit     python tb/runner.py edge_line        # the unfiltered last-line copy (intra edge reads; LF a row earlier) vs a model
 run mc_filt_unit       python tb/runner.py mc_filt          # the motion-compensation filter vs the model: fuzz + back-to-back (overlapped) runs
 run tile_syntax_plain  TS_SCREEN=0 TS_SEEDS=12 python tb/runner.py tile_syntax
