@@ -428,7 +428,11 @@ module dec_host
     always_comb for (int p = 0; p < 3; p++) cur_planes[72 * p +: 72] = {dma_stride[p], dma_base[p]};   // the picture being decoded: intra block copy
     logic [15:0]    dma_w [3], dma_h [3];
     logic [31:0]    dma_beats;
-    typedef enum logic [3:0] {D_IDLE, D_PLANE, D_ROW, D_BURST, D_AW, D_F0, D_F0W, D_F1, D_F2, D_W, D_B, D_NEXT} dstate_t;
+    // Streamed since 2026-11-13: the read side asks the window memory for one sample group a cycle (the answer lands two
+    // cycles later with h_ok) and packs the groups into beats in a small FIFO; the write side sends a burst's beats as
+    // they come and does not wait for a burst's response before the next address (b_out counts the responses owed; the
+    // run ends in D_DRAIN when all are in). Before, a beat took 5 cycles and every burst waited for its B.
+    typedef enum logic [3:0] {D_IDLE, D_PLANE, D_ROW, D_BURST, D_AW, D_W, D_DRAIN, D_NEXT} dstate_t;
     dstate_t        ds;
     logic [1:0]     d_plane;
     logic [15:0]    row_lines;                               // lines of plane d_plane in one released superblock row
@@ -438,7 +442,21 @@ module dec_host
     logic [39:0]    d_row_addr, d_addr;                      // this row's first byte; the next beat's address
     logic [15:0]    d_row_beats;                             // beats still to write in this row
     logic [4:0]     d_len, d_cnt;                            // burst beats, beats done in it
-    logic [47:0]    d_g0, d_g1;                              // the two sample groups of the beat
+    logic [47:0]    d_g0, d_g1;                              // the two sample groups of the beat on the write channel
+    logic           o_v;                                     // d_g0 / d_g1 hold a beat not yet written
+    // read side of a line
+    logic [FBX-1:0] r_x, r_lx;                               // the next group to ask for; the next group to land
+    logic [15:0]    r_issue_left, r_land_left;               // groups of the line still to ask for / still to land
+    logic           r_v1, r_v2;                              // a request one / two cycles old (r_v2: its answer is on h_rdata4 now)
+    logic           r_half;                                  // 8-bit: r_hold has the beat's first group
+    logic [47:0]    r_hold;
+    localparam int BFA = 4;                                  // beat FIFO: 16 beats
+    logic [95:0]    bf_mem [1 << BFA];
+    logic [BFA:0]   bf_w, bf_r, bf_cnt;
+    assign bf_cnt = bf_w - bf_r;
+    logic           r_issue, r_goback, bf_pop, w_fire;
+    logic [15:0]    line_beats;
+    logic [4:0]     b_out;                                   // write responses owed
     logic [1:0]     n_planes;
     assign fmt16 = dma_cfg[0];
     assign n_planes = dma_cfg[5:4];
@@ -459,21 +477,27 @@ module dec_host
     always_comb beat_strb = (rem_bytes >= 16'd8) ? 8'hFF : 8'((9'd1 << rem_bytes[3:0]) - 9'd1);
     assign h_plane_m = dma_busy ? d_plane : haddr[29:28];
     assign h_y_m     = dma_busy ? d_y : haddr[14 +: FBY];
-    assign h_x_m     = dma_busy ? ((ds == D_F0W) ? d_x + FBX'(4) : d_x) : hx_q;   // D_F0: group d_x, D_F0W: d_x + 4 (two-cycle read: both in flight)
+    assign h_x_m     = dma_busy ? r_x : hx_q;
+    assign line_beats = (row_bytes + 16'd7) >> 3;
+    // a request goes out while the FIFO has room for everything in flight (two requests, a held half and this one)
+    assign r_goback = r_v2 && !h_ok;                         // the memory did not serve that group: ask again from it
+    assign r_issue  = dma_busy && (r_issue_left != 16'd0) && (bf_cnt <= (BFA+1)'((1 << BFA) - 4)) && !r_goback;
+    assign w_fire   = (ds == D_W) && o_v && m_axi_wready && !fs_active;
+    assign bf_pop   = (bf_cnt != '0) && (!o_v || w_fire);
     assign m_axi_awaddr  = fs_active ? fs_addr : d_addr;
     assign m_axi_awlen   = fs_active ? 8'(fs_len - 5'd1) : 8'(d_len - 5'd1);
     assign m_axi_awsize  = 3'b011;                           // 8 bytes
     assign m_axi_awburst = 2'b01;                            // INCR
     assign m_axi_awcache = 4'b0011;                          // normal, non-cacheable, bufferable
     assign m_axi_awprot  = 3'b000;
-    assign m_axi_awvalid = fs_active ? fs_awvalid : (ds == D_AW);
+    assign m_axi_awvalid = fs_active ? fs_awvalid : ((ds == D_AW) && (b_out < 5'd8));   // at most 8 bursts in flight
     assign m_axi_wdata   = fs_active ? (sv_busy ? sv_buf[g_done[3:2]][64 * g_done[1:0] +: 64] : fs_rd_data)
                          : fmt16 ? {4'd0, d_g0[47:36], 4'd0, d_g0[35:24], 4'd0, d_g0[23:12], 4'd0, d_g0[11:0]}
                                  : {d_g1[43:36], d_g1[31:24], d_g1[19:12], d_g1[7:0], d_g0[43:36], d_g0[31:24], d_g0[19:12], d_g0[7:0]};
     assign m_axi_wstrb   = fs_active ? 8'hFF : beat_strb;
     assign m_axi_wlast   = fs_active ? fs_wlast : (d_cnt == d_len - 5'd1);
-    assign m_axi_wvalid  = fs_active ? fs_wvalid : (ds == D_W);
-    assign m_axi_bready  = fs_active ? fs_bready : (ds == D_B);
+    assign m_axi_wvalid  = fs_active ? fs_wvalid : ((ds == D_W) && o_v);
+    assign m_axi_bready  = fs_active ? fs_bready : (b_out != 5'd0);
     logic           fs_go, fs_pend, fs_sel;
     // the read channels belong to ref_fetch (dec_top)
 
@@ -482,7 +506,9 @@ module dec_host
         if (!aresetn) begin
             ds <= D_IDLE; dma_busy <= 1'b0; dma_done <= 1'b0; dma_err <= 1'b0; dma_beats <= '0;
             d_plane <= '0; d_y <= '0; d_x <= '0; d_row_addr <= '0; d_addr <= '0; d_row_beats <= '0; d_len <= '0; d_cnt <= '0;
-            d_g0 <= '0; d_g1 <= '0; d_y1 <= '0;
+            d_g0 <= '0; d_g1 <= '0; d_y1 <= '0; o_v <= 1'b0;
+            r_x <= '0; r_lx <= '0; r_issue_left <= '0; r_land_left <= '0; r_v1 <= 1'b0; r_v2 <= 1'b0; r_half <= 1'b0; r_hold <= '0;
+            bf_w <= '0; bf_r <= '0; b_out <= '0;
             fq_w <= '0; fq_r <= '0; fl_rows <= '0; fl_run <= 1'b0;
             for (int p = 0; p < 3; p++) begin fl_addr[p] <= '0; fl_y[p] <= '0; end
         end else begin
@@ -509,33 +535,29 @@ module dec_host
                     ds <= (fl_run && fl_y[d_plane] >= dma_h[d_plane]) ? D_NEXT : D_ROW;   // nothing left in this plane
                 end
                 D_ROW: begin                                 // a row: its beats and first address
-                    d_addr <= d_row_addr; d_x <= '0; d_row_beats <= (row_bytes + 16'd7) >> 3; ds <= D_BURST;
+                    d_addr <= d_row_addr; d_x <= '0; d_row_beats <= line_beats; ds <= D_BURST;
+                    // the read side starts on the line now (the beat FIFO and the request pipe are empty between lines)
+                    r_x <= '0; r_lx <= '0; r_half <= 1'b0;
+                    r_issue_left <= fmt16 ? line_beats : {line_beats[14:0], 1'b0};   // 8-bit: two groups a beat
+                    r_land_left  <= fmt16 ? line_beats : {line_beats[14:0], 1'b0};
                 end
                 D_BURST: begin
                     if (d_row_beats == 16'd0) ds <= D_NEXT;
                     else begin d_len <= burst_len; d_cnt <= 5'd0; ds <= D_AW; end
                 end
-                D_AW: if (m_axi_awready) ds <= D_F0;
-                D_F0: ds <= D_F0W;                           // h_x = d_x this cycle; its group lands two cycles later (D_F1 / D_F2)
-                D_F0W: ds <= fmt16 ? D_F2 : D_F1;            // h_x = d_x + 4 this cycle (8-bit: the beat's second group)
-                // the window memory serves the host port only when the filter's read port is idle (a flush runs
-                // alongside decoding): a group the memory did not serve (h_ok low) is fetched again from D_F0
-                D_F1: begin d_g0 <= h_rdata4; ds <= h_ok ? D_F2 : D_F0; end   // group d_x lands (8-bit: d_x + 4 follows in D_F2)
-                D_F2: begin
-                    if (fmt16) d_g0 <= h_rdata4; else d_g1 <= h_rdata4;
-                    ds <= h_ok ? D_W : D_F0;
-                end
-                D_W: if (m_axi_wready) begin
+                D_AW: if (m_axi_awvalid && m_axi_awready) ds <= D_W;
+                D_W: if (w_fire) begin
                     dma_beats <= dma_beats + 1'b1;
                     d_addr <= d_addr + 40'd8;
                     d_x <= d_x + (fmt16 ? FBX'(4) : FBX'(8));
                     d_row_beats <= d_row_beats - 1'b1;
                     d_cnt <= d_cnt + 1'b1;
-                    ds <= m_axi_wlast ? D_B : D_F0;
+                    if (m_axi_wlast) ds <= D_BURST;          // the response is counted in b_out, not waited for
                 end
-                D_B: if (m_axi_bvalid) begin
-                    if (m_axi_bresp[1]) dma_err <= 1'b1;
-                    ds <= D_BURST;
+                D_DRAIN: if (b_out == 5'd0) begin            // every burst of the run answered: the data is in DDR
+                    dma_busy <= 1'b0; ds <= D_IDLE;
+                    if (fl_run) begin flush_done <= 1'b1; fl_rows <= fl_rows + 8'd1; end
+                    else dma_done <= 1'b1;
                 end
                 D_NEXT: begin                                // line done
                     if (16'(d_y) + 16'd1 >= d_y1 || (fl_run && fl_y[d_plane] >= dma_h[d_plane])) begin
@@ -543,17 +565,36 @@ module dec_host
                             fl_addr[d_plane] <= d_row_addr + 40'(dma_stride[d_plane]);
                             fl_y[d_plane] <= d_y1;
                         end
-                        if (d_plane == n_planes) begin
-                            dma_busy <= 1'b0; ds <= D_IDLE;
-                            if (fl_run) begin flush_done <= 1'b1; fl_rows <= fl_rows + 8'd1; end
-                            else dma_done <= 1'b1;
-                        end else begin d_plane <= d_plane + 1'b1; ds <= D_PLANE; end
+                        if (d_plane == n_planes) ds <= D_DRAIN;
+                        else begin d_plane <= d_plane + 1'b1; ds <= D_PLANE; end
                     end else begin
                         d_y <= d_y + 1'b1; d_row_addr <= d_row_addr + 40'(dma_stride[d_plane]); ds <= D_ROW;
                     end
                 end
                 default: ds <= D_IDLE;
             endcase
+            // ---- read side: one group request a cycle, answers two cycles later. The window memory serves the host port
+            // only when the filter's read port is idle (a flush runs alongside decoding): on a group it did not serve
+            // (h_ok low) the requests behind it are dropped and the stream restarts from that group.
+            r_v1 <= r_issue; r_v2 <= r_v1;
+            if (r_issue) begin r_x <= r_x + FBX'(4); r_issue_left <= r_issue_left - 16'd1; end
+            if (r_v2 && h_ok) begin
+                r_lx <= r_lx + FBX'(4); r_land_left <= r_land_left - 16'd1;
+                if (fmt16) begin bf_mem[bf_w[BFA-1:0]] <= {48'd0, h_rdata4}; bf_w <= bf_w + 1'b1; end
+                else if (!r_half) begin r_hold <= h_rdata4; r_half <= 1'b1; end
+                else begin bf_mem[bf_w[BFA-1:0]] <= {h_rdata4, r_hold}; bf_w <= bf_w + 1'b1; r_half <= 1'b0; end
+            end
+            if (r_goback) begin r_x <= r_lx; r_issue_left <= r_land_left; r_v1 <= 1'b0; r_v2 <= 1'b0; end
+            // ---- beat FIFO to the write channel's register
+            if (bf_pop) begin {d_g1, d_g0} <= bf_mem[bf_r[BFA-1:0]]; bf_r <= bf_r + 1'b1; o_v <= 1'b1; end
+            else if (w_fire) o_v <= 1'b0;
+            // ---- write responses
+            case ({m_axi_awvalid && m_axi_awready && !fs_active, m_axi_bvalid && m_axi_bready && !fs_active})
+                2'b10: b_out <= b_out + 5'd1;
+                2'b01: b_out <= b_out - 5'd1;
+                default: ;
+            endcase
+            if (m_axi_bvalid && m_axi_bready && !fs_active && m_axi_bresp[1]) dma_err <= 1'b1;
         end
     end
 
