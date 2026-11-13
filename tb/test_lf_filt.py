@@ -1,8 +1,8 @@
 """Fuzz the deblocking sample filter (rtl/lf_filt.sv, combinational) against lf_model.LoopFilter.sample_filter on one
 line of 14 samples: random bit depth, plane kind, filter size and strength; the samples are drawn so that every filter
 (none, narrow with and without hev, 6-tap, 8-tap, 14-tap) fires often. The line after the model's filter must equal the
-RTL's out where mod is set and the input elsewhere, and mod must be set exactly where the model changed... a sample
-the filter rewrites with the same value counts as changed for the RTL only, so the check is on the values.
+RTL's out where mod is set and the input elsewhere (out must also repeat the input where mod is clear). Each of the
+six outcomes (none, narrow with and without hev, chroma 6-tap, luma 8-tap, luma 14-tap) must occur at least 200 times.
 Env: LFF_ITERS (default 30000), LFF_SEED."""
 import os
 import random
@@ -50,17 +50,16 @@ async def lf_filt_vs_model(dut):
                 assert ((out >> (12 * (k + 6))) & 0xFFF) == line[7 + k], f"iter {it}: out at an unmodified position {k} differs from the input"
         plane = 1 if chroma else 0
         m = lfm.LoopFilter(types.SimpleNamespace(BitDepth=bd), None, [[list(line)], [list(line)], [list(line)]])
+        took = []                                            # which filter the model applied
+        nar, wid = m.narrow, m.wide
+        m.narrow = lambda hev, *a: (took.append("narrow_hev" if hev else "narrow"), nar(hev, *a))[1]
+        m.wide = lambda x, y, pl, dx, dy, lg: (took.append(("chroma6" if pl else "luma8") if lg == 3 else "luma14"), wid(x, y, pl, dx, dy, lg))[1]
         m.sample_filter(7, 0, plane, limit, blimit, thresh, 1, 0, fsize)
         exp = m.planes[plane][0]
         assert got == exp, (f"iter {it}: bd {bd} chroma {chroma} size {fsize} limit {limit} blimit {blimit} thresh {thresh}\n"
-                            f"  in  {line}\n  rtl {got}\n  exp {exp}\n  mod {mod:012b}")
-        nmod = bin(mod).count("1")
-        kind = "none" if nmod == 0 else "narrow_hev" if nmod == 2 else "narrow" if (nmod == 4 and (fsize == 4 or mod == 0b000011110000 and not _wide4(exp, line))) else f"wide{nmod}"
+                            f"  in  {line}\n  rtl {got}\n  exp {exp}\n  mod {mod:012b} model took {took}")
+        kind = took[0] if took else "none"
         kinds[kind] = kinds.get(kind, 0) + 1
-    need = ["none", "narrow_hev", "wide6", "wide12"]
-    assert all(kinds.get(k, 0) > 50 for k in need) and (kinds.get("narrow", 0) + kinds.get("wide4", 0)) > 100, kinds
+    need = ["none", "narrow", "narrow_hev", "chroma6", "luma8", "luma14"]
+    assert all(kinds.get(k, 0) > 200 for k in need), kinds
     dut._log.info(f"OK: {kinds}")
-
-
-def _wide4(exp, line):
-    return False
