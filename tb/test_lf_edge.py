@@ -70,10 +70,11 @@ async def lf_edge_vs_model(dut):
     vdir = os.environ.get("TS_LF_VEC", "")
     if vdir:                                                 # frames dumped by a decoder test bench (lf_edge_vec.dump)
         import pickle
-        files = sorted(Path(vdir).glob("lfvec_*.pkl"))
+        import gzip
+        files = sorted(list(Path(vdir).glob("lfvec_*.pkl")) + list(Path(vdir).glob("lfvec_*.pkl.gz")))
         assert files, f"no vector files in {vdir}"
         for f in files:
-            with open(f, "rb") as fh:
+            with (gzip.open(f, "rb") if f.suffix == ".gz" else open(f, "rb")) as fh:
                 await run_vectors(dut, pickle.load(fh), stats)
         assert stats["inter_positions"] > 0, f"the dumped frames have no inter position: {stats}"
     elif ivfs:
