@@ -282,7 +282,7 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
             buf = 2
         if fcm.ENABLED:                                      # the streaming chain's models against the pictures above
             fcm.check_frame(hdr, state, pre_chain, deblocked_chain, cdef_chain, final_chain, tag)
-            stats["chain_checked"] = fcm.stats["frames"]
+            stats["chain_checked"] = dict(fcm.stats)
     return planes, buf
 
 
