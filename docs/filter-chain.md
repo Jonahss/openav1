@@ -51,6 +51,18 @@ tile engines -> row store (pre-filter, 2 superblock rows)
 | restoration | CDEF / super-res output and deblocked stripe boundary lines | 3 lines above and below, 2 + 2 saved boundary lines per 64-line stripe | 7-tap Wiener / self-guided windows, the stripe rule |
 | writer | final samples | one burst | 512-bit DDR port |
 
+Confirmed so far with stage models that take the picture band by band and raise on any read outside what they hold
+(`tb/lf_stage_model.py`, `tb/cdef_stage_model.py`, checks `tools/check_lf_stream.py`, `tools/check_filter_chain.py`;
+generated frames in 4:2:0 / 4:2:2 / 4:4:4 / mono at 8, 10 and 12 bits and the first frame of five real streams, both
+superblock sizes, identical to the frame-at-once models):
+
+- deblock: horizontal edges two columns behind the vertical edges, row by row, is bit-exact with the specification's
+  order; 8 lines of context per plane are enough and 6 are not (7 is the minimum);
+- CDEF behind it: carries at most 18 luma and 6 chroma deblocked lines (4:2:0) from one superblock row to the next;
+  a reach of 1 instead of 2 fails.
+
+Not yet modelled: restoration with super-res, inter frames, the left-column context inside a row.
+
 Because a stage's output for the bottom lines of row r depends on the top of row r + 1, each stage finishes a row
 shifted up by its context (deblock by 8 lines, CDEF by 2 more, restoration by 3 more). The context memories carry the
 unfinished lines to the next row. In total about 20 lines of the frame width per plane: under 2 Mbit at 4K, against
