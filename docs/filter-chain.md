@@ -59,9 +59,15 @@ superblock sizes, identical to the frame-at-once models):
 - deblock: horizontal edges two columns behind the vertical edges, row by row, is bit-exact with the specification's
   order; 8 lines of context per plane are enough and 6 are not (7 is the minimum);
 - CDEF behind it: carries at most 18 luma and 6 chroma deblocked lines (4:2:0) from one superblock row to the next;
-  a reach of 1 instead of 2 fails.
+  a reach of 1 instead of 2 fails;
+- restoration behind that (`tb/lr_stage_model.py`): carries at most 11 luma and 7 chroma CDEF lines, and of the
+  deblocked picture only the four lines around each stripe boundary (6 luma, 4 chroma held at once); keeping three of
+  the four, or one CDEF line less above a block row, fails.
 
-Not yet modelled: restoration with super-res, inter frames, the left-column context inside a row.
+All three stages chained are identical to the frame-at-once models on frame 0 of the natural, screen and synthetic
+streams (restoration on in three of them).
+
+Not yet modelled: super-res between CDEF and restoration, inter frames, the left-column context inside a row.
 
 Because a stage's output for the bottom lines of row r depends on the top of row r + 1, each stage finishes a row
 shifted up by its context (deblock by 8 lines, CDEF by 2 more, restoration by 3 more). The context memories carry the
