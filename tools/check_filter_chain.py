@@ -84,5 +84,5 @@ for tag, tiles in frames(sys.argv[1:]):
             ch = 0
         bad += 0 if (ok_lf and ok_cd) else 1
         print(f"{tag} sb{sb}: deblock {'identical' if ok_lf else 'DIFFERS'}, cdef {'off' if not cdef_on else ('identical, ' + str(ch) + ' lines changed') if ok_cd else 'DIFFERS'}{msg}")
-print(f"frames x superblock sizes {n_frames}, failing {bad}; CDEF on in {cdef_frames} with {cdef_changed} lines changed; most deblocked lines held by the CDEF stage per plane {held}")
+print(f"frames x superblock sizes {n_frames}, failing {bad}; CDEF on in {cdef_frames} with {cdef_changed} lines changed; most deblocked lines the CDEF stage carried between superblock rows, per plane {held}")
 sys.exit(1 if bad or not n_frames else 0)

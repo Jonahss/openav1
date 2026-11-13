@@ -5,7 +5,7 @@ in order, and the stage holds only the deblocked lines its next blocks still rea
 An 8x8 block row at luma line y reads deblocked luma y - 2 .. y + 9 and, for its chroma blocks, chroma lines
 yc - 2 .. yc + (8 >> subY) + 1. A block row is filtered as soon as those lines have arrived (or the picture has ended);
 its lines are then final. Deblocked lines above the next block row's reach are dropped. Any read outside the held
-lines raises: the check that the stage's window is enough. `held_max` records the most lines ever held per plane.
+lines raises: the check that the stage's window is enough. `held_max` records the most deblocked lines carried from one call to the next, per plane.
 """
 import sys
 from pathlib import Path
@@ -56,7 +56,6 @@ class CdefStage(cdm.Cdef):
                 assert y == w.hi, f"plane {p}: line {y} arrived, expected {w.hi}"
                 w.rows[y] = ln; w.hi = y + 1
                 self.out[p][y] = ln[:]                         # CdefFrame starts as a copy
-            self.held_max[p] = max(self.held_max[p], w.hi - w.lo)
         # block rows whose reach has arrived
         while self.next_r < h.MiRows:
             r = self.next_r
@@ -79,6 +78,9 @@ class CdefStage(cdm.Cdef):
                 for y in range(w.lo, min(keep, w.hi)):
                     del w.rows[y]
                 w.lo = max(w.lo, min(keep, w.hi))
+        if not last:
+            for p in range(h.NumPlanes):                       # what is carried to the next call
+                self.held_max[p] = max(self.held_max[p], self.cur[p].hi - self.cur[p].lo)
         res = []
         for p in range(h.NumPlanes):
             sy = self._sub(p)
