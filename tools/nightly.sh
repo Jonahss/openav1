@@ -113,6 +113,7 @@ if [ -d "$ARGON" ]; then
   run tile_syntax_inter  TS_IVF="$IIVFS" python tb/runner.py tile_syntax
   # inter frames through the whole decoder (stage 2a: translational MC, average / distance compound), references =
   # the model's pictures in the AXI memory model (tb/test_dec_inter.py); test10046 is the stage-2a-clean Argon stream
+  run lf_edge_argon      TS_IVF="$ARGON/test10963.obu,$ARGON/test1057_6368.obu,$ARGON/test10446_512_421.obu" python tb/runner.py lf_edge   # frame 0s where the level fallback to the neighbour changes the picture (delta LF / segment features)
   run dec_inter_argon    FBX=12 FBY=9 TS_STAGE=recon TS_IVF="$ARGON/test10046.obu" python tb/runner.py dec_top test_dec_inter
   # inter frames through the WHOLE pipeline (deblocking with the inter ref / mode deltas and the skipped-inter edge rule,
   # CDEF, super-resolution, loop restoration): the corpus runs stop at recon, which hid both lf_top gaps until 2026-10-20

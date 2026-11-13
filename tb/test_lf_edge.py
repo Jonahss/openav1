@@ -103,7 +103,7 @@ async def lf_edge_vs_model(dut):
     if ivfs:
         import obu_parser as op
         for path in ivfs:
-            d = op.Decoder(); d.feed_ivf(open(path, "rb").read())
+            d = op.parse_file(path)                          # .ivf, or Argon's .obu
             await one_frame(dut, [d.tiles[i] for i in d.frames[0]], f"{Path(path).name} frame 0", stats)
     else:
         for seed in seeds:
