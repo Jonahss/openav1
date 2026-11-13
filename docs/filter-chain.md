@@ -151,6 +151,18 @@ Arithmetic for 4K: a 64-line superblock row is 960 block columns x 16 blocks = 1
 and 60 frames a second is 31 M clocks a second, about a third of a 100 MHz clock. The chroma planes run beside luma
 on their own, smaller datapaths.
 
+Built so far (branch `filter-chain`, simulation only, not in the decoder):
+- `rtl/lf_filt.sv`: the sample filter for one line across an edge, combinational, fuzzed against `lf_model` (30,000
+  lines, every one of the six outcomes at least 200 times; three deliberate faults each fail).
+- `rtl/lf_stream.sv`: the stage as described above for one plane, a band at a time, with eight `lf_filt`. Its unit test
+  (`tb/test_lf_stream.py`, suite `lf_stream_unit`) feeds whole frames band by band with the model's edge strengths,
+  for superblock rows of 64 and 128 lines, with gaps in the input, and requires every sample of the plane to come out
+  once and equal to `lf_model`: 8 generated frames (48 plane runs, 57,600 blocks) and frame 0 of four real streams
+  are identical; four deliberate faults each fail. One of them (the last column's vertical edge left out) passed the
+  first seed list and the real frames, where no sample depends on that edge: seeds where samples do were added.
+- Not done: the strength computation from mode info (the test supplies it), back-pressure on the output, pipeline
+  registers for 100 MHz (both passes are one combinational step today), throughput measured.
+
 Open points for this stage:
 - the row store's word: a 4x4 block (16 samples) read at once, written by reconstruction four samples at a time;
 - 128-line superblocks double the window height (or the band is taken as two 64-line halves: the stage model can
