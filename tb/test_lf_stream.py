@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import cocotb
+import cocotb.utils
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge, Timer
 
@@ -76,6 +77,7 @@ async def one_plane(dut, hdr, state, pre, post, plane, sb_lines, rng, tag, stats
         await RisingEdge(dut.clk); await Timer(1, "ns")
         dut.band_start.value = 0
         gap = rng.choice([0.0, 0.0, 0.2, 0.6])
+        t_start = cocotb.utils.get_sim_time("ns")
         for ci, col in enumerate(cols):
             for ri, row in enumerate(rows):
                 while rng.random() < gap:
@@ -101,6 +103,9 @@ async def one_plane(dut, hdr, state, pre, post, plane, sb_lines, rng, tag, stats
             if done:
                 break
             assert n < 200000, f"{tag} plane {plane} band at MI row {row0}: no band_done"
+        if gap == 0.0:                                       # input never held back: the stage's own rate
+            stats["nogap_cycles"] += int((cocotb.utils.get_sim_time("ns") - t_start) // 10)
+            stats["nogap_blocks"] += len(rows) * len(cols)
         await RisingEdge(dut.clk); await Timer(1, "ns")
         stats["cycles"] += n
         for (c, r, v) in out:
@@ -156,7 +161,7 @@ async def lf_stream_vs_model(dut):
     dut.rst.value = 0
     await RisingEdge(dut.clk)
     rng = random.Random(1)
-    stats = dict(frames=0, planes=0, blocks=0, filtered=0, cycles=0, skipped=0)
+    stats = dict(frames=0, planes=0, blocks=0, filtered=0, cycles=0, skipped=0, nogap_cycles=0, nogap_blocks=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:
         import obu_parser as op
@@ -173,4 +178,6 @@ async def lf_stream_vs_model(dut):
                 continue
             await one_frame(dut, d.tiles, f"seed {seed} {fmt} bd{args['bd']} {W}x{H}", stats, rng)
     assert stats["frames"] > 0 and stats["filtered"] > 0, stats
+    if stats["nogap_blocks"]:
+        stats["clocks_per_block"] = round(stats["nogap_cycles"] / stats["nogap_blocks"], 3)
     dut._log.info(f"OK: {stats}")
