@@ -9,9 +9,9 @@ module lf_filt (
     input  logic [3:0]      bit_depth,
     input  logic            chroma,        // plane != 0: the wide filter is the 6-tap one
     input  logic [4:0]      filter_size,   // 4, 8 or 16 (7.14.3)
-    input  logic [5:0]      limit,         // 7.14.4
-    input  logic [6:0]      blimit,
-    input  logic [3:0]      thresh,
+    input  logic [7:0]      limit,         // 7.14.4 (as lf_top: limit <= 63, blimit <= 193, thresh <= 3)
+    input  logic [7:0]      blimit,
+    input  logic [7:0]      thresh,
     input  logic [14*12-1:0] pix,
     output logic [12*12-1:0] out,
     output logic [11:0]     mod
