@@ -979,7 +979,9 @@ class HostDecoder:
         rtl/mf_project.sv); the host keeps only the slot table and where each slot's areas are."""
         import recon_model as rm
         import seq_model as sm
+        import copy
         import lf_model as lfm
+        import filter_chain_model as fcm
         import cdef_model as cdm
         import lr_model as lrm
         import superres_model as srm
@@ -1179,15 +1181,22 @@ class HostDecoder:
             else:
                 # the model's final picture: the reference store (and, if asked, the comparison)
                 mp = frame["planes"]
+                pre_chain = copy.deepcopy(mp) if fcm.ENABLED else None
                 lfm.LoopFilter(hdr0, state, mp).apply()
                 deblocked = mp
+                deblocked_chain = mp; cdef_chain = None
                 if cdef_on(hdr0):
                     mp = cdm.Cdef(hdr0, state, mp).apply()
+                    cdef_chain = mp
                 if hdr0.use_superres:
                     deblocked = srm.upscale(hdr0, deblocked)
                     mp = srm.upscale(hdr0, mp) if mp is not deblocked else deblocked
                 if any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
                     mp = lrm.LoopRestoration(hdr0, state, deblocked, mp if cdef_on(hdr0) else [[r[:] for r in p_] for p_ in mp]).apply()
+                if fcm.ENABLED:                              # the streaming chain's models against the pictures above
+                    lr_final = mp if (not hdr0.use_superres and any(tt != 0 for tt in hdr0.FrameRestorationType[:hdr0.NumPlanes])) else None
+                    fcm.check_frame(hdr0, state, pre_chain, deblocked_chain, cdef_chain, lr_final, tag)
+                    self.stats["chain_checked"] = fcm.stats["frames"]
                 seq.end_frame(ph, summaries, frame_cdfs=ctx.cdfs)
             if model_only:
                 mem_at = None if host_only else self.upload_picture(write, target - base, target, hdr0, mp, stride, tag)

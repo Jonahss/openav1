@@ -6,6 +6,7 @@ Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (recon | lf | lr: l
 sequencer, pipelined builds with fb1 / fb2 rings), TS_TRANSCRIPT; or TS_IVF=<a.ivf,b.ivf>
 to run real streams (intra, no CDEF / LR: the core build) against dav1d's pictures in refout/ (TS_REF_DIR).
 """
+import copy
 import os
 import random
 import sys
@@ -18,6 +19,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "tools"))
 import cdf_map as M                     # noqa: E402
 import lf_model as lfm                  # noqa: E402
+import filter_chain_model as fcm       # noqa: E402
 import cdef_model as cdm                # noqa: E402
 import lr_model as lrm                  # noqa: E402
 import superres_model as srm            # noqa: E402
@@ -60,19 +62,27 @@ def model_filters(hdr0, decs, planes):
     state = xf.FrameState(hdr0)
     for _d in decs:
         state.add(_d)
+    pre_chain = copy.deepcopy(planes) if fcm.ENABLED else None
     lfm.LoopFilter(hdr0, state, planes).apply()
     if STAGE != "lr":
+        if fcm.ENABLED:
+            fcm.check_frame(hdr0, state, pre_chain, planes, None, None, "dec_host")
         return planes
     deblocked = planes
+    deblocked_chain = planes; cdef_chain = None; final_chain = None
     cdef_on = hdr0.enable_cdef and not hdr0.CodedLossless and not hdr0.allow_intrabc
     if cdef_on:
         planes = cdm.Cdef(hdr0, state, planes).apply()
+        cdef_chain = planes
     if hdr0.use_superres:
         deblocked = srm.upscale(hdr0, deblocked)
         planes = srm.upscale(hdr0, planes) if cdef_on else deblocked
     if any(t != 0 for t in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
         planes_cdef = planes if cdef_on else [[row[:] for row in p] for p in planes]
         planes = lrm.LoopRestoration(hdr0, state, deblocked, planes_cdef).apply()
+        final_chain = None if hdr0.use_superres else planes
+    if fcm.ENABLED:
+        fcm.check_frame(hdr0, state, pre_chain, deblocked_chain, cdef_chain, final_chain, "dec_host")
     return planes
 
 

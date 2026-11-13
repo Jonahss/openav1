@@ -9,7 +9,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tb")); sys.path.insert(0, str(HERE))
 import recon_model as rm, test_tile_syntax as TT, xcheck_frame as xf
-import lf_model as lfm, cdef_model as cdm, lr_model as lrm, lf_stage_model as lst, cdef_stage_model as cst, lr_stage_model as rst
+import lf_model as lfm, cdef_model as cdm, lr_model as lrm
 
 def frames(argv):
     if argv and argv[0] == "--seeds":
@@ -28,40 +28,7 @@ def frames(argv):
             d = op.Decoder(); d.feed_ivf(open(path, "rb").read())
             yield f"{Path(path).name} frame 0", [d.tiles[i] for i in d.frames[0]]
 
-def chain(hdr, state, pre, sb_lines):
-    """Band by band through the deblock, CDEF and restoration stage models; returns (deblocked, cdef, restored, held)."""
-    cdef_on = bool(hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc)
-    lr_on = lr_wanted(hdr)
-    heights = [len(pl) for pl in pre]
-    lf = lst.DeblockStage(hdr, state)
-    cd = cst.CdefStage(hdr, state, heights)
-    lr = rst.LrStage(hdr, state, heights)
-    n = hdr.NumPlanes
-    dbl = [[None] * heights[p] for p in range(n)]; out = [[None] * heights[p] for p in range(n)]; fin_lr = [[None] * heights[p] for p in range(n)]
-    band = sb_lines // 4
-    for row0 in range(0, hdr.MiRows, band):
-        row1 = min(row0 + band, hdr.MiRows); last = row1 >= hdr.MiRows
-        lines = []
-        for p in range(n):
-            sy = hdr.subsampling_y if p else 0
-            y0 = (row0 * 4) >> sy; y1 = len(pre[p]) if last else (row1 * 4) >> sy
-            lines.append([list(r) for r in pre[p][y0:y1]])
-        fin = lf.band(row0, row1, lines, last)
-        for p in range(n):
-            for y, ln in fin[p]: dbl[p][y] = ln[:]
-        res = cd.feed(fin, last) if cdef_on else [[(y, ln[:]) for y, ln in fin[p]] for p in range(n)]
-        for p in range(n):
-            for y, ln in res[p]:
-                assert out[p][y] is None; out[p][y] = ln[:]
-        if lr_on:
-            r2 = lr.feed(fin, res, last)
-            for p in range(n):
-                for y, ln in r2[p]:
-                    assert fin_lr[p][y] is None; fin_lr[p][y] = ln
-    return dbl, out, (fin_lr if lr_on else None), (cd.held_max, lr.held_max, lr.cur_kept_max)
-
-def lr_wanted(hdr):
-    return (not all(t == 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes])) and not getattr(hdr, "use_superres", 0)
+from filter_chain_model import chain, lr_wanted
 
 bad = 0; n_frames = 0; cdef_frames = 0; lr_frames = 0; sr_skipped = 0; cdef_changed = 0; lr_changed = 0; held = [[0] * 3 for _ in range(3)]
 for tag, tiles in frames(sys.argv[1:]):
