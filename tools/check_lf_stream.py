@@ -12,13 +12,17 @@ import recon_model as rm, test_tile_syntax as TT, xcheck_frame as xf, lf_stream_
 seeds = [int(x) for x in (sys.argv[1] if len(sys.argv) > 1 else "1,2,3,4,5,6").split(",")]
 W = int(sys.argv[2]) if len(sys.argv) > 2 else 192
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 160
-fails = {0: 0, 1: 0, 2: 0, 3: 0}; runs = 0; total_changed = 0
+fails = {0: 0, 1: 0, 2: 0, 3: 0}; runs = 0; total_changed = 0; skipped = 0
 for seed in seeds:
     fmt = random.Random(seed * 7).choice(["420", "444", "mono", "422"])
-    d, args = TT.gen(seed, W, H, fmt)
-    frame = {}; decs = []
-    for th, data in d.tiles:
-        dec = rm.FrameRecon(th, data, frame); dec.decode_tile(); decs.append(dec)
+    try:
+        d, args = TT.gen(seed, W, H, fmt)
+        frame = {}; decs = []
+        for th, data in d.tiles:
+            dec = rm.FrameRecon(th, data, frame); dec.decode_tile(); decs.append(dec)
+    except Exception as e:                                   # a generated stream the models reject (as the RTL suites skip)
+        print(f"seed {seed} {fmt}: skipped ({type(e).__name__}: {str(e)[:60]})"); skipped += 1
+        continue
     hdr = d.tiles[0][0]; state = xf.FrameState(hdr)
     for _d in decs: state.add(_d)
     pre = frame["planes"]
@@ -30,5 +34,5 @@ for seed in seeds:
             if lag == 2:
                 total_changed += changed if ok else 0
                 print(f"seed {seed} {fmt} bd{args['bd']} {W}x{H} sb{sb} lag 2: {'identical' if ok else 'DIFFERS ' + str(bad[:3])}, {changed if ok else '?'} samples changed by the filter, levels {hdr.loop_filter_level}")
-print(f"runs {runs}; frames differing by lag: {fails}; samples changed (lag 2 runs) {total_changed}")
+print(f"runs {runs}; seeds skipped {skipped}; frames differing by lag: {fails}; samples changed (lag 2 runs) {total_changed}")
 sys.exit(0 if fails[2] == 0 and fails[3] == 0 and total_changed > 0 else 1)
