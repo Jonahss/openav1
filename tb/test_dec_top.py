@@ -23,6 +23,7 @@ import cdf_map as M                     # noqa: E402
 import cdef_model as cdm                # noqa: E402
 import lf_model as lfm                  # noqa: E402
 import filter_chain_model as fcm       # noqa: E402
+import lf_edge_vec as lev              # noqa: E402
 import lr_model as lrm
 import superres_model as srm                  # noqa: E402
 import test_cdef_top as TC              # noqa: E402
@@ -253,6 +254,7 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
         for d in decs:
             state.add(d)
         pre_chain = copy.deepcopy(planes) if fcm.ENABLED else None
+        lev.dump(hdr, state, decs[0], tag)                   # TS_LF_VEC_OUT: this frame's edge-decision vectors for test_lf_edge
         lfm.LoopFilter(hdr, state, planes).apply()
         dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
         stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)

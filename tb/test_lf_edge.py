@@ -2,8 +2,8 @@
 pass and 4x4 position the module gets the frame header, the mode info of the position and of its neighbour across the
 edge and the two transform sizes, as the streaming stage will supply them; its {apply, size, limit, blimit, thresh}
 must equal what lf_model would call the sample filter with (or apply = 0 where the model does not filter).
-Env: TS_SEEDS / TS_W / TS_H / TS_FMT (generated intra frames), TS_IVF (every frame of real streams the Python
-reconstruction can decode alone, i.e. their intra frames)."""
+Env: TS_SEEDS / TS_W / TS_H / TS_FMT (generated intra frames), TS_IVF (frame 0 of real streams), TS_LF_VEC=<dir>
+(frames dumped by a decoder test bench run with TS_LF_VEC_OUT=<dir>: inter frames; see tb/lf_edge_vec.py)."""
 import os
 import random
 import sys
@@ -19,31 +19,31 @@ import lf_model as lfm                  # noqa: E402
 import recon_model as rm                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
-from host_regs import LF_FIELDS, lf_vals   # noqa: E402
 
-MI_FIELDS = [("bsize", 5), ("skip", 1), ("seg", 3), ("delta_lf", 28), ("ref0", 3), ("mode_type", 1)]
-
-
-class _Params(lfm.LoopFilter):
-    def sample_filter(self, x, y, plane, limit, blimit, thresh, dx, dy, filterSize):
-        self.got = (filterSize, limit, blimit, thresh)
-
-    def params(self, plane, pss, row, col):
-        self.got = None
-        self.edge(plane, pss, row, col)
-        if self.got is None:
-            return None
-        return self.got
+import lf_edge_vec as lv                # noqa: E402
 
 
-def mi_word(state, r, c):
-    dlf = state.DeltaLFs[r][c] or [0, 0, 0, 0]
-    rf = getattr(state, "RefFrames", None)
-    ref0 = rf[r][c][0] if rf is not None and rf[r][c] is not None and rf[r][c][0] > 0 else 0
-    ym = state.YModes[r][c] if getattr(state, "YModes", None) is not None else 0
-    mode_type = 1 if (ym >= 13 and ym not in (15, 23)) else 0
-    return TT.pack(MI_FIELDS, dict(bsize=state.MiSizes[r][c], skip=state.Skips[r][c], seg=state.SegmentIds[r][c],
-                                   delta_lf=sum((dlf[i] & 0x7F) << (7 * i) for i in range(4)), ref0=ref0, mode_type=mode_type))
+async def run_vectors(dut, v, stats):
+    tag = v["tag"]
+    dut.hdr.value = v["hdr"]; dut.lh.value = v["lh"]
+    for (plane, pss, row, col, cur, prv, cur_tx, prv_tx, exp) in v["vec"]:
+        dut.plane.value = plane; dut.pss.value = pss; dut.row.value = row; dut.col.value = col
+        dut.cur.value = cur; dut.prv.value = prv; dut.cur_tx.value = cur_tx; dut.prv_tx.value = prv_tx
+        await Timer(1, "ns")
+        got = int(dut.par.value)
+        if exp is None:
+            assert (got >> 29) == 0, f"{tag} plane {plane} pass {pss} ({row}, {col}): apply set, the model does not filter"
+            stats["off"] += 1
+        else:
+            fs, limit, blimit, thresh = exp
+            e = (1 << 29) | (fs << 24) | (limit << 16) | (blimit << 8) | thresh
+            assert got == e, (f"{tag} plane {plane} pass {pss} ({row}, {col}): par {got:08x} "
+                              f"(apply {got >> 29} size {(got >> 24) & 31} limit {(got >> 16) & 255} blimit {(got >> 8) & 255} thresh {got & 255}), "
+                              f"model size {fs} limit {limit} blimit {blimit} thresh {thresh}")
+            stats["on"] += 1
+            stats[f"size{fs}"] = stats.get(f"size{fs}", 0) + 1
+    stats["frames"] += 1
+    stats["inter_positions"] += v["inter_positions"]; stats["positions"] += v["positions"]
 
 
 async def one_frame(dut, tiles, tag, stats):
@@ -54,53 +54,29 @@ async def one_frame(dut, tiles, tag, stats):
     state = xf.FrameState(hdr)
     for _d in decs:
         state.add(_d)
-    if hdr.loop_filter_level[0] == 0 and hdr.loop_filter_level[1] == 0:
+    v = lv.vectors(hdr, state, decs[0], tag)
+    if v is None:
         stats["skipped"] += 1
         return
-    par = _Params(hdr, state, None)
-    dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(hdr, decs[0]))
-    dut.lh.value = TT.pack(LF_FIELDS, lf_vals(hdr))
-    for plane in range(hdr.NumPlanes):
-        if not (plane == 0 or hdr.loop_filter_level[1 + plane]):
-            continue
-        sx = hdr.subsampling_x if plane else 0
-        sy = hdr.subsampling_y if plane else 0
-        lts = state.LoopfilterTxSizes[plane]
-        for pss in (0, 1):
-            for row in range(0, hdr.MiRows, 1 << sy):
-                for col in range(0, hdr.MiCols, 1 << sx):
-                    ra = row | sy; ca = col | sx
-                    pr = ra - ((1 << sy) if pss else 0); pc = ca - (0 if pss else (1 << sx))
-                    has_prev = pr >= 0 and pc >= 0
-                    dut.plane.value = plane; dut.pss.value = pss; dut.row.value = row; dut.col.value = col
-                    dut.cur.value = mi_word(state, ra, ca)
-                    dut.prv.value = mi_word(state, pr, pc) if has_prev else 0
-                    dut.cur_tx.value = lts[ra >> sy][ca >> sx]
-                    dut.prv_tx.value = lts[pr >> sy][pc >> sx] if has_prev else 0
-                    await Timer(1, "ns")
-                    got = int(dut.par.value)
-                    exp = par.params(plane, pss, row, col)
-                    if exp is None:
-                        assert (got >> 29) == 0, f"{tag} plane {plane} pass {pss} ({row}, {col}): apply set, the model does not filter"
-                        stats["off"] += 1
-                    else:
-                        fs, limit, blimit, thresh = exp
-                        e = (1 << 29) | (fs << 24) | (limit << 16) | (blimit << 8) | thresh
-                        assert got == e, (f"{tag} plane {plane} pass {pss} ({row}, {col}): par {got:08x} "
-                                          f"(apply {got >> 29} size {(got >> 24) & 31} limit {(got >> 16) & 255} blimit {(got >> 8) & 255} thresh {got & 255}), "
-                                          f"model size {fs} limit {limit} blimit {blimit} thresh {thresh}")
-                        stats["on"] += 1
-                        stats[f"size{fs}"] = stats.get(f"size{fs}", 0) + 1
-    stats["frames"] += 1
+    await run_vectors(dut, v, stats)
 
 
 @cocotb.test()
 async def lf_edge_vs_model(dut):
     seeds = [int(x) for x in os.environ.get("TS_SEEDS", "2,3,7,20").split(",") if x]
     W = int(os.environ.get("TS_W", "128")); H = int(os.environ.get("TS_H", "96"))
-    stats = dict(frames=0, on=0, off=0, skipped=0)
+    stats = dict(frames=0, on=0, off=0, skipped=0, inter_positions=0, positions=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
-    if ivfs:
+    vdir = os.environ.get("TS_LF_VEC", "")
+    if vdir:                                                 # frames dumped by a decoder test bench (lf_edge_vec.dump)
+        import pickle
+        files = sorted(Path(vdir).glob("lfvec_*.pkl"))
+        assert files, f"no vector files in {vdir}"
+        for f in files:
+            with open(f, "rb") as fh:
+                await run_vectors(dut, pickle.load(fh), stats)
+        assert stats["inter_positions"] > 0, f"the dumped frames have no inter position: {stats}"
+    elif ivfs:
         import obu_parser as op
         for path in ivfs:
             d = op.parse_file(path)                          # .ivf, or Argon's .obu
