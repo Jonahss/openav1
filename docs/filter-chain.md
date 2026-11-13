@@ -72,7 +72,10 @@ Inter frames and super-res (`tb/filter_chain_model.py`, run on every frame a dec
 super-res, where the deblocked and CDEF lines are upscaled one by one on the way into the restoration stage) and 13
 frames of Argon test6641 / test8854 (CDEF and restoration in 10) are identical.
 
-Not yet modelled: the left-column context inside a row (the stage models still see whole lines).
+The column context of the deblock stage (`DeblockColStage` in `tb/lf_stage_model.py`): block columns enter one at a
+time; with column i in, the vertical edge on the left of column i - 1 is filtered, then the horizontal edges of
+column i - 3, which leaves. A window of four block columns is identical on 58 generated frames x superblock sizes;
+three columns fail on 34 of them. CDEF and restoration still see whole lines in the model.
 
 Because a stage's output for the bottom lines of row r depends on the top of row r + 1, each stage finishes a row
 shifted up by its context (deblock by 8 lines, CDEF by 2 more, restoration by 3 more). The context memories carry the
