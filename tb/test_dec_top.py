@@ -277,7 +277,7 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
             planes_cdef = planes if buf == 1 else [[row[:] for row in p] for p in planes]
             dut.lr_from_deblocked.value = 0 if buf == 1 else 1
             planes = lrm.LoopRestoration(hdr, state, deblocked, planes_cdef).apply()
-            final_chain = None if hdr.use_superres else planes
+            final_chain = planes
             stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000)
             buf = 2
         if fcm.ENABLED:                                      # the streaming chain's models against the pictures above

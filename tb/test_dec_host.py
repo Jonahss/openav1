@@ -80,7 +80,7 @@ def model_filters(hdr0, decs, planes):
     if any(t != 0 for t in hdr0.FrameRestorationType[:hdr0.NumPlanes]):
         planes_cdef = planes if cdef_on else [[row[:] for row in p] for p in planes]
         planes = lrm.LoopRestoration(hdr0, state, deblocked, planes_cdef).apply()
-        final_chain = None if hdr0.use_superres else planes
+        final_chain = planes
     if fcm.ENABLED:
         fcm.check_frame(hdr0, state, pre_chain, deblocked_chain, cdef_chain, final_chain, "dec_host")
     return planes

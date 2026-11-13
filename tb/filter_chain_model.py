@@ -1,8 +1,9 @@
 """The streaming filter chain as a model (docs/filter-chain.md): the three stage models chained band by band, and a
 check of that chain against the frame-at-once models' pictures. tools/check_filter_chain.py runs it on intra frames;
 the decoder test benches call check_frame() on every frame they filter when TS_CHAIN_CHECK=1, which covers inter
-frames and the Argon streams. Super-resolution frames are checked up to CDEF only (the upscale and the restoration
-behind it are not in the chain model yet)."""
+frames and the Argon streams. With super-resolution the deblocked and CDEF lines are upscaled one by one on their way
+into the restoration stage (7.16 works line by line); the deblocked and CDEF pictures are compared before the upscale,
+the restored picture after it."""
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lf_stage_model as lst      # noqa: E402
 import cdef_stage_model as cst    # noqa: E402
 import lr_stage_model as rst      # noqa: E402
+import superres_model as srm     # noqa: E402
 
 ENABLED = os.environ.get("TS_CHAIN_CHECK", "0") == "1"
 stats = {"frames": 0, "cdef": 0, "lr": 0, "sr_partial": 0}
@@ -42,19 +44,24 @@ def chain(hdr, state, pre, sb_lines):
             for y, ln in res[p]:
                 assert out[p][y] is None; out[p][y] = ln[:]
         if lr_on:
-            r2 = lr.feed(fin, res, last)
+            if getattr(hdr, "use_superres", 0):             # 7.16 between CDEF and restoration, line by line
+                fin_u = [[(y, srm.upscale_row(hdr, p, y, ln)) for y, ln in fin[p]] for p in range(n)]
+                res_u = [[(y, srm.upscale_row(hdr, p, y, ln)) for y, ln in res[p]] for p in range(n)]
+            else:
+                fin_u, res_u = fin, res
+            r2 = lr.feed(fin_u, res_u, last)
             for p in range(n):
                 for y, ln in r2[p]:
                     assert fin_lr[p][y] is None; fin_lr[p][y] = ln
     return dbl, out, (fin_lr if lr_on else None), (cd.held_max, lr.held_max, lr.cur_kept_max)
 
 def lr_wanted(hdr):
-    return (not all(t == 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes])) and not getattr(hdr, "use_superres", 0)
+    return not all(t == 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes])
 
 
 def check_frame(hdr, state, pre, deblocked, cdef, final, tag="", sb_lines=None):
     """pre: the pre-filter planes; deblocked / cdef / final: the frame-at-once models' pictures before any upscale
-    (cdef None when CDEF is off, final None when restoration is off or the frame uses super-res). Raises
+    (cdef None when CDEF is off, final None when restoration is off; final is the upscaled picture). Raises
     AssertionError naming the first differing stage."""
     n = hdr.NumPlanes
     for sb in ([sb_lines] if sb_lines else [128 if getattr(hdr, "use_128x128_superblock", 0) else 64]):
