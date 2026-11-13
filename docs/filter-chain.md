@@ -1,0 +1,100 @@
+# Streaming filter chain: a proposal (2026-11-13)
+
+Status: **sketch for discussion, no RTL yet.** It follows from `docs/4k60-budget.md`: the three in-loop filters are
+frame-wide, 4 to 8 times short of 4K60, and built on a frame-memory port that cannot pass 4 samples a clock.
+
+## What changes
+
+Today:
+
+```
+tile engines -> fb0 (window, 5 superblock rows) <-> deblock (in place)
+                fb0 -> CDEF -> fb1 (3 rows) -> restoration -> fb2 (3 rows) -> flush -> DDR
+```
+
+Every stage reads and writes whole picture buffers through 4-sample ports of double-pumped UltraRAM. The buffers
+hold 5 + 3 + 3 superblock rows of the full width (556 UltraRAMs at 1920 wide).
+
+Proposed:
+
+```
+tile engines -> row store (pre-filter, 2 superblock rows)
+                   |  one superblock row at a time, left to right, 16 samples a cycle
+                   v
+                deblock -> CDEF -> super-res -> restoration -> writer -> DDR (512-bit port)
+                (each stage keeps only its own context lines)
+```
+
+- The filters stop using picture buffers. Each is a pipeline stage that takes a column of blocks in, keeps the few
+  lines and columns of context it needs in its own small memories, and passes finished samples on.
+- The only picture-sized memory left on the chip is the **row store**: the pre-filter samples of the superblock row
+  being reconstructed and the one before it.
+- `edge_line` (today's unfiltered last-line copy for intra prediction) stays as it is.
+
+## Why a row store and not a pure stream
+
+- Tile engines produce superblocks tile by tile, several tile columns at once. The filters cross tile edges and must
+  see a superblock row across the whole frame width. So reconstruction of row r is collected first, then the chain
+  runs over it left to right. That is the rule the sequencer already uses (`row_dec`).
+- Reconstruction itself needs random access to the block it is building (prediction written, residual added, OBMC
+  and inter-intra blends read back). The row store is that working memory; each tile engine works in its own columns
+  of it.
+- Two rows deep so that the engines can go on with row r + 1 while the chain drains row r.
+
+## What each stage holds (arithmetic, from the AV1 filter definitions; to be confirmed against the models)
+
+| stage | input | context it must keep | why |
+|---|---|---|---|
+| deblock | pre-filter row | 8 lines above per plane, 8 columns to the left | a horizontal edge at the row top reads 8 and changes up to 6 lines above; vertical edges come first |
+| CDEF | deblocked | 2 lines above, 2 columns left of deblocked samples, plus the 8x8 direction search | taps reach 2 samples out; it must read deblocked, not CDEF-filtered, neighbours |
+| super-res | CDEF output | a few columns | horizontal upscale, row by row |
+| restoration | CDEF / super-res output and deblocked stripe boundary lines | 3 lines above and below, 2 + 2 saved boundary lines per 64-line stripe | 7-tap Wiener / self-guided windows, the stripe rule |
+| writer | final samples | one burst | 512-bit DDR port |
+
+Because a stage's output for the bottom lines of row r depends on the top of row r + 1, each stage finishes a row
+shifted up by its context (deblock by 8 lines, CDEF by 2 more, restoration by 3 more). The context memories carry the
+unfinished lines to the next row. In total about 20 lines of the frame width per plane: under 2 Mbit at 4K, against
+the 11 superblock rows of picture buffer today.
+
+## Rates
+
+- Target for every stage: **16 samples a clock** (one 4x4 block), twice the 7.5 that 4K60 needs at 100 MHz, so that
+  stalls and row boundaries have room. Deblock: four filter rows side by side on one 4-sample edge unit a cycle.
+- The row store's read side for the chain is sequential, so it can be a plain wide memory at the system clock: the
+  double-pumped UltraRAM and its timing family go away.
+- Reconstruction keeps its 4-sample ports per engine: 1.9 samples a cycle per engine is under that ceiling.
+
+## Memory at 4K (arithmetic)
+
+- Row store: 2 rows x 3840 x 128 lines x 1.5 = 1.47 M samples; at 12 bits 17.7 Mbit, about 62 UltraRAMs (today's
+  window: 556 at half the width).
+- Context lines: under 2 Mbit.
+- So 4K width fits on the U200 with room. This is the answer to "do we need a bigger FPGA" for memory; logic for four
+  to eight tile engines is still unmeasured.
+
+## What must be checked before RTL
+
+1. **Who else reads the picture buffers today.** Intra block copy reads the current picture well above the current
+   row; those frames have the filters off, so the samples it needs are already what goes to DDR, but the fetch path
+   (`fb_fetch`) has to move to DDR for rows that left the row store. The host read-back port and the frame-state
+   paths need the same look.
+2. **128-pixel superblocks and frames narrower than a superblock**, 4:4:4 and 4:2:2, 10-bit: the context sizes above
+   are for 4:2:0.
+3. **Loop restoration units up to 256 and super-res together**: restoration works in the upscaled frame.
+4. **Order of work inside a row for deblock**: vertical edges of a block column, then horizontal edges of the column
+   to its left, so that every sample a horizontal edge reads has had its vertical edges.
+
+## How it lands without losing a working decoder
+
+- Each stage is built as its own module with a unit test against the existing Python model (`lf_model`, `cdef_model`,
+  `lr_model`), and every test is shown to fail on a deliberately broken design before it counts.
+- The models gain a banded entry point so a stage can be compared row by row, not only at the end of the frame.
+- The chain goes in beside the current path behind a build parameter. The old path stays the default until the chain
+  passes the full nightly, the gate rung and the card census with identical pictures.
+- Order: deblock, CDEF, restoration with super-res, the writer on the wide DDR port, then the row store replaces the
+  three windows. The 1080p card stays the scoreboard throughout; main is tagged before the switch.
+
+## What this does not do
+
+- It does not speed up the tile engines. Four engines and the MC path are the next items in the budget.
+- It does not need a clock change, but it removes the 200 MHz memory clock that stands in the way of one.
