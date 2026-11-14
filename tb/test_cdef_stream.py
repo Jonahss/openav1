@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge, Timer
+from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge, Timer
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -51,13 +51,13 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane
                 y = int(dut.out_y.value); y = y - 512 if y >= 256 else y
                 out.append((int(dut.out_col.value), y, int(dut.out_line.value), int(dut.out_n4.value)))
 
-    async def mode_info():                                   # mi_store's registered reads: the answer a clock after the address
+    async def mode_info():                                   # mi_store's registered reads: the address of one clock is answered in the next
         while True:
-            await RisingEdge(dut.clk)
-            await ReadOnly()
+            await FallingEdge(dut.clk)                       # the address is stable here; the coming edge samples it
             r = int(dut.rd_row.value); c = int(dut.rd_col.value)
             r64 = int(dut.cdr_row64.value); c64 = int(dut.cdr_col64.value)
             yr = int(dut.yd_row.value); yc = int(dut.yd_col.value)
+            await RisingEdge(dut.clk)
             await Timer(1, "ns")
             dut.yd.value = ydir(yr, yc) if (ydir and yr < hdr.MiRows and yc < hdr.MiCols) else 0
             dut.rd_skip.value = int(state.Skips[min(r, hdr.MiRows - 1)][min(c, hdr.MiCols - 1)]) if (r < 4096 and c < 4096) else 0
