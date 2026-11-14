@@ -6,6 +6,7 @@ Env: TS_SEEDS (as in test_tile_syntax), TS_W / TS_H (frame size, default 128x96)
 TS_NOLR, TD_DEBUG=1 (per-tile record counting + hang dump), TS_FRAMES=2,5 (model-compare mode with TS_IVF: only these
 decoded-frame indices; frames with primary_ref_frame = NONE are independent).
 """
+import copy
 import os
 import random
 import sys
@@ -21,6 +22,9 @@ sys.path.insert(0, str(HERE.parent / "tools"))
 import cdf_map as M                     # noqa: E402
 import cdef_model as cdm                # noqa: E402
 import lf_model as lfm                  # noqa: E402
+import filter_chain_model as fcm       # noqa: E402
+import lf_edge_vec as lev              # noqa: E402
+import cdef_vec as cdv                  # noqa: E402
 import lr_model as lrm
 import superres_model as srm                  # noqa: E402
 import test_cdef_top as TC              # noqa: E402
@@ -250,12 +254,17 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
         state = xf.FrameState(hdr)
         for d in decs:
             state.add(d)
+        pre_chain = copy.deepcopy(planes) if fcm.ENABLED else None
+        lev.dump(hdr, state, decs[0], tag)                   # TS_LF_VEC_OUT: this frame's edge-decision vectors for test_lf_edge
         lfm.LoopFilter(hdr, state, planes).apply()
         dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
         stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)
         deblocked = planes
+        deblocked_chain = planes; cdef_chain = None; final_chain = None
         if STAGE in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             planes = cdm.Cdef(hdr, state, planes).apply()
+            cdef_chain = planes
+            cdv.dump(hdr, state, deblocked, planes, tag)     # TS_CDEF_VEC_OUT: this frame for test_cdef_stream
             dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
             stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
             buf = 1
@@ -272,8 +281,12 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
             planes_cdef = planes if buf == 1 else [[row[:] for row in p] for p in planes]
             dut.lr_from_deblocked.value = 0 if buf == 1 else 1
             planes = lrm.LoopRestoration(hdr, state, deblocked, planes_cdef).apply()
+            final_chain = planes
             stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000)
             buf = 2
+        if fcm.ENABLED:                                      # the streaming chain's models against the pictures above
+            fcm.check_frame(hdr, state, pre_chain, deblocked_chain, cdef_chain, final_chain, tag)
+            stats["chain_checked"] = dict(fcm.stats)
     return planes, buf
 
 

@@ -19,7 +19,7 @@ waves = os.environ.get("WAVES", "0") == "1"
 waves_fmt = os.environ.get("WAVE_FMT", "fst")      # fst, or vcd (needs neither lz4 nor a working FST writer)
 sys.path.insert(0, str(ROOT / "tb"))
 r = get_runner("verilator")
-EXTRA = {"itx_lvl": ["itx_pair.sv"], "mc_filt": ["mc_tables_pkg.sv"], "warp_setup": ["mc_tables_pkg.sv"], "ref_fetch": [], "frame_mem_uram": [], "itx2d": ["itx_pair.sv", "itx_lvl.sv", "itx_row.sv"],
+EXTRA = {"cdef_stream": ["cdef_pkg.sv", "blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lf_cbuf.sv", "cdef_dir.sv", "cdef_str.sv", "cdef_row.sv"], "cdef_row": ["cdef_pkg.sv"], "cdef_dir": ["cdef_pkg.sv"], "cdef_str": ["cdef_pkg.sv", "blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv"], "lf_stream": ["lf_cbuf.sv", "lf_filt.sv"], "lf_stage_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "mi_store.sv", "lf_cbuf.sv", "lf_filt.sv", "lf_edge.sv", "lf_feed.sv", "lf_stream.sv"], "lf_edge": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv"], "itx_lvl": ["itx_pair.sv"], "mc_filt": ["mc_tables_pkg.sv"], "warp_setup": ["mc_tables_pkg.sv"], "ref_fetch": [], "frame_mem_uram": [], "itx2d": ["itx_pair.sv", "itx_lvl.sv", "itx_row.sv"],
          "coef_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv", "sym_seq.sv", "coef_rd.sv"],
          "tile_syntax": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                          "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mf_band.sv", "seg_band.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv"],
@@ -67,6 +67,12 @@ if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN"):
 # TE=N: N tile engines (the tile columns of a tile row decoded at once, rtl/tile_engines.sv)
 if top in ("dec_top", "dec_host") and os.environ.get("TE"):
     params["TE"] = int(os.environ["TE"])
+if top in ("lf_filt", "lf_stream") and os.environ.get("LF_CHROMA_ONLY") == "1":   # the chroma-only build of the deblock filter / stage
+    params["LUMA"] = 0
+if top == "cdef_row" and os.environ.get("CR_N"):                # lanes of the CDEF line filter
+    params["N"] = int(os.environ["CR_N"])
+if top == "lf_filt" and os.environ.get("LFF_PIPE") == "1":      # the deblocking sample filter in its two-stage form
+    params["PIPE"] = 1
 # REF_RING=N: ref_fetch line buffers (reference rows in flight ahead of the writer; the U200 image's U200_REF_RING)
 if top in ("dec_top", "dec_host") and os.environ.get("REF_RING"):
     params["REF_RING"] = int(os.environ["REF_RING"])

@@ -80,6 +80,23 @@ runsh_one() {
 # identifiers used before their declaration: Verilator accepts them, Vivado makes implicit 1-bit nets (2026-11-09: mc_filt's
 # v_hold was tied to 0 in three netlists while every suite and gate rung passed)
 run decl_order         bash -c 'python3 tools/check_decl_order.py rtl/*.sv && echo "OK: {decl_order: clean}" || { echo "%Error: identifiers used before their declaration"; exit 1; }'
+run lf_edge_unit       TS_SEEDS=2,3,7,8,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_edge   # the deblocking edge decision (apply, size, strength) vs lf_model, every position of every plane
+run lf_edge_inter      TS_LF_VEC="$PWD/tb/vectors/lf_edge_inter" python tb/runner.py lf_edge   # six inter frames of Argon test47 / test6491 / test11 dumped by dec_inter_lr (TS_LF_VEC_OUT): reference and mode deltas, the skip-and-inter rule
+run lf_filt_chroma     LFF_PIPE=1 LF_CHROMA_ONLY=1 python tb/runner.py lf_filt   # the chroma-only build (LUMA = 0)
+run lf_stream_chroma   LF_CHROMA_ONLY=1 TS_SEEDS=2,3,7,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the chroma-only stage on the chroma planes
+run lf_stream_short    TS_SEEDS=2,3,7,20,47 TS_W=192 TS_H=136 python tb/runner.py lf_stream   # a last band of two luma block rows (one chroma row in 4:2:0): bands shorter than the stage's pipeline
+run lf_stage_short     TS_SEEDS=2,3,7,20 TS_W=176 TS_H=136 python tb/runner.py lf_stage_tb_top test_lf_stage
+run lf_stage_unit      TS_SEEDS=2,3,7,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stage_tb_top test_lf_stage   # mi_store + lf_feed + lf_edge + lf_stream vs lf_model: the deblock stage with nothing supplied but what the decoder has
+run cdef_dir_unit      python tb/runner.py cdef_dir         # the CDEF direction search of the streaming chain vs cdef_model
+run cdef_stream_unit   TS_IVF="$PWD/streams/synth/natural_lf_cdef_8bit.ivf,$PWD/streams/synth/natural_lf_cdef_lr_10bit.ivf,$PWD/streams/synth/screen_8bit.ivf,$PWD/streams/synth/synth_8bit.ivf" python tb/runner.py cdef_stream   # the streaming CDEF stage (luma) vs cdef_model, band by band
+run cdef_stream_inter  TS_CDEF_VEC="$PWD/tb/vectors/cdef_stream_inter" python tb/runner.py cdef_stream   # six inter frames dumped by dec_inter_lr (TS_CDEF_VEC_OUT): unfiltered blocks
+run cdef_stream_fmt    TS_SEEDS=3,23,25,43,35 TS_W=128 TS_H=96 python tb/runner.py cdef_stream   # generated 4:4:4 and 4:2:2 frames where CDEF changes the chroma planes (8 / 10 / 12 bit)
+run cdef_str_unit      python tb/runner.py cdef_str         # the CDEF block parameters (direction, strengths, shifts) vs cdef_model
+run cdef_row_unit      python tb/runner.py cdef_row         # the CDEF line filter (8 lanes) of the streaming chain vs cdef_model
+run cdef_row_4         CR_N=4 python tb/runner.py cdef_row   # the 4-lane build (4:2:0 chroma lines)
+run lf_filt_unit       python tb/runner.py lf_filt          # the deblocking sample filter of the streaming chain vs lf_model (one line across an edge)
+run lf_filt_pipe       LFF_PIPE=1 python tb/runner.py lf_filt   # the same filter in its two-stage form (PIPE = 1): outputs from the stage registers alone
+run lf_stream_unit     TS_SEEDS=2,3,7,8,9,10,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the streaming deblock stage vs lf_model, band by band (seeds 7, 20, 47, 70: samples that depend on the last column's vertical edge)
 run edge_line_unit     python tb/runner.py edge_line        # the unfiltered last-line copy (intra edge reads; LF a row earlier) vs a model
 run mc_filt_unit       python tb/runner.py mc_filt          # the motion-compensation filter vs the model: fuzz + back-to-back (overlapped) runs
 run tile_syntax_plain  TS_SCREEN=0 TS_SEEDS=12 python tb/runner.py tile_syntax
@@ -110,6 +127,7 @@ if [ -d "$ARGON" ]; then
   run tile_syntax_inter  TS_IVF="$IIVFS" python tb/runner.py tile_syntax
   # inter frames through the whole decoder (stage 2a: translational MC, average / distance compound), references =
   # the model's pictures in the AXI memory model (tb/test_dec_inter.py); test10046 is the stage-2a-clean Argon stream
+  run lf_edge_argon      TS_IVF="$ARGON/test10963.obu,$ARGON/test1057_6368.obu,$ARGON/test10446_512_421.obu" python tb/runner.py lf_edge   # frame 0s where the level fallback to the neighbour changes the picture (delta LF / segment features)
   run dec_inter_argon    FBX=12 FBY=9 TS_STAGE=recon TS_IVF="$ARGON/test10046.obu" python tb/runner.py dec_top test_dec_inter
   # inter frames through the WHOLE pipeline (deblocking with the inter ref / mode deltas and the skipped-inter edge rule,
   # CDEF, super-resolution, loop restoration): the corpus runs stop at recon, which hid both lf_top gaps until 2026-10-20
