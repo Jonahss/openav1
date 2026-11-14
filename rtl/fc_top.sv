@@ -49,7 +49,8 @@ module fc_top
     output logic [2:0][1:0]       lrr_plane,
     output logic [2:0][SBW-1:0]   lrr_row, lrr_col,
     input  lr_rec_t [2:0]         lrr_rec,
-    // per plane: the final line segments
+    // per plane: the final line segments (out_hold: see fc_plane)
+    input  logic [2:0]            out_hold,
     output logic [2:0]            out_valid,
     output logic [2:0][95:0]      out_line,
     output logic [2:0][1:0]       out_n4,
@@ -58,7 +59,7 @@ module fc_top
 );
     logic [2:0]            p_busy, p_done, p_ovf, p_act, done_l;
     logic [2:0][MIW-1:0]   yd_row, yd_col, dw_row, dw_col;
-    logic [2:0][2:0]       yd, dw_dir;
+    logic [2:0][6:0]       yd, dw_info;
     logic [2:0]            dw_we, cd_hold;
     logic [2:0][CW:0]      cd_col;
     logic [CW:0]           n_col_y, n_col_c;
@@ -82,29 +83,29 @@ module fc_top
             .rd_row(rd_row[p]), .rd_col(rd_col[p]), .rd_info(rd_info[p]), .txr_plane(txr_plane[p]), .txr_row(txr_row[p]), .txr_col(txr_col[p]),
             .txr_sz(txr_sz[p]), .rd2_row(rd2_row[p]), .rd2_col(rd2_col[p]), .rd2_skip(rd2_skip[p]),
             .cdr_row64(cdr_row64[p]), .cdr_col64(cdr_col64[p]), .cdr_val(cdr_val[p]),
-            .yd_row(yd_row[p]), .yd_col(yd_col[p]), .yd(yd[p]), .dw_we(dw_we[p]), .dw_row(dw_row[p]), .dw_col(dw_col[p]), .dw_dir(dw_dir[p]),
+            .yd_row(yd_row[p]), .yd_col(yd_col[p]), .yd(yd[p]), .dw_we(dw_we[p]), .dw_row(dw_row[p]), .dw_col(dw_col[p]), .dw_info(dw_info[p]),
             .cd_col(cd_col[p]), .cd_hold(cd_hold[p]),
             .lrr_plane(lrr_plane[p]), .lrr_row(lrr_row[p]), .lrr_col(lrr_col[p]), .lrr_rec(lrr_rec[p]),
-            .out_valid(out_valid[p]), .out_line(out_line[p]), .out_n4(out_n4[p]), .out_col(out_col[p]), .out_y(out_y[p]));
+            .out_hold(out_hold[p]), .out_valid(out_valid[p]), .out_line(out_line[p]), .out_n4(out_n4[p]), .out_col(out_col[p]), .out_y(out_y[p]));
     end endgenerate
 
     // luma's directions per 8x8 block: 64 block rows (a band of 128 lines is 16, and chroma reads back into the band
     // above) by the picture's block columns; one copy for each chroma plane's reads
     localparam int DAW = 6 + CW - 1;
-    logic [2:0] dmem1 [1 << DAW];
-    logic [2:0] dmem2 [1 << DAW];
+    logic [6:0] dmem1 [1 << DAW];
+    logic [6:0] dmem2 [1 << DAW];
     logic [DAW-1:0] d_wa, d_ra1, d_ra2;
-    logic [2:0]     d_q1, d_q2;
+    logic [6:0]     d_q1, d_q2;
     always_comb begin
         d_wa  = {dw_row[0][6:1], dw_col[0][CW-1:1]};
         d_ra1 = {yd_row[1][6:1], yd_col[1][CW-1:1]};
         d_ra2 = {yd_row[2][6:1], yd_col[2][CW-1:1]};
     end
     always_ff @(posedge clk) begin
-        if (dw_we[0]) begin dmem1[d_wa] <= dw_dir[0]; dmem2[d_wa] <= dw_dir[0]; end
+        if (dw_we[0]) begin dmem1[d_wa] <= dw_info[0]; dmem2[d_wa] <= dw_info[0]; end
         d_q1 <= dmem1[d_ra1]; d_q2 <= dmem2[d_ra2];
     end
-    assign yd[0] = 3'd0; assign yd[1] = d_q1; assign yd[2] = d_q2;
+    assign yd[0] = 7'd0; assign yd[1] = d_q1; assign yd[2] = d_q2;
 
     // the band is done when every active plane is (a plane's done pulse comes as its busy falls)
     logic act;

@@ -16,7 +16,8 @@ module fc_plane
 #(
     parameter int LUMA = 1,                  // 0: a chroma-only deblock stage
     parameter int NBMAX = 32,
-    parameter int CW = 10                    // log2 of the most 4x4 columns
+    parameter int CW = 10,                   // log2 of the most 4x4 columns
+    parameter int OUT_SLACK = 16             // lines that may still come out after out_hold rises (the tests measure it)
 ) (
     input  logic            clk,
     input  logic            rst,
@@ -51,12 +52,12 @@ module fc_plane
     input  logic            rd2_skip,
     output logic [SBW-1:0]  cdr_row64, cdr_col64,
     input  logic [3:0]      cdr_val,
-    // luma's CDEF directions: written by the luma plane, read by the chroma planes
+    // luma's CDEF decisions per 8x8 block {filtered, cdef_idx, direction}: written by the luma plane, read by chroma
     output logic [MIW-1:0]  yd_row, yd_col,
-    input  logic [2:0]      yd,
+    input  logic [6:0]      yd,
     output logic            dw_we,
     output logic [MIW-1:0]  dw_row, dw_col,
-    output logic [2:0]      dw_dir,
+    output logic [6:0]      dw_info,
     // the CDEF stage's progress in the band and a hold from outside (a chroma plane waits for luma's directions)
     output logic [CW:0]     cd_col,          // first 4x4 column of the block column CDEF filters next
     input  logic            cd_hold,
@@ -64,6 +65,9 @@ module fc_plane
     output logic [1:0]      lrr_plane,
     output logic [SBW-1:0]  lrr_row, lrr_col,
     input  lr_rec_t         lrr_rec,
+    // the taker's hold: restoration pushes no further line into its filters while it is high. The lines already in
+    // them still come out (at most OUT_SLACK), so the taker raises it with that much room left
+    input  logic            out_hold,
     output logic            out_valid,
     output logic [95:0]     out_line,        // out_n4 groups of four samples from bit 0
     output logic [1:0]      out_n4,
@@ -115,7 +119,7 @@ module fc_plane
         .mi_rows(hdr.mi_rows), .mi_cols(hdr.mi_cols), .band_start, .row0(prow0), .pic_rows, .n_blk, .n_col, .first_band, .last_band,
         .busy(c_busy), .band_done(), .in_valid(lo_valid), .in_ready(lo_ready), .in_blk(lo_blk),
         .rd_row(rd2_row), .rd_col(rd2_col), .rd_skip(rd2_skip), .cdr_row64, .cdr_col64, .cdr_val(cdef_on ? cdr_val : 4'd0),
-        .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_dir,
+        .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_info,
         .col_hold(cd_hold || ff_free < (FAW+1)'(160)),   // a column's lines: at most 4 (32 + 4), and four still on their way
         .col_next(cd_col),
         .out_valid(co_valid), .out_line(co_line), .out_n4(), .out_col(), .out_y(co_y));
@@ -135,7 +139,7 @@ module fc_plane
     lr_stream #(.CW(CW)) u_lr (.clk, .rst, .bit_depth(hdr.bit_depth), .en(hdr.lr_type[2 * plane +: 2] != 2'd0), .plane, .ssx, .ssy,
         .pl_w((MIW+2)'(fw_p)), .pl_h((MIW+2)'(fh_p)), .u_log2, .u_rows(SBW'(ur)), .u_cols(SBW'(uc)),
         .band_start, .row0(prow0), .pic_rows, .n_blk, .n_col, .first_band, .last_band, .busy(r_busy), .band_done(r_done),
-        .in_valid(ri_valid), .in_ready(ri_ready), .in_line(ri_line), .in_y(ri_y),
+        .in_valid(ri_valid), .in_ready(ri_ready), .in_line(ri_line), .in_y(ri_y), .out_hold,
         .lrr_plane, .lrr_row, .lrr_col, .lrr_rec, .bl_k, .bl_col, .bl_rd,
         .out_valid, .out_line, .out_n4, .out_col, .out_y);
 

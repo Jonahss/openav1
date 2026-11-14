@@ -71,6 +71,7 @@ module lr_stream
     output logic [SBW:0]    bl_k,
     output logic [CW-1:0]   bl_col,
     input  logic [383:0]    bl_rd,
+    input  logic            out_hold,        // push no further line (the taker's room is short); lines already pushed still come out
     output logic            out_valid,
     output logic [95:0]     out_line,        // out_n4 groups of four samples from bit 0
     output logic [1:0]      out_n4,
@@ -254,7 +255,7 @@ module lr_stream
             G_BPOST: is.v = 1'b1;
             default: ;
         endcase
-        if (sg_busy) begin is.v = 1'b0; is.seed = 1'b0; is.rpl = 1'b0; end          // the column waits for the engine
+        if (sg_busy || out_hold) begin is.v = 1'b0; is.seed = 1'b0; is.rpl = 1'b0; end   // the column waits for the engine or for the taker
         is_endc = is.v && g_lastl && ((gst == G_LINE && !g_haspost) || ((gst == G_REP || gst == G_BOT || gst == G_BPOST) && g_cnt == 2'd2));
         is.first = is.v && g_new && !is.rpl;
         is.load = is.v && g_new && !is.rpl && !first_band;
@@ -271,6 +272,8 @@ module lr_stream
         if (rst || band_start) begin gst <= G_IDLE; g_col <= '0; g_new <= 1'b0; g_cnt <= '0; g_dr <= '0; sg_busy <= 1'b0; end
         else if (sg_busy) begin
             if (sg_done) sg_busy <= 1'b0;
+        end else if (out_hold) begin
+            // the taker has no room: no line is pushed; the lines already past this point still come out
         end else begin
             if (is.v && !is.rpl) g_new <= 1'b0;
             if (is.v && is.sgr) sg_busy <= 1'b1;

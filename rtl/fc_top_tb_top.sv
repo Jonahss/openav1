@@ -23,6 +23,7 @@ module fc_top_tb_top
     output logic        busy,
     output logic        band_done,
     output logic        err_ovf,
+    input  logic [2:0]            out_hold,
     output logic [2:0]            out_valid,
     output logic [2:0][95:0]      out_line,
     output logic [2:0][1:0]       out_n4,

@@ -244,7 +244,7 @@ async def lr_stream_vs_model(dut):
     rng = random.Random(int(os.environ.get("LS_SEED", "1")))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     for s in ("band_start", "in_valid", "in_line", "in_y", "row0", "pic_rows", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "en", "plane",
-              "ssx", "ssy", "pl_w", "pl_h", "u_log2", "u_rows", "u_cols", "lrr_rec"):
+              "ssx", "ssy", "pl_w", "pl_h", "u_log2", "u_rows", "u_cols", "lrr_rec", "out_hold"):
         getattr(dut, s).value = 0
     for s in ("bl_rd",) if not hasattr(dut, "wr_valid") else ("wr_valid", "wr_blk", "wr_col", "wr_row", "wr_row0"):
         getattr(dut, s).value = 0

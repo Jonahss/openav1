@@ -36,6 +36,7 @@ module lr_stage_tb_top
     input  logic [191:0]    wr_blk,
     input  logic [CW-1:0]   wr_col,
     input  logic signed [6:0] wr_row,
+    input  logic            out_hold,
     output logic            out_valid,
     output logic [95:0]     out_line,
     output logic [1:0]      out_n4,

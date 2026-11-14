@@ -223,9 +223,20 @@ that fail:
 - A test bug worth remembering: the test's stand-in for `mi_store` answered in the same clock instead of the next.
   The first cut read all four skip flags anyway and passed; the look-ahead read one twice, and only the dumped inter
   frames showed it. The stand-in now has the memory's latency.
-- Not done: the per-column overhead, output back-pressure, the small memory that
-  carries the luma direction to the chroma stages (the test answers that port from the model), chroma on inter
-  frames (the dumped frames hold luma only).
+- Chroma from luma's record (2026-11-14): whether a block is filtered, its cdef_idx and its direction are those of
+  the luma 8x8 block over it in every format. The luma stage now gives all three as it decides them (`dw_info`), and
+  a chroma stage reads that one record a block (`yd`) instead of four skip flags, the cdef_idx and the direction:
+  it reads nothing from `mi_store`. With one read to wait for, blocks one 4x4 row high (vertically subsampled
+  chroma) got their own look-ahead: the next block's row and record are fetched during the current block's four
+  lines, so they follow each other every four clocks (they took about 14 in sequence). The tests give a chroma
+  stage noise on the `mi_store` ports. 15 faults in the new parts: 13 fail (the one-row look-ahead's six only on
+  4:2:0 frames, the record's three only in `fc_top`, where chroma reads what luma wrote), one was not a valid
+  fault (it did not compile), and one passes and is a simplification: a chroma column's first block could take
+  its record a clock earlier than it does.
+  The whole chain on frame 0 of the six real streams, three planes at once: 4.4 samples a clock before, 5.4
+  after; luma CDEF at its 2.7 clocks a 4x4 block is now what sets the pace.
+- Not done: two lines a clock (the planned rate), the per-column overhead, chroma on inter frames (the dumped
+  frames hold luma only).
 
 Plan for the stage around them (the luma part is built as described):
 - It takes the deblock stage's output as it comes: 4x4 blocks column by column, the band shifted up by 8 lines.
@@ -318,8 +329,8 @@ Plan for the stage around them (the luma part is built as described):
     256 lines (`rtl/fc_lfifo.sv`) sits between them and CDEF starts a block column only when the FIFO has room for
     all of that column's lines (`col_hold`). A dropped line would raise `err_ovf`; none has.
 - `rtl/fc_top.sv`: the planes of a picture, each an `fc_plane`, working on the same band at the same time. Luma's
-  CDEF directions go into a small memory (64 rows of 8x8 blocks, a copy per chroma plane) as luma's stage finds
-  them; a chroma plane holds a block column until luma has finished the columns over the same picture area.
+  CDEF decisions (filtered or not, cdef_idx, direction) go into a small memory (64 rows of 8x8 blocks, a copy per
+  chroma plane) as luma's stage makes them; a chroma plane holds a block column until luma has finished the columns over the same picture area.
   Monochrome leaves the chroma planes idle. Each plane has its own read ports into the row store and the mode
   info: the stores behind them must answer three readers at once (the test wrapper uses three `mi_store`).
 - Tests against the frame-at-once models (`lf_model`, then `cdef_model`, then `lr_model`), every sample of the coded
@@ -342,13 +353,38 @@ Plan for the stage around them (the luma part is built as described):
   DSP blocks, 255 block RAM tiles; the luma plane is 97,534 LUTs of it (CDEF 41,783, restoration 13,328). That is
   large, and the stages were written to be right first. Per plane: deblock 31,492 (luma) / 15,470 (the chroma-only
   build), CDEF 41,783 / 31,494 (synthesis drops the direction search from the chroma planes, whose `luma` input is
-  constant), restoration 13,328, the boundary store about 9,000, of which 7,168 are LUT RAM: inside the chain two
-  of its four memories were not mapped to block RAM, although alone it is 33 block RAM tiles and 64 LUTs. That
-  mapping and CDEF's window multiplexers are the first places to look.
+  constant), restoration 13,328, the boundary store about 9,000, of which 7,168 are LUT RAM. That last figure is an
+  artefact of the part this script synthesises for (the K26, 144 block RAM tiles): the chain asks for more than the
+  part has, and synthesis moved two of the store's four memories and the line FIFOs to LUT RAM (alone the store is
+  33 block RAM tiles and 64 LUTs). About 40,000 of the 246,512 LUTs are such LUT RAM. CDEF's window multiplexers
+  are the first place to look for real savings.
 - Rate as it stands, a frame's planes run at the same time, generated 128x96 frames with self-guided units: about
   1 sample a clock. Per plane on the real streams: about 7 clocks a 4x4 block over the three planes one after
   another, which is luma at CDEF's 2.7 clocks a block and 4:2:0 chroma at about 14 (CDEF blocks one 4x4 row high
-  take `cdef_stream`'s sequential path). Chroma CDEF is the slowest part of the chain today; the stages' planned
-  rate is one block a clock.
-- Not done: super-resolution between CDEF and restoration, the stores shared by three readers in the decoder (mode
-  info), the row store, the writer to DDR, and the switch in `dec_top`.
+  took `cdef_stream`'s sequential path; see the CDEF section for the look-ahead that replaced it). The stages'
+  planned rate is one block a clock.
+- The output can be held (`out_hold`, per plane): restoration then pushes no further line into its filters, on the
+  stall it already had for a self-guided line. Lines already inside still come out: 5 at most in the tests, which
+  hold for random stretches and fail above 16 (`OUT_SLACK`). A first attempt held restoration's input instead and
+  saw 56 lines follow, a whole buffered column. Three faults (the push not stopped, the sequencer not stopped, the
+  hold not connected) fail.
+- `rtl/fc_rstore.sv`: the row store, as a mirror. Every write reconstruction makes to the frame memory (an aligned
+  group of four samples with lane enables) is repeated into it, the way `edge_line` repeats the last lines; the
+  frame memory stays what reconstruction reads, and the chain reads a whole 4x4 block a clock from the mirror
+  (four memories a plane, one per line of a block; a ring of 64 luma and 32 chroma block rows). Suite
+  `fc_rstore_unit`: superblock rows written in a shuffled order with whole, half and single-sample group writes
+  and rewrites, blocks read back for three planes at once from the newest row and from older rows still in the
+  ring; ten faults fail (the tenth, a read that does not hold its data, after the test began to move the address
+  while it waits). Not in the decoder yet, not synthesised.
+- `rtl/fc_out.sv`: the chain's output into a picture memory of today's shape: the three planes' line segments go
+  through a FIFO each and out of two write ports, an aligned group of four samples a port a clock (eight samples
+  a clock in all; a 4:2:0 picture is three groups for every luma segment, so luma can pass 5.3 samples a clock,
+  just above what the chain delivers today). It raises the planes' `out_hold` with room left for the lines that
+  still follow. Suite `fc_out_unit`: 91,007 random segments, every group written once and in place, no FIFO
+  overflow; nine faults, eight fail and one is equivalent (a test of the ports left that the inner loop repeats).
+  This is for the first landing in the decoder (the restored picture's ring memory, flushed as today); the writer
+  straight to DDR replaces it later.
+- Mode info for three readers needs no new module: three `mi_store` written alike, as in the test wrappers;
+  synthesis drops what an instance's unconnected ports leave unused.
+- Not done: super-resolution between CDEF and restoration, the writer to DDR, and the switch in `dec_top` (the
+  sequencer with one cursor, the release of finished rows to the flush, the holds).
