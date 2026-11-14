@@ -2,7 +2,8 @@
 (lf_model) is fed band by band in the order the deblock stage sends it (4x4 blocks column by column, the band shifted
 up by 8 lines), the test answers the stage's skip and cdef_idx reads from the frame's state, and every line segment
 the stage sends must equal the model's CDEF picture, every luma sample of the coded area exactly once.
-Env: TS_IVF (frame 0 of real streams; generated frames rarely exercise CDEF), TS_SEEDS / TS_W / TS_H / TS_FMT."""
+Env: TS_IVF (frame 0 of real streams; generated frames rarely exercise CDEF), TS_SEEDS / TS_W / TS_H / TS_FMT,
+TS_CDEF_VEC=<dir> (frames dumped by a decoder test bench run with TS_CDEF_VEC_OUT=<dir>: inter frames, tb/cdef_vec.py)."""
 import copy
 import os
 import random
@@ -115,6 +116,17 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats):
     stats["changed"] += sum(1 for y in range(H) for x in range(W) if post[y][x] != dbl[y][x])
 
 
+async def run_frame(dut, hdr, state, dbl, post, tag, stats, rng):
+    dut.bit_depth.value = hdr.BitDepth
+    dut.ch.value = ((hdr.cdef_damping & 7) << 98) | (sum(v << (6 * i) for i, v in enumerate(hdr.cdef_y_strengths)) << 48) \
+        | sum(v << (6 * i) for i, v in enumerate(hdr.cdef_uv_strengths))
+    for sb in (64, 128):
+        await one_plane(dut, hdr, state, dbl, post, sb, rng, tag, stats)
+        stats["runs"] += 1
+    stats["frames"] += 1
+    dut._log.info(f"{tag}: identical ({stats})")
+
+
 async def one_frame(dut, tiles, tag, stats, rng):
     frame = {}; decs = []
     for th, data in tiles:
@@ -129,14 +141,7 @@ async def one_frame(dut, tiles, tag, stats, rng):
         stats["skipped"] += 1
         return
     post = cdm.Cdef(hdr, state, planes).apply()
-    dut.bit_depth.value = hdr.BitDepth
-    dut.ch.value = ((hdr.cdef_damping & 7) << 98) | (sum(v << (6 * i) for i, v in enumerate(hdr.cdef_y_strengths)) << 48) \
-        | sum(v << (6 * i) for i, v in enumerate(hdr.cdef_uv_strengths))
-    for sb in (64, 128):
-        await one_plane(dut, hdr, state, planes[0], post[0], sb, rng, tag, stats)
-        stats["runs"] += 1
-    stats["frames"] += 1
-    dut._log.info(f"{tag}: identical ({stats})")
+    await run_frame(dut, hdr, state, planes[0], post[0], tag, stats, rng)
 
 
 @cocotb.test()
@@ -153,7 +158,22 @@ async def cdef_stream_vs_model(dut):
     rng = random.Random(1)
     stats = dict(frames=0, runs=0, lines=0, changed=0, cycles=0, skipped=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
-    if ivfs:
+    vdir = os.environ.get("TS_CDEF_VEC", "")
+    if vdir:                                                 # frames dumped by a decoder test bench (cdef_vec.dump): inter frames
+        import gzip, pickle
+        import cdef_vec as cdv
+        files = sorted(Path(vdir).glob("cdefvec_*.pkl.gz"))
+        assert files, f"no frame files in {vdir}"
+        cov = dict(blocks8=0, skipped8=0, noidx8=0, fourth_decides=0)
+        for f in files:
+            with gzip.open(f, "rb") as fh:
+                v = pickle.load(fh)
+            for k in cov: cov[k] += v[k]
+            hdr, state, dbl, post = cdv.unpack(v)
+            await run_frame(dut, hdr, state, dbl, post, v["tag"], stats, rng)
+        stats.update(cov)
+        assert cov["skipped8"] > 0 and cov["noidx8"] > 0 and cov["fourth_decides"] > 0, f"the frames lack unfiltered blocks: {cov}"
+    elif ivfs:
         import obu_parser as op
         for path in ivfs:
             d = op.parse_file(path)

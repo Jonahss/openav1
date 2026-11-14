@@ -24,6 +24,7 @@ import cdef_model as cdm                # noqa: E402
 import lf_model as lfm                  # noqa: E402
 import filter_chain_model as fcm       # noqa: E402
 import lf_edge_vec as lev              # noqa: E402
+import cdef_vec as cdv                  # noqa: E402
 import lr_model as lrm
 import superres_model as srm                  # noqa: E402
 import test_cdef_top as TC              # noqa: E402
@@ -263,6 +264,7 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
         if STAGE in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             planes = cdm.Cdef(hdr, state, planes).apply()
             cdef_chain = planes
+            cdv.dump(hdr, state, deblocked, planes, tag)     # TS_CDEF_VEC_OUT: this frame for test_cdef_stream
             dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
             stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
             buf = 1
