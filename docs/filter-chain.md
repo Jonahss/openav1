@@ -215,7 +215,15 @@ that fail:
   three chroma faults (direction ignored, the band start, the skip address) fail.
 - Synthesis of the luma first cut (out of context, 10 ns): 0.9 ns of slack (the direction search's cost sums),
   38,647 LUTs (direction search 10,218, line filter 16,951).
-- Not done: the planned rate, output back-pressure, 4:4:4 and 4:2:2 chroma in the test, the small memory that
+- Look-ahead: inside a block column the next block's rows, direction search, skip flags and parameters are
+  prepared during the current block's eight lines, so luma blocks follow each other every eight clocks. Measured
+  on the six inter frames with the input never held back: 10.6 clocks an 8x8 block including each column's start
+  (the first block in sequence, the carried rows read and saved): about 6 luma samples a clock on these small
+  pictures, where a band is only 8 or 16 blocks high. `cdef_stream_fmt` adds 4:4:4 and 4:2:2 frames.
+- A test bug worth remembering: the test's stand-in for `mi_store` answered in the same clock instead of the next.
+  The first cut read all four skip flags anyway and passed; the look-ahead read one twice, and only the dumped inter
+  frames showed it. The stand-in now has the memory's latency.
+- Not done: the per-column overhead, output back-pressure, the small memory that
   carries the luma direction to the chroma stages (the test answers that port from the model), chroma on inter
   frames (the dumped frames hold luma only).
 
