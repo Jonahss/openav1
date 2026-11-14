@@ -202,7 +202,16 @@ that fail:
 - `rtl/cdef_str.sv`: direction, strengths, the constrain() shifts and the tap-weight bit of a plane's block from the
   frame's strengths, cdef_idx, the luma direction and variance. Suite `cdef_str_unit`.
 
-Plan for the stage around them (not built):
+- `rtl/cdef_stream.sv`: the stage for the luma plane, first cut (the plan below, with the block's steps in sequence:
+  about 18 clocks an 8x8 block). Its test (`tb/test_cdef_stream.py`) feeds the deblocked picture in `lf_stream`'s
+  order, answers the skip and cdef_idx reads, and requires every luma sample once and equal to `cdef_model`: frame 0
+  of four real streams (suite `cdef_stream_unit`) and six inter frames dumped by `dec_inter_lr` (`tb/cdef_vec.py`,
+  `tb/vectors/cdef_stream_inter`, suite `cdef_stream_inter`: 837 skipped blocks, blocks without a cdef_idx, blocks
+  where the fourth skip flag decides). Five deliberate faults fail; the two about unfiltered blocks only on the inter
+  frames.
+- Not done: the chroma planes, the planned rate, output back-pressure, synthesis.
+
+Plan for the stage around them (the luma part is built as described):
 - It takes the deblock stage's output as it comes: 4x4 blocks column by column, the band shifted up by 8 lines.
   That shift is one 8x8 block row, so the blocks arrive aligned to CDEF's 8x8 grid.
 - Five rotating column buffers as in `lf_stream`, each a column of the band plus the lines carried from the band
