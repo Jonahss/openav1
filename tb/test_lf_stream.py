@@ -56,14 +56,18 @@ async def one_plane(dut, hdr, state, pre, post, plane, sb_lines, rng, tag, stats
     dut.bit_depth.value = hdr.BitDepth; dut.chroma.value = 1 if plane else 0
     band = sb_lines // 4
     out = []
+    orng = random.Random(plane * 7 + sb_lines)
+    stall = [0.0]
 
     async def monitor():
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
-            if int(dut.out_valid.value):
+            if int(dut.out_valid.value) and int(dut.out_ready.value):
                 r = int(dut.out_row.value); r = r - 128 if r >= 64 else r
                 out.append((int(dut.out_col.value), r, int(dut.out_blk.value)))
+            await Timer(2, "ns")                             # the taker is ready at random (never for a whole band at 0)
+            dut.out_ready.value = 1 if (orng.random() >= stall[0]) else 0
     mon = cocotb.start_soon(monitor())
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
@@ -77,6 +81,7 @@ async def one_plane(dut, hdr, state, pre, post, plane, sb_lines, rng, tag, stats
         await RisingEdge(dut.clk); await Timer(1, "ns")
         dut.band_start.value = 0
         gap = rng.choice([0.0, 0.0, 0.2, 0.6])
+        stall[0] = 0.0 if gap == 0.0 else rng.choice([0.0, 0.3, 0.7])   # unthrottled bands stay unthrottled at both ends
         t_start = cocotb.utils.get_sim_time("ns")
         for ci, col in enumerate(cols):
             for ri, row in enumerate(rows):
@@ -155,7 +160,7 @@ async def lf_stream_vs_model(dut):
     seeds = [int(x) for x in seeds_env.split(",") if x]
     W = int(os.environ.get("TS_W", "128")); H = int(os.environ.get("TS_H", "96"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("band_start", "in_valid", "in_blk", "in_vpar", "in_hpar", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "chroma"):
+    for s in ("band_start", "out_ready", "in_valid", "in_blk", "in_vpar", "in_hpar", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "chroma"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)

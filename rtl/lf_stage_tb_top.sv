@@ -21,6 +21,7 @@ module lf_stage_tb_top
     output logic        busy,
     output logic        band_done,
     output logic        out_valid,
+    input  logic        out_ready,
     output logic [191:0] out_blk,
     output logic [CW-1:0] out_col,
     output logic signed [6:0] out_row,
@@ -62,6 +63,6 @@ module lf_stage_tb_top
         .bk_re, .bk_row, .bk_col, .bk_data, .in_valid, .in_ready, .in_blk, .in_vpar, .in_hpar);
     lf_stream #(.NBMAX(NBMAX), .CW(CW)) u_lf (.clk, .rst, .bit_depth(hdr.bit_depth), .chroma(plane != 2'd0),
         .band_start, .n_blk, .n_col, .first_band, .last_band, .busy(s_busy), .band_done,
-        .in_valid, .in_ready, .in_blk, .in_vpar, .in_hpar, .out_valid, .out_blk, .out_col, .out_row);
+        .in_valid, .in_ready, .in_blk, .in_vpar, .in_hpar, .out_valid, .out_ready, .out_blk, .out_col, .out_row);
     assign busy = f_busy || s_busy;
 endmodule

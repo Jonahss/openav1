@@ -63,14 +63,18 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, tag, stats):
     dut.plane.value = plane
     band = sb_lines // 4
     out = []
+    orng = random.Random(plane * 7 + sb_lines)
+    stall = [0.0]
 
     async def monitor():
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
-            if int(dut.out_valid.value):
+            if int(dut.out_valid.value) and int(dut.out_ready.value):
                 r = int(dut.out_row.value); r = r - 128 if r >= 64 else r
                 out.append((int(dut.out_col.value), r, int(dut.out_blk.value)))
+            await Timer(2, "ns")                             # the taker is ready at random (never for a whole band at 0)
+            dut.out_ready.value = 1 if (orng.random() >= stall[0]) else 0
     mon = cocotb.start_soon(monitor())
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
@@ -84,6 +88,7 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, tag, stats):
                 await RisingEdge(dut.clk); await Timer(1, "ns")
         dut.bm_we.value = 0
         del out[:]
+        stall[0] = orng.choice([0.0, 0.0, 0.3, 0.7])
         dut.row0.value = row0; dut.n_blk.value = len(rows); dut.n_col.value = len(cols)
         dut.first_band.value = int(row0 == 0); dut.last_band.value = int(row1 >= hdr.MiRows)
         dut.band_start.value = 1
@@ -148,7 +153,7 @@ async def lf_stage_vs_model(dut):
     seeds = [int(x) for x in os.environ.get("TS_SEEDS", "2,3").split(",") if x]
     W = int(os.environ.get("TS_W", "128")); H = int(os.environ.get("TS_H", "96"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("band_start", "bm_we", "bm_row", "bm_col", "bm_data", "blk_we", "tx_we", "hdr", "lh", "plane", "row0", "n_blk", "n_col",
+    for s in ("band_start", "out_ready", "bm_we", "bm_row", "bm_col", "bm_data", "blk_we", "tx_we", "hdr", "lh", "plane", "row0", "n_blk", "n_col",
               "first_band", "last_band", "blk_r", "blk_c", "blk_bw4", "blk_bh4", "blk_data", "tx_plane", "tx_row", "tx_col", "tx_w4", "tx_h4", "tx_sz"):
         getattr(dut, s).value = 0
     dut.rst.value = 1

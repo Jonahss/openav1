@@ -20,7 +20,8 @@
 //           go out instead.
 // The five column buffers (four in pass A, one in pass B) are distributed RAMs that change roles as columns advance.
 // Out: finished blocks with their column and row; row counts from the band's first block row, the two context rows
-// are rows -2 and -1 (not sent in the picture's first band). No back-pressure on the output yet.
+// are rows -2 and -1 (not sent in the picture's first band). The output is valid / ready: pass B stands still while
+// a block waits to be taken, and pass A then waits for pass B at the end of its column.
 // A block is 16 samples of 12 bits, sample (line l, column c) at bits (4 l + c) * 12.
 module lf_stream #(
     parameter int LUMA = 1,                  // 0: a chroma-only stage (lf_filt without the 8- and 14-tap filters)
@@ -44,6 +45,7 @@ module lf_stream #(
     input  logic [29:0]     in_vpar,
     input  logic [29:0]     in_hpar,
     output logic            out_valid,
+    input  logic            out_ready,       // a block is taken when out_valid && out_ready; pass B waits otherwise
     output logic [191:0]    out_blk,
     output logic [CW-1:0]   out_col,
     output logic signed [6:0] out_row
@@ -136,6 +138,8 @@ module lf_stream #(
     logic [191:0]    wx, w0, w1, w2, w3;     // wx: the block that left the window at the top a clock ago
     logic            d_v, d_app;             // an edge was decided last clock (its outputs are valid now); it is filtered
     logic [5:0]      d_r;
+    logic            b_en;                   // pass B advances: no block is waiting at the output
+    assign b_en = !out_valid || out_ready;
     logic [29:0]     hp;
     assign hb_ra = b_r[RW-1:0];
     assign hp = hb_q[b_slot];                // strength of edge b_r
@@ -150,7 +154,7 @@ module lf_stream #(
                         w0[(4*3+c)*12 +: 12], w0[(4*2+c)*12 +: 12], w0[(4*1+c)*12 +: 12]};
     end
     generate for (genvar gc = 0; gc < 4; gc++) begin : g_bh
-        lf_filt #(.PIPE(1), .LUMA(LUMA)) u_f (.clk, .ce(1'b1), .bit_depth, .chroma, .filter_size(hp[28:24]), .limit(hp[23:16]), .blimit(hp[15:8]),
+        lf_filt #(.PIPE(1), .LUMA(LUMA)) u_f (.clk, .ce(b_en), .bit_depth, .chroma, .filter_size(hp[28:24]), .limit(hp[23:16]), .blimit(hp[15:8]),
                                  .thresh(hp[7:0]), .pix(b_pix[gc]), .out(b_out[gc]), .mod(b_mod[gc]));
     end endgenerate
     // the edge decided last clock (d_r), applied now: its rows d_r - 2 .. d_r + 1 are in wx, w0, w1, w2
@@ -202,8 +206,9 @@ module lf_stream #(
     assign b_idle = (bst == B_IDLE);
     assign busy = a_act || !b_idle || b_pend || v1 || v2 || done_pend;
     always_ff @(posedge clk) begin
-        out_valid <= 1'b0; band_done <= 1'b0; ctx_we <= 1'b0;
+        band_done <= 1'b0; ctx_we <= 1'b0;
         if (rst) begin
+            out_valid <= 1'b0;
             a_act <= 1'b0; a_col <= '0; a_row <= '0; bst <= B_IDLE; done_pend <= 1'b0; b_pend <= 1'b0; v1 <= 1'b0; v2 <= 1'b0;
             s0 <= 3'd0; s1 <= 3'd1; s2 <= 3'd2; s3 <= 3'd3; sb <= 3'd4;
             b_col <= '0; b_slot <= '0; b_r <= '0; wx <= '0; w0 <= '0; w1 <= '0; w2 <= '0; w3 <= '0; ctx_q <= '0;
@@ -238,7 +243,9 @@ module lf_stream #(
                     end
                 end else a_row <= a_row + 1'b1;
             end
-            // ---- pass B
+            // ---- pass B (stands still while an output block waits)
+            if (b_en) begin
+            out_valid <= 1'b0;
             d_v <= 1'b0;
             case (bst)
                 B_IDLE: if (b_pend && !(slow && (v1 || v2))) begin
@@ -282,7 +289,8 @@ module lf_stream #(
                 B_CTXW: begin ctx_we <= 1'b1; ctx_wa <= b_col; ctx_wd <= {w0, wx}; bst <= B_IDLE; end
                 default: bst <= B_IDLE;
             endcase
-            if (done_pend && !a_act && b_idle && !b_pend && !v1 && !v2 && !ctx_we && !(band_start && !busy)) begin done_pend <= 1'b0; band_done <= 1'b1; end
+            end
+            if (done_pend && !a_act && b_idle && !b_pend && !v1 && !v2 && !ctx_we && !out_valid && !(band_start && !busy)) begin done_pend <= 1'b0; band_done <= 1'b1; end
         end
     end
 endmodule
