@@ -223,9 +223,20 @@ that fail:
 - A test bug worth remembering: the test's stand-in for `mi_store` answered in the same clock instead of the next.
   The first cut read all four skip flags anyway and passed; the look-ahead read one twice, and only the dumped inter
   frames showed it. The stand-in now has the memory's latency.
-- Not done: the per-column overhead, output back-pressure, the small memory that
-  carries the luma direction to the chroma stages (the test answers that port from the model), chroma on inter
-  frames (the dumped frames hold luma only).
+- Chroma from luma's record (2026-11-14): whether a block is filtered, its cdef_idx and its direction are those of
+  the luma 8x8 block over it in every format. The luma stage now gives all three as it decides them (`dw_info`), and
+  a chroma stage reads that one record a block (`yd`) instead of four skip flags, the cdef_idx and the direction:
+  it reads nothing from `mi_store`. With one read to wait for, blocks one 4x4 row high (vertically subsampled
+  chroma) got their own look-ahead: the next block's row and record are fetched during the current block's four
+  lines, so they follow each other every four clocks (they took about 14 in sequence). The tests give a chroma
+  stage noise on the `mi_store` ports. 15 faults in the new parts: 13 fail (the one-row look-ahead's six only on
+  4:2:0 frames, the record's three only in `fc_top`, where chroma reads what luma wrote), one was not a valid
+  fault (it did not compile), and one passes and is a simplification: a chroma column's first block could take
+  its record a clock earlier than it does.
+  The whole chain on frame 0 of the six real streams, three planes at once: 4.4 samples a clock before, 5.4
+  after; luma CDEF at its 2.7 clocks a 4x4 block is now what sets the pace.
+- Not done: two lines a clock (the planned rate), the per-column overhead, chroma on inter frames (the dumped
+  frames hold luma only).
 
 Plan for the stage around them (the luma part is built as described):
 - It takes the deblock stage's output as it comes: 4x4 blocks column by column, the band shifted up by 8 lines.
@@ -318,8 +329,8 @@ Plan for the stage around them (the luma part is built as described):
     256 lines (`rtl/fc_lfifo.sv`) sits between them and CDEF starts a block column only when the FIFO has room for
     all of that column's lines (`col_hold`). A dropped line would raise `err_ovf`; none has.
 - `rtl/fc_top.sv`: the planes of a picture, each an `fc_plane`, working on the same band at the same time. Luma's
-  CDEF directions go into a small memory (64 rows of 8x8 blocks, a copy per chroma plane) as luma's stage finds
-  them; a chroma plane holds a block column until luma has finished the columns over the same picture area.
+  CDEF decisions (filtered or not, cdef_idx, direction) go into a small memory (64 rows of 8x8 blocks, a copy per
+  chroma plane) as luma's stage makes them; a chroma plane holds a block column until luma has finished the columns over the same picture area.
   Monochrome leaves the chroma planes idle. Each plane has its own read ports into the row store and the mode
   info: the stores behind them must answer three readers at once (the test wrapper uses three `mi_store`).
 - Tests against the frame-at-once models (`lf_model`, then `cdef_model`, then `lr_model`), every sample of the coded
@@ -348,7 +359,7 @@ Plan for the stage around them (the luma part is built as described):
 - Rate as it stands, a frame's planes run at the same time, generated 128x96 frames with self-guided units: about
   1 sample a clock. Per plane on the real streams: about 7 clocks a 4x4 block over the three planes one after
   another, which is luma at CDEF's 2.7 clocks a block and 4:2:0 chroma at about 14 (CDEF blocks one 4x4 row high
-  take `cdef_stream`'s sequential path). Chroma CDEF is the slowest part of the chain today; the stages' planned
-  rate is one block a clock.
+  took `cdef_stream`'s sequential path; see the CDEF section for the look-ahead that replaced it). The stages'
+  planned rate is one block a clock.
 - Not done: super-resolution between CDEF and restoration, the stores shared by three readers in the decoder (mode
   info), the row store, the writer to DDR, and the switch in `dec_top`.
