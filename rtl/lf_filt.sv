@@ -8,8 +8,11 @@
 //   PIPE   : 1 = two stages, as lf_top splits the filter: the decision (masks, filter choice, the first half of the
 //            narrow filter) is registered with the samples, the outputs follow a clock later (ce advances the stage);
 //            0 = combinational (clk and ce unused).
+//   LUMA   : 0 = a chroma-only build: `chroma` is taken as 1, which leaves the narrow and the 6-tap filter and lets
+//            synthesis drop the 8- and 14-tap ones (the deblock stage's chroma planes).
 module lf_filt #(
-    parameter int PIPE = 0
+    parameter int PIPE = 0,
+    parameter int LUMA = 1
 ) (
     input  logic            clk,
     input  logic            ce,
@@ -25,6 +28,10 @@ module lf_filt #(
 );
     logic [3:0]  bd8;
     assign bd8 = bit_depth - 4'd8;
+    logic        chroma_c;                              // the plane kind the filter is built for
+    assign chroma_c = (LUMA != 0) ? chroma : 1'b1;
+    logic [4:0]  fsize_c;                               // a chroma edge is at most 8 wide (7.14.3)
+    assign fsize_c = (LUMA != 0) ? filter_size : ((filter_size > 5'd8) ? 5'd8 : filter_size);
     logic [12:0] p [0:6];                               // decision stage: the input samples
     logic [12:0] q [0:6];
     always_comb for (int j = 0; j < 7; j++) begin p[j] = 13'(pix[(6 - j) * 12 +: 12]); q[j] = 13'(pix[(7 + j) * 12 +: 12]); end
@@ -39,7 +46,7 @@ module lf_filt #(
     logic        hev, filter_mask, flat, flat2;
     logic [15:0] thresh_bd, limit_bd, blimit_bd, one_bd;
     always_comb begin
-        filter_len = (filter_size == 5'd4) ? 5'd4 : chroma ? 5'd6 : (filter_size == 5'd8) ? 5'd8 : 5'd16;
+        filter_len = (fsize_c == 5'd4) ? 5'd4 : chroma_c ? 5'd6 : (fsize_c == 5'd8) ? 5'd8 : 5'd16;
         thresh_bd = 16'(thresh) << bd8; limit_bd = 16'(limit) << bd8; blimit_bd = 16'(blimit) << bd8; one_bd = 16'd1 << bd8;
         hev = (16'(adiff(p[1], p[0])) > thresh_bd) || (16'(adiff(q[1], q[0])) > thresh_bd);
         begin
@@ -55,14 +62,14 @@ module lf_filt #(
             m = (16'(adiff(p[1], p[0])) > one_bd) || (16'(adiff(q[1], q[0])) > one_bd) ||
                 (16'(adiff(p[2], p[0])) > one_bd) || (16'(adiff(q[2], q[0])) > one_bd);
             if (filter_len >= 5'd8) m = m || (16'(adiff(p[3], p[0])) > one_bd) || (16'(adiff(q[3], q[0])) > one_bd);
-            flat = (filter_size >= 5'd8) && !m;
+            flat = (fsize_c >= 5'd8) && !m;
         end
         begin
             logic m;
             m = (16'(adiff(p[6], p[0])) > one_bd) || (16'(adiff(q[6], q[0])) > one_bd) ||
                 (16'(adiff(p[5], p[0])) > one_bd) || (16'(adiff(q[5], q[0])) > one_bd) ||
                 (16'(adiff(p[4], p[0])) > one_bd) || (16'(adiff(q[4], q[0])) > one_bd);
-            flat2 = (filter_size >= 5'd16) && !m;
+            flat2 = (fsize_c >= 5'd16) && !m;
         end
     end
     // narrow filter (7.14.6.3)
@@ -123,16 +130,16 @@ module lf_filt #(
     logic   chroma_s;
     always_comb begin
         if (!filter_mask) fmode = F_NONE;
-        else if (filter_size == 5'd4 || !flat) fmode = F_NARROW;
-        else if (filter_size == 5'd8 || !flat2) fmode = F_WIDE8;
+        else if (fsize_c == 5'd4 || !flat) fmode = F_NARROW;
+        else if (fsize_c == 5'd8 || !flat2) fmode = F_WIDE8;
         else fmode = F_WIDE16;
     end
     generate if (PIPE != 0) begin : g_pipe
         always_ff @(posedge clk) if (ce) begin
-            pix_s <= pix; fmode_s <= fmode; hev_s <= hev; filt_a_s <= filt_a; chroma_s <= chroma;
+            pix_s <= pix; fmode_s <= fmode; hev_s <= hev; filt_a_s <= filt_a; chroma_s <= chroma_c;
         end
     end else begin : g_comb
-        assign pix_s = pix; assign fmode_s = fmode; assign hev_s = hev; assign filt_a_s = filt_a; assign chroma_s = chroma;
+        assign pix_s = pix; assign fmode_s = fmode; assign hev_s = hev; assign filt_a_s = filt_a; assign chroma_s = chroma_c;
         logic unused_clk;
         assign unused_clk = clk ^ ce;
     end endgenerate
@@ -148,10 +155,10 @@ module lf_filt #(
                     if (k == -2) begin o = np1; v = !hev_s; end
                 end
                 F_WIDE8: begin
-                    if (!chroma_s && k >= -3 && k <= 2) begin o = w8[k + 3]; v = 1'b1; end
+                    if (LUMA != 0 && !chroma_s && k >= -3 && k <= 2) begin o = w8[k + 3]; v = 1'b1; end
                     if (chroma_s && k >= -2 && k <= 1)  begin o = w6[k + 2]; v = 1'b1; end
                 end
-                F_WIDE16: begin o = w16[k + 6]; v = 1'b1; end
+                F_WIDE16: if (LUMA != 0) begin o = w16[k + 6]; v = 1'b1; end   // never chosen in a chroma-only build
                 default: ;
             endcase
             out[(k + 6) * 12 +: 12] = v ? o : pix_s[(7 + k) * 12 +: 12];

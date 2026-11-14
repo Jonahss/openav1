@@ -19,11 +19,12 @@ async def lf_filt_vs_model(dut):
     rng = random.Random(int(os.environ.get("LFF_SEED", "1")))
     kinds = {}
     pipe = os.environ.get("LFF_PIPE", "0") == "1"
+    chroma_only = os.environ.get("LF_CHROMA_ONLY", "0") == "1"      # the LUMA = 0 build: chroma lines only
     dut.clk.value = 0; dut.ce.value = 0
     for it in range(iters):
         bd = rng.choice([8, 10, 12])
         mx = (1 << bd) - 1
-        chroma = rng.random() < 0.35
+        chroma = True if chroma_only else rng.random() < 0.35
         fsize = rng.choice([4, 8]) if chroma else rng.choice([4, 8, 16])
         lvl = rng.randint(1, 63)
         sharp = rng.choice([0, 0, 3, 7])
@@ -73,6 +74,6 @@ async def lf_filt_vs_model(dut):
                             f"  in  {line}\n  rtl {got}\n  exp {exp}\n  mod {mod:012b} model took {took}")
         kind = took[0] if took else "none"
         kinds[kind] = kinds.get(kind, 0) + 1
-    need = ["none", "narrow", "narrow_hev", "chroma6", "luma8", "luma14"]
+    need = ["none", "narrow", "narrow_hev", "chroma6"] + ([] if chroma_only else ["luma8", "luma14"])
     assert all(kinds.get(k, 0) > 200 for k in need), kinds
     dut._log.info(f"OK: {kinds}")

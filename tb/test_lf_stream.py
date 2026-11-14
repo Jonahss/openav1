@@ -139,8 +139,9 @@ async def one_frame(dut, tiles, tag, stats, rng):
     if hdr.loop_filter_level[0] == 0 and hdr.loop_filter_level[1] == 0:
         stats["skipped"] += 1
         return
+    chroma_only = os.environ.get("LF_CHROMA_ONLY", "0") == "1"        # the LUMA = 0 build takes the chroma planes only
     for plane in range(hdr.NumPlanes):
-        if plane == 0 or hdr.loop_filter_level[1 + plane]:
+        if (plane == 0 and not chroma_only) or (plane and hdr.loop_filter_level[1 + plane]):
             for sb in (64, 128):
                 await one_plane(dut, hdr, state, pre, post, plane, sb, rng, tag, stats)
                 stats["planes"] += 1

@@ -23,6 +23,7 @@
 // are rows -2 and -1 (not sent in the picture's first band). No back-pressure on the output yet.
 // A block is 16 samples of 12 bits, sample (line l, column c) at bits (4 l + c) * 12.
 module lf_stream #(
+    parameter int LUMA = 1,                  // 0: a chroma-only stage (lf_filt without the 8- and 14-tap filters)
     parameter int NBMAX = 32,                // most block rows in a band (128-line superblock)
     parameter int CW = 10                    // log2 of the most block columns (4096 / 4)
 ) (
@@ -106,7 +107,7 @@ module lf_stream #(
                         b3_1[(4*l+3)*12 +: 12], b3_1[(4*l+2)*12 +: 12], b3_1[(4*l+1)*12 +: 12]};
     end
     generate for (genvar gl = 0; gl < 4; gl++) begin : g_av
-        lf_filt #(.PIPE(1)) u_f (.clk, .ce(1'b1), .bit_depth, .chroma, .filter_size(vp_1[28:24]), .limit(vp_1[23:16]), .blimit(vp_1[15:8]),
+        lf_filt #(.PIPE(1), .LUMA(LUMA)) u_f (.clk, .ce(1'b1), .bit_depth, .chroma, .filter_size(vp_1[28:24]), .limit(vp_1[23:16]), .blimit(vp_1[15:8]),
                                  .thresh(vp_1[7:0]), .pix(a_pix[gl]), .out(a_out[gl]), .mod(a_mod[gl]));
     end endgenerate
     always_comb begin                        // stage 2: the changed samples into the four blocks
@@ -149,7 +150,7 @@ module lf_stream #(
                         w0[(4*3+c)*12 +: 12], w0[(4*2+c)*12 +: 12], w0[(4*1+c)*12 +: 12]};
     end
     generate for (genvar gc = 0; gc < 4; gc++) begin : g_bh
-        lf_filt #(.PIPE(1)) u_f (.clk, .ce(1'b1), .bit_depth, .chroma, .filter_size(hp[28:24]), .limit(hp[23:16]), .blimit(hp[15:8]),
+        lf_filt #(.PIPE(1), .LUMA(LUMA)) u_f (.clk, .ce(1'b1), .bit_depth, .chroma, .filter_size(hp[28:24]), .limit(hp[23:16]), .blimit(hp[15:8]),
                                  .thresh(hp[7:0]), .pix(b_pix[gc]), .out(b_out[gc]), .mod(b_mod[gc]));
     end endgenerate
     // the edge decided last clock (d_r), applied now: its rows d_r - 2 .. d_r + 1 are in wx, w0, w1, w2
