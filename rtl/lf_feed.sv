@@ -4,7 +4,8 @@
 // The neighbour across the left edge is the same row of the column before: kept in a register file over the band's
 // rows. The neighbour across the top edge is the row before in the column, or, for a column's first block, the last
 // block of that column in the band above: kept per column from band to band.
-// One block a clock when lf_stream takes them: requests run ahead into a two-entry queue.
+// One block a clock when lf_stream takes them: requests run ahead into a two-entry queue, and the block leaves
+// through a register with its strengths.
 module lf_feed
   import blk_tables_pkg::*;
   import tx_tables_pkg::*;
@@ -87,18 +88,20 @@ module lf_feed
     logic [MIW-1:0] e_row, e_col;
     assign e_row = row0 + (MIW'(h_r) << sub_y);
     assign e_col = MIW'(h_c) << sub_x;
+    logic [29:0] e_vpar, e_hpar;
     lf_edge u_ev (.hdr, .lh, .plane, .pss(1'b0), .row(e_row), .col(e_col), .cur(h_info), .prv(pv_info),
-                  .cur_tx(h_e[4:0]), .prv_tx(pv_e[4:0]), .par(in_vpar));
+                  .cur_tx(h_e[4:0]), .prv_tx(pv_e[4:0]), .par(e_vpar));
     lf_edge u_eh (.hdr, .lh, .plane, .pss(1'b1), .row(e_row), .col(e_col), .cur(h_info), .prv(ph_info),
-                  .cur_tx(h_e[4:0]), .prv_tx(ph_e[4:0]), .par(in_hpar));
-    assign in_valid = (q_n != 2'd0);
-    assign in_blk = q_b[q_h];
-    assign pop = in_valid && in_ready;
-    assign busy = i_act || rq_v || (q_n != 2'd0);
+                  .cur_tx(h_e[4:0]), .prv_tx(ph_e[4:0]), .par(e_hpar));
+    // output register: the block with its two strengths (the edge decision ends here, not inside lf_stream)
+    logic o_v;
+    assign in_valid = o_v;
+    assign pop = (q_n != 2'd0) && (!o_v || in_ready);
+    assign busy = i_act || rq_v || (q_n != 2'd0) || o_v;
     always_ff @(posedge clk) begin
         if (rst) begin
             i_act <= 1'b0; i_row <= '0; i_col <= '0; rq_v <= 1'b0; rq_row <= '0; rq_col <= '0; q_n <= 2'd0; q_h <= 1'b0;
-            above_e <= '0;
+            above_e <= '0; o_v <= 1'b0; in_blk <= '0; in_vpar <= '0; in_hpar <= '0;
         end else begin
             if (band_start && !busy) begin i_act <= 1'b1; i_row <= '0; i_col <= '0; end
             rq_v <= issue; rq_row <= i_row; rq_col <= i_col;
@@ -115,7 +118,9 @@ module lf_feed
                 q_r[q_t] <= rq_row;
                 q_c[q_t] <= rq_col;
             end
+            if (in_ready) o_v <= 1'b0;
             if (pop) begin
+                o_v <= 1'b1; in_blk <= q_b[q_h]; in_vpar <= e_vpar; in_hpar <= e_hpar;
                 q_h <= !q_h;
                 left_e[h_r[RW-1:0]] <= h_e;
                 above_e <= h_e;
