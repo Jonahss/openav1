@@ -64,6 +64,10 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane
             dut.rd_skip.value = int(state.Skips[min(r, hdr.MiRows - 1)][min(c, hdr.MiCols - 1)]) if (r < 4096 and c < 4096) else 0
             idx = state.cdef_idx.get((r64 << 4, c64 << 4), -1)
             dut.cdr_val.value = 0 if idx == -1 else (8 | idx)
+            # the taker's room: block columns are held back at random in the bands whose input has gaps
+            h = 1 if hrng.random() < hold_p[0] else 0
+            dut.col_hold.value = h; stats["hold_clocks"] += h
+    hrng = random.Random(1000 * plane + sb_lines); hold_p = [0.0]
     mon = cocotb.start_soon(monitor()); mi = cocotb.start_soon(mode_info())
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
@@ -78,6 +82,7 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane
         await RisingEdge(dut.clk); await Timer(2, "ns")
         dut.band_start.value = 0
         gap = rng.choice([0.0, 0.0, 0.3])
+        hold_p[0] = 0.6 if gap else 0.0
         t_start = cocotb.utils.get_sim_time("ns")
         for ci in range(cols):
             for r4 in range(0 if first else -2, (n_blk if last else n_blk - 2)):
@@ -173,14 +178,14 @@ async def cdef_stream_vs_model(dut):
     W = int(os.environ.get("TS_W", "128")); H = int(os.environ.get("TS_H", "96"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     for s in ("band_start", "in_valid", "in_blk", "row0", "pic_rows", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "ch", "rd_skip", "cdr_val",
-              "luma", "ssx", "ssy", "mi_rows", "mi_cols", "yd"):
+              "luma", "ssx", "ssy", "mi_rows", "mi_cols", "yd", "col_hold"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
     rng = random.Random(1)
-    stats = dict(frames=0, runs=0, chroma_runs=0, lines=0, changed=0, cycles=0, skipped=0, nogap_clocks=0, nogap_blocks=0)
+    stats = dict(frames=0, runs=0, chroma_runs=0, lines=0, changed=0, cycles=0, skipped=0, hold_clocks=0, nogap_clocks=0, nogap_blocks=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     vdir = os.environ.get("TS_CDEF_VEC", "")
     if vdir:                                                 # frames dumped by a decoder test bench (cdef_vec.dump): inter frames

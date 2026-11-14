@@ -17,6 +17,8 @@
 // cdef_row (8 lanes), one a clock. A block that is not filtered goes through cdef_row with both strengths 0, which
 // returns the samples unchanged.
 // Out: line segments of 8 samples: 8x8 block column, line counted from the band's first line (negative above it).
+// The output cannot be held line by line; col_hold keeps the next block column from starting instead (a column sends
+// at most 4 (n_blk + 4) lines, and up to four lines of the column before may still be on their way out).
 // Rate: eight clocks an 8x8 block inside a column (the next block's rows, direction search, skip flags and parameters
 // are prepared during the current block's lines); the first block of a column and blocks one 4x4 row high (subsampled
 // chroma) take the steps in sequence, about 18 and 14 clocks.
@@ -57,6 +59,7 @@ module cdef_stream
     output logic            dw_we,
     output logic [MIW-1:0]  dw_row, dw_col,
     output logic [2:0]      dw_dir,
+    input  logic            col_hold,        // do not start a block column (the taker has no room for a column's lines)
     output logic            out_valid,
     output logic [95:0]     out_line,        // out_n4 groups of four samples from bit 0
     output logic [1:0]      out_n4,          // 1 or 2
@@ -229,7 +232,7 @@ module cdef_stream
     logic [1:0] tail;                        // lines still inside cdef_row after the last block
     logic [2:0] wait_n;
     logic       p_can;                       // the block column's window is complete
-    assign p_can = a_act && (p_c2 < n_col) && ((a_col > p_c2 + (CW+1)'(bw4)) || (a_col == n_col));
+    assign p_can = a_act && (p_c2 < n_col) && ((a_col > p_c2 + (CW+1)'(bw4)) || (a_col == n_col));   // (with !col_hold)
     assign busy = a_act || (pst != P_IDLE) || done_pend;
     always_ff @(posedge clk) begin
         band_done <= 1'b0; dir_go <= 1'b0; ctx_we <= 1'b0;
@@ -250,7 +253,7 @@ module cdef_stream
             end
             // ---- one 8x8 block column
             case (pst)
-                P_IDLE: if (p_can) begin k_cnt <= 2'd0; ctx_a <= CW'(p_c2 - (CW+1)'(1)); pst <= P_CTX; end
+                P_IDLE: if (p_can && !col_hold) begin k_cnt <= 2'd0; ctx_a <= CW'(p_c2 - (CW+1)'(1)); pst <= P_CTX; end
                 // the four columns' carried rows: address out, a clock for the memory, then the data
                 P_CTX: pst <= P_CTXW;
                 P_CTXW: begin
