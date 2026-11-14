@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import cocotb
+import cocotb.utils
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge, Timer
 
@@ -77,6 +78,7 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane
         await RisingEdge(dut.clk); await Timer(2, "ns")
         dut.band_start.value = 0
         gap = rng.choice([0.0, 0.0, 0.3])
+        t_start = cocotb.utils.get_sim_time("ns")
         for ci in range(cols):
             for r4 in range(0 if first else -2, (n_blk if last else n_blk - 2)):
                 while rng.random() < gap:
@@ -103,6 +105,9 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane
             if done:
                 break
             assert n < 400000, f"{tag} band at MI row {row0}: no band_done"
+        if gap == 0.0:                                       # input never held back: clocks a CDEF block (the band's start and end included)
+            stats["nogap_clocks"] += int((cocotb.utils.get_sim_time("ns") - t_start) // 10)
+            stats["nogap_blocks"] += len(range(0, cols, 2 >> sx)) * len(range(0, n_blk, 2 >> sy))
         await ClockCycles(dut.clk, 2); await Timer(2, "ns")
         stats["cycles"] += n
         for (c4, yr, v, n4) in out:
@@ -175,7 +180,7 @@ async def cdef_stream_vs_model(dut):
     dut.rst.value = 0
     await RisingEdge(dut.clk)
     rng = random.Random(1)
-    stats = dict(frames=0, runs=0, chroma_runs=0, lines=0, changed=0, cycles=0, skipped=0)
+    stats = dict(frames=0, runs=0, chroma_runs=0, lines=0, changed=0, cycles=0, skipped=0, nogap_clocks=0, nogap_blocks=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     vdir = os.environ.get("TS_CDEF_VEC", "")
     if vdir:                                                 # frames dumped by a decoder test bench (cdef_vec.dump): inter frames
@@ -207,4 +212,6 @@ async def cdef_stream_vs_model(dut):
                 continue
             await one_frame(dut, d.tiles, f"seed {seed} {fmt} bd{args['bd']} {W}x{H}", stats, rng)
     assert stats["frames"] > 0 and stats["changed"] > 0, stats
+    if stats["nogap_blocks"]:
+        stats["clocks_per_block"] = round(stats["nogap_clocks"] / stats["nogap_blocks"], 2)
     dut._log.info(f"OK: {stats}")
