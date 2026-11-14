@@ -368,5 +368,13 @@ Plan for the stage around them (the luma part is built as described):
   hold for random stretches and fail above 16 (`OUT_SLACK`). A first attempt held restoration's input instead and
   saw 56 lines follow, a whole buffered column. Three faults (the push not stopped, the sequencer not stopped, the
   hold not connected) fail.
+- `rtl/fc_rstore.sv`: the row store, as a mirror. Every write reconstruction makes to the frame memory (an aligned
+  group of four samples with lane enables) is repeated into it, the way `edge_line` repeats the last lines; the
+  frame memory stays what reconstruction reads, and the chain reads a whole 4x4 block a clock from the mirror
+  (four memories a plane, one per line of a block; a ring of 64 luma and 32 chroma block rows). Suite
+  `fc_rstore_unit`: superblock rows written in a shuffled order with whole, half and single-sample group writes
+  and rewrites, blocks read back for three planes at once from the newest row and from older rows still in the
+  ring; ten faults fail (the tenth, a read that does not hold its data, after the test began to move the address
+  while it waits). Not in the decoder yet, not synthesised.
 - Not done: super-resolution between CDEF and restoration, the stores shared by three readers in the decoder (mode
-  info for the deblock stages, the unit records), the row store, the writer to DDR, and the switch in `dec_top`.
+  info for the deblock stages, the unit records), the writer to DDR, and the switch in `dec_top`.
