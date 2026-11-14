@@ -34,6 +34,15 @@ def blk_of(plane_rows, y, x):
     return v
 
 
+def yd_record(hdr, state, ydir, r, c):
+    """What the luma stage gives the chroma stages for the 8x8 block at 4x4 unit (r, c): {filtered, cdef_idx, direction}"""
+    if not ydir or r >= hdr.MiRows or c >= hdr.MiCols:
+        return 0
+    idx = state.cdef_idx.get(((r >> 4) << 4, (c >> 4) << 4), -1)
+    skipped = all(state.Skips[min(r + i, hdr.MiRows - 1)][min(c + j, hdr.MiCols - 1)] for i in range(2) for j in range(2))
+    return (int(idx != -1 and not skipped) << 6) | ((idx & 7) << 3 if idx != -1 else 0) | ydir(r, c)
+
+
 async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane=0, ydir=None):
     sx = getattr(hdr, "subsampling_x", 0) if plane else 0
     sy = getattr(hdr, "subsampling_y", 0) if plane else 0
@@ -60,10 +69,13 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane
             yr = int(dut.yd_row.value); yc = int(dut.yd_col.value)
             await RisingEdge(dut.clk)
             await Timer(1, "ns")
-            dut.yd.value = ydir(yr, yc) if (ydir and yr < hdr.MiRows and yc < hdr.MiCols) else 0
-            dut.rd_skip.value = int(state.Skips[min(r, hdr.MiRows - 1)][min(c, hdr.MiCols - 1)]) if (r < 4096 and c < 4096) else 0
-            idx = state.cdef_idx.get((r64 << 4, c64 << 4), -1)
-            dut.cdr_val.value = 0 if idx == -1 else (8 | idx)
+            dut.yd.value = yd_record(hdr, state, ydir, yr, yc)
+            if plane == 0:
+                dut.rd_skip.value = int(state.Skips[min(r, hdr.MiRows - 1)][min(c, hdr.MiCols - 1)]) if (r < 4096 and c < 4096) else 0
+                idx = state.cdef_idx.get((r64 << 4, c64 << 4), -1)
+                dut.cdr_val.value = 0 if idx == -1 else (8 | idx)
+            else:                                            # a chroma stage must not depend on mi_store's answers
+                dut.rd_skip.value = hrng.getrandbits(1); dut.cdr_val.value = hrng.getrandbits(4)
             # the taker's room: block columns are held back at random in the bands whose input has gaps
             h = 1 if hrng.random() < hold_p[0] else 0
             dut.col_hold.value = h; stats["hold_clocks"] += h

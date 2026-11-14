@@ -51,12 +51,12 @@ module fc_plane
     input  logic            rd2_skip,
     output logic [SBW-1:0]  cdr_row64, cdr_col64,
     input  logic [3:0]      cdr_val,
-    // luma's CDEF directions: written by the luma plane, read by the chroma planes
+    // luma's CDEF decisions per 8x8 block {filtered, cdef_idx, direction}: written by the luma plane, read by chroma
     output logic [MIW-1:0]  yd_row, yd_col,
-    input  logic [2:0]      yd,
+    input  logic [6:0]      yd,
     output logic            dw_we,
     output logic [MIW-1:0]  dw_row, dw_col,
-    output logic [2:0]      dw_dir,
+    output logic [6:0]      dw_info,
     // the CDEF stage's progress in the band and a hold from outside (a chroma plane waits for luma's directions)
     output logic [CW:0]     cd_col,          // first 4x4 column of the block column CDEF filters next
     input  logic            cd_hold,
@@ -115,7 +115,7 @@ module fc_plane
         .mi_rows(hdr.mi_rows), .mi_cols(hdr.mi_cols), .band_start, .row0(prow0), .pic_rows, .n_blk, .n_col, .first_band, .last_band,
         .busy(c_busy), .band_done(), .in_valid(lo_valid), .in_ready(lo_ready), .in_blk(lo_blk),
         .rd_row(rd2_row), .rd_col(rd2_col), .rd_skip(rd2_skip), .cdr_row64, .cdr_col64, .cdr_val(cdef_on ? cdr_val : 4'd0),
-        .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_dir,
+        .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_info,
         .col_hold(cd_hold || ff_free < (FAW+1)'(160)),   // a column's lines: at most 4 (32 + 4), and four still on their way
         .col_next(cd_col),
         .out_valid(co_valid), .out_line(co_line), .out_n4(), .out_col(), .out_y(co_y));

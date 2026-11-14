@@ -29,6 +29,7 @@ import xcheck_frame as xf               # noqa: E402
 from host_regs import LF_FIELDS, lf_vals, CDEF_FIELDS, cdef_vals   # noqa: E402
 from test_lf_stage import blk_of, load_mi   # noqa: E402
 from test_lr_top import lr_rec_vals     # noqa: E402
+from test_cdef_stream import yd_record  # noqa: E402
 
 
 async def load_units(dut, hdr, state):
@@ -50,7 +51,7 @@ async def load_units(dut, hdr, state):
     await RisingEdge(dut.clk); await Timer(1, "ns")
 
 
-async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, force_off=False):
+async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, force_off=False, state=None):
     sx = hdr.subsampling_x if plane else 0
     sy = hdr.subsampling_y if plane else 0
     cols = len(range(0, hdr.MiCols, 1 << sx))
@@ -80,7 +81,7 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, forc
             yr = int(dut.yd_row.value); yc = int(dut.yd_col.value)
             await RisingEdge(dut.clk)
             await Timer(1, "ns")
-            dut.yd.value = ydir(yr, yc) if (ydir and plane and yr < hdr.MiRows and yc < hdr.MiCols) else 0
+            dut.yd.value = yd_record(hdr, state, ydir, yr, yc) if plane else 0
     mon = cocotb.start_soon(monitor()); dr = cocotb.start_soon(directions())
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
@@ -177,7 +178,7 @@ async def one_frame(dut, tiles, tag, stats):
     only_sb = int(os.environ.get("FC_SB", "0"))
     for plane in range(hdr.NumPlanes):
         for sb in ((only_sb,) if only_sb else (64, 128)):
-            await one_plane(dut, hdr, pre, post, plane, sb, ydir if cdef_on else None, tag, stats)
+            await one_plane(dut, hdr, pre, post, plane, sb, ydir if cdef_on else None, tag, stats, state=state)
         stats["by_lf"] += sum(1 for a, b in zip(pre[plane], dbl[plane]) if a != b)
         stats["by_cdef"] += sum(1 for a, b in zip(dbl[plane], cdef[plane]) if a != b)
         stats["by_lr"] += sum(1 for a, b in zip(cdef[plane], post[plane]) if a != b)

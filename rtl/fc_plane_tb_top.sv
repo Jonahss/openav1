@@ -28,10 +28,10 @@ module fc_plane_tb_top
     output logic        band_done,
     output logic        err_ovf,
     output logic [MIW-1:0] yd_row, yd_col,
-    input  logic [2:0]  yd,
+    input  logic [6:0]  yd,
     output logic        dw_we,
     output logic [MIW-1:0] dw_row, dw_col,
-    output logic [2:0]  dw_dir,
+    output logic [6:0]  dw_info,
     output logic        out_valid,
     output logic [95:0] out_line,
     output logic [1:0]  out_n4,
@@ -86,6 +86,6 @@ module fc_plane_tb_top
         .band_start, .row0, .n_blk, .n_col, .first_band, .last_band, .busy, .band_done, .err_ovf,
         .bk_re, .bk_row, .bk_col, .bk_data, .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
         .rd2_row, .rd2_col, .rd2_skip(rd2_info.skip), .cdr_row64, .cdr_col64, .cdr_val,
-        .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_dir, .cd_col(), .cd_hold(1'b0), .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
+        .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_info, .cd_col(), .cd_hold(1'b0), .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
         .out_valid, .out_line, .out_n4, .out_col, .out_y);
 endmodule

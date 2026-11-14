@@ -1,6 +1,8 @@
 // CDEF stage of the streaming filter chain (docs/filter-chain.md) for one plane, one superblock row (band) at a time.
 // The description below is for luma (a CDEF block = 2 x 2 blocks of 4x4); a subsampled chroma plane's CDEF block is
-// one 4x4 block wide and / or high, takes the luma direction from the yd port and steps by its own size.
+// one 4x4 block wide and / or high and steps by its own size. A chroma plane reads nothing from mi_store: whether a
+// block is filtered, its cdef_idx and its direction are those of the luma 8x8 block over it, which the luma stage
+// gives on dw_* as it decides them and the chroma stage reads back on the yd port (one read a block).
 // First cut: correct and simple, not yet at the planned rate (see "Rate" below).
 //
 // In: the deblock stage's output as lf_stream sends it: 4x4 blocks of the band column by column, rows -2 .. n_blk - 3
@@ -20,8 +22,9 @@
 // The output cannot be held line by line; col_hold keeps the next block column from starting instead (a column sends
 // at most 4 (n_blk + 4) lines, and up to four lines of the column before may still be on their way out).
 // Rate: eight clocks an 8x8 block inside a column (the next block's rows, direction search, skip flags and parameters
-// are prepared during the current block's lines); the first block of a column and blocks one 4x4 row high (subsampled
-// chroma) take the steps in sequence, about 18 and 14 clocks.
+// are prepared during the current block's lines), four clocks a block one 4x4 row high (vertically subsampled chroma:
+// the next block's row and its yd read during the four lines); the first block of a column takes the steps in
+// sequence, about 18 clocks in luma and 9 in chroma.
 module cdef_stream
   import syn_pkg::*;
 #(
@@ -54,11 +57,11 @@ module cdef_stream
     input  logic [3:0]      cdr_val,         // {valid, idx}
     // chroma: the luma direction of the 8x8 block at 4x4 luma unit (yd_row, yd_col), one clock after the address
     output logic [MIW-1:0]  yd_row, yd_col,
-    input  logic [2:0]      yd,
+    input  logic [6:0]      yd,              // {filtered, cdef_idx, direction} as the luma stage gave it
     // luma: the direction found for the block at (dw_row, dw_col), for the chroma stages
     output logic            dw_we,
     output logic [MIW-1:0]  dw_row, dw_col,
-    output logic [2:0]      dw_dir,
+    output logic [6:0]      dw_info,         // {the block is filtered (cdef_idx coded, not all skipped), cdef_idx, direction}
     input  logic            col_hold,        // do not start a block column (the taker has no room for a column's lines)
     output logic [CW:0]     col_next,        // first 4x4 column of the block column filtered next: every column before it is done
     output logic            out_valid,
@@ -177,7 +180,7 @@ module cdef_stream
     logic        cidx_v;
     logic [MIW-1:0] b_mr, b_mc, b_mr1, b_mc1;    // the block's first 4x4 unit and the next (clamped to the picture)
     always_comb begin
-        b_mr = MIW'($signed({1'b0, row0}) + (MIW+1)'(p_r) + (la_blk ? (MIW+1)'(2) : (MIW+1)'(0))) << ssy;
+        b_mr = MIW'($signed({1'b0, row0}) + (MIW+1)'(p_r) + (la_blk ? (MIW+1)'(bh4) : (MIW+1)'(0))) << ssy;
         b_mc = MIW'(p_c2) << ssx;
         b_mr1 = (b_mr + MIW'(1) < mi_rows) ? b_mr + MIW'(1) : mi_rows - MIW'(1);
         b_mc1 = (b_mc + MIW'(1) < mi_cols) ? b_mc + MIW'(1) : mi_cols - MIW'(1);
@@ -188,8 +191,11 @@ module cdef_stream
     end
     logic [2:0]  s_dr; logic [11:0] s_pri, s_sec; logic [4:0] s_adjp, s_adjs; logic s_odd;
     logic [2:0]  dr_r; logic [11:0] pri_r, sec_r; logic [4:0] adjp_r, adjs_r; logic odd_r;
-    logic [2:0]  yd_q;                       // chroma: the luma direction as read
-    cdef_str u_str (.ch, .cs, .ssx, .ssy, .idx(la_blk ? n_cidx : cidx), .luma, .ydir(luma ? dir_d : yd_q), .var_i(dir_var),
+    logic [6:0]  yd_q;                       // chroma: the luma block's record as read
+    logic        f_cur, f_nxt;               // the block is filtered: the one whose flags were read in sequence / the look-ahead's
+    assign f_cur = luma ? (cidx_v && !sk_all) : yd_q[6];
+    assign f_nxt = luma ? (n_cidx_v && !n_sk_all) : yd_q[6];
+    cdef_str u_str (.ch, .cs, .ssx, .ssy, .idx(!luma ? yd_q[5:3] : la_blk ? n_cidx : cidx), .luma, .ydir(luma ? dir_d : yd_q[2:0]), .var_i(dir_var),
                     .dr(s_dr), .pri(s_pri), .sec(s_sec), .adjp(s_adjp), .adjs(s_adjs), .priodd(s_odd));
     // the line's neighbourhood: 5 lines x 12 columns out of the window (16 lines x 16 columns; the block starts at 4, 4)
     logic [2:0]  p_l;                        // line of the block
@@ -227,7 +233,8 @@ module cdef_stream
     assign out_n4 = bw4;
     assign col_next = p_c2;
     // luma: the block's direction for the chroma stages, as cdef_dir delivers it
-    assign dw_we = luma && ((pst == P_STR) || (pst == P_PIX && la && p_l == 3'd7)); assign dw_row = b_mr; assign dw_col = b_mc; assign dw_dir = dir_d;
+    assign dw_we = luma && ((pst == P_STR) || (pst == P_PIX && la && p_l == 3'd7)); assign dw_row = b_mr; assign dw_col = b_mc;
+    assign dw_info = (pst == P_PIX) ? {f_nxt, n_cidx, dir_d} : {f_cur, cidx, dir_d};
 
     // ---------------------------------------------------------------- sequencing
     logic done_pend;
@@ -274,7 +281,7 @@ module cdef_stream
                         win[0][k] <= win[1][k]; win[1][k] <= win[2][k]; win[2][k] <= win[3][k]; win[3][k] <= ld_blk[k];
                     end
                     ld_r <= ld_r + 7'sd1; ld_n <= ld_n - 3'd1;
-                    if (ld_n == 3'd1) begin sk_cnt <= 2'd0; sk_all <= 1'b1; pst <= P_SKIP; dir_go <= 1'b1; end
+                    if (ld_n == 3'd1) begin sk_cnt <= 2'd0; sk_all <= 1'b1; wait_n <= 3'd0; pst <= luma ? P_SKIP : P_DIRW; dir_go <= 1'b1; end
                 end
                 // the four skip flags (address now, flag next clock) and cdef_idx; the direction search runs meanwhile
                 P_SKIP: begin
@@ -290,16 +297,34 @@ module cdef_stream
                     if (luma ? dir_v : (wait_n != 3'd0)) pst <= P_STR;
                 end
                 P_STR: begin
-                    filt <= cidx_v && !sk_all;
+                    filt <= f_cur;
                     dr_r <= s_dr; adjp_r <= s_adjp; adjs_r <= s_adjs; odd_r <= s_odd;
-                    pri_r <= (cidx_v && !sk_all) ? s_pri : 12'd0;
-                    sec_r <= (cidx_v && !sk_all) ? s_sec : 12'd0;
+                    pri_r <= f_cur ? s_pri : 12'd0;
+                    sec_r <= f_cur ? s_sec : 12'd0;
                     p_l <= 3'd0; pst <= P_PIX;
-                    la <= (bh4 == 2'd2) && (p_r < p_last);
+                    la <= (p_r < p_last);
                 end
                 P_PIX: begin
                     p_l <= p_l + 3'd1;
-                    if (la) begin
+                    if (la && bh4 == 2'd1) begin
+                        // a block one 4x4 row high (chroma): the next block's row and its record during the four lines
+                        case (p_l)
+                            3'd0: begin for (int k = 0; k < 4; k++) nx3[k] <= ld_blk[k]; ld_r <= ld_r + 7'sd1; la_blk <= 1'b1; end
+                            3'd1: ;                                                 // the yd address is the next block's
+                            3'd2: yd_q <= yd;
+                            default: begin                                          // line 3: the next block takes over
+                                for (int k = 0; k < 4; k++) begin
+                                    win[0][k] <= win[1][k]; win[1][k] <= win[2][k]; win[2][k] <= win[3][k]; win[3][k] <= nx3[k];
+                                end
+                                filt <= f_nxt;
+                                dr_r <= s_dr; adjp_r <= s_adjp; adjs_r <= s_adjs; odd_r <= s_odd;
+                                pri_r <= f_nxt ? s_pri : 12'd0;
+                                sec_r <= f_nxt ? s_sec : 12'd0;
+                                p_r <= p_r + 7'sd1; p_l <= 3'd0; la_blk <= 1'b0;
+                                la <= (p_r + 7'sd1 < p_last);
+                            end
+                        endcase
+                    end else if (la) begin
                         // the next block alongside this block's lines
                         case (p_l)
                             3'd0: begin for (int k = 0; k < 4; k++) nx3[k] <= ld_blk[k]; ld_r <= ld_r + 7'sd1; end
@@ -316,10 +341,10 @@ module cdef_stream
                                 for (int k = 0; k < 4; k++) begin
                                     win[0][k] <= win[2][k]; win[1][k] <= win[3][k]; win[2][k] <= nx3[k]; win[3][k] <= nx4[k];
                                 end
-                                filt <= n_cidx_v && !n_sk_all; cidx <= n_cidx; cidx_v <= n_cidx_v; sk_all <= n_sk_all;
+                                filt <= f_nxt; cidx <= n_cidx; cidx_v <= n_cidx_v; sk_all <= n_sk_all;
                                 dr_r <= s_dr; adjp_r <= s_adjp; adjs_r <= s_adjs; odd_r <= s_odd;
-                                pri_r <= (n_cidx_v && !n_sk_all) ? s_pri : 12'd0;
-                                sec_r <= (n_cidx_v && !n_sk_all) ? s_sec : 12'd0;
+                                pri_r <= f_nxt ? s_pri : 12'd0;
+                                sec_r <= f_nxt ? s_sec : 12'd0;
                                 p_r <= p_r + 7'sd2; p_l <= 3'd0; la_blk <= 1'b0;
                                 la <= (p_r + 7'sd2 < p_last);                       // and a block after that one?
                             end
