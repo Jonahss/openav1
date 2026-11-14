@@ -69,7 +69,6 @@ module sr_stream
     end
 
     // ---------------------------------------------------------------- arrival: six rotating column buffers
-    logic [95:0] cb [6][256];
     logic [8:0]  tg [256];
     logic        act;
     logic [CW:0] a_col;                      // input column arriving (n_seg_in: all in)
@@ -131,12 +130,21 @@ module sr_stream
     logic [11:0] pix_max;
     assign pix_max = 12'((13'd1 << bit_depth) - 13'd1);
 
+    // the six column buffers, each a memory of its own with one write and one registered read (written as one array
+    // indexed by the slot, synthesis built them from 147,456 flip-flops a stage: Synth 8-4767, seen as 964,000
+    // registers in the first card build with the chain, 2026-11-14)
+    generate for (genvar b = 0; b < 6; b++) begin : g_cb
+        (* ram_style = "block" *) logic [95:0] mem [256];
+        always_ff @(posedge clk) begin
+            if (a_step && a_slot == 3'(b)) mem[a_ln] <= in_line;
+            if (adv) q[b] <= mem[r_j[7:0]];
+        end
+    end endgenerate
     always_ff @(posedge clk) begin
-        // arrival
-        if (a_step) begin cb[a_slot][a_ln] <= in_line; tg[a_ln] <= in_tag; end
+        // arrival (the lines themselves go into the column buffers below)
+        if (a_step) tg[a_ln] <= in_tag;
         // the pipeline
         if (adv) begin
-            for (int b = 0; b < 6; b++) q[b] <= cb[b][r_j[7:0]];
             r1_v <= rd; r1_l <= (r_j + 9'd1 == nl); r1_t <= tg[r_j[7:0]];
             // the window: three columns of 8, or four of 4
             for (int i = 0; i < 4; i++)
