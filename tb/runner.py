@@ -19,7 +19,7 @@ waves = os.environ.get("WAVES", "0") == "1"
 waves_fmt = os.environ.get("WAVE_FMT", "fst")      # fst, or vcd (needs neither lz4 nor a working FST writer)
 sys.path.insert(0, str(ROOT / "tb"))
 r = get_runner("verilator")
-EXTRA = {"lr_wiener_tb_top": [], "cdef_stream": ["cdef_pkg.sv", "blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lf_cbuf.sv", "cdef_dir.sv", "cdef_str.sv", "cdef_row.sv"], "cdef_row": ["cdef_pkg.sv"], "cdef_dir": ["cdef_pkg.sv"], "cdef_str": ["cdef_pkg.sv", "blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv"], "lf_stream": ["lf_cbuf.sv", "lf_filt.sv"], "lf_stage_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "mi_store.sv", "lf_cbuf.sv", "lf_filt.sv", "lf_edge.sv", "lf_feed.sv", "lf_stream.sv"], "lf_edge": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv"], "itx_lvl": ["itx_pair.sv"], "mc_filt": ["mc_tables_pkg.sv"], "warp_setup": ["mc_tables_pkg.sv"], "ref_fetch": [], "frame_mem_uram": [], "itx2d": ["itx_pair.sv", "itx_lvl.sv", "itx_row.sv"],
+EXTRA = {"lr_wiener_tb_top": ["lr_wiener_pkg.sv", "lr_wiener_h.sv", "lr_wiener_v.sv"], "cdef_stream": ["cdef_pkg.sv", "blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lf_cbuf.sv", "cdef_dir.sv", "cdef_str.sv", "cdef_row.sv"], "cdef_row": ["cdef_pkg.sv"], "cdef_dir": ["cdef_pkg.sv"], "cdef_str": ["cdef_pkg.sv", "blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv"], "lf_stream": ["lf_cbuf.sv", "lf_filt.sv"], "lf_stage_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "mi_store.sv", "lf_cbuf.sv", "lf_filt.sv", "lf_edge.sv", "lf_feed.sv", "lf_stream.sv"], "lf_edge": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv"], "itx_lvl": ["itx_pair.sv"], "mc_filt": ["mc_tables_pkg.sv"], "warp_setup": ["mc_tables_pkg.sv"], "ref_fetch": [], "frame_mem_uram": [], "itx2d": ["itx_pair.sv", "itx_lvl.sv", "itx_row.sv"],
          "coef_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv", "sym_seq.sv", "coef_rd.sv"],
          "tile_syntax": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                          "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mf_band.sv", "seg_band.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv"],
@@ -32,8 +32,7 @@ EXTRA = {"lr_wiener_tb_top": [], "cdef_stream": ["cdef_pkg.sv", "blk_tables_pkg.
          "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lr_top.sv"],
          "cdef_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "cdef_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "cdef_top.sv"]}
 EXTRA["dec_host"] = EXTRA["dec_top"] + ["dec_top.sv"]          # the AXI-Lite host interface around the decoder
-TOP_FILE = {"lr_wiener_tb_top": "lr_wiener.sv"}                 # tops that live in a file of another name
-sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / TOP_FILE.get(top, f"{top}.sv")]
+sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{top}.sv"]
 # frame-buffer / per-4x4 state capacity for the frame-level tops (dec_top, *_tb_top): FBX/FBY = log2 pixels,
 # ML2 = log2 4x4 units (FBX-2 / FBY-2 covers the same picture). Defaults fit 1024x512; Argon needs more.
 params = {}
