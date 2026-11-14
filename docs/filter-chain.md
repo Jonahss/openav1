@@ -305,3 +305,50 @@ Plan for the stage around them (the luma part is built as described):
   band); the one that passes (the block row taken as unsigned) lands on the same boundary slot, since 128 rows are
   a multiple of four boundaries.
 - Not done: super-resolution in front of the stage, output back-pressure, the fast self-guided path.
+
+## The stages joined (2026-11-14, simulation only)
+
+- `rtl/fc_plane.sv`: one plane of the chain. `lf_feed` + `lf_stream` take the band's blocks from the row store,
+  `cdef_stream` takes the deblocked blocks, `lr_bstore` copies the stripe boundary lines out of the same stream, and
+  `lr_stream` takes CDEF's lines. One `band_start` for all of it; the band is done when restoration is and the
+  stages before it are idle.
+  - All three stages always run. A filter that is off for the frame or the plane passes its samples through
+    (`lf_on`, `cdef_on`, the plane's restoration type), so a plane's output always has the same shape and shift.
+  - CDEF's output cannot wait line by line and a self-guided line takes restoration about 30 clocks, so a FIFO of
+    256 lines (`rtl/fc_lfifo.sv`) sits between them and CDEF starts a block column only when the FIFO has room for
+    all of that column's lines (`col_hold`). A dropped line would raise `err_ovf`; none has.
+- `rtl/fc_top.sv`: the planes of a picture, each an `fc_plane`, working on the same band at the same time. Luma's
+  CDEF directions go into a small memory (64 rows of 8x8 blocks, a copy per chroma plane) as luma's stage finds
+  them; a chroma plane holds a block column until luma has finished the columns over the same picture area.
+  Monochrome leaves the chroma planes idle. Each plane has its own read ports into the row store and the mode
+  info: the stores behind them must answer three readers at once (the test wrapper uses three `mi_store`).
+- Tests against the frame-at-once models (`lf_model`, then `cdef_model`, then `lr_model`), every sample of the coded
+  area exactly once, both band sizes, with nothing supplied but the headers, `mi_store`'s contents and each band's
+  pre-filter blocks: `tb/test_fc_plane.py` (suites `fc_plane_unit`, `fc_plane_odd`, `fc_plane_real`; a chroma
+  plane's luma directions answered by the test; every frame once more with deblocking and CDEF switched off by the
+  switches alone) and `tb/test_fc_top.py` (`fc_top_unit`, `fc_top_odd`, `fc_top_real`; nothing answered by the
+  test). Identical on 62 frames each in a first wide run: generated frames at 128x96, 200x136 and 72x264 in all
+  four formats and three bit depths, and frame 0 of six real streams. Frames with super-resolution are skipped.
+- Faults: 25 in `fc_plane`, the FIFO and CDEF's column hold. 17 failed on the first set of frames; the eight that
+  passed showed what the frames lacked, and the tests gained it: the pass with the filters switched off (the two
+  deblock switches and the CDEF switch then fail), odd picture sizes with 4:2:0 chroma restoration (plane width and
+  height rounding, the unit-column count, the plane's own unit size and the boundary store's row then fail). One
+  still passes and is equivalent as the stages are built: reporting the band done on restoration's word alone,
+  without waiting for the stages before it, which are always idle by then. 13 in `fc_top`: all fail (chroma's hold
+  removed or short by a column, the direction memory's row, column, second copy and depth, the chroma plane's
+  columns and rows, monochrome, the band's end, the luma build, the per-plane deblock switch; the last two needed
+  a monochrome frame and a pass with chroma's deblocking alone switched off).
+- Synthesis of `fc_top` (out of context, 10 ns, 4096 columns): 0.9 ns of slack, 246,512 LUTs, 77,494 registers, 640
+  DSP blocks, 255 block RAM tiles; the luma plane is 97,534 LUTs of it (CDEF 41,783, restoration 13,328). That is
+  large, and the stages were written to be right first. Per plane: deblock 31,492 (luma) / 15,470 (the chroma-only
+  build), CDEF 41,783 / 31,494 (synthesis drops the direction search from the chroma planes, whose `luma` input is
+  constant), restoration 13,328, the boundary store about 9,000, of which 7,168 are LUT RAM: inside the chain two
+  of its four memories were not mapped to block RAM, although alone it is 33 block RAM tiles and 64 LUTs. That
+  mapping and CDEF's window multiplexers are the first places to look.
+- Rate as it stands, a frame's planes run at the same time, generated 128x96 frames with self-guided units: about
+  1 sample a clock. Per plane on the real streams: about 7 clocks a 4x4 block over the three planes one after
+  another, which is luma at CDEF's 2.7 clocks a block and 4:2:0 chroma at about 14 (CDEF blocks one 4x4 row high
+  take `cdef_stream`'s sequential path). Chroma CDEF is the slowest part of the chain today; the stages' planned
+  rate is one block a clock.
+- Not done: super-resolution between CDEF and restoration, the stores shared by three readers in the decoder (mode
+  info), the row store, the writer to DDR, and the switch in `dec_top`.
