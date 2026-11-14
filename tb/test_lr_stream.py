@@ -216,7 +216,9 @@ async def lr_stream_vs_model(dut):
         stats["pictures"] += 1
         dut._log.info(f"{tag}: identical")
     del stats["unit_reads"]
-    assert stats["changed"] > 0 and stats["odd_w"] > 0 and stats["odd_h"] > 0 and stats["end_below_stripe"] > 0, stats
     if stats["nogap_lines"]:
         stats["clocks_per_line"] = round(stats["nogap_clocks"] / stats["nogap_lines"], 3)
+    assert stats["changed"] > 0, stats
+    if not (os.environ.get("LS_W") or os.environ.get("LS_H")):  # a fixed size (rate measurements) has not the borders
+        assert stats["odd_w"] > 0 and stats["odd_h"] > 0 and stats["end_below_stripe"] > 0, stats
     dut._log.info(f"OK: {stats}")
