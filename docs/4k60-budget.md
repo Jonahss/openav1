@@ -80,6 +80,21 @@ Readings:
 2. **Frame-wide**: loop filter, CDEF, loop restoration, the flush to DDR, the frame memory itself. Tiles do not
    split these. Each must carry the whole stream: **7.5 samples a cycle at 100 MHz**.
 
+## Two targets side by side (arithmetic from the table below)
+
+Since every software encoder writes one tile at 4K by default, the budget carries two figures for the per-tile
+stages, at 100 MHz:
+
+| target | what one tile engine must do | today (light / heavy 1080p frame) | short by |
+|---|---|---|---|
+| 4K60 in four or more tile columns (YouTube's streams) | 1.9 samples a clock | 1.16 / 0.41 to 0.51 | 1.6x / about 4x |
+| 4K60 in one tile (a self-encoded file) | 7.5 samples a clock | 1.16 / 0.41 to 0.51 | 6.4x / 15 to 18x |
+| 4K24 in one tile (a film encoded at home) | 3.0 samples a clock | 1.16 / 0.41 to 0.51 | 2.6x / 6 to 7x |
+
+Inside one tile only the entropy decoding is strictly serial; prediction, transforms and the filters can be widened
+and overlapped. The single-tile figures are what the per-engine work (the MC path, the transform and coefficient
+path) is measured against; tile engines only close the first row.
+
 ## Per stage, today (1080p; a superblock row is 184,320 samples, a frame 3.11 M)
 
 | stage | kind | today, samples a cycle | needed at 100 MHz | short by | source |
