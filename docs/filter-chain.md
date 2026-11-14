@@ -75,7 +75,9 @@ frames of Argon test6641 / test8854 (CDEF and restoration in 10) are identical.
 The column context of the deblock stage (`DeblockColStage` in `tb/lf_stage_model.py`): block columns enter one at a
 time; with column i in, the vertical edge on the left of column i - 1 is filtered, then the horizontal edges of
 column i - 3, which leaves. A window of four block columns is identical on 58 generated frames x superblock sizes;
-three columns fail on 34 of them. CDEF and restoration still see whole lines in the model.
+three columns fail on 34 of them. The CDEF stage's column window (`CdefColStage`): while an 8x8 block is filtered
+only the deblocked samples from two columns left of it to two columns right may be read (12 luma columns); identical
+on the real frames, and a reach of one column fails. Restoration still sees whole lines in the model.
 
 Because a stage's output for the bottom lines of row r depends on the top of row r + 1, each stage finishes a row
 shifted up by its context (deblock by 8 lines, CDEF by 2 more, restoration by 3 more). The context memories carry the

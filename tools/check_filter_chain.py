@@ -67,6 +67,6 @@ for tag, tiles in frames(sys.argv[1:]):
         bad += 0 if ok else 1
         d = lambda on, okk, ch: "off" if not on else (f"identical ({ch} lines changed)" if okk else "DIFFERS")
         print(f"{tag} sb{sb}: deblock {'identical' if ok_lf else 'DIFFERS'}, cdef {d(cdef_on, ok_cd, chc)}, restoration {d(lr_on, ok_lr, chl)}{msg}")
-print(f"frames x superblock sizes {n_frames}, failing {bad}; CDEF on in {cdef_frames} ({cdef_changed} lines changed), restoration on in {lr_frames} ({lr_changed} lines changed), super-res frames (restoration not modelled) {sr_skipped}")
+print(f"frames x superblock sizes {n_frames}, failing {bad}; CDEF on in {cdef_frames} ({cdef_changed} lines changed), restoration on in {lr_frames} ({lr_changed} lines changed), super-res frames {sr_skipped}")
 print(f"carried between superblock rows, per plane: CDEF stage {held[0]} deblocked lines; restoration stage {held[1]} CDEF lines and {held[2]} deblocked boundary lines")
 sys.exit(1 if bad or not n_frames else 0)
