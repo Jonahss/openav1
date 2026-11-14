@@ -176,9 +176,13 @@ Built so far (branch `filter-chain`, simulation only, not in the decoder):
   `lf_stream_short` / `lf_stage_short` (a last band shorter than the pipeline). Synthesis: **4.3 ns of slack at 10 ns,
   21 levels** on the worst path (filter outputs into a column buffer), 4,763 registers, **33,375 LUTs for one plane**.
   That is a synthesis estimate, before placement and routing. 1.5 clocks a block on the small test frames.
-- Not done: back-pressure on the output, a register between `lf_feed`'s strengths and `lf_stream` (not timed yet),
-  a chroma-only build without the 14-tap filter (area), the stage on inter frames end to end (the edge decision
-  alone is), a picture wider than the test frames, overlapping pass B's start with pass A (the 0.5 clock a block).
+- `lf_feed` hands the block over through a register with its strengths; the whole stage synthesised together
+  (`lf_stage_tb_top`) has 2.2 ns of slack at 10 ns, its worst path now the edge decision in `lf_feed` (25 levels).
+- A chroma-only build (`LUMA = 0`: no 8- or 14-tap filter; suites `lf_filt_chroma`, `lf_stream_chroma`) is
+  15,404 LUTs with 4.5 ns of slack. One luma and two chroma stages: about 64,000 LUTs, against 19,000 for today's
+  whole deblocking, super-res and mode-info block.
+- Not done: back-pressure on the output, the stage on inter frames end to end (the edge decision alone is), a
+  picture wider than the test frames, overlapping pass B's start with pass A (the 0.5 clock a block).
 
 Open points for this stage:
 - the row store's word: a 4x4 block (16 samples) read at once, written by reconstruction four samples at a time;
