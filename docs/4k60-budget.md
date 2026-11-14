@@ -25,10 +25,53 @@ Headers of the first ~250 frames of nine YouTube 2160p AV1 videos, seven of them
 
 - None is a single tile. The fewest tile columns is 4.
 - The loop filter is on in nearly every frame for seven of the nine (0 of 255 and 66 of 255 frames in the other two).
+- None of the nine uses loop restoration or super-res; six use CDEF in every frame (see the next section).
 - Our 1080p scoreboard clip (`in_to_tree-aom.ivf`) has the loop filter **off in 428 of 548 frames** and is a single
   tile: it under-weights the filters and cannot show a tile-engine gain.
 - Limits of this sample: one service, nine videos. libaom's default is one tile, so a single-tile 4K stream must
   decode correctly; it need not reach 60 fps.
+
+## Which filters and how many tiles: more streams and the encoders themselves (measured 2026-11-13 evening)
+
+Frame headers read with `~/projects/openav1-4k60/hdr_census2.py` (on the Pi; samples in `other/`, encodes in `enc2/`).
+
+Real streams:
+
+| source | samples | tiles | loop restoration | CDEF | super-res |
+|---|---|---|---|---|---|
+| YouTube 4K / 8K / 1080p, family A (sb64) | 9 | 2x1 (1080p), 4x1, 8x1 | never | allowed in all, non-zero in most frames of 8 | never |
+| YouTube 4K / 8K, family B (sb128) | 8 | 8x4 | never | switched off for the whole stream | never |
+| Bilibili (only 852x480 AV1 without a login) | 5 | 1x1 | in 12, 47, 63, 185 and 198 of 204 frames, Wiener and self-guided | non-zero in most frames | never |
+
+What the software encoders write by default and at their speed settings (Debian 13 packages through ffmpeg: libaom
+3.12.1, SVT-AV1 2.3.0, rav1e 0.7.1; 24 frames of an 8K sample scaled down to 4K and to 1080p, constant quality):
+
+| encoder, setting | tiles at 4K | loop restoration at 4K (frames) | at 1080p | CDEF non-zero at 4K |
+|---|---|---|---|---|
+| libaom good, cpu-used 1 (ffmpeg default; 7 frames) | 1x1 | 1 of 7, Wiener | 1 of 7 | 6 of 7 |
+| libaom good, cpu-used 4 | 1x1 | 6 of 26, Wiener and self-guided | 8 of 26 | 15 of 26 |
+| libaom good, cpu-used 6 and 8 | 1x1 | none | none | 18 of 25 |
+| libaom realtime, cpu-used 8 | 1x1 | none | none | 24 of 24 |
+| SVT-AV1 presets 4, 6, 8 | 1x1 | 7, 10, 11 of 24, Wiener only | 10 of 24 | 17 to 20 of 24 |
+| SVT-AV1 presets 10, 13 and ffmpeg's default | 1x1 | none | none | 0 of 24 |
+| rav1e default, speed 4, speed 6 | 1x1 | 24 of 24 (switchable) | 24 of 24 | 24 of 24 |
+| rav1e speed 10 | 1x1 | none | none | 24 of 24 |
+
+Documented: SVT-AV1's parameter table lists restoration, CDEF and the deblocking filter as enabled by default and
+the tile defaults as 0 ("default changes per resolution"); libaom's speed features switch both restoration filters
+off in realtime mode and the self-guided one from speed 5 in good mode; the aomenc manual says restoration is on by
+default except in realtime mode.
+
+Readings:
+
+- **Restoration is not used by YouTube at any resolution sampled, and it is used elsewhere**: by another service at
+  low resolution, and at 4K by the slower settings of all three software encoders (a third of the frames with libaom
+  and SVT-AV1, every frame with rav1e). SVT-AV1, the most used of them, wrote Wiener only.
+- **Every software encoder writes a single tile at 4K unless told otherwise.** Tile engines multiply YouTube's
+  streams; a 4K file someone encoded themselves is one tile and needs the whole rate from one engine.
+- Super-res did not appear anywhere.
+- Limits: 22 real streams from two services, one 24-frame clip per encoder setting, one version of each encoder.
+  No data on Netflix, Meta or hardware encoders: a web search found no primary source that lists the tools they use.
 
 ## Two kinds of stage
 
