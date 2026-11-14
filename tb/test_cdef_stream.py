@@ -33,12 +33,15 @@ def blk_of(plane_rows, y, x):
     return v
 
 
-async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats):
-    cols = hdr.MiCols; W = cols * 4; H = hdr.MiRows * 4
+async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats, plane=0, ydir=None):
+    sx = getattr(hdr, "subsampling_x", 0) if plane else 0
+    sy = getattr(hdr, "subsampling_y", 0) if plane else 0
+    cols = len(range(0, hdr.MiCols, 1 << sx)); W = cols * 4; H = (hdr.MiRows * 4) >> sy
     seen = [[0] * W for _ in range(H)]
     band = sb_lines // 4
     out = []
-    y0_box = [0]
+    dut.luma.value = 0 if plane else 1; dut.ssx.value = sx; dut.ssy.value = sy
+    dut.mi_rows.value = hdr.MiRows; dut.mi_cols.value = hdr.MiCols
 
     async def monitor():
         while True:
@@ -46,7 +49,7 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats):
             await ReadOnly()
             if int(dut.out_valid.value):
                 y = int(dut.out_y.value); y = y - 512 if y >= 256 else y
-                out.append((int(dut.out_c8.value), y, int(dut.out_line.value)))
+                out.append((int(dut.out_col.value), y, int(dut.out_line.value), int(dut.out_n4.value)))
 
     async def mode_info():                                   # mi_store's registered reads: the answer a clock after the address
         while True:
@@ -54,19 +57,21 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats):
             await ReadOnly()
             r = int(dut.rd_row.value); c = int(dut.rd_col.value)
             r64 = int(dut.cdr_row64.value); c64 = int(dut.cdr_col64.value)
+            yr = int(dut.yd_row.value); yc = int(dut.yd_col.value)
             await Timer(1, "ns")
+            dut.yd.value = ydir(yr, yc) if (ydir and yr < hdr.MiRows and yc < hdr.MiCols) else 0
             dut.rd_skip.value = int(state.Skips[min(r, hdr.MiRows - 1)][min(c, hdr.MiCols - 1)]) if (r < 4096 and c < 4096) else 0
             idx = state.cdef_idx.get((r64 << 4, c64 << 4), -1)
             dut.cdr_val.value = 0 if idx == -1 else (8 | idx)
     mon = cocotb.start_soon(monitor()); mi = cocotb.start_soon(mode_info())
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
-        n_blk = row1 - row0
+        n_blk = len(range(row0, row1, 1 << sy))
         first = row0 == 0; last = row1 >= hdr.MiRows
-        y0 = row0 * 4
+        y0 = (row0 * 4) >> sy
         del out[:]
         await Timer(2, "ns")
-        dut.row0.value = row0; dut.pic_rows.value = hdr.MiRows; dut.n_blk.value = n_blk; dut.n_col.value = cols
+        dut.row0.value = row0 >> sy; dut.pic_rows.value = H // 4; dut.n_blk.value = n_blk; dut.n_col.value = cols
         dut.first_band.value = int(first); dut.last_band.value = int(last)
         dut.band_start.value = 1
         await RisingEdge(dut.clk); await Timer(2, "ns")
@@ -100,19 +105,21 @@ async def one_plane(dut, hdr, state, dbl, post, sb_lines, rng, tag, stats):
             assert n < 400000, f"{tag} band at MI row {row0}: no band_done"
         await ClockCycles(dut.clk, 2); await Timer(2, "ns")
         stats["cycles"] += n
-        for (c8, yr, v) in out:
+        for (c4, yr, v, n4) in out:
             y = y0 + yr
-            assert 0 <= y < H and 0 <= c8 * 8 < W, f"{tag}: line {yr} of the band at line {y0}, block column {c8}: outside the plane"
-            for k in range(8):
+            assert 0 <= y < H and 0 <= c4 * 4 < W, f"{tag} plane {plane}: line {yr} of the band at line {y0}, 4x4 column {c4}: outside the plane"
+            for k in range(4 * n4):
+                if 4 * c4 + k >= W:
+                    continue                                 # an odd number of 4x4 columns: the block's second half is outside
                 got = (v >> (12 * k)) & 0xFFF
-                exp = post[y][8 * c8 + k]
-                assert got == exp, (f"{tag} sb{sb_lines}: sample ({y}, {8 * c8 + k}) = {got}, model {exp} (deblocked {dbl[y][8 * c8 + k]}; "
-                                    f"block column {c8}, line {yr} of the band at line {y0})")
-                seen[y][8 * c8 + k] += 1
+                exp = post[y][4 * c4 + k]
+                assert got == exp, (f"{tag} plane {plane} sb{sb_lines}: sample ({y}, {4 * c4 + k}) = {got}, model {exp} (deblocked {dbl[y][4 * c4 + k]}; "
+                                    f"4x4 column {c4}, line {yr} of the band at line {y0})")
+                seen[y][4 * c4 + k] += 1
         stats["lines"] += len(out)
     mon.cancel(); mi.cancel()
     missing = sum(1 for y in range(H) for x in range(W) if seen[y][x] != 1)
-    assert missing == 0, f"{tag} sb{sb_lines}: {missing} samples not sent out exactly once"
+    assert missing == 0, f"{tag} plane {plane} sb{sb_lines}: {missing} samples not sent out exactly once"
     stats["changed"] += sum(1 for y in range(H) for x in range(W) if post[y][x] != dbl[y][x])
 
 
@@ -140,8 +147,19 @@ async def one_frame(dut, tiles, tag, stats, rng):
     if not (hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc):
         stats["skipped"] += 1
         return
-    post = cdm.Cdef(hdr, state, planes).apply()
+    cd = cdm.Cdef(hdr, state, planes)
+    post = cd.apply()
     await run_frame(dut, hdr, state, planes[0], post[0], tag, stats, rng)
+    dirs = {}
+
+    def ydir(r, c):                                          # the luma direction of the 8x8 block, as the luma stage would store it
+        if (r, c) not in dirs:
+            dirs[(r, c)] = cd.direction(r, c)[0]
+        return dirs[(r, c)]
+    for plane in range(1, hdr.NumPlanes):
+        for sb in (64, 128):
+            await one_plane(dut, hdr, state, planes[plane], post[plane], sb, rng, tag, stats, plane, ydir)
+            stats["chroma_runs"] += 1
 
 
 @cocotb.test()
@@ -149,14 +167,15 @@ async def cdef_stream_vs_model(dut):
     seeds = [int(x) for x in os.environ.get("TS_SEEDS", "2,3").split(",") if x]
     W = int(os.environ.get("TS_W", "128")); H = int(os.environ.get("TS_H", "96"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("band_start", "in_valid", "in_blk", "row0", "pic_rows", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "ch", "rd_skip", "cdr_val"):
+    for s in ("band_start", "in_valid", "in_blk", "row0", "pic_rows", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "ch", "rd_skip", "cdr_val",
+              "luma", "ssx", "ssy", "mi_rows", "mi_cols", "yd"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
     rng = random.Random(1)
-    stats = dict(frames=0, runs=0, lines=0, changed=0, cycles=0, skipped=0)
+    stats = dict(frames=0, runs=0, chroma_runs=0, lines=0, changed=0, cycles=0, skipped=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     vdir = os.environ.get("TS_CDEF_VEC", "")
     if vdir:                                                 # frames dumped by a decoder test bench (cdef_vec.dump): inter frames

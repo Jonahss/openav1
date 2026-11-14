@@ -1,4 +1,6 @@
-// CDEF stage of the streaming filter chain (docs/filter-chain.md), luma plane, one superblock row (band) at a time.
+// CDEF stage of the streaming filter chain (docs/filter-chain.md) for one plane, one superblock row (band) at a time.
+// The description below is for luma (a CDEF block = 2 x 2 blocks of 4x4); a subsampled chroma plane's CDEF block is
+// one 4x4 block wide and / or high, takes the luma direction from the yd port and steps by its own size.
 // First cut: correct and simple, not yet at the planned rate (see "Rate" below).
 //
 // In: the deblock stage's output as lf_stream sends it: 4x4 blocks of the band column by column, rows -2 .. n_blk - 3
@@ -27,11 +29,14 @@ module cdef_stream
     input  logic            rst,
     input  logic [3:0]      bit_depth,
     input  cdef_hdr_t       ch,
+    input  logic            luma,            // the plane is luma: the direction is searched here; chroma takes it from yd
+    input  logic            ssx, ssy,        // chroma subsampling (0 for luma): a CDEF block is (2 >> ssx) x (2 >> ssy) 4x4 blocks
+    input  logic [MIW-1:0]  mi_rows, mi_cols,   // the picture in 4x4 luma units (skip flags are read there)
     input  logic            band_start,      // pulse while idle
-    input  logic [MIW-1:0]  row0,            // the band's first 4x4 row in the picture
-    input  logic [MIW-1:0]  pic_rows,        // the plane's 4x4 rows (MI-aligned picture height / 4)
-    input  logic [5:0]      n_blk,           // 4x4 block rows in the band (even)
-    input  logic [CW:0]     n_col,           // 4x4 block columns (even)
+    input  logic [MIW-1:0]  row0,            // the band's first 4x4 row in the plane
+    input  logic [MIW-1:0]  pic_rows,        // the plane's 4x4 rows
+    input  logic [5:0]      n_blk,           // the plane's 4x4 block rows in the band
+    input  logic [CW:0]     n_col,           // the plane's 4x4 block columns
     input  logic            first_band,
     input  logic            last_band,
     output logic            busy,
@@ -44,14 +49,25 @@ module cdef_stream
     input  logic            rd_skip,
     output logic [SBW-1:0]  cdr_row64, cdr_col64,
     input  logic [3:0]      cdr_val,         // {valid, idx}
+    // chroma: the luma direction of the 8x8 block at 4x4 luma unit (yd_row, yd_col), one clock after the address
+    output logic [MIW-1:0]  yd_row, yd_col,
+    input  logic [2:0]      yd,
+    // luma: the direction found for the block at (dw_row, dw_col), for the chroma stages
+    output logic            dw_we,
+    output logic [MIW-1:0]  dw_row, dw_col,
+    output logic [2:0]      dw_dir,
     output logic            out_valid,
-    output logic [95:0]     out_line,
-    output logic [CW-2:0]   out_c8,
+    output logic [95:0]     out_line,        // out_n4 groups of four samples from bit 0
+    output logic [1:0]      out_n4,          // 1 or 2
+    output logic [CW-1:0]   out_col,         // the segment's first 4x4 column
     output logic signed [8:0] out_y
 );
     localparam int AW = $clog2(NBMAX + 4);
     logic [3:0] cs;
     assign cs = bit_depth - 4'd8;
+    logic [1:0] bw4, bh4;                    // the plane's CDEF block in 4x4 blocks
+    assign bw4 = ssx ? 2'd1 : 2'd2;
+    assign bh4 = ssy ? 2'd1 : 2'd2;
     // ---------------------------------------------------------------- column buffers (entry = block row + 2) and carried rows
     logic [5:0]      cb_we;
     logic [AW-1:0]   cb_wa, cb_ra;
@@ -74,7 +90,7 @@ module cdef_stream
     logic [CW:0]     a_col;                  // 4x4 column arriving (n_col: all in)
     logic signed [6:0] a_row;                // its next block row
     logic [2:0]      a_slot;                 // buffer of the arriving column (a_col mod 6)
-    logic [CW:0]     p_c2;                   // 2 * (the 8x8 block column filtered next)
+    logic [CW:0]     p_c2;                   // first 4x4 column of the block column filtered next
     logic signed [6:0] a_first, a_last;      // first and last block row that arrives
     assign a_first = first_band ? 7'sd0 : -7'sd2;
     assign a_last  = last_band ? 7'(n_blk) - 7'sd1 : 7'(n_blk) - 7'sd3;
@@ -96,8 +112,10 @@ module cdef_stream
     logic [575:0]    ctxw [4];               // the window columns' carried rows
     logic signed [6:0] p_r;                  // first 4x4 row of the 8x8 block (even)
     logic signed [6:0] p_first, p_last;      // first and last 8x8 row (as its first 4x4 row)
-    assign p_first = first_band ? 7'sd0 : -7'sd4;
-    assign p_last  = last_band ? 7'(n_blk) - 7'sd2 : 7'(n_blk) - 7'sd6;
+    // a block row needs two lines of the row below it: a band's own block rows end three 4x4 rows before its last
+    // arriving row (rounded down to the block height), and the band starts where the band above stopped
+    assign p_first = first_band ? 7'sd0 : -(7'sd2 + 7'(bh4));
+    assign p_last  = last_band ? 7'(n_blk) - 7'(bh4) : (ssy ? 7'(n_blk) - 7'sd4 : 7'(n_blk) - 7'sd6);
     logic signed [6:0] ld_r;                 // the block row being loaded into the window
     logic [2:0]      ld_n;                   // rows still to load before the block can be filtered
     logic [191:0]    win [4][4];             // [row r - 1 .. r + 2][column 2C - 1 .. 2C + 2]
@@ -143,17 +161,19 @@ module cdef_stream
     logic        cidx_v;
     logic [MIW-1:0] b_mr, b_mc, b_mr1, b_mc1;    // the block's first 4x4 unit and the next (clamped to the picture)
     always_comb begin
-        b_mr = MIW'($signed({1'b0, row0}) + (MIW+1)'(p_r));
-        b_mc = MIW'(p_c2);
-        b_mr1 = (b_mr + MIW'(1) < pic_rows) ? b_mr + MIW'(1) : pic_rows - MIW'(1);
-        b_mc1 = (b_mc + MIW'(1) < MIW'(n_col)) ? b_mc + MIW'(1) : MIW'(n_col) - MIW'(1);
+        b_mr = MIW'($signed({1'b0, row0}) + (MIW+1)'(p_r)) << ssy;
+        b_mc = MIW'(p_c2) << ssx;
+        b_mr1 = (b_mr + MIW'(1) < mi_rows) ? b_mr + MIW'(1) : mi_rows - MIW'(1);
+        b_mc1 = (b_mc + MIW'(1) < mi_cols) ? b_mc + MIW'(1) : mi_cols - MIW'(1);
+        yd_row = b_mr; yd_col = b_mc;
         rd_row = sk_cnt[0] ? b_mr1 : b_mr;
         rd_col = sk_cnt[1] ? b_mc1 : b_mc;
         cdr_row64 = SBW'(b_mr >> 4); cdr_col64 = SBW'(b_mc >> 4);
     end
     logic [2:0]  s_dr; logic [11:0] s_pri, s_sec; logic [4:0] s_adjp, s_adjs; logic s_odd;
     logic [2:0]  dr_r; logic [11:0] pri_r, sec_r; logic [4:0] adjp_r, adjs_r; logic odd_r;
-    cdef_str u_str (.ch, .cs, .ssx(1'b0), .ssy(1'b0), .idx(cidx), .luma(1'b1), .ydir(dir_d), .var_i(dir_var),
+    logic [2:0]  yd_q;                       // chroma: the luma direction as read
+    cdef_str u_str (.ch, .cs, .ssx, .ssy, .idx(cidx), .luma, .ydir(luma ? dir_d : yd_q), .var_i(dir_var),
                     .dr(s_dr), .pri(s_pri), .sec(s_sec), .adjp(s_adjp), .adjs(s_adjs), .priodd(s_odd));
     // the line's neighbourhood: 5 lines x 12 columns out of the window (16 lines x 16 columns; the block starts at 4, 4)
     logic [2:0]  p_l;                        // line of the block
@@ -181,20 +201,23 @@ module cdef_stream
                              .priodd(odd_r), .v_out(row_vo), .out(row_out));
     assign row_v = (pst == P_PIX);
     // the line's position travels beside cdef_row (four clocks)
-    logic [CW-2:0]      tg_c [4];
+    logic [CW-1:0]      tg_c [4];
     logic signed [8:0]  tg_y [4];
     always_ff @(posedge clk) begin
-        tg_c[0] <= (CW-1)'(p_c2 >> 1); tg_y[0] <= 9'((p_r <<< 2)) + 9'(p_l);
+        tg_c[0] <= CW'(p_c2); tg_y[0] <= 9'((p_r <<< 2)) + 9'(p_l);
         for (int i = 1; i < 4; i++) begin tg_c[i] <= tg_c[i - 1]; tg_y[i] <= tg_y[i - 1]; end
     end
-    assign out_valid = row_vo; assign out_line = row_out; assign out_c8 = tg_c[3]; assign out_y = tg_y[3];
+    assign out_valid = row_vo; assign out_line = row_out; assign out_col = tg_c[3]; assign out_y = tg_y[3];
+    assign out_n4 = bw4;
+    // luma: the block's direction for the chroma stages, as cdef_dir delivers it
+    assign dw_we = luma && (pst == P_STR); assign dw_row = b_mr; assign dw_col = b_mc; assign dw_dir = dir_d;
 
     // ---------------------------------------------------------------- sequencing
     logic done_pend;
     logic [1:0] tail;                        // lines still inside cdef_row after the last block
     logic [2:0] wait_n;
     logic       p_can;                       // the block column's window is complete
-    assign p_can = a_act && (p_c2 < n_col) && ((a_col > p_c2 + (CW+1)'(2)) || (a_col == n_col));
+    assign p_can = a_act && (p_c2 < n_col) && ((a_col > p_c2 + (CW+1)'(bw4)) || (a_col == n_col));
     assign busy = a_act || (pst != P_IDLE) || done_pend;
     always_ff @(posedge clk) begin
         band_done <= 1'b0; dir_go <= 1'b0; ctx_we <= 1'b0;
@@ -246,7 +269,8 @@ module cdef_stream
                 P_DIRW: begin
                     if (wait_n == 3'd0) sk_all <= sk_all && rd_skip;      // the fourth flag
                     wait_n <= wait_n + 3'd1;
-                    if (dir_v) pst <= P_STR;
+                    yd_q <= yd;
+                    if (luma ? dir_v : (wait_n != 3'd0)) pst <= P_STR;
                 end
                 P_STR: begin
                     filt <= cidx_v && !sk_all;
@@ -257,11 +281,11 @@ module cdef_stream
                 end
                 P_PIX: begin
                     p_l <= p_l + 3'd1;
-                    if (p_l == 3'd7) pst <= P_NEXT;
+                    if (p_l == ((bh4 == 2'd2) ? 3'd7 : 3'd3)) pst <= P_NEXT;
                 end
                 P_NEXT: begin
                     if (p_r >= p_last) begin k_cnt <= 2'd0; ld_r <= 7'(n_blk) - 7'sd5; pst <= P_SAVE_RD; end
-                    else begin p_r <= p_r + 7'sd2; ld_n <= 3'd2; pst <= P_ROW; end
+                    else begin p_r <= p_r + 7'(bh4); ld_n <= 3'(bh4); pst <= P_ROW; end
                 end
                 // the next band's carried rows (n_blk - 5 .. n_blk - 3) of the two columns leaving the window (all four
                 // after the band's last block column); nothing to keep after the picture's last band
@@ -276,12 +300,12 @@ module cdef_stream
                 P_SAVE_WR: begin
                     if (col_ok(k_cnt)) begin ctx_we <= 1'b1; ctx_a <= CW'(p_c2 + (CW+1)'(k_cnt) - (CW+1)'(1)); end
                     k_cnt <= k_cnt + 2'd1; ld_r <= 7'(n_blk) - 7'sd5;
-                    if ((k_cnt == 2'd1 && (p_c2 + (CW+1)'(2) < n_col)) || k_cnt == 2'd3) pst <= P_DONE;
+                    if ((k_cnt == bw4 - 2'd1 && (p_c2 + (CW+1)'(bw4) < n_col)) || k_cnt == 2'd3) pst <= P_DONE;
                     else pst <= P_SAVE_RD;
                 end
                 P_DONE: begin
-                    p_c2 <= p_c2 + (CW+1)'(2);
-                    p_base <= slot_k(p_base, 2'd2);
+                    p_c2 <= p_c2 + (CW+1)'(bw4);
+                    p_base <= slot_k(p_base, bw4);
                     tail <= 2'd3;
                     pst <= P_IDLE;
                 end
