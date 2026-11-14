@@ -16,7 +16,7 @@ module dec_top
     parameter int INTER = 1,                 // 0: the intra-only build (no ref_fetch / mc_filt / warp_setup, no inter syntax): the K26 board
     parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks too (128-line window rows, deeper mode-info rings)
     parameter int CHAIN = 0,                 // 1: the streaming filter chain (rtl/fc_top.sv, docs/filter-chain.md) filters each superblock row and writes the
-                                             //    final picture into fb2; the frame-wide stages below stay idle. Pipelined frames only, no super-resolution yet
+                                             //    final picture into fb2; the frame-wide stages below stay idle. Pipelined frames only
     parameter int TE = 1,                     // tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
                                              //    phase); fb1 / fb2 are left out, so only the core build (no CDEF / LR / SR) can use it
     parameter int REF_RING = 16              // ref_fetch line buffers (recon_top REF_RING; the U200 build's U200_REF_RING)
@@ -631,7 +631,7 @@ module dec_top
                                                   || 32'(n_tile_cols) > TE)) win_unsup <= 1'b1;   // more tile columns than engines
         // (a core build asked for CDEF / LR is the host software's business: HostDecoder.check_core_build; an RTL flag here
         // broke the core build's lf-stage suites on 2026-10-24, whose frames carry CDEF headers the host never starts)
-        else if ((CHAIN != 0) && tile_busy && (hdr.use_superres || !pipe_en)) win_unsup <= 1'b1;   // the chain has no upscaler yet and runs only under the frame sequencer
+        else if ((CHAIN != 0) && tile_busy && !pipe_en) win_unsup <= 1'b1;   // the chain runs only under the frame sequencer
         else if (RING && (FRAME_WIN > 0) && tile_busy && pipe_en && (32'(FRAME_WIN) < 3 + 32'(cdef_en) + 32'(lr_en)))
             win_unsup <= 1'b1;                                   // the fb0 ring is too shallow for the stages in flight: recon(r), LF(r-1),
                                                                  // CDEF(r-2), LR(r-3) and the hold slot would deadlock (2026-10-24, WIN 3 + CDEF + LR)

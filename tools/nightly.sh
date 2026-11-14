@@ -145,6 +145,8 @@ ARGON=$PWD/streams/argon/profile0_core/streams
 if [ -d "$ARGON" ]; then
   AIVFS=$(for s in 4592 8304 5297 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
   runsh argon_features   TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
+  # the same feature streams under the frame sequencer with the streaming filter chain (super-resolution through the chain's upscaler)
+  runsh argon_chain      CHAIN=1 TS_PIPE=1 TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
   # inter frames through the RTL tile syntax vs the model (the frame sequence: inherited CDFs, segmentation map, motion field)
   IIVFS=$(for s in 10046 10001 10041; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
   run tile_syntax_inter  TS_IVF="$IIVFS" python tb/runner.py tile_syntax
