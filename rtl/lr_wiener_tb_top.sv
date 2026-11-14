@@ -17,5 +17,8 @@ module lr_wiener_tb_top #(
         lr_wiener_h #(.N(N)) u_h (.clk, .rst, .v_in, .bd, .coef(hcoef), .px(px[r * (N + 6) * 12 +: (N + 6) * 12]),
                                   .v_out(hv_v[r]), .out(hv[r * N * 21 +: N * 21]));
     end endgenerate
-    lr_wiener_v #(.N(N)) u_v (.clk, .rst, .v_in(hv_v[0]), .bd, .coef(vcoef), .hv, .v_out, .out);
+    // the vertical coefficients travel with the line through the horizontal pass (two clocks)
+    logic [20:0] vc1, vc2;
+    always_ff @(posedge clk) begin vc1 <= vcoef; vc2 <= vc1; end
+    lr_wiener_v #(.N(N)) u_v (.clk, .rst, .v_in(hv_v[0]), .bd, .coef(vc2), .hv, .v_out, .out);
 endmodule

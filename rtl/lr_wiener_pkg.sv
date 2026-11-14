@@ -5,6 +5,8 @@
 //   lr_wiener_v : N positions: 7 intermediate lines -> N samples, two clocks.
 // Coefficients as the block records carry them: three signed 7-bit values c0, c1, c2 for taps 0 / 6, 1 / 5, 2 / 4;
 // tap 3 is 128 - 2 (c0 + c1 + c2). Rounding by bit depth: InterRound0 = 3 (5 at 12 bits), InterRound1 = 11 (9).
+// The coefficients are taken with the line (v_in); the bit depth is read in both stages and must not change while
+// lines are inside (it is a property of the frame).
 package lr_wiener_pkg;
     function automatic logic signed [9:0] wcoef(input logic [20:0] c3, input logic [2:0] t);
         logic signed [6:0] c0, c1, c2;

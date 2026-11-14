@@ -26,7 +26,7 @@ async def lr_wiener_vs_model(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk); await Timer(1, "ns")
-    expect = []; seen = [0]
+    expect = []; seen = [0]; last_bd = [0]
     stats = dict(blocks=0, lines=0, changed=0, stripe_edge=0, plane_edge=0, clamped_out=0)
 
     async def monitor():
@@ -62,6 +62,10 @@ async def lr_wiener_vs_model(dut):
             m.block(0, row, col + b)
         x, y = col * 4, row * 4
         pk = lambda c3: sum((v & 0x7F) << (7 * i) for i, v in enumerate(c3))
+        if bd != last_bd[0]:                                 # the bit depth belongs to the frame: let the lines inside leave first
+            dut.v_in.value = 0
+            await ClockCycles(dut.clk, 6); await Timer(1, "ns")
+            last_bd[0] = bd
         dut.bd.value = bd; dut.hcoef.value = pk(hc); dut.vcoef.value = pk(vc)
         stats["blocks"] += 1
         stats["stripe_edge"] += (y - 3 < m.StripeStartY) or (y + 6 > m.StripeEndY)
