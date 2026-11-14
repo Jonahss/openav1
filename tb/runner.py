@@ -31,6 +31,11 @@ EXTRA = {"fc_lfifo": [], "fc_out": ["fc_lfifo.sv"], "fc_rstore": ["blk_tables_pk
          "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lf_top.sv"],
          "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lr_top.sv"],
          "cdef_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "cdef_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "cdef_top.sv"]}
+if os.environ.get("CHAIN"):                                     # the streaming filter chain inside the decoder (dec_top CHAIN)
+    EXTRA["dec_top"] = EXTRA["dec_top"] + [f for f in ("lf_cbuf.sv", "lf_filt.sv", "lf_edge.sv", "lf_feed.sv", "lf_stream.sv", "cdef_dir.sv", "cdef_str.sv",
+                                                         "cdef_row.sv", "cdef_stream.sv", "lr_wiener_pkg.sv", "lr_wiener_h.sv", "lr_wiener_v.sv", "lr_sgr_ab.sv",
+                                                         "lr_sgr_f.sv", "lr_stream.sv", "lr_bstore.sv", "fc_lfifo.sv", "fc_plane.sv", "fc_top.sv", "fc_rstore.sv",
+                                                         "fc_out.sv") if f not in EXTRA["dec_top"]]
 EXTRA["dec_host"] = EXTRA["dec_top"] + ["dec_top.sv"]          # the AXI-Lite host interface around the decoder
 sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{top}.sv"]
 # frame-buffer / per-4x4 state capacity for the frame-level tops (dec_top, *_tb_top): FBX/FBY = log2 pixels,
@@ -65,6 +70,8 @@ if top == "dec_host" and os.environ.get("FIFO_LW"):
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN"):
     params["FRAME_WIN"] = int(os.environ["FRAME_WIN"])
 # TE=N: N tile engines (the tile columns of a tile row decoded at once, rtl/tile_engines.sv)
+if top in ("dec_top", "dec_host") and os.environ.get("CHAIN"):
+    params["CHAIN"] = int(os.environ["CHAIN"])
 if top in ("dec_top", "dec_host") and os.environ.get("TE"):
     params["TE"] = int(os.environ["TE"])
 if top in ("lf_filt", "lf_stream") and os.environ.get("LF_CHROMA_ONLY") == "1":   # the chroma-only build of the deblock filter / stage

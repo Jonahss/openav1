@@ -434,6 +434,8 @@ async def rtl_only_stream(dut, path, stats):
                     buf = 1
                 if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
                     buf = 2
+                if os.environ.get("CHAIN"):                    # the streaming filter chain writes the final picture into fb2, whatever is enabled
+                    buf = 2
                 dut.pipe_en.value = 0
             # in-loop filters, driven by the frame header alone (host-driven mode)
             if not PIPE:

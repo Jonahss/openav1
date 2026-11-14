@@ -15,6 +15,8 @@ module dec_top
     parameter int FRAME_WIN2 = -1,           //   picture; -1: no fb1 / fb2 at all, the core build); fb2 (LrFrame) likewise (docs/picture-memory.md)
     parameter int INTER = 1,                 // 0: the intra-only build (no ref_fetch / mc_filt / warp_setup, no inter syntax): the K26 board
     parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks too (128-line window rows, deeper mode-info rings)
+    parameter int CHAIN = 0,                 // 1: the streaming filter chain (rtl/fc_top.sv, docs/filter-chain.md) filters each superblock row and writes the
+                                             //    final picture into fb2; the frame-wide stages below stay idle. Pipelined frames only, no super-resolution yet
     parameter int TE = 1,                     // tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
                                              //    phase); fb1 / fb2 are left out, so only the core build (no CDEF / LR / SR) can use it
     parameter int REF_RING = 16              // ref_fetch line buffers (recon_top REF_RING; the U200 build's U200_REF_RING)
@@ -268,8 +270,26 @@ module dec_top
                                             .m_axi_araddr(rf_araddr), .m_axi_arlen(rf_arlen), .m_axi_arsize(rf_arsize), .m_axi_arburst(rf_arburst), .m_axi_arcache(rf_arcache), .m_axi_arprot(rf_arprot),
                                             .m_axi_arvalid(rf_arvalid), .m_axi_arready(rf_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(rf_rvalid), .m_axi_rready(rf_rready));
 
+    // ---- the streaming filter chain's side of the shared stores (CHAIN; the chain itself is instantiated after the frame sequencer)
+    localparam int FCW = FBX - 2;
+    logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+    logic [2:0][1:0]     fc_txr_plane, fc_lrr_plane;
+    logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
+    logic                fc_lf_busy, fc_lf_done;             // the chain as the sequencer's per-row stage
+    logic [1:0]          fo_we; logic [1:0][1:0] fo_plane; logic [1:0][FBX-1:0] fo_x; logic [1:0][FBY-1:0] fo_y; logic [1:0][47:0] fo_d;   // its two writes into fb2
+    logic [MIW-1:0] o_rd_row, o_rd_col, o_txr_row, o_txr_col, o_cd_rd_row, o_cd_rd_col; logic [1:0] o_txr_plane, o_lrr_plane;   // the frame-wide stages' reads
+    logic [SBW-1:0] o_cdr_row64, o_cdr_col64, o_lrr_row, o_lrr_col;
+    logic           o_lf_busy, o_lf_done;
     // per-4x4 state + deblocking filter; the filter owns the frame buffer port while it runs
     logic [MIW-1:0] rd_row, rd_col, txr_row, txr_col; mi_lf_t rd_info; logic [1:0] txr_plane; logic [4:0] txr_sz;
+    logic [1:0] lrr_plane; logic [SBW-1:0] lrr_row, lrr_col;
+    // the store's readers: the frame-wide stages, or the chain's luma plane (its chroma planes read two more stores, below)
+    assign rd_row = (CHAIN != 0) ? fc_rd_row[0] : o_rd_row;         assign rd_col = (CHAIN != 0) ? fc_rd_col[0] : o_rd_col;
+    assign txr_plane = (CHAIN != 0) ? fc_txr_plane[0] : o_txr_plane; assign txr_row = (CHAIN != 0) ? fc_txr_row[0] : o_txr_row; assign txr_col = (CHAIN != 0) ? fc_txr_col[0] : o_txr_col;
+    assign cd_rd_row = (CHAIN != 0) ? fc_rd2_row[0] : o_cd_rd_row;  assign cd_rd_col = (CHAIN != 0) ? fc_rd2_col[0] : o_cd_rd_col;
+    assign cdr_row64 = (CHAIN != 0) ? fc_cdr_row64[0] : o_cdr_row64; assign cdr_col64 = (CHAIN != 0) ? fc_cdr_col64[0] : o_cdr_col64;
+    assign lrr_plane = (CHAIN != 0) ? fc_lrr_plane[0] : o_lrr_plane; assign lrr_row = (CHAIN != 0) ? fc_lrr_row[0] : o_lrr_row; assign lrr_col = (CHAIN != 0) ? fc_lrr_col[0] : o_lrr_col;
+    assign lf_busy = (CHAIN != 0) ? fc_lf_busy : o_lf_busy;         assign lf_done = (CHAIN != 0) ? fc_lf_done : o_lf_done;
     // the per-4x4 filter state (and CDEF indices, LR units) is a ring of 2^ML2R MI rows: every row the fb0 ring can hold
     // live (FRAME_WIN superblock rows of 16: recon(r) down to LR(r-3)'s stripe) must fit, or recon overwrites the row LR
     // is reading (2026-10-24: 64 MI rows with a 5-row ring lost row 0's LR units to row 4)
@@ -284,28 +304,28 @@ module dec_top
     logic lf_go, cd_go, sr_go, lr_go, lf_start_i, cdef_start_i, sr_start_i, lr_start_i, sr_buf_i, lr_from_deblocked_i;
     logic [SBW-1:0] lf_next, cd_next, sr_next, lr_next;   // next superblock row (stripe for LR) each stage will process
     logic [PXW-1:0] lr_ly0, lr_ly1;
-    assign lf_start_i = pipe_en ? lf_go : lf_start; assign cdef_start_i = pipe_en ? cd_go : cdef_start;
-    assign sr_start_i = pipe_en ? sr_go : sr_start; assign lr_start_i = pipe_en ? lr_go : lr_start;
+    assign lf_start_i = (CHAIN != 0) ? 1'b0 : pipe_en ? lf_go : lf_start; assign cdef_start_i = (CHAIN != 0) ? 1'b0 : pipe_en ? cd_go : cdef_start;
+    assign sr_start_i = (CHAIN != 0) ? 1'b0 : pipe_en ? sr_go : sr_start; assign lr_start_i = (CHAIN != 0) ? 1'b0 : pipe_en ? lr_go : lr_start;
     logic lf_re, lf_we; logic [1:0] lf_plane; logic [FBX-1:0] lf_x; logic [FBY-1:0] lf_y; logic [11:0] lf_wdata;
     logic lf4_we; logic [FBX-1:0] lf4_x; logic [FBY-1:0] lf4_y; logic [47:0] lf4_wdata;
-    lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start(lf_start_i), .row_first(lf_row_first), .row_last(lf_row_last), .busy(lf_busy), .done(lf_done),
-                                         .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
+    lf_top #(.FBX(FBX), .FBY(FBY)) u_lf (.clk, .rst, .hdr, .lh, .start(lf_start_i), .row_first(lf_row_first), .row_last(lf_row_last), .busy(o_lf_busy), .done(o_lf_done),
+                                         .rd_row(o_rd_row), .rd_col(o_rd_col), .rd_info, .txr_plane(o_txr_plane), .txr_row(o_txr_row), .txr_col(o_txr_col), .txr_sz,
                                          .fb_re(lf_re), .fb_we(lf_we), .fb_plane(lf_plane), .fb_x(lf_x), .fb_y(lf_y), .fb_wdata(lf_wdata), .fb_rdata(lf_rdata),
                                          .fb_rdata4(lf_rdata4), .fb4_we(lf4_we), .fb4_x(lf4_x), .fb4_y(lf4_y), .fb4_wdata(lf4_wdata));
     // CDEF: reads the deblocked frame (fb0, shared port while cdef_busy), writes CdefFrame (fb1)
     logic cd_re, cd_we; logic [1:0] cd_plane, cd_dplane; logic [FBX-1:0] cd_x, cd_dx; logic [FBY-1:0] cd_y, cd_dy; logic [11:0] cd_wdata;
     logic cd4_we; logic [1:0] cd4_plane; logic [FBX-1:0] cd4_x; logic [FBY-1:0] cd4_y; logic [47:0] cd4_wdata;
     cdef_top #(.FBX(FBX), .FBY(FBY)) u_cdef (.clk, .rst, .hdr, .ch, .start(cdef_start_i), .row_first(cd_row_first), .row_last(cd_row_last), .busy(cdef_busy), .done(cdef_done),
-                                             .rd_row(cd_rd_row), .rd_col(cd_rd_col), .rd_info(cd_rd_info), .cdr_row64, .cdr_col64, .cdr_val,
+                                             .rd_row(o_cd_rd_row), .rd_col(o_cd_rd_col), .rd_info(cd_rd_info), .cdr_row64(o_cdr_row64), .cdr_col64(o_cdr_col64), .cdr_val,
                                              .src_re(cd_re), .src_plane(cd_plane), .src_x(cd_x), .src_y(cd_y), .src_rdata(cd_rdata), .src_rdata4(cd_rdata4),
                                              .dst4_we(cd4_we), .dst4_plane(cd4_plane), .dst4_x(cd4_x), .dst4_y(cd4_y), .dst4_wdata(cd4_wdata),
                                              .dst_we(cd_we), .dst_plane(cd_dplane), .dst_x(cd_dx), .dst_y(cd_dy), .dst_wdata(cd_wdata));
 
     // loop restoration: reads fb0 (deblocked) and fb1 (CdefFrame) while lr_busy, writes fb2 (LrFrame)
-    logic [1:0] lrr_plane; logic [SBW-1:0] lrr_row, lrr_col; lr_rec_t lrr_rec;
+    lr_rec_t lrr_rec;
     logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata; logic lr_we4; logic [3:0] lr_be4; logic [47:0] lr_wdata4, lr0_rdata4, lr1_rdata4;
     lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start(lr_start_i), .ly_first(lr_ly_first), .ly_last(lr_ly_last), .busy(lr_busy), .done(lr_done_o),
-                                         .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
+                                         .lrr_plane(o_lrr_plane), .lrr_row(o_lrr_row), .lrr_col(o_lrr_col), .lrr_rec,
                                          .s0_re(lr_s0_re), .s1_re(lr_s1_re), .s_plane(lr_splane), .s_x(lr_sx), .s_y(lr_sy), .s0_rdata(lr0_rdata), .s0_rdata4(lr0_rdata4),
                                          .s1_rdata(lr_from_deblocked_i ? lr0_rdata : lr1_rdata), .s1_rdata4(lr_from_deblocked_i ? lr0_rdata4 : lr1_rdata4),
                                          .d4_we(lr_we4), .d4_be(lr_be4), .d4_wdata(lr_wdata4),
@@ -388,7 +408,7 @@ module dec_top
             .rdata(fb0_rdata[23:0]), .rdata4(fb0_rdata4[95:0]),
             .we(fb0_we[1:0]), .w_be(fb0_be[7:0]), .w_plane(fb0_wplane[3:0]), .w_x(fb0_wx[2*FBX-1:0]), .w_y(fb0_wy[2*FBY-1:0]), .w_data(fb0_wdata[95:0]),
             .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40), .h_ok(h_ok0));
-        if (RING) begin : g_mirror
+        if (RING && CHAIN == 0) begin : g_mirror
             logic [23:0] m_rdata, s_rdata; logic [95:0] m_rdata4, s_rdata4;
             logic [11:0] unused_hm; logic [47:0] unused_hm4; logic unused_hokm;
             frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN), .SB128(SB128)) u_fbm (.clk, .clk2x, .phase, .sb128(hdr.sb128),
@@ -439,7 +459,7 @@ module dec_top
                                                  .we(w_sr1_we), .be(w_sr1_be), .plane(w_sr1_pl), .x(w_sr1_x), .y(w_sr1_y), .data(w_sr1_d));
     assign fb1_we = {w_sr1_we, w_cd_we}; assign fb1_be = {w_sr1_be, w_cd_be}; assign fb1_wplane = {w_sr1_pl, w_cd_pl};
     assign fb1_wx = {w_sr1_x, w_cd_x}; assign fb1_wy = {w_sr1_y, w_cd_y}; assign fb1_wdata = {w_sr1_d, w_cd_d};
-    generate if (FRAME_URAM != 0 && FRAME_WIN1 < 0) begin : g_fb1_none
+    generate if (FRAME_URAM != 0 && (FRAME_WIN1 < 0 || CHAIN != 0)) begin : g_fb1_none
         assign fb1_rdata = '0; assign fb1_rdata4 = '0; assign h_rdata1 = '0; assign h_rdata41 = '0; assign h_ok1 = 1'b1;
     end else if (FRAME_URAM != 0) begin : g_fb1_uram
         // the CDEF frame as an UltraRAM ring (docs/picture-memory.md, step A): readers LR source 1 and SR, writers CDEF and SR
@@ -456,18 +476,26 @@ module dec_top
     logic [11:0] fb2_rdata_u; logic [47:0] fb2_rdata4_u;
     logic w_lr_we; logic [3:0] w_lr_be; logic [1:0] w_lr_pl; logic [FBX-1:0] w_lr_x; logic [FBY-1:0] w_lr_y; logic [47:0] w_lr_d;
     assign w_lr_we = lr_we4; assign w_lr_be = lr_be4; assign w_lr_pl = lr_dplane; assign w_lr_x = lr_dx; assign w_lr_y = lr_dy; assign w_lr_d = lr_wdata4;
+    // the ring's two write ports: restoration's on port 0, or the chain's two (fc_out)
+    logic [1:0] lrf_we; logic [7:0] lrf_be; logic [3:0] lrf_pl; logic [2*FBX-1:0] lrf_x; logic [2*FBY-1:0] lrf_y; logic [95:0] lrf_d;
+    assign lrf_we = (CHAIN != 0) ? fo_we : {1'b0, w_lr_we};
+    assign lrf_be = (CHAIN != 0) ? {{4{fo_we[1]}}, {4{fo_we[0]}}} : {4'd0, w_lr_be};
+    assign lrf_pl = (CHAIN != 0) ? {fo_plane[1], fo_plane[0]} : {2'd0, w_lr_pl};
+    assign lrf_x  = (CHAIN != 0) ? {fo_x[1], fo_x[0]} : {FBX'(0), w_lr_x};
+    assign lrf_y  = (CHAIN != 0) ? {fo_y[1], fo_y[0]} : {FBY'(0), w_lr_y};
+    assign lrf_d  = (CHAIN != 0) ? {fo_d[1], fo_d[0]} : {48'd0, w_lr_d};
     generate if (FRAME_URAM != 0 && FRAME_WIN2 < 0) begin : g_fb2_none
         assign fb2_rdata_u = '0; assign fb2_rdata4_u = '0; assign h_rdata2 = '0; assign h_rdata42 = '0; assign h_ok2 = 1'b1;
     end else if (FRAME_URAM != 0) begin : g_fb2_uram
         // the LR frame as an UltraRAM ring: one writer (LR), no decoder-side reader, so the host port is always served
         frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN2), .SB128(SB128)) u_fb2 (.clk, .clk2x, .phase, .sb128(hdr.sb128),
             .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata({fb2_rdata4_u[11:0], fb2_rdata_u}), .rdata4(),
-            .we({1'b0, w_lr_we}), .w_be({4'd0, w_lr_be}), .w_plane({2'd0, w_lr_pl}), .w_x({FBX'(0), w_lr_x}), .w_y({FBY'(0), w_lr_y}), .w_data({48'd0, w_lr_d}),
+            .we(lrf_we), .w_be(lrf_be), .w_plane(lrf_pl), .w_x(lrf_x), .w_y(lrf_y), .w_data(lrf_d),
             .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42), .h_ok(h_ok2));
         assign fb2_rdata4_u[47:12] = '0;
     end else begin : g_fb2_model
-        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(fb2_rdata_u), .rdata4(fb2_rdata4_u),
-                                                                            .we(w_lr_we), .w_be(w_lr_be), .w_plane(w_lr_pl), .w_x(w_lr_x), .w_y(w_lr_y), .w_data(w_lr_d),
+        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(fb2_rdata_u), .rdata4(fb2_rdata4_u),
+                                                                            .we(lrf_we), .w_be(lrf_be), .w_plane(lrf_pl), .w_x(lrf_x), .w_y(lrf_y), .w_data(lrf_d),
                                                                             .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42), .h_ok(h_ok2));
     end endgenerate
     assign h_ok     = (h_buf == 2'd3) ? h_ok3     : (h_buf == 2'd2) ? h_ok2     : (h_buf == 2'd1) ? h_ok1     : h_ok0;
@@ -497,9 +525,12 @@ module dec_top
     // frame geometry and stage enables follow the live header (the host loads it with the first tile, after frame_start)
     assign n_rows = SBW'((hdr.mi_rows + (MIW'(1) << sb_shift) - MIW'(1)) >> sb_shift);
     assign n_stripes = SBW'(((hdr.frame_height + PXW'(7)) >> 6) + PXW'(1));
-    assign cdef_en = hdr.enable_cdef && !hdr.coded_lossless && !hdr.allow_intrabc;
-    assign sr_en = hdr.use_superres;
-    assign lr_en = (hdr.lr_type[1:0] != 2'd0) || (!hdr.mono && ((hdr.lr_type[3:2] != 2'd0) || (hdr.lr_type[5:4] != 2'd0)));
+    // under CHAIN the chain is the one per-row stage (in LF's place: lf_next, lf_go, lf_done) and holds all the filters
+    logic        fc_cdef_on;
+    assign fc_cdef_on = hdr.enable_cdef && !hdr.coded_lossless && !hdr.allow_intrabc;
+    assign cdef_en = (CHAIN == 0) && fc_cdef_on;
+    assign sr_en = (CHAIN == 0) && hdr.use_superres;
+    assign lr_en = (CHAIN == 0) && ((hdr.lr_type[1:0] != 2'd0) || (!hdr.mono && ((hdr.lr_type[3:2] != 2'd0) || (hdr.lr_type[5:4] != 2'd0))));
     logic [SBW-1:0]  tile_row_prev; logic tile_row_valid;
     logic        sb_pop; logic [SBW-1:0] sb_pop_row;
     assign sb_shift = hdr.sb128 ? 5'd5 : 5'd4;
@@ -510,7 +541,7 @@ module dec_top
         lr_rows_done = (lr_next == SBW'(0)) ? SBW'(0) : SBW'((32'(lr_next) * 64 - 8) >> (hdr.sb128 ? 7 : 6));
         lr_row_cur   = SBW'((32'(lr_next) * 64 + 55) >> (hdr.sb128 ? 7 : 6));
     end
-    logic           hold_rc, hold_cd, hold_lr, hold_sr;      // slot-reuse holds (assigned below)
+    logic           hold_rc, hold_cd, hold_lr, hold_sr, hold_fc, hold_rs;   // slot-reuse holds (assigned below)
     // A superblock event held back from the reconstruction stage by the window (hold_rc, below) still marks the end
     // of the previous row once reconstruction has finished its last block: the hold waits for a flush that waits
     // for the filter that waits for this row count (2026-10-14: a deadlock at the first held row otherwise). The
@@ -531,7 +562,7 @@ module dec_top
     logic [SBW-1:0] fb0_free, fb1_free, fb2_free, fbs_free;                 // registered copies of the *_c below
     logic [SBW-1:0] fb0_free_c, fb1_free_c, fb2_free_c, fbs_free_c, rel_upto_c;
     // the final picture: LrFrame, else CdefFrame, else (RING build, super-res) SR's upscaled rows in fb0s, else fb0
-    assign final_buf = lr_en ? 2'd2 : cdef_en ? 2'd1 : (RING && sr_en) ? 2'd3 : 2'd0;
+    assign final_buf = (CHAIN != 0) ? 2'd2 : lr_en ? 2'd2 : cdef_en ? 2'd1 : (RING && sr_en) ? 2'd3 : 2'd0;   // (the chain writes fb2 whatever is enabled)
     function automatic logic [SBW-1:0] minr(input logic [SBW-1:0] a, input logic [SBW-1:0] b); return (a < b) ? a : b; endfunction
     function automatic logic [SBW-1:0] dec1(input logic [SBW-1:0] a); return (a == SBW'(0)) ? SBW'(0) : a - SBW'(1); endfunction
     always_comb begin
@@ -541,6 +572,8 @@ module dec_top
         if (sr_en)   fb0_free_c = minr(fb0_free_c, sr_next);
         if (lr_en)   fb0_free_c = minr(fb0_free_c, (lr_next >= n_stripes) ? n_rows : lr_rows_done);
         if (final_buf == 2'd0) fb0_free_c = minr(fb0_free_c, flushed_cnt);
+        // the chain leaves fb0 as reconstructed; intra block copy reads the rows that left fb0 from DDR, so they must be flushed
+        if (CHAIN != 0 && hdr.allow_intrabc) fb0_free_c = minr(fb0_free_c, flushed_cnt);
         fb1_free_c = n_rows;
         if (sr_en)   fb1_free_c = minr(fb1_free_c, sr_next);
         if (lr_en)   fb1_free_c = minr(fb1_free_c, (lr_next >= n_stripes) ? n_rows : lr_rows_done);
@@ -566,8 +599,15 @@ module dec_top
         if (rst || frame_start) begin fb0_free <= '0; fb1_free <= '0; fb2_free <= '0; fbs_free <= '0; rel_upto <= '0; end
         else begin fb0_free <= fb0_free_c; fb1_free <= fb1_free_c; fb2_free <= fb2_free_c; fbs_free <= fbs_free_c; rel_upto <= rel_upto_c; end
     end
-    assign hold_rc = (FRAME_WIN > 0) && ev_valid && (ev_kind == 2'd2) && (32'(sb_pop_row) >= FRAME_WIN)
-                     && (32'(sb_pop_row) - FRAME_WIN >= 32'(fb0_free));
+    // the chain's row store keeps 64 luma 4x4 rows (4 superblock rows of 64 lines, 2 of 128): reconstruction may not
+    // start row R before the chain has read row R - 4 (R - 2), i.e. finished that band; and the chain may not start band
+    // r (which writes rows r - 1 and r of fb2) before fb2's row r - FRAME_WIN2 is flushed
+    logic [31:0] rs_rows;
+    assign rs_rows = hdr.sb128 ? 32'd2 : 32'd4;
+    assign hold_rs = (CHAIN != 0) && ev_valid && (ev_kind == 2'd2) && (32'(sb_pop_row) >= rs_rows) && (32'(sb_pop_row) - rs_rows >= 32'(lf_next));
+    assign hold_fc = (CHAIN != 0) && (FRAME_URAM != 0) && (FRAME_WIN2 > 0) && (32'(lf_next) >= FRAME_WIN2) && (32'(lf_next) - FRAME_WIN2 >= 32'(fb2_free));
+    assign hold_rc = ((FRAME_WIN > 0) && ev_valid && (ev_kind == 2'd2) && (32'(sb_pop_row) >= FRAME_WIN)
+                      && (32'(sb_pop_row) - FRAME_WIN >= 32'(fb0_free))) || hold_rs;
     assign hold_cd = (FRAME_URAM != 0) && (FRAME_WIN1 > 0) && (32'(cd_next) >= FRAME_WIN1) && (32'(cd_next) - FRAME_WIN1 >= 32'(fb1_free));
     assign hold_lr = (FRAME_URAM != 0) && (FRAME_WIN2 > 0) && (32'(lr_row_cur) >= FRAME_WIN2) && (32'(lr_row_cur) - FRAME_WIN2 >= 32'(fb2_free));
     assign hold_sr = RING && (FRAME_WIN1 > 0) && (32'(sr_next) >= FRAME_WIN1) && (32'(sr_next) - FRAME_WIN1 >= 32'(fbs_free));
@@ -591,6 +631,7 @@ module dec_top
                                                   || 32'(n_tile_cols) > TE)) win_unsup <= 1'b1;   // more tile columns than engines
         // (a core build asked for CDEF / LR is the host software's business: HostDecoder.check_core_build; an RTL flag here
         // broke the core build's lf-stage suites on 2026-10-24, whose frames carry CDEF headers the host never starts)
+        else if ((CHAIN != 0) && tile_busy && (hdr.use_superres || !pipe_en)) win_unsup <= 1'b1;   // the chain has no upscaler yet and runs only under the frame sequencer
         else if (RING && (FRAME_WIN > 0) && tile_busy && pipe_en && (32'(FRAME_WIN) < 3 + 32'(cdef_en) + 32'(lr_en)))
             win_unsup <= 1'b1;                                   // the fb0 ring is too shallow for the stages in flight: recon(r), LF(r-1),
                                                                  // CDEF(r-2), LR(r-3) and the hold slot would deadlock (2026-10-24, WIN 3 + CDEF + LR)
@@ -636,7 +677,7 @@ module dec_top
     logic [SBW-1:0] lr_row;                                   // superblock row holding the stripe's last line
     always_comb begin
         logic [SBW-1:0] r;
-        r = lf_next; lf_ok = (r < n_rows) && row_dec(r) && !mi_blk_busy && !mi_tx_busy;
+        r = lf_next; lf_ok = (r < n_rows) && row_dec(r) && !mi_blk_busy && !mi_tx_busy && !hold_fc;
         r = cd_next; cd_ok = cdef_en && (r < n_rows) && (lf_next > r) && ((r + SBW'(1) >= n_rows) || (lf_next > r + SBW'(1))) && !hold_cd;
         r = sr_next; sr_ok = sr_en && (r < n_rows) && (cdef_en ? ((cd_next > r) && ((r + SBW'(1) >= n_rows) || (cd_next > r + SBW'(1))))
                                                             : ((lf_next > r) && ((r + SBW'(1) >= n_rows) || (lf_next > r + SBW'(1))))) && !hold_sr;
@@ -687,6 +728,84 @@ module dec_top
         end
     end
 
+    // ================================================================ the streaming filter chain (CHAIN)
+    // Band r = superblock row r, started by the sequencer's lf_go when row r is reconstructed. The chain reads the row's
+    // 4x4 blocks from its row store (a mirror of reconstruction's writes), the mode info from three stores written
+    // alike (its planes read at the same time), and writes the final line segments into fb2 through fc_out. The band's
+    // output ends 19 lines above the band's end, so row r - 1 is final when band r is done: the sequencer's rule for
+    // a deblock-only frame (rel_upto_c), with fb2 as the flushed buffer.
+    if (CHAIN != 0) begin : g_chain
+        logic [2:0]            fc_lf_on;
+        logic                  fcb_busy, fcb_done, fc_ovf, fo_busy, fo_ovf, fc_dn_l;
+        logic [2:0]            bk_re, rd2_skip, fc_out_valid, fc_out_hold;
+        logic [2:0][5:0]       bk_row;
+        logic [2:0][FCW-1:0]   bk_col, fc_out_col;
+        logic [2:0][191:0]     bk_data;
+        mi_lf_t [2:0]          fc_rd_info;
+        logic [2:0][4:0]       fc_txr_sz;
+        logic [2:0][3:0]       fc_cdr_val;
+        lr_rec_t [2:0]         fc_lrr_rec;
+        logic [2:0][95:0]      fc_out_line;
+        logic [2:0][1:0]       fc_out_n4;
+        logic signed [2:0][8:0] fc_out_y;
+        logic [5:0]            fc_n_blk;
+        logic [2:0][FBY-1:0]   fc_y0;
+        logic                  lf_frame_on;
+        always_comb begin
+            lf_frame_on = (lh.level[5:0] != 6'd0) || (lh.level[11:6] != 6'd0);                // 7.14.1
+            fc_lf_on = {lf_frame_on && (lh.level[23:18] != 6'd0), lf_frame_on && (lh.level[17:12] != 6'd0), lf_frame_on};
+            fc_n_blk = 6'(lf_row_last - lf_row_first + MIW'(1));
+            fc_y0[0] = FBY'({lf_row_first, 2'b00});
+            fc_y0[1] = FBY'({lf_row_first >> hdr.ssy, 2'b00});
+            fc_y0[2] = fc_y0[1];
+        end
+        // plane 0 reads the decoder's own store (u_mi); planes 1 and 2 two more, written alike
+        assign fc_rd_info[0] = rd_info; assign fc_txr_sz[0] = txr_sz; assign rd2_skip[0] = cd_rd_info.skip;
+        assign fc_cdr_val[0] = cdr_val; assign fc_lrr_rec[0] = lrr_rec;
+        for (genvar p = 1; p < 3; p++) begin : g_mi
+            logic b_busy_u, t_busy_u; mi_lf_t rd2_u; logic [3:0] cdr_u;
+            mi_store #(.ML2R(FRAME_WIN > 0 ? $clog2(FRAME_WIN * (SB128 != 0 ? 32 : 16)) : FBY - 2), .ML2C(FBX - 2)) u_mi (.clk, .rst,
+                .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(b_busy_u),
+                .tx_we(mi_tx_we), .tx_plane(mi_tx_plane), .tx_row(mi_tx_row), .tx_col(mi_tx_col), .tx_w4(mi_tx_w4), .tx_h4(mi_tx_h4), .tx_sz(mi_tx_sz), .tx_busy(t_busy_u),
+                .rd_row(fc_rd_row[p]), .rd_col(fc_rd_col[p]), .rd_info(fc_rd_info[p]), .rd2_row(MIW'(0)), .rd2_col(MIW'(0)), .rd2_info(rd2_u),
+                .txr_plane(fc_txr_plane[p]), .txr_row(fc_txr_row[p]), .txr_col(fc_txr_col[p]), .txr_sz(fc_txr_sz[p]),
+                .cd_clr(1'b0), .cd_we(1'b0), .cd_row64(SBW'(0)), .cd_col64(SBW'(0)), .cd_sb128(1'b0), .cd_mask(4'd0), .cd_idx(3'd0),
+                .cdr_row64(SBW'(0)), .cdr_col64(SBW'(0)), .cdr_val(cdr_u),
+                .lr_we(lr_done), .lr_rec, .lrr_plane(fc_lrr_plane[p]), .lrr_row(fc_lrr_row[p]), .lrr_col(fc_lrr_col[p]), .lrr_rec(fc_lrr_rec[p]));
+            assign rd2_skip[p] = 1'b0; assign fc_cdr_val[p] = 4'd0;           // a chroma plane's CDEF takes luma's record, not the store
+        end
+        fc_rstore #(.FBX(FBX), .FBY(FBY), .CW(FCW), .RBY(6), .RBC(6)) u_rs (.clk, .ssy(hdr.ssy),
+            .we(w_rc_we), .be(w_rc_be), .wplane(w_rc_pl), .wx(w_rc_x), .wy(w_rc_y), .wdata(w_rc_d),
+            .row0(lf_row_first), .bk_re, .bk_row, .bk_col, .bk_data);
+        fc_top #(.NBMAX(32), .CW(FCW)) u_fc (.clk, .rst, .hdr, .lh, .ch, .lf_on(fc_lf_on), .cdef_on(fc_cdef_on),
+            .band_start(lf_go), .row0(lf_row_first), .n_blk(fc_n_blk), .first_band(lf_next == SBW'(0)), .last_band(lf_next + SBW'(1) >= n_rows),
+            .busy(fcb_busy), .band_done(fcb_done), .err_ovf(fc_ovf),
+            .bk_re, .bk_row, .bk_col, .bk_data,
+            .rd_row(fc_rd_row), .rd_col(fc_rd_col), .rd_info(fc_rd_info), .txr_plane(fc_txr_plane), .txr_row(fc_txr_row), .txr_col(fc_txr_col), .txr_sz(fc_txr_sz),
+            .rd2_row(fc_rd2_row), .rd2_col(fc_rd2_col), .rd2_skip, .cdr_row64(fc_cdr_row64), .cdr_col64(fc_cdr_col64), .cdr_val(fc_cdr_val),
+            .lrr_plane(fc_lrr_plane), .lrr_row(fc_lrr_row), .lrr_col(fc_lrr_col), .lrr_rec(fc_lrr_rec),
+            .out_hold(fc_out_hold), .out_valid(fc_out_valid), .out_line(fc_out_line), .out_n4(fc_out_n4), .out_col(fc_out_col), .out_y(fc_out_y));
+        fc_out #(.FBX(FBX), .FBY(FBY), .CW(FCW)) u_fo (.clk, .rst, .y0(fc_y0), .in_valid(fc_out_valid), .in_line(fc_out_line), .in_n4(fc_out_n4),
+            .in_col(fc_out_col), .in_y(fc_out_y), .out_hold(fc_out_hold), .busy(fo_busy), .err_ovf(fo_ovf),
+            .we(fo_we), .wplane(fo_plane), .wx(fo_x), .wy(fo_y), .wdata(fo_d));
+        // the stage is done for the sequencer when the band is and its last segments are in fb2
+        always_ff @(posedge clk) begin
+            fc_lf_done <= 1'b0;
+            if (rst || frame_start) fc_dn_l <= 1'b0;
+            else begin
+                if (fcb_done) fc_dn_l <= 1'b1;
+                if (fc_dn_l && !fo_busy) begin fc_dn_l <= 1'b0; fc_lf_done <= 1'b1; end
+            end
+        end
+        assign fc_lf_busy = fcb_busy || fc_dn_l || fo_busy;
+`ifndef SYNTHESIS
+        always_ff @(posedge clk) if (!rst && (fc_ovf || fo_ovf)) $error("[chain] a line was dropped at a FIFO (fc_ovf %0d fo_ovf %0d)", fc_ovf, fo_ovf);
+`endif
+    end else begin : g_nochain
+        assign fc_rd_row = '0; assign fc_rd_col = '0; assign fc_rd2_row = '0; assign fc_rd2_col = '0; assign fc_txr_row = '0; assign fc_txr_col = '0;
+        assign fc_txr_plane = '0; assign fc_lrr_plane = '0; assign fc_cdr_row64 = '0; assign fc_cdr_col64 = '0; assign fc_lrr_row = '0; assign fc_lrr_col = '0;
+        assign fc_lf_busy = 1'b0; assign fc_lf_done = 1'b0; assign fo_we = '0; assign fo_plane = '0; assign fo_x = '0; assign fo_y = '0; assign fo_d = '0;
+    end
     // tile_done once the syntax is finished and the reconstruction stage has drained
     logic done_pend;
     always_ff @(posedge clk) begin
