@@ -209,7 +209,15 @@ that fail:
   `tb/vectors/cdef_stream_inter`, suite `cdef_stream_inter`: 837 skipped blocks, blocks without a cdef_idx, blocks
   where the fourth skip flag decides). Five deliberate faults fail; the two about unfiltered blocks only on the inter
   frames.
-- Not done: the chroma planes, the planned rate, output back-pressure, synthesis.
+- The same module takes a chroma plane (`luma = 0`): its CDEF block is one 4x4 block wide and / or high by the
+  subsampling, the direction comes from a port (the luma stage's result for the 8x8 block), and it steps by its own
+  block size. `cdef_stream_unit` drives all three planes of the four real frames (16 chroma runs, 4:2:0): identical;
+  three chroma faults (direction ignored, the band start, the skip address) fail.
+- Synthesis of the luma first cut (out of context, 10 ns): 0.9 ns of slack (the direction search's cost sums),
+  38,647 LUTs (direction search 10,218, line filter 16,951).
+- Not done: the planned rate, output back-pressure, 4:4:4 and 4:2:2 chroma in the test, the small memory that
+  carries the luma direction to the chroma stages (the test answers that port from the model), chroma on inter
+  frames (the dumped frames hold luma only).
 
 Plan for the stage around them (the luma part is built as described):
 - It takes the deblock stage's output as it comes: 4x4 blocks column by column, the band shifted up by 8 lines.
