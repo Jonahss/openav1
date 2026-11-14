@@ -30,19 +30,19 @@ async def cdef_row_vs_model(dut):
     dut.rst.value = 0
     await RisingEdge(dut.clk); await Timer(1, "ns")
     stats = dict(blocks=0, lines=0, changed=0, absent_taps=0, pri0=0, sec0=0, dirs=set())
-    expect = []                                              # (due clock, expected N samples, tag)
-    clk_n = [0]
+    expect = []                                              # (expected N samples, tag) in input order
+    seen = [0]
 
-    async def monitor():
+    async def monitor():                                     # every v_out is the next line that went in
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
-            clk_n[0] += 1
-            while expect and expect[0][0] == clk_n[0]:
-                _, exp, tag = expect.pop(0)
-                assert int(dut.v_out.value) == 1, f"{tag}: no v_out"
+            if int(dut.v_out.value):
+                assert expect, "v_out with nothing expected"
+                exp, tag = expect.pop(0)
                 got = [(int(dut.out.value) >> (12 * l)) & 0xFFF for l in range(N)]
                 assert got == exp, f"{tag}: rtl {got}, model {exp}"
+                seen[0] += 1
     cocotb.start_soon(monitor())
     for it in range(iters):
         bd = rng.choice([8, 10, 12]); cs = bd - 8; mx = (1 << bd) - 1
@@ -82,7 +82,7 @@ async def cdef_row_vs_model(dut):
                 dut.v_in.value = 1; dut.nb.value = nb; dut.nbok.value = ok; dut.dr.value = dr
                 dut.pri.value = pri; dut.sec.value = sec; dut.adjp.value = adjp; dut.adjs.value = adjs; dut.priodd.value = priodd
                 exp = m.out[0][y0 + i][xs:xs + N]
-                expect.append((clk_n[0] + 5, exp, f"block {it} bd{bd} {W}x{H} at ({r},{c}) line {i} part {part} dr {dr} pri {pri} sec {sec} damping {damping}"))
+                expect.append((exp, f"block {it} bd{bd} {W}x{H} at ({r},{c}) line {i} part {part} dr {dr} pri {pri} sec {sec} damping {damping}"))
                 stats["lines"] += 1; stats["changed"] += exp != src[y0 + i][xs:xs + N]
                 await RisingEdge(dut.clk); await Timer(1, "ns")
                 if rng.random() < 0.2:                        # gaps in the input
@@ -92,5 +92,6 @@ async def cdef_row_vs_model(dut):
     await ClockCycles(dut.clk, 8)
     assert not expect, f"{len(expect)} lines never came out"
     stats["dirs"] = len(stats["dirs"])
+    assert seen[0] == stats["lines"], f"{seen[0]} lines came out, {stats['lines']} went in"
     assert stats["changed"] > stats["lines"] // 4 and stats["absent_taps"] > 1000 and stats["dirs"] == 8 and stats["pri0"] > 20 and stats["sec0"] > 20, stats
     dut._log.info(f"OK: {stats}")
