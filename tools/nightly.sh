@@ -89,6 +89,7 @@ run lf_stage_short     TS_SEEDS=2,3,7,20 TS_W=176 TS_H=136 python tb/runner.py l
 run lf_stage_unit      TS_SEEDS=2,3,7,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stage_tb_top test_lf_stage   # mi_store + lf_feed + lf_edge + lf_stream vs lf_model: the deblock stage with nothing supplied but what the decoder has
 run cdef_dir_unit      python tb/runner.py cdef_dir         # the CDEF direction search of the streaming chain vs cdef_model
 run cdef_stream_unit   TS_IVF="$PWD/streams/synth/natural_lf_cdef_8bit.ivf,$PWD/streams/synth/natural_lf_cdef_lr_10bit.ivf,$PWD/streams/synth/screen_8bit.ivf,$PWD/streams/synth/synth_8bit.ivf" python tb/runner.py cdef_stream   # the streaming CDEF stage (luma) vs cdef_model, band by band
+run cdef_stream_inter  TS_CDEF_VEC="$PWD/tb/vectors/cdef_stream_inter" python tb/runner.py cdef_stream   # six inter frames dumped by dec_inter_lr (TS_CDEF_VEC_OUT): unfiltered blocks
 run cdef_str_unit      python tb/runner.py cdef_str         # the CDEF block parameters (direction, strengths, shifts) vs cdef_model
 run cdef_row_unit      python tb/runner.py cdef_row         # the CDEF line filter (8 lanes) of the streaming chain vs cdef_model
 run cdef_row_4         CR_N=4 python tb/runner.py cdef_row   # the 4-lane build (4:2:0 chroma lines)
