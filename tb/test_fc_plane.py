@@ -67,13 +67,27 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, forc
     out = []
     sh = 12 if sy else 16
 
+    hrng = random.Random(77 * plane + sb_lines + len(pre[0][0])); hold_p = [0.0]
+
     async def monitor():
+        held = 0; run = 0                                    # clocks out_hold has been high; lines sent since it rose
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
             if int(dut.out_valid.value):
                 y = int(dut.out_y.value); y = y - 512 if y >= 256 else y
                 out.append((int(dut.out_col.value), y, int(dut.out_line.value), int(dut.out_n4.value)))
+                if held:
+                    run += 1; stats["hold_lines_max"] = max(stats["hold_lines_max"], run)
+            await Timer(1, "ns")
+            # the taker: holds for stretches of random length in some bands
+            if held:
+                held += 1
+                if hrng.random() < 0.02:
+                    held = 0; run = 0
+            elif hrng.random() < hold_p[0]:
+                held = 1; run = 0
+            dut.out_hold.value = int(held > 0); stats["hold_clocks"] += held > 0
 
     async def directions():                                  # the luma direction store: the address of one clock is answered in the next
         while True:
@@ -98,8 +112,9 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, forc
         del out[:]
         dut.row0.value = row0; dut.n_blk.value = len(rows); dut.n_col.value = cols
         dut.first_band.value = int(first); dut.last_band.value = int(last)
+        hold_p[0] = hrng.choice([0.0, 0.0, 0.01])
         dut.band_start.value = 1
-        await RisingEdge(dut.clk); await Timer(1, "ns")
+        await RisingEdge(dut.clk); await Timer(2, "ns")
         dut.band_start.value = 0
         n = 0
         while True:
@@ -206,13 +221,13 @@ async def fc_plane_vs_models(dut):
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     for s in ("band_start", "bm_we", "bm_row", "bm_col", "bm_data", "blk_we", "tx_we", "hdr", "lh", "ch", "plane", "lf_on", "cdef_on", "row0", "n_blk",
               "n_col", "first_band", "last_band", "blk_r", "blk_c", "blk_bw4", "blk_bh4", "blk_data", "tx_plane", "tx_row", "tx_col", "tx_w4", "tx_h4",
-              "tx_sz", "cd_clr", "cd_we", "cd_row64", "cd_col64", "cd_sb128", "cd_mask", "cd_idx", "lr_we", "lr_rec", "yd"):
+              "tx_sz", "cd_clr", "cd_we", "cd_row64", "cd_col64", "cd_sb128", "cd_mask", "cd_idx", "lr_we", "lr_rec", "yd", "out_hold"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lf_off_planes=0, lr_off_planes=0, forced_off_planes=0, forced_off_differs=0, lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
+    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lf_off_planes=0, lr_off_planes=0, forced_off_planes=0, forced_off_differs=0, hold_clocks=0, hold_lines_max=0, lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
                  in_blocks=0, cycles=0, skipped=0, skipped_superres=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:
@@ -230,5 +245,6 @@ async def fc_plane_vs_models(dut):
                 continue
             await one_frame(dut, d.tiles, f"seed {seed} {fmt} bd{args['bd']} {W}x{H}", stats)
     assert stats["frames"] > 0 and stats["by_lf"] > 0, stats
+    assert stats["hold_lines_max"] <= 16, f"{stats['hold_lines_max']} lines came out after out_hold rose: more than OUT_SLACK"
     stats["clocks_per_block"] = round(stats["cycles"] / max(1, stats["in_blocks"]), 3)
     dut._log.info(f"OK: {stats}")

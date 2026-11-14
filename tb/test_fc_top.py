@@ -175,7 +175,7 @@ async def fc_top_vs_models(dut):
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     for s in ("band_start", "bm_we", "bm_plane", "bm_row", "bm_col", "bm_data", "blk_we", "tx_we", "hdr", "lh", "ch", "lf_on", "cdef_on", "row0", "n_blk",
               "first_band", "last_band", "blk_r", "blk_c", "blk_bw4", "blk_bh4", "blk_data", "tx_plane", "tx_row", "tx_col", "tx_w4", "tx_h4",
-              "tx_sz", "cd_clr", "cd_we", "cd_row64", "cd_col64", "cd_sb128", "cd_mask", "cd_idx", "lr_we", "lr_rec"):
+              "tx_sz", "cd_clr", "cd_we", "cd_row64", "cd_col64", "cd_sb128", "cd_mask", "cd_idx", "lr_we", "lr_rec", "out_hold"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)

@@ -32,6 +32,7 @@ module fc_plane_tb_top
     output logic        dw_we,
     output logic [MIW-1:0] dw_row, dw_col,
     output logic [6:0]  dw_info,
+    input  logic        out_hold,
     output logic        out_valid,
     output logic [95:0] out_line,
     output logic [1:0]  out_n4,
@@ -87,5 +88,5 @@ module fc_plane_tb_top
         .bk_re, .bk_row, .bk_col, .bk_data, .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
         .rd2_row, .rd2_col, .rd2_skip(rd2_info.skip), .cdr_row64, .cdr_col64, .cdr_val,
         .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_info, .cd_col(), .cd_hold(1'b0), .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
-        .out_valid, .out_line, .out_n4, .out_col, .out_y);
+        .out_hold, .out_valid, .out_line, .out_n4, .out_col, .out_y);
 endmodule

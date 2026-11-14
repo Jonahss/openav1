@@ -49,7 +49,8 @@ module fc_top
     output logic [2:0][1:0]       lrr_plane,
     output logic [2:0][SBW-1:0]   lrr_row, lrr_col,
     input  lr_rec_t [2:0]         lrr_rec,
-    // per plane: the final line segments
+    // per plane: the final line segments (out_hold: see fc_plane)
+    input  logic [2:0]            out_hold,
     output logic [2:0]            out_valid,
     output logic [2:0][95:0]      out_line,
     output logic [2:0][1:0]       out_n4,
@@ -85,7 +86,7 @@ module fc_top
             .yd_row(yd_row[p]), .yd_col(yd_col[p]), .yd(yd[p]), .dw_we(dw_we[p]), .dw_row(dw_row[p]), .dw_col(dw_col[p]), .dw_info(dw_info[p]),
             .cd_col(cd_col[p]), .cd_hold(cd_hold[p]),
             .lrr_plane(lrr_plane[p]), .lrr_row(lrr_row[p]), .lrr_col(lrr_col[p]), .lrr_rec(lrr_rec[p]),
-            .out_valid(out_valid[p]), .out_line(out_line[p]), .out_n4(out_n4[p]), .out_col(out_col[p]), .out_y(out_y[p]));
+            .out_hold(out_hold[p]), .out_valid(out_valid[p]), .out_line(out_line[p]), .out_n4(out_n4[p]), .out_col(out_col[p]), .out_y(out_y[p]));
     end endgenerate
 
     // luma's directions per 8x8 block: 64 block rows (a band of 128 lines is 16, and chroma reads back into the band

@@ -361,5 +361,10 @@ Plan for the stage around them (the luma part is built as described):
   another, which is luma at CDEF's 2.7 clocks a block and 4:2:0 chroma at about 14 (CDEF blocks one 4x4 row high
   took `cdef_stream`'s sequential path; see the CDEF section for the look-ahead that replaced it). The stages'
   planned rate is one block a clock.
+- The output can be held (`out_hold`, per plane): restoration then pushes no further line into its filters, on the
+  stall it already had for a self-guided line. Lines already inside still come out: 5 at most in the tests, which
+  hold for random stretches and fail above 16 (`OUT_SLACK`). A first attempt held restoration's input instead and
+  saw 56 lines follow, a whole buffered column. Three faults (the push not stopped, the sequencer not stopped, the
+  hold not connected) fail.
 - Not done: super-resolution between CDEF and restoration, the stores shared by three readers in the decoder (mode
-  info), the row store, the writer to DDR, and the switch in `dec_top`.
+  info for the deblock stages, the unit records), the row store, the writer to DDR, and the switch in `dec_top`.
