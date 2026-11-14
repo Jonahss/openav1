@@ -35,6 +35,8 @@ async def one_size(dut, hdr, pre, post, sb_lines, tag, stats):
     seen = [[[0] * W[p] for _ in range(H[p])] for p in range(n)]
     band = sb_lines // 4
     out = [[] for _ in range(n)]
+    prof = os.environ.get("FC_PROF") == "1"                  # FC_PROF=1: per plane and stage, the clocks from a band's start to the stage's last busy clock, summed (t_<plane>_<s|c|r>: deblock, CDEF, restoration)
+    planes_h = [dut.u_fc.g_p[p].u_pl for p in range(n)] if prof else []
 
     async def monitor():
         while True:
@@ -70,9 +72,15 @@ async def one_size(dut, hdr, pre, post, sb_lines, tag, stats):
         await RisingEdge(dut.clk); await Timer(1, "ns")
         dut.band_start.value = 0
         k = 0
+        last_busy = {}
         while True:
             await ReadOnly()
             done = int(dut.band_done.value)
+            if prof:                                         # the last clock each stage of a plane was busy in this band
+                for p in range(n):
+                    for s in ("s_busy", "c_busy", "r_busy"):
+                        if int(getattr(planes_h[p], s).value):
+                            last_busy[(p, s)] = k
             await RisingEdge(dut.clk); await Timer(1, "ns")
             k += 1
             if done:
@@ -80,6 +88,8 @@ async def one_size(dut, hdr, pre, post, sb_lines, tag, stats):
             assert k < 3000000, f"{tag} sb{sb_lines} band at MI row {row0}: no band_done"
         await ClockCycles(dut.clk, 2); await Timer(1, "ns")
         assert int(dut.err_ovf.value) == 0, f"{tag} sb{sb_lines}: a CDEF line was dropped at a FIFO"
+        for (p, s), v in last_busy.items():
+            stats[f"t_{'yuv'[p]}_{s[0]}"] = stats.get(f"t_{'yuv'[p]}_{s[0]}", 0) + v
         stats["cycles"] += k; stats["in_samples"] += sum(16 * cols[p] * len(range(row0, row1, 1 << sxy[p][1])) for p in range(n))
         for p in range(n):
             sy = sxy[p][1]; sh = 12 if sy else 16

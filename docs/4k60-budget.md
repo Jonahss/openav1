@@ -140,6 +140,30 @@ Readings that follow from the table:
 - Every output sample costs 2 to 3.4 reference samples moved, because each strip fetches its own (w + 7) x (h + 7)
   patch and warp blocks are cut into 8x8 strips.
 
+## The streaming filter chain as built: first rate, in simulation (measured 2026-11-14)
+
+`docs/filter-chain.md` describes the chain; it is not in the decoder yet. Its three planes each have their own
+deblock, CDEF and restoration stages and run at the same time, so the frame-wide requirement of 7.5 samples a clock
+splits into 5.0 for luma and 1.25 for each 4:2:0 chroma plane.
+
+| what | samples a clock | needs | note |
+|---|---|---|---|
+| whole picture, frame 0 of `natural_lf_cdef_8bit` (352x288, 64-line bands, deblock + CDEF) | 7.8 | 7.5 | measured: 147,456 samples in 18,881 clocks, band starts and ends included |
+| the same frame with Wiener restoration in luma (`natural_lf_cdef_lr_8bit`) | 7.8 | 7.5 | measured: the same 18,881 clocks; restoration is not what limits |
+| luma alone in those runs | 5.2 | 5.0 | the planes finish together: chroma waits for luma's CDEF decisions |
+| a self-guided restoration unit | about 0.2 | 5.0 | measured on made-up pictures: 30.8 clocks a line; correct, not fast |
+
+- What sets the pace is luma CDEF: 11.5 clocks an 8x8 block here, of which 8 are the block's lines and the rest is
+  paid once a block column (the carried rows read and saved, the column's first block prepared in sequence), and a
+  64-line band has only eight blocks in a column. The deblock stage in front waits for it most of the time.
+- So the chain meets the 4K60 figure with no margin, on a small frame, in simulation. Against today's frame-wide
+  filters (0.9, 1.2 and 1.8 samples a clock in the table above) it is 4 to 8 times faster, which was the point.
+- Margin comes from two places, in this order: the per-column overhead of CDEF (up to 8 samples a clock for luma
+  without it), then two lines a clock through CDEF and restoration (16).
+- Not in this figure: the row store and the DDR writer around the chain, super-resolution, timing closure of the
+  whole chain inside the decoder (out of context it meets 10 ns with 0.9 ns to spare), and its size (246,512 LUTs
+  as first written).
+
 ## Memory and the DDR port (arithmetic unless marked)
 
 - **Frame memory on the chip**: the window holds 5 / 3 / 3 superblock rows of the three picture buffers at 1920
