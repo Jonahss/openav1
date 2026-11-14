@@ -57,6 +57,9 @@ module fc_plane
     output logic            dw_we,
     output logic [MIW-1:0]  dw_row, dw_col,
     output logic [2:0]      dw_dir,
+    // the CDEF stage's progress in the band and a hold from outside (a chroma plane waits for luma's directions)
+    output logic [CW:0]     cd_col,          // first 4x4 column of the block column CDEF filters next
+    input  logic            cd_hold,
     // restoration unit records
     output logic [1:0]      lrr_plane,
     output logic [SBW-1:0]  lrr_row, lrr_col,
@@ -113,7 +116,8 @@ module fc_plane
         .busy(c_busy), .band_done(), .in_valid(lo_valid), .in_ready(lo_ready), .in_blk(lo_blk),
         .rd_row(rd2_row), .rd_col(rd2_col), .rd_skip(rd2_skip), .cdr_row64, .cdr_col64, .cdr_val(cdef_on ? cdr_val : 4'd0),
         .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_dir,
-        .col_hold(ff_free < (FAW+1)'(160)),          // a column's lines: at most 4 (32 + 4), and four still on their way
+        .col_hold(cd_hold || ff_free < (FAW+1)'(160)),   // a column's lines: at most 4 (32 + 4), and four still on their way
+        .col_next(cd_col),
         .out_valid(co_valid), .out_line(co_line), .out_n4(), .out_col(), .out_y(co_y));
 
     // ---------------------------------------------------------------- restoration

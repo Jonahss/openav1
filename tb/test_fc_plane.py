@@ -58,7 +58,10 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats):
     seen = [[0] * W for _ in range(H)]
     dut.plane.value = plane
     lvl = hdr.loop_filter_level
-    dut.lf_on.value = int(bool(lvl[0] or lvl[1]) and (plane == 0 or bool(lvl[1 + plane])))
+    lf_on = bool(lvl[0] or lvl[1]) and (plane == 0 or bool(lvl[1 + plane]))
+    dut.lf_on.value = int(lf_on)
+    stats["lf_off_planes"] += not lf_on
+    stats["lr_off_planes"] += hdr.FrameRestorationType[plane] == 0
     band = sb_lines // 4
     out = []
     sh = 12 if sy else 16
@@ -133,8 +136,14 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats):
 
 async def one_frame(dut, tiles, tag, stats):
     frame = {}; decs = []
-    for th, data in tiles:
-        dec = rm.FrameRecon(th, data, frame); dec.decode_tile(); decs.append(dec)
+    try:
+        for th, data in tiles:
+            dec = rm.FrameRecon(th, data, frame); dec.decode_tile(); decs.append(dec)
+    except Exception as e:                                   # a generated stream whose residual leaves the transform's range
+        if type(e).__name__ != "Nonconformant":
+            raise
+        dut._log.info(f"{tag}: not a conformant stream ({e}), skipped"); stats["skipped"] += 1
+        return
     hdr = tiles[0][0]
     if getattr(hdr, "use_superres", 0):
         stats["skipped_superres"] += 1
@@ -189,7 +198,7 @@ async def fc_plane_vs_models(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
+    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lf_off_planes=0, lr_off_planes=0, lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
                  in_blocks=0, cycles=0, skipped=0, skipped_superres=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:

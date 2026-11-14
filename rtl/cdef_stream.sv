@@ -60,6 +60,7 @@ module cdef_stream
     output logic [MIW-1:0]  dw_row, dw_col,
     output logic [2:0]      dw_dir,
     input  logic            col_hold,        // do not start a block column (the taker has no room for a column's lines)
+    output logic [CW:0]     col_next,        // first 4x4 column of the block column filtered next: every column before it is done
     output logic            out_valid,
     output logic [95:0]     out_line,        // out_n4 groups of four samples from bit 0
     output logic [1:0]      out_n4,          // 1 or 2
@@ -224,6 +225,7 @@ module cdef_stream
     end
     assign out_valid = row_vo; assign out_line = row_out; assign out_col = tg_c[3]; assign out_y = tg_y[3];
     assign out_n4 = bw4;
+    assign col_next = p_c2;
     // luma: the block's direction for the chroma stages, as cdef_dir delivers it
     assign dw_we = luma && ((pst == P_STR) || (pst == P_PIX && la && p_l == 3'd7)); assign dw_row = b_mr; assign dw_col = b_mc; assign dw_dir = dir_d;
 
