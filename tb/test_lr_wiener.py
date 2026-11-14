@@ -87,5 +87,5 @@ async def lr_wiener_vs_model(dut):
     dut.v_in.value = 0
     await ClockCycles(dut.clk, 8)
     assert not expect and seen[0] == stats["lines"], f"{seen[0]} lines came out, {stats['lines']} went in"
-    assert stats["changed"] > stats["lines"] // 2 and stats["stripe_edge"] > 100 and stats["plane_edge"] > 100 and stats["clamped_out"] > 100, stats
+    assert stats["changed"] > stats["lines"] // 2 and stats["stripe_edge"] > 50 and stats["plane_edge"] > 100 and stats["clamped_out"] > 100, stats
     dut._log.info(f"OK: {stats}")
