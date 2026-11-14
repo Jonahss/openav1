@@ -230,7 +230,9 @@ module sr_stream
             end
         end
     end
-    assign busy = use_sr && (act || o_v || r1_v || r2_v || r3_v || r4_v);
+    // busy from a band's first line to its last output: a band may bring no line at all (the boundary lines of a band
+    // without a boundary row), and then the stage is idle
+    assign busy = use_sr && ((act && (a_col != '0 || a_ln != '0)) || o_v || r1_v || r2_v || r3_v || r4_v);
     assign in_ready  = use_sr ? in_rdy_i : out_ready;
     assign out_valid = use_sr ? o_v : in_valid;
     assign out_line  = use_sr ? o_line : in_line;

@@ -132,17 +132,33 @@ async def one_plane(dut, hdr, state, dbl, cdef, post, p, sb_lines, rng, tag, sta
                     v |= rng.getrandbits(96) << (96 * i)       # never a line of the picture: must not be used
             dut.bl_rd.value = v
     mon = cocotb.start_soon(monitor()); st = cocotb.start_soon(stores())
-    if store:
-        # what the store holds from the plane before (the same picture's lines, when only the band size changed) is
-        # overwritten with noise, so that a line the store fails to take cannot pass as the old copy of itself
-        per = 16 >> sy; off = 2 >> sy
-        for k in range(1, 5):
-            for ra in (per * k - off - 1, per * k - off):
-                dut.wr_row0.value = ra; dut.wr_row.value = 0
-                for c in range(cols):
-                    dut.wr_valid.value = 1; dut.wr_blk.value = rng.getrandbits(192); dut.wr_col.value = c
+    async def send_blocks(row0p, nb, last_b, first_b, blocks, wgap):
+        """a band of the deblock stage's blocks through the converter: blocks(c, r) gives block (column c, row r)"""
+        dut.wr_row0.value = row0p; dut.wr_n_blk.value = nb; dut.wr_last_band.value = int(last_b)
+        dut.wr_start.value = 1
+        await RisingEdge(dut.clk); await Timer(2, "ns")
+        dut.wr_start.value = 0
+        for c in range(cols):
+            for r in range(0 if first_b else -2, nb if last_b else nb - 2):
+                dut.wr_valid.value = 1; dut.wr_blk.value = blocks(c, r); dut.wr_col.value = c; dut.wr_row.value = r & 0x7F
+                while True:
+                    await ReadOnly()
+                    rdy = int(dut.wr_ready.value)
+                    await RisingEdge(dut.clk); await Timer(2, "ns")
+                    if rdy:
+                        break
+                if rng.random() < wgap:
+                    dut.wr_valid.value = 0; dut.wr_blk.value = rng.getrandbits(192)
                     await RisingEdge(dut.clk); await Timer(2, "ns")
         dut.wr_valid.value = 0
+        await ClockCycles(dut.clk, 4); await Timer(2, "ns")
+    if store:
+        # what the store holds from the plane before (the same picture's lines, when only the band size changed) is
+        # overwritten with noise, so that a line the store fails to take cannot pass as the old copy of itself: four
+        # short bands whose two rows are the rows around boundaries 1 .. 4
+        per = 16 >> sy; off = 2 >> sy
+        for k in range(1, 5):
+            await send_blocks(per * k - off - 1, 2, True, True, lambda c, r: rng.getrandbits(192), 0.0)
     sh = 12 if sy else 16
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
@@ -161,20 +177,12 @@ async def one_plane(dut, hdr, state, dbl, cdef, post, p, sb_lines, rng, tag, sta
         if store:
             # the deblock stage's blocks of this band as lf_stream sends them: column by column, the two context rows
             # of the band above first (rows -2, -1), the band's own last two rows held back for the next band
-            dut.wr_row0.value = row0 >> sy
-            wgap = rng.choice([0.0, 0.2])
-            for c in range(cols):
-                for r in range(0 if first else -2, n_blk if last else n_blk - 2):
-                    yy = y0 + 4 * r
-                    v = 0
-                    for l in range(4):
-                        v |= pack_line(dbl[p][yy + l], c * 4, 4) << (48 * l)
-                    dut.wr_valid.value = 1; dut.wr_blk.value = v; dut.wr_col.value = c; dut.wr_row.value = r & 0x7F
-                    await RisingEdge(dut.clk); await Timer(2, "ns")
-                    if rng.random() < wgap:
-                        dut.wr_valid.value = 0; dut.wr_blk.value = rng.getrandbits(192)
-                        await RisingEdge(dut.clk); await Timer(2, "ns")
-            dut.wr_valid.value = 0
+            def blk(c, r, y0=y0):
+                v = 0
+                for l in range(4):
+                    v |= pack_line(dbl[p][y0 + 4 * r + l], c * 4, 4) << (48 * l)
+                return v
+            await send_blocks(row0 >> sy, n_blk, last, first, blk, rng.choice([0.0, 0.2]))
             stats["store_blocks"] += cols * len(range(0 if first else -2, n_blk if last else n_blk - 2))
         gap = rng.choice([0.0, 0.0, 0.3])
         t_start = cocotb.utils.get_sim_time("ns")
@@ -246,7 +254,7 @@ async def lr_stream_vs_model(dut):
     for s in ("band_start", "in_valid", "in_line", "in_y", "row0", "pic_rows", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "en", "plane",
               "ssx", "ssy", "pl_w", "pl_h", "u_log2", "u_rows", "u_cols", "lrr_rec", "out_hold"):
         getattr(dut, s).value = 0
-    for s in ("bl_rd",) if not hasattr(dut, "wr_valid") else ("wr_valid", "wr_blk", "wr_col", "wr_row", "wr_row0"):
+    for s in ("bl_rd",) if not hasattr(dut, "wr_valid") else ("wr_valid", "wr_blk", "wr_col", "wr_row", "wr_row0", "wr_start", "wr_n_blk", "wr_last_band"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)

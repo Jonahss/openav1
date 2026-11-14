@@ -96,6 +96,10 @@ run cdef_row_unit      python tb/runner.py cdef_row         # the CDEF line filt
 run cdef_row_4         CR_N=4 python tb/runner.py cdef_row   # the 4-lane build (4:2:0 chroma lines)
 run fc_rstore_unit     python tb/runner.py fc_rstore        # the chain's row store (block-organised mirror of reconstruction's writes) vs a plain picture: lane writes, the ring, three readers
 run fc_out_unit        python tb/runner.py fc_out           # the chain's line segments into two frame-memory write ports vs a plain picture: every group once, the hold against overflow
+run sr_stream_unit     SR_BANDS=200 python tb/runner.py sr_stream   # super-resolution for the chain (line segments upscaled column by column) vs superres_model: every denominator, both segment widths, back-pressure
+run fc_plane_sr        FC_SR=1 TS_SEEDS=3,5,7,9,11,13,41,42 python tb/runner.py fc_plane_tb_top test_fc_plane   # one plane of the chain on frames taken as super-resolution frames (a denominator and fresh restoration units drawn per frame)
+run fc_top_sr          FC_SR=1 TS_SEEDS=2,3,4,5,6,7,8,9 python tb/runner.py fc_top_tb_top test_fc_top
+run fc_top_sr_odd      FC_SR=1 TS_SEEDS=41,42,43,44,45,46 TS_W=133 TS_H=99 python tb/runner.py fc_top_tb_top test_fc_top
 run fc_plane_unit      TS_SEEDS=3,5,7,9,11,13 python tb/runner.py fc_plane_tb_top test_fc_plane   # one plane of the chain (deblock -> CDEF -> restoration, mi_store + block memory) vs the three models, and with deblocking and CDEF switched off
 run fc_plane_odd       TS_SEEDS=41,42,43,44,45,46,47,48 TS_W=133 TS_H=99 python tb/runner.py fc_plane_tb_top test_fc_plane   # odd picture sizes: plane and unit rounding, 4:2:0 chroma restoration
 run fc_plane_real      TS_IVF="$PWD/streams/synth/natural_lf_cdef_lr_8bit.ivf,$PWD/streams/synth/natural_lf_cdef_lr_10bit.ivf,$PWD/streams/synth/screen_8bit.ivf,$PWD/streams/synth/synth_8bit.ivf" python tb/runner.py fc_plane_tb_top test_fc_plane
