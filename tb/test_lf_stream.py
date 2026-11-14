@@ -62,12 +62,13 @@ async def one_plane(dut, hdr, state, pre, post, plane, sb_lines, rng, tag, stats
     async def monitor():
         while True:
             await RisingEdge(dut.clk)
-            await ReadOnly()
+            await Timer(2, "ns")                             # the taker is ready at random
+            dut.out_ready.value = 1 if (orng.random() >= stall[0]) else 0
+            await Timer(1, "ns")
+            # out_valid and out_ready as the next clock edge will see them: that edge takes the block
             if int(dut.out_valid.value) and int(dut.out_ready.value):
                 r = int(dut.out_row.value); r = r - 128 if r >= 64 else r
                 out.append((int(dut.out_col.value), r, int(dut.out_blk.value)))
-            await Timer(2, "ns")                             # the taker is ready at random (never for a whole band at 0)
-            dut.out_ready.value = 1 if (orng.random() >= stall[0]) else 0
     mon = cocotb.start_soon(monitor())
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
