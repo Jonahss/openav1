@@ -50,7 +50,7 @@ async def load_units(dut, hdr, state):
     await RisingEdge(dut.clk); await Timer(1, "ns")
 
 
-async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats):
+async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, force_off=False):
     sx = hdr.subsampling_x if plane else 0
     sy = hdr.subsampling_y if plane else 0
     cols = len(range(0, hdr.MiCols, 1 << sx))
@@ -58,7 +58,7 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats):
     seen = [[0] * W for _ in range(H)]
     dut.plane.value = plane
     lvl = hdr.loop_filter_level
-    lf_on = bool(lvl[0] or lvl[1]) and (plane == 0 or bool(lvl[1 + plane]))
+    lf_on = bool(lvl[0] or lvl[1]) and (plane == 0 or bool(lvl[1 + plane])) and not force_off
     dut.lf_on.value = int(lf_on)
     stats["lf_off_planes"] += not lf_on
     stats["lr_off_planes"] += hdr.FrameRestorationType[plane] == 0
@@ -107,6 +107,9 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats):
             await RisingEdge(dut.clk); await Timer(1, "ns")
             n += 1
             if done:
+                # the next band may start right away: every stage must be idle when the band is reported done
+                idle = [int(getattr(dut.u_fc, s).value) for s in ("f_busy", "s_busy", "c_busy", "r_busy")]
+                assert idle == [0, 0, 0, 0], f"{tag} plane {plane} sb{sb_lines} band at MI row {row0}: band_done with a stage still busy {idle}"
                 break
             assert n < 3000000, f"{tag} plane {plane} sb{sb_lines} band at MI row {row0}: no band_done"
         await ClockCycles(dut.clk, 2); await Timer(1, "ns")
@@ -178,6 +181,16 @@ async def one_frame(dut, tiles, tag, stats):
         stats["by_lf"] += sum(1 for a, b in zip(pre[plane], dbl[plane]) if a != b)
         stats["by_cdef"] += sum(1 for a, b in zip(dbl[plane], cdef[plane]) if a != b)
         stats["by_lr"] += sum(1 for a, b in zip(cdef[plane], post[plane]) if a != b)
+    # the switches: the same frame with deblocking and CDEF switched off by lf_on / cdef_on alone (the headers still
+    # carry the levels and strengths, mi_store the cdef_idx), against restoration of the unfiltered picture
+    if os.environ.get("FC_FORCE_OFF", "1") == "1":
+        post_off = lrm.LoopRestoration(hdr, state, copy.deepcopy(pre), copy.deepcopy(pre)).apply() if lr_on else pre
+        dut.cdef_on.value = 0
+        sb = only_sb or (64, 128)[stats["frames"] & 1]
+        for plane in range(hdr.NumPlanes):
+            await one_plane(dut, hdr, pre, post_off, plane, sb, None, tag + " (deblocking and CDEF switched off)", stats, force_off=True)
+            stats["forced_off_planes"] += 1
+            stats["forced_off_differs"] += post_off[plane] != post[plane]
     for (p, r, c), t in state.LrType.items():
         if hdr.FrameRestorationType[p]:
             stats["units_" + "nws"[t]] += 1
@@ -198,7 +211,7 @@ async def fc_plane_vs_models(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lf_off_planes=0, lr_off_planes=0, lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
+    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lf_off_planes=0, lr_off_planes=0, forced_off_planes=0, forced_off_differs=0, lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
                  in_blocks=0, cycles=0, skipped=0, skipped_superres=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:

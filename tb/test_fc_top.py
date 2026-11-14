@@ -141,6 +141,14 @@ async def one_frame(dut, tiles, tag, stats):
     only_sb = int(os.environ.get("FC_SB", "0"))
     for sb in ((only_sb,) if only_sb else (64, 128)):
         await one_size(dut, hdr, pre, post, sb, tag, stats)
+    # the per-plane switch: the same frame with chroma's deblocking switched off by lf_on alone
+    if hdr.NumPlanes > 1 and os.environ.get("FC_FORCE_OFF", "1") == "1":
+        dbl2 = [copy.deepcopy(dbl[0])] + [copy.deepcopy(pre[p]) for p in range(1, hdr.NumPlanes)]
+        cdef2 = cdm.Cdef(hdr, state, dbl2).apply() if cdef_on else copy.deepcopy(dbl2)
+        post2 = lrm.LoopRestoration(hdr, state, dbl2, cdef2).apply() if lr_on else cdef2
+        dut.lf_on.value = int(bool(lvl[0] or lvl[1]))
+        await one_size(dut, hdr, pre, post2, only_sb or (64, 128)[stats["frames"] & 1], tag + " (chroma deblocking switched off)", stats)
+        stats["chroma_lf_off_frames"] += 1; stats["chroma_lf_off_differs"] += any(post2[p] != post[p] for p in range(1, hdr.NumPlanes))
     for p in range(hdr.NumPlanes):
         stats["by_lf"] += sum(1 for a, b in zip(pre[p], dbl[p]) if a != b)
         stats["by_cdef"] += sum(1 for a, b in zip(dbl[p], cdef[p]) if a != b)
@@ -163,7 +171,7 @@ async def fc_top_vs_models(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, cdef_frames=0, lr_frames=0, mono=0, lines=0, by_lf=0, by_cdef=0, chroma_by_cdef=0, by_lr=0, in_samples=0, cycles=0,
+    stats = dict(frames=0, cdef_frames=0, lr_frames=0, mono=0, chroma_lf_off_frames=0, chroma_lf_off_differs=0, lines=0, by_lf=0, by_cdef=0, chroma_by_cdef=0, by_lr=0, in_samples=0, cycles=0,
                  skipped=0, skipped_superres=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:

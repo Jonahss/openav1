@@ -75,7 +75,7 @@ module fc_top
             cd_hold[p] = (CW+2)'(cd_col[0]) < (((CW+2)'(cd_col[p]) << hdr.ssx) + (CW+2)'(2)) && (cd_col[0] < n_col_y);
     end
     generate for (genvar p = 0; p < 3; p++) begin : g_p
-        fc_plane #(.LUMA(p == 0), .NBMAX(NBMAX), .CW(CW)) u_pl (.clk, .rst, .hdr, .lh, .ch, .plane(2'(p)), .lf_on(lf_on[p]), .cdef_on,
+        fc_plane #(.LUMA(p == 0 ? 1 : 0), .NBMAX(NBMAX), .CW(CW)) u_pl (.clk, .rst, .hdr, .lh, .ch, .plane(2'(p)), .lf_on(lf_on[p]), .cdef_on,
             .band_start(band_start && p_act[p]), .row0, .n_blk(p == 0 ? n_blk : n_blk_c), .n_col(p == 0 ? n_col_y : n_col_c),
             .first_band, .last_band, .busy(p_busy[p]), .band_done(p_done[p]), .err_ovf(p_ovf[p]),
             .bk_re(bk_re[p]), .bk_row(bk_row[p]), .bk_col(bk_col[p]), .bk_data(bk_data[p]),
@@ -106,16 +106,17 @@ module fc_top
     end
     assign yd[0] = 3'd0; assign yd[1] = d_q1; assign yd[2] = d_q2;
 
-    // the band is done when every active plane is
-    assign busy = |p_busy;
+    // the band is done when every active plane is (a plane's done pulse comes as its busy falls)
+    logic act;
+    assign busy = act;
     always_ff @(posedge clk) begin
         band_done <= 1'b0;
-        if (rst) begin done_l <= '0; err_ovf <= 1'b0; end
+        if (rst) begin done_l <= '0; err_ovf <= 1'b0; act <= 1'b0; end
         else begin
-            if (band_start && !busy) done_l <= ~p_act;
-            else begin
+            if (band_start && !act) begin act <= 1'b1; done_l <= ~p_act; end
+            else if (act) begin
                 done_l <= done_l | p_done;
-                if (busy && (&(done_l | p_done))) begin band_done <= 1'b1; done_l <= '0; end
+                if (&(done_l | p_done)) begin band_done <= 1'b1; act <= 1'b0; done_l <= '0; end
             end
             if (|p_ovf) err_ovf <= 1'b1;
         end
