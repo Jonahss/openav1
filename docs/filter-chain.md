@@ -340,8 +340,11 @@ Plan for the stage around them (the luma part is built as described):
   a monochrome frame and a pass with chroma's deblocking alone switched off).
 - Synthesis of `fc_top` (out of context, 10 ns, 4096 columns): 0.9 ns of slack, 246,512 LUTs, 77,494 registers, 640
   DSP blocks, 255 block RAM tiles; the luma plane is 97,534 LUTs of it (CDEF 41,783, restoration 13,328). That is
-  large: each chroma plane carries a full CDEF stage with the direction search it never uses, and the stages were
-  written to be right first. `lr_bstore` alone: 33 block RAM tiles as declared.
+  large, and the stages were written to be right first. Per plane: deblock 31,492 (luma) / 15,470 (the chroma-only
+  build), CDEF 41,783 / 31,494 (synthesis drops the direction search from the chroma planes, whose `luma` input is
+  constant), restoration 13,328, the boundary store about 9,000, of which 7,168 are LUT RAM: inside the chain two
+  of its four memories were not mapped to block RAM, although alone it is 33 block RAM tiles and 64 LUTs. That
+  mapping and CDEF's window multiplexers are the first places to look.
 - Rate as it stands, a frame's planes run at the same time, generated 128x96 frames with self-guided units: about
   1 sample a clock. Per plane on the real streams: about 7 clocks a 4x4 block over the three planes one after
   another, which is luma at CDEF's 2.7 clocks a block and 4:2:0 chroma at about 14 (CDEF blocks one 4x4 row high
