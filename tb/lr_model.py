@@ -154,6 +154,22 @@ class LoopRestoration:
                 s = round2(v, SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS)
                 out[y + i][x + j] = clip3(0, mx, s)
 
+    @staticmethod
+    def sgr_ab(a, b, bd, n, s, oneOverN):
+        """a2 and b2 of one box position from the box's sum of squares a and sum b (7.17.3)"""
+        a = round2(a, 2 * (bd - 8))
+        d = round2(b, bd - 8)
+        p = max(0, a * n - d * d)
+        z = round2(p * s, SGRPROJ_MTABLE_BITS)
+        if z >= 255:
+            a2 = 256
+        elif z == 0:
+            a2 = 1
+        else:
+            a2 = ((z << SGRPROJ_SGR_BITS) + (z // 2)) // (z + 1)
+        b2 = ((1 << SGRPROJ_SGR_BITS) - a2) * b * oneOverN
+        return a2, round2(b2, SGRPROJ_RECIP_BITS)
+
     def box_filter(self, plane, x, y, w, hh, st, pss):
         bd = self.h.BitDepth
         r = T.Sgr_Params[st][pss * 2 + 0]
@@ -175,19 +191,7 @@ class LoopRestoration:
                         c = self.src(plane, x + j + dx, y + i + dy)
                         a += c * c
                         b += c
-                a = round2(a, 2 * (bd - 8))
-                d = round2(b, bd - 8)
-                p = max(0, a * n - d * d)
-                z = round2(p * s, SGRPROJ_MTABLE_BITS)
-                if z >= 255:
-                    a2 = 256
-                elif z == 0:
-                    a2 = 1
-                else:
-                    a2 = ((z << SGRPROJ_SGR_BITS) + (z // 2)) // (z + 1)
-                b2 = ((1 << SGRPROJ_SGR_BITS) - a2) * b * oneOverN
-                A[(i, j)] = a2
-                B[(i, j)] = round2(b2, SGRPROJ_RECIP_BITS)
+                A[(i, j)], B[(i, j)] = self.sgr_ab(a, b, bd, n, s, oneOverN)
         F = [[0] * w for _ in range(hh)]
         cd = self.cdef[plane]
         for i in range(hh):

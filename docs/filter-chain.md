@@ -242,12 +242,12 @@ Plan for the stage around them (the luma part is built as described):
 - Out: 8x8 blocks (or their lines) in column order to the super-res / restoration stage, with the deblocked stripe
   boundary lines the restoration stage needs taken from the same stream.
 
-## Restoration stage: built so far (2026-11-14, branch `lr-chain`, simulation only)
+## Restoration stage: built so far (2026-11-14, simulation only)
 
 - `rtl/lr_wiener_h.sv`, `rtl/lr_wiener_v.sv` (`lr_wiener_pkg.sv`): the Wiener filter's horizontal and vertical
   passes for N samples of a line, two clocks each, lifted from `lr_top`. Suites `lr_wiener_unit` (8 lanes),
   `lr_wiener_4`.
-- `rtl/lr_stream.sv`: the stage for one plane, Wiener units and units without restoration. It takes the CDEF stage's
+- `rtl/lr_stream.sv`: the stage for one plane, all three unit types (self-guided units below). It takes the CDEF stage's
   line segments as they come (segment column by segment column, top to bottom):
   - four rotating column buffers (block RAM); segment column C is filtered when column C + 1 has arrived, since a
     line's horizontal pass reads three samples either side;
@@ -255,9 +255,8 @@ Plan for the stage around them (the luma part is built as described):
     register and `lr_wiener_v` gives the line three above the newest;
   - the stripe rule becomes pushes of extra lines: before a stripe's first line the deblocked lines two and one
     above it (the shift register starts afresh), after its last line the two deblocked lines below; the plane's
-    first and last lines are repeated three times. The four deblocked lines around a stripe boundary come from a
-    line store through a port (the store itself, fed from the deblock stage's output, is not built; the test
-    answers the port from the deblocked picture);
+    first and last lines are repeated three times. The four deblocked lines around a stripe boundary come from the
+    boundary line store (below) through a port;
   - the unit record (type, coefficients) is read from `mi_store`'s port at every stripe start;
   - between bands it carries, per column, the six newest intermediate lines (16 bits a sample hold them at every
     bit depth) and the three newest source lines: 1056 bits a segment column;
@@ -273,5 +272,36 @@ Plan for the stage around them (the luma part is built as described):
 - Synthesis (out of context, 10 ns, 1024 segment columns): 3.4 ns of slack, 3,106 LUTs, 2,005 registers, 126 DSP
   blocks, 35.5 block RAM tiles (30 of them the carried lines; half would do for 4K luma's 480 columns). The worst
   path is the carried lines' memory into the vertical pass's multipliers.
-- Not done: self-guided units (they pass through unchanged, which is wrong for them), super-resolution in front of
-  the stage, the boundary line store, output back-pressure.
+- Self-guided units, correct but slow (`rtl/lr_sgr_ab.sv`, `rtl/lr_sgr_f.sv`, the arithmetic lifted from `lr_top`):
+  the same pushes of lines, but a line's 14 samples go to a sequential engine and the column waits for it. The
+  engine keeps the last six lines, walks the 14 sample columns (the column sums of both radii a clock), slides the
+  box sums over them and sends the ten box positions of the line through two `lr_sgr_ab` (a2 and b2, one per
+  pass); `lr_sgr_f` then gives the line three above the newest from three rows of a2 / b2. Between bands a
+  self-guided column carries its six newest source lines in place of the Wiener intermediates and pushes them
+  again at the column's start to rebuild the rows. Suite `lr_sgr_ab_unit` (20,000 fuzzed boxes against the model's
+  arithmetic); `lr_stream_unit` now draws all three unit types (124 self-guided units in its 40 pictures).
+  - Rate, same 960-wide pictures: 30.8 clocks a line with every unit self-guided, against 1.37 with every unit
+    Wiener. That is about 0.2 samples a clock: fine for being correct, far from 4K60. No YouTube sample uses
+    restoration at all, and the encoders that use it at 4K choose Wiener or (rav1e) a mix
+    (`docs/4k60-budget.md`), so the fast version waits until a stream needs it. The way there is known: the box
+    sums are already running sums, so ten box positions a clock instead of one is more multipliers, not a new
+    design.
+  - Synthesis with the self-guided path (out of context, 10 ns): 3.4 ns of slack (unchanged, still the carried
+    lines into the vertical pass), 11,339 LUTs, 6,453 registers, 183 DSP blocks, 42 block RAM tiles.
+  - 50 deliberate faults across the stage and the two arithmetic modules: 44 fail by a sample mismatch. The six
+    that pass change nothing a legal picture can show: the parity of a line that never makes the engine give a line
+    (three of them), the weight-0 pass standing in as the source when the bitstream forces that weight to 0 (two),
+    and a2 = 1 for z = 0, which the table's default gives as well.
+- `rtl/lr_bstore.sv`: the boundary line store. It watches the deblock stage's finished 4x4 blocks go by and keeps,
+  per 4x4 column, the two lines above each stripe boundary and the two from it on (block rows B/4 - 1 and B/4),
+  for four boundaries at a time: in a 128-line band restoration reads two boundaries while the deblock stage of the
+  same band is already writing the next one, so three are alive at once. 768 bits a 4x4 column; as declared for
+  1024 columns 1.18 Mbit (about 33 block RAM tiles), because the memory of a segment's first four samples is sized
+  for a subsampled plane, where every 4x4 column starts a segment (not synthesised yet). The deblock stage must not run a whole band ahead of restoration's reads.
+  Suite `lr_stage_unit`: the stage and the store together (`lr_stage_tb_top`), the test writing the blocks as
+  `lf_stream` sends them (two context rows first, the band's last two rows held back) and filling the store with
+  noise before each plane so that a line it fails to take cannot pass as an old copy. 16 deliberate faults in
+  the store: 15 fail by a sample mismatch (among them a store of two boundaries instead of four, on a 128-line
+  band); the one that passes (the block row taken as unsigned) lands on the same boundary slot, since 128 rows are
+  a multiple of four boundaries.
+- Not done: super-resolution in front of the stage, output back-pressure, the fast self-guided path.

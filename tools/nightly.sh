@@ -96,7 +96,9 @@ run cdef_row_unit      python tb/runner.py cdef_row         # the CDEF line filt
 run cdef_row_4         CR_N=4 python tb/runner.py cdef_row   # the 4-lane build (4:2:0 chroma lines)
 run lr_wiener_unit     python tb/runner.py lr_wiener_tb_top test_lr_wiener   # the Wiener line modules (8 lanes) of the streaming chain vs lr_model
 run lr_wiener_4        LW_N=4 python tb/runner.py lr_wiener_tb_top test_lr_wiener
-run lr_stream_unit     LS_ITERS=40 python tb/runner.py lr_stream   # the streaming restoration stage (Wiener and no-restoration units) vs lr_model on made-up pictures: stripes, units, borders, bands
+run lr_sgr_ab_unit     python tb/runner.py lr_sgr_ab        # a2 / b2 of a self-guided box position vs lr_model (20,000 fuzzed boxes)
+run lr_stage_unit      LS_ITERS=40 LS_SEED=3 python tb/runner.py lr_stage_tb_top test_lr_stream   # the same stage with its boundary line store (lr_bstore) fed the deblock stage's blocks
+run lr_stream_unit     LS_ITERS=40 python tb/runner.py lr_stream   # the streaming restoration stage (Wiener, self-guided and no-restoration units) vs lr_model on made-up pictures: stripes, units, borders, bands
 run lf_filt_unit       python tb/runner.py lf_filt          # the deblocking sample filter of the streaming chain vs lf_model (one line across an edge)
 run lf_filt_pipe       LFF_PIPE=1 python tb/runner.py lf_filt   # the same filter in its two-stage form (PIPE = 1): outputs from the stage registers alone
 run lf_stream_unit     TS_SEEDS=2,3,7,8,9,10,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the streaming deblock stage vs lf_model, band by band (seeds 7, 20, 47, 70: samples that depend on the last column's vertical edge)
