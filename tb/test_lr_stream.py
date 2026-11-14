@@ -1,12 +1,13 @@
 """The streaming loop restoration stage (rtl/lr_stream.sv) against lr_model on whole pictures: made-up pictures (a
 CDEF plane and a deblocked plane per plane, any width and height, 4:2:0 / 4:4:4 / 4:2:2 / mono, 8 / 10 / 12 bit) with a
-made-up map of restoration units (Wiener with coefficients in the bitstream's ranges, or none; unit sizes as the
-header allows). The CDEF plane is fed band by band in the order cdef_stream sends it (line segments column by
+made-up map of restoration units (Wiener with coefficients in the bitstream's ranges, self-guided with any parameter
+set and weights in the bitstream's ranges, or none; unit sizes as the header allows). The CDEF plane is fed band by band in the order cdef_stream sends it (line segments column by
 column), the test answers the stage's unit reads and its reads of the deblocked lines around the stripe boundaries,
 and every line segment the stage sends must equal the model's picture: every sample of the coded area exactly once.
 The arithmetic is fuzzed in test_lr_wiener; this test is about the stage's structure (stripes, units, picture
 borders, bands, the column window).
-Env: LS_ITERS (pictures, default 10), LS_SEED, LS_W / LS_H (fix the picture's size), LS_FMT."""
+Env: LS_ITERS (pictures, default 10), LS_SEED, LS_W / LS_H (fix the picture's size), LS_FMT, LS_TYPES (unit types
+drawn from, default "nwwwss": n none, w Wiener, s self-guided)."""
 import os
 import random
 import types
@@ -16,6 +17,7 @@ import cocotb.utils
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge, Timer
 
+import av1_tables as T
 import lr_model as lrm
 
 SBW = 9
@@ -38,7 +40,8 @@ def make_picture(rng):
     hdr = types.SimpleNamespace(BitDepth=bd, FrameHeight=H, UpscaledWidth=W, subsampling_x=sx, subsampling_y=sy, NumPlanes=n,
                                 LoopRestorationSize=[us, uv, uv], FrameRestorationType=[1 if rng.random() < 0.9 else 0 for _ in range(3)],
                                 MiRows=mi_rows, MiCols=mi_cols)
-    cdef = []; dbl = []; lr_type = {}; wien = {}
+    cdef = []; dbl = []; lr_type = {}; wien = {}; sgr_set = {}; sgr_xqd = {}
+    types_ = os.environ.get("LS_TYPES", "nwwwss")
     for p in range(n):
         psx = sx if p else 0; psy = sy if p else 0
         cw = (mi_cols * 4) >> psx; ch = (mi_rows * 4) >> psy
@@ -55,9 +58,17 @@ def make_picture(rng):
         for ur in range(urows):
             for uc in range(ucols):
                 k = (p, ur, uc)
-                lr_type[k] = 1 if rng.random() < 0.75 else 0
+                lr_type[k] = "nws".index(rng.choice(types_))
                 wien[k] = [[rng.randint(-5, 10), rng.randint(-23, 8), rng.randint(-17, 46)] for _ in range(2)]
-    state = types.SimpleNamespace(LrType=lr_type, LrWiener=wien)
+                st = rng.randrange(16)
+                if T.Sgr_Params[st][0] == 0:                # read_lr_unit: the weight of an unused pass is not coded
+                    w0 = 0; w1 = rng.randint(-32, 95)
+                elif T.Sgr_Params[st][2] == 0:
+                    w0 = rng.randint(-96, 31); w1 = max(-32, min(95, 128 - w0))
+                else:
+                    w0 = rng.randint(-96, 31); w1 = rng.randint(-32, 95)
+                sgr_set[k] = st; sgr_xqd[k] = (w0, w1)
+    state = types.SimpleNamespace(LrType=lr_type, LrWiener=wien, LrSgrSet=sgr_set, LrSgrXqd=sgr_xqd)
     return hdr, state, dbl, cdef, fmt
 
 
@@ -85,6 +96,7 @@ async def one_plane(dut, hdr, state, dbl, cdef, post, p, sb_lines, rng, tag, sta
     out = []
     band = sb_lines // 4
     sh_stripe = 64 >> sy; so = 8 >> sy
+    store = hasattr(dut, "wr_valid")                         # lr_stage_tb_top: lr_stream with its boundary line store
 
     async def monitor():
         while True:
@@ -98,14 +110,18 @@ async def one_plane(dut, hdr, state, dbl, cdef, post, p, sb_lines, rng, tag, sta
         while True:
             await FallingEdge(dut.clk)
             pl = int(dut.lrr_plane.value); ur = int(dut.lrr_row.value); uc = int(dut.lrr_col.value)
-            k = int(dut.bl_k.value); c4 = int(dut.bl_col.value)
+            if not store:
+                k = int(dut.bl_k.value); c4 = int(dut.bl_col.value)
             await RisingEdge(dut.clk)
             await Timer(1, "ns")
             key = (pl, ur, uc)
             t = state.LrType.get(key, 0); w = state.LrWiener.get(key, [[0, 0, 0], [0, 0, 0]])
             wv = sum((v & 0x7F) << (7 * i) for i, v in enumerate(w[0])) | (sum((v & 0x7F) << (7 * i) for i, v in enumerate(w[1])) << 21)
             stats["unit_reads"] += 1
-            dut.lrr_rec.value = (t << 62) | (wv << 20) | rng.getrandbits(20)
+            w0, w1 = state.LrSgrXqd.get(key, (0, 0))
+            dut.lrr_rec.value = (t << 62) | (wv << 20) | (state.LrSgrSet.get(key, 0) << 16) | ((w1 & 0xFF) << 8) | (w0 & 0xFF)
+            if store:                                         # the boundary lines come from lr_bstore
+                continue
             b = k * sh_stripe - so
             v = 0
             for i in range(4):
@@ -116,6 +132,17 @@ async def one_plane(dut, hdr, state, dbl, cdef, post, p, sb_lines, rng, tag, sta
                     v |= rng.getrandbits(96) << (96 * i)       # never a line of the picture: must not be used
             dut.bl_rd.value = v
     mon = cocotb.start_soon(monitor()); st = cocotb.start_soon(stores())
+    if store:
+        # what the store holds from the plane before (the same picture's lines, when only the band size changed) is
+        # overwritten with noise, so that a line the store fails to take cannot pass as the old copy of itself
+        per = 16 >> sy; off = 2 >> sy
+        for k in range(1, 5):
+            for ra in (per * k - off - 1, per * k - off):
+                dut.wr_row0.value = ra; dut.wr_row.value = 0
+                for c in range(cols):
+                    dut.wr_valid.value = 1; dut.wr_blk.value = rng.getrandbits(192); dut.wr_col.value = c
+                    await RisingEdge(dut.clk); await Timer(2, "ns")
+        dut.wr_valid.value = 0
     sh = 12 if sy else 16
     for row0 in range(0, hdr.MiRows, band):
         row1 = min(row0 + band, hdr.MiRows)
@@ -131,6 +158,24 @@ async def one_plane(dut, hdr, state, dbl, cdef, post, p, sb_lines, rng, tag, sta
         dut.band_start.value = 1
         await RisingEdge(dut.clk); await Timer(2, "ns")
         dut.band_start.value = 0
+        if store:
+            # the deblock stage's blocks of this band as lf_stream sends them: column by column, the two context rows
+            # of the band above first (rows -2, -1), the band's own last two rows held back for the next band
+            dut.wr_row0.value = row0 >> sy
+            wgap = rng.choice([0.0, 0.2])
+            for c in range(cols):
+                for r in range(0 if first else -2, n_blk if last else n_blk - 2):
+                    yy = y0 + 4 * r
+                    v = 0
+                    for l in range(4):
+                        v |= pack_line(dbl[p][yy + l], c * 4, 4) << (48 * l)
+                    dut.wr_valid.value = 1; dut.wr_blk.value = v; dut.wr_col.value = c; dut.wr_row.value = r & 0x7F
+                    await RisingEdge(dut.clk); await Timer(2, "ns")
+                    if rng.random() < wgap:
+                        dut.wr_valid.value = 0; dut.wr_blk.value = rng.getrandbits(192)
+                        await RisingEdge(dut.clk); await Timer(2, "ns")
+            dut.wr_valid.value = 0
+            stats["store_blocks"] += cols * len(range(0 if first else -2, n_blk if last else n_blk - 2))
         gap = rng.choice([0.0, 0.0, 0.3])
         t_start = cocotb.utils.get_sim_time("ns")
         for ci in range(nseg):
@@ -184,6 +229,9 @@ async def one_plane(dut, hdr, state, dbl, cdef, post, p, sb_lines, rng, tag, sta
     stats["changed"] += sum(1 for y in range(ch) for x in range(cw) if post[p][y][x] != cdef[p][y][x])
     stats["planes"] += 1
     stats["planes_off"] += not en
+    for (pp, ur, uc), t in state.LrType.items():
+        if pp == p and en:
+            stats["units_" + "nws"[t]] += 1
     stats["stripes"] += (pl_h + so + sh_stripe - 1) // sh_stripe
     stats["odd_w"] += pl_w != cw
     stats["odd_h"] += pl_h != ch
@@ -196,13 +244,15 @@ async def lr_stream_vs_model(dut):
     rng = random.Random(int(os.environ.get("LS_SEED", "1")))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     for s in ("band_start", "in_valid", "in_line", "in_y", "row0", "pic_rows", "n_blk", "n_col", "first_band", "last_band", "bit_depth", "en", "plane",
-              "ssx", "ssy", "pl_w", "pl_h", "u_log2", "u_rows", "u_cols", "lrr_rec", "bl_rd"):
+              "ssx", "ssy", "pl_w", "pl_h", "u_log2", "u_rows", "u_cols", "lrr_rec"):
+        getattr(dut, s).value = 0
+    for s in ("bl_rd",) if not hasattr(dut, "wr_valid") else ("wr_valid", "wr_blk", "wr_col", "wr_row", "wr_row0"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(pictures=0, planes=0, planes_off=0, lines=0, changed=0, stripes=0, odd_w=0, odd_h=0, end_below_stripe=0, unit_reads=0, nogap_clocks=0, nogap_lines=0)
+    stats = dict(pictures=0, planes=0, planes_off=0, lines=0, changed=0, stripes=0, odd_w=0, odd_h=0, end_below_stripe=0, units_n=0, units_w=0, units_s=0, unit_reads=0, store_blocks=0, nogap_clocks=0, nogap_lines=0)
     for it in range(iters):
         hdr, state, dbl, cdef, fmt = make_picture(rng)
         m = lrm.LoopRestoration(hdr, state, dbl, cdef)
@@ -218,7 +268,10 @@ async def lr_stream_vs_model(dut):
     del stats["unit_reads"]
     if stats["nogap_lines"]:
         stats["clocks_per_line"] = round(stats["nogap_clocks"] / stats["nogap_lines"], 3)
+    dut._log.info(f"stats: {stats}")
     assert stats["changed"] > 0, stats
     if not (os.environ.get("LS_W") or os.environ.get("LS_H")):  # a fixed size (rate measurements) has not the borders
         assert stats["odd_w"] > 0 and stats["odd_h"] > 0 and stats["end_below_stripe"] > 0, stats
+    if not os.environ.get("LS_TYPES"):
+        assert stats["units_w"] > 20 and stats["units_s"] > 20 and stats["units_n"] > 5, stats
     dut._log.info(f"OK: {stats}")

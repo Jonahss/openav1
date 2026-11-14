@@ -1,6 +1,6 @@
 // Loop restoration stage of the streaming filter chain (docs/filter-chain.md) for one plane, one superblock row (band)
-// at a time. First cut: Wiener units and units without restoration; a self-guided unit is passed through unchanged
-// (not correct yet), and super-resolution is not handled.
+// at a time. Wiener units at a line a clock; self-guided units correct but slow (below); super-resolution is not
+// handled.
 //
 // In: the CDEF stage's output as cdef_stream sends it: line segments of 8 samples (4 in a horizontally subsampled
 // plane), segment column by segment column, each column's lines top to bottom. A band brings the lines from 16 above
@@ -23,12 +23,20 @@
 // (the lines not yet sent): a band's output runs from three lines above its first input line to three above its last.
 // This relies on the picture's geometry: a band's input never ends on a stripe's last line or within three lines
 // after a stripe's first (CDEF's band ends 8 lines before a stripe boundary, 4 in a subsampled plane).
+// Self-guided units (correctness first): the same pushes, but the line's 14 samples go to a sequential engine
+// instead of the horizontal pass and the column waits for it. The engine keeps the last six lines; per line it
+// walks the 14 columns (five squares and the column sums of both radii a clock), slides the box sums over them and
+// sends the ten box positions x - 1 .. x + 8 through two lr_sgr_ab (one a pass); lr_sgr_f then gives the line three
+// above the newest from the three newest rows of a2 / b2. About 26 clocks a line. Between bands the six newest lines
+// are carried instead of the Wiener intermediates and pushed again at the column's start to rebuild the rows.
 // Out: line segments as they came in: first 4x4 column, line counted from the band's first line (negative above it).
 // Rate: one line a clock inside a column; a stripe boundary costs eight more (two unit reads, six extra lines), a
-// column one idle clock, and the arrival side six clocks a column and boundary for the copy.
+// column one idle clock, and the arrival side six clocks a column and boundary for the copy. A self-guided line
+// takes about 26 clocks.
 // The band's parameters are held from band_start to band_done.
 module lr_stream
   import syn_pkg::*;
+  import lr_pkg::*;
 #(
     parameter int CW = 10                    // log2 of the most segment columns / 4x4 columns
 ) (
@@ -169,8 +177,13 @@ module lr_stream
     end
 
     // ---------------------------------------------------------------- one segment column, line by line
-    typedef enum logic [3:0] {G_IDLE, G_UNIT, G_UNIT2, G_REP0, G_TOP, G_BPRE, G_LINE, G_REP, G_BOT, G_BPOST, G_DRAIN} gst_t;
-    gst_t          gst, g_after, g_post;
+    typedef enum logic [3:0] {G_IDLE, G_UNIT, G_UNIT2, G_RPL, G_REP0, G_TOP, G_BPRE, G_LINE, G_REP, G_BOT, G_BPOST, G_DRAIN} gst_t;
+    gst_t          gst, g_after, g_post, g_disp;
+    logic          g_sgr;                    // the stripe's unit is self-guided
+    logic [3:0]    g_set;
+    logic [15:0]   g_xqd;
+    logic [2:0]    g_rc;                     // carried line pushed again
+    logic          sg_busy, sg_done;         // the self-guided engine has a line
     logic [YW-1:0] g_y, g_y1;                // the next line of the band to push
     logic [1:0]    g_cnt;
     logic [3:0]    g_dr;
@@ -200,6 +213,8 @@ module lr_stream
         if (g_lastl) g_after = G_IDLE;
         else if (g_y1 == pl_h || (g_y1 < pl_h && g_end)) g_after = G_UNIT;
         else g_after = G_LINE;
+        // before line g_y: the plane's first line three times, the lines below the plane apart, a stripe's top lines
+        g_disp = (g_y == '0) ? G_REP0 : (g_y == pl_h) ? G_BPRE : (g_y < pl_h && g_start) ? G_TOP : G_LINE;
         u_r = (g_y + so) >> u_log2;
         u_c = (ssx ? YW'(g_col) << 2 : YW'(g_col) << 3) >> u_log2;
         lrr_plane = plane;
@@ -215,6 +230,10 @@ module lr_stream
         logic          first;                // the column's first push
         logic          save;                 // the column's last line of a band: carry the lines
         logic          wien;
+        logic          sgr;                  // the line goes to the self-guided engine
+        logic          rpl;                  // a carried line pushed again (self-guided): rebuilds the rows only
+        logic          par;                  // the line's parity in the plane; read when the line makes the engine give a
+                                             // line (the one three above it), so never from a seed or a carried line
         logic [20:0]   vc;
         logic [3:0]    nv;                   // the segment's samples inside the plane
         logic [CW-1:0] col;
@@ -225,20 +244,23 @@ module lr_stream
     always_comb begin
         is = '0; is_a = 8'(g_y - ya);
         case (gst)
-            G_REP0:  begin is.v = 1'b1; is_a = 8'd0; is.seed = g_cnt == 2'd0; end
-            G_TOP:   begin is.v = 1'b1; is_a = BL0 + {4'd0, j_top, (g_cnt == 2'd2) ? 2'd1 : 2'd0}; is.seed = g_cnt == 2'd0; end
+            G_RPL:   begin is.v = 1'b1; is.rpl = 1'b1; is.par = g_rc[0]; end
+            G_REP0:  begin is.v = 1'b1; is_a = 8'd0; is.seed = g_cnt == 2'd0; is.par = !g_cnt[0]; end
+            G_TOP:   begin is.v = 1'b1; is_a = BL0 + {4'd0, j_top, (g_cnt == 2'd2) ? 2'd1 : 2'd0}; is.seed = g_cnt == 2'd0; is.par = !g_cnt[0]; end
             G_BPRE:  begin is.v = 1'b1; is.seed = g_cnt == 2'd0; end
-            G_LINE:  is.v = 1'b1;
-            G_REP:   is.v = 1'b1;
-            G_BOT:   begin is.v = 1'b1; is_a = BL0 + {4'd0, j_bot, (g_cnt == 2'd0 || g_y + YW'(2) >= pl_h) ? 2'd2 : 2'd3}; end
+            G_LINE:  begin is.v = 1'b1; is.par = g_y[0]; end
+            G_REP:   begin is.v = 1'b1; is.par = !(g_y[0] ^ g_cnt[0]); end
+            G_BOT:   begin is.v = 1'b1; is_a = BL0 + {4'd0, j_bot, (g_cnt == 2'd0 || g_y + YW'(2) >= pl_h) ? 2'd2 : 2'd3}; is.par = !(g_y[0] ^ g_cnt[0]); end
             G_BPOST: is.v = 1'b1;
             default: ;
         endcase
+        if (sg_busy) begin is.v = 1'b0; is.seed = 1'b0; is.rpl = 1'b0; end          // the column waits for the engine
         is_endc = is.v && g_lastl && ((gst == G_LINE && !g_haspost) || ((gst == G_REP || gst == G_BOT || gst == G_BPOST) && g_cnt == 2'd2));
-        is.first = is.v && g_new;
-        is.load = is.v && g_new && !first_band;
+        is.first = is.v && g_new && !is.rpl;
+        is.load = is.v && g_new && !is.rpl && !first_band;
         is.save = is_endc && !last_band;
         is.wien = g_wien;
+        is.sgr = g_sgr;
         is.vc = g_vc;
         is.nv = (g_col == c_w) ? 4'({1'b0, lw}) + 4'd1 : segw;
         is.col = g_col[CW-1:0];
@@ -246,9 +268,12 @@ module lr_stream
     end
     always_ff @(posedge clk) begin
         band_done <= 1'b0;
-        if (rst || band_start) begin gst <= G_IDLE; g_col <= '0; g_new <= 1'b0; g_cnt <= '0; g_dr <= '0; end
-        else begin
-            if (is.v) g_new <= 1'b0;
+        if (rst || band_start) begin gst <= G_IDLE; g_col <= '0; g_new <= 1'b0; g_cnt <= '0; g_dr <= '0; sg_busy <= 1'b0; end
+        else if (sg_busy) begin
+            if (sg_done) sg_busy <= 1'b0;
+        end else begin
+            if (is.v && !is.rpl) g_new <= 1'b0;
+            if (is.v && is.sgr) sg_busy <= 1'b1;
             case (gst)
                 G_IDLE: if (act && g_col < n_seg) begin
                             if (a_col > g_col + (CW+1)'(1) || a_col == n_seg) begin g_y <= ya; g_new <= 1'b1; gst <= G_UNIT; end
@@ -256,9 +281,16 @@ module lr_stream
                 G_UNIT: gst <= G_UNIT2;                                           // the unit's address is out
                 G_UNIT2: begin
                     g_wien <= en && (g_y < pl_h) && (lrr_rec.lr_type == 2'd1);
+                    g_sgr <= en && (g_y < pl_h) && (lrr_rec.lr_type == 2'd2);
                     g_vc <= lrr_rec.wiener[0 +: 21]; g_hc <= lrr_rec.wiener[21 +: 21];
-                    g_cnt <= 2'd0;
-                    gst <= (g_y == '0) ? G_REP0 : (g_y == pl_h) ? G_BPRE : (g_y < pl_h && g_start) ? G_TOP : G_LINE;
+                    g_set <= lrr_rec.sgr_set; g_xqd <= lrr_rec.xqd;
+                    g_cnt <= 2'd0; g_rc <= 3'd0;
+                    // a self-guided column that continues from the band above: its six carried lines first
+                    gst <= (g_new && !first_band && en && (g_y < pl_h) && (lrr_rec.lr_type == 2'd2)) ? G_RPL : g_disp;
+                end
+                G_RPL: begin
+                    g_rc <= g_rc + 3'd1;
+                    if (g_rc == 3'd5) gst <= g_disp;
                 end
                 G_REP0, G_TOP, G_BPRE: begin
                     g_cnt <= g_cnt + 2'd1;
@@ -290,8 +322,11 @@ module lr_stream
     assign busy = act;
 
     // ---------------------------------------------------------------- the line's samples with the picture's side borders
+    localparam int SRW = 6 * 128, RSW = 3 * 96, PXL = 6 * 168;
+    logic [PXL+RSW-1:0] cy_q;                // the column's carried lines, read at the column's start
     logic [20:0]  p1_hc, p2_hc;
     logic [1:0]   p1_slot;
+    logic [2:0]   p1_rc;
     logic         p1_c0, p1_last, p1_nxl;
     logic [95:0]  w_l, w_m, w_r;
     logic [3:0]   nvr;
@@ -313,9 +348,9 @@ module lr_stream
         end
     end
     always_ff @(posedge clk) begin
-        p1 <= is; p1_hc <= g_hc; p1_slot <= g_col[1:0];
+        p1 <= is; p1_hc <= g_hc; p1_slot <= g_col[1:0]; p1_rc <= g_rc;
         p1_c0 <= g_col == '0; p1_last <= g_col == c_w; p1_nxl <= g_col + (CW+1)'(1) == c_w;
-        p2 <= p1; p2_hc <= p1_hc; px2 <= px_c; raw2 <= w_m;
+        p2 <= p1; p2_hc <= p1_hc; px2 <= p1.rpl ? cy_q[32'(3'd5 - p1_rc) * 168 +: 168] : px_c; raw2 <= w_m;
         p3 <= p2; raw3 <= raw2;
         p4 <= p3; raw4 <= raw3;
         if (rst) begin p1.v <= 1'b0; p2.v <= 1'b0; p3.v <= 1'b0; p4.v <= 1'b0; end
@@ -324,13 +359,81 @@ module lr_stream
     // ---------------------------------------------------------------- horizontal pass, the last lines, vertical pass
     logic            h_v;
     logic [8*21-1:0] h_out;
-    lr_wiener_h #(.N(8)) u_h (.clk, .rst, .v_in(p2.v), .bd(bit_depth), .coef(p2_hc), .px(px2), .v_out(h_v), .out(h_out));
+    lr_wiener_h #(.N(8)) u_h (.clk, .rst, .v_in(p2.v && !p2.sgr), .bd(bit_depth), .coef(p2_hc), .px(px2), .v_out(h_v), .out(h_out));
 
-    localparam int SRW = 6 * 128, RSW = 3 * 96;
-    // carried between bands, per column: the six newest intermediate lines (16 bits hold them at every bit depth)
-    // and the three newest source lines
-    (* ram_style = "block" *) logic [SRW+RSW-1:0] cy_mem [1 << CW];
-    logic [SRW+RSW-1:0] cy_q, cy_wd;
+    // ---------------------------------------------------------------- self-guided: the engine
+    logic [167:0]  wl [6];                   // the last six lines (0 the newest), 14 samples each
+    tag_t          sgt;                      // the line in the engine
+    logic [95:0]   sg_raw;
+    logic          sg_col;                   // walking the columns
+    logic [3:0]    sg_i;
+    logic [14:0]   c5b, c3b;
+    logic [26:0]   c5a, c3a;
+    logic [14:0]   h5b [5], h3b [4];         // the last column sums (0 the newest)
+    logic [26:0]   h5a [5], h3a [4];
+    logic          h_pv, bx_v;               // a box position is complete in the column sums / in the box sums
+    logic [29:0]   bx5a, bx3a;
+    logic [17:0]   bx5b, bx3b;
+    logic [15:0]   sg_sp;
+    logic          ab_v, ab_v1;
+    logic [8:0]    ab_a0, ab_a1;
+    logic [21:0]   ab_b0, ab_b1;
+    logic [3:0]    ab_k;
+    logic [309:0]  abn [2];                  // the row being formed: [pass], position k at bits k * 31
+    logic [309:0]  abr [2][2];               // [pass][0 = the row before it, 1 = the one before that]
+    assign sg_sp = sgr_params(g_set);
+    always_comb begin
+        c5b = '0; c5a = '0; c3b = '0; c3a = '0;
+        for (int r = 0; r < 5; r++) begin
+            logic [11:0] c; logic [23:0] q;
+            c = wl[r][sg_i * 12 +: 12]; q = 24'(c) * 24'(c);
+            c5b = c5b + 15'(c); c5a = c5a + 27'(q);
+            if (r >= 1 && r <= 3) begin c3b = c3b + 15'(c); c3a = c3a + 27'(q); end
+        end
+    end
+    always_ff @(posedge clk) begin
+        sg_done <= 1'b0;
+        if (p2.v && p2.sgr) begin                                  // a line arrives
+            wl[0] <= px2; for (int r = 1; r < 6; r++) wl[r] <= wl[r - 1];
+            sgt <= p2; sg_raw <= raw2;
+            sg_col <= 1'b1; sg_i <= 4'd0; ab_k <= 4'd0;
+        end
+        h_pv <= 1'b0;
+        if (sg_col) begin
+            h5b[0] <= c5b; h5a[0] <= c5a; h3b[0] <= c3b; h3a[0] <= c3a;
+            for (int k = 1; k < 5; k++) begin h5b[k] <= h5b[k - 1]; h5a[k] <= h5a[k - 1]; end
+            for (int k = 1; k < 4; k++) begin h3b[k] <= h3b[k - 1]; h3a[k] <= h3a[k - 1]; end
+            h_pv <= sg_i >= 4'd4;                                  // columns i - 4 .. i are in: the box of position i - 4
+            sg_i <= sg_i + 4'd1;
+            if (sg_i == 4'd13) sg_col <= 1'b0;
+        end
+        bx_v <= h_pv;
+        bx5b <= 18'(h5b[0]) + 18'(h5b[1]) + 18'(h5b[2]) + 18'(h5b[3]) + 18'(h5b[4]);
+        bx5a <= 30'(h5a[0]) + 30'(h5a[1]) + 30'(h5a[2]) + 30'(h5a[3]) + 30'(h5a[4]);
+        bx3b <= 18'(h3b[1]) + 18'(h3b[2]) + 18'(h3b[3]);           // radius 1: the three columns around the position
+        bx3a <= 30'(h3a[1]) + 30'(h3a[2]) + 30'(h3a[3]);
+        if (ab_v) begin
+            abn[0][ab_k * 31 +: 31] <= {ab_a0, ab_b0};
+            abn[1][ab_k * 31 +: 31] <= {ab_a1, ab_b1};
+            ab_k <= ab_k + 4'd1;
+            if (ab_k == 4'd9) sg_done <= 1'b1;
+        end
+        if (sg_done) for (int p = 0; p < 2; p++) begin abr[p][1] <= abr[p][0]; abr[p][0] <= abn[p]; end
+        if (rst) begin sg_col <= 1'b0; h_pv <= 1'b0; bx_v <= 1'b0; sg_done <= 1'b0; end
+    end
+    lr_sgr_ab u_ab0 (.clk, .rst, .v_in(bx_v), .bd(bit_depth), .r1(1'b0), .s(sgr_s(g_set, 1'b0)), .box_a(bx5a), .box_b(bx5b),
+                     .v_out(ab_v), .a2(ab_a0), .b2(ab_b0));
+    lr_sgr_ab u_ab1 (.clk, .rst, .v_in(bx_v), .bd(bit_depth), .r1(1'b1), .s(sgr_s(g_set, 1'b1)), .box_a(bx3a), .box_b(bx3b),
+                     .v_out(ab_v1), .a2(ab_a1), .b2(ab_b1));
+
+    // ---------------------------------------------------------------- the last lines, vertical pass
+    // carried between bands, per column: the six newest intermediate lines (16 bits hold them at every bit depth; a
+    // self-guided column: its six newest lines of 14 samples) and the three newest source lines
+    (* ram_style = "block" *) logic [PXL+RSW-1:0] cy_mem [1 << CW];
+    logic [PXL+RSW-1:0] cy_wd;
+    tag_t               ev;                  // the line that enters the count: from the horizontal pass or the engine
+    logic               ev_v, sg_ev, fire_s;
+    logic [95:0]        ev_raw;
     logic               cy_we;
     logic [SRW-1:0]     sr, sr_b, sr_n;      // line j (0 the newest) at bits j * 128
     logic [RSW-1:0]     rs, rs_b, rs_n;
@@ -341,29 +444,41 @@ module lr_stream
     logic [YW-1:0]      oy, oy_b;            // the line the vertical pass gives next
     always_comb begin
         for (int l = 0; l < 8; l++) h16[l * 16 +: 16] = h_out[l * 21 +: 16];
-        sr_b = p4.load ? cy_q[SRW-1:0] : sr;
-        rs_b = p4.load ? cy_q[SRW +: RSW] : rs;
+        sg_ev = sg_done && !sgt.rpl;
+        ev = sg_ev ? sgt : p4;
+        ev_v = sg_ev || (p4.v && !p4.sgr);
+        ev_raw = sg_ev ? sg_raw : raw4;
+        sr_b = ev.load ? cy_q[SRW-1:0] : sr;
+        rs_b = ev.load ? cy_q[PXL +: RSW] : rs;
         sr_n = {sr_b[SRW-129:0], h16};
-        rs_n = {rs_b[RSW-97:0], raw4};
+        rs_n = {rs_b[RSW-97:0], ev_raw};
         for (int r = 0; r < 6; r++)
             for (int l = 0; l < 8; l++) hv[(r * 8 + l) * 21 +: 21] = 21'(signed'(sr_b[((5 - r) * 8 + l) * 16 +: 16]));
         for (int l = 0; l < 8; l++) hv[(48 + l) * 21 +: 21] = 21'(signed'(h16[l * 16 +: 16]));
-        fill_b = p4.load ? 3'd6 : fill;
-        fill_n = p4.seed ? 3'd1 : (fill_b == 3'd7) ? 3'd7 : fill_b + 3'd1;
-        fire = p4.v && (fill_n == 3'd7);
-        oy_b = p4.first ? (first_band ? YW'(0) : ya - YW'(3)) : oy;
-        cy_we = p4.v && p4.save;
-        cy_wd = {rs_n, sr_n};
+        fill_b = ev.load ? 3'd6 : fill;
+        fill_n = ev.seed ? 3'd1 : (fill_b == 3'd7) ? 3'd7 : fill_b + 3'd1;
+        fire = ev_v && !sg_ev && (fill_n == 3'd7);
+        fire_s = sg_ev && (fill_n == 3'd7);
+        oy_b = ev.first ? (first_band ? YW'(0) : ya - YW'(3)) : oy;
+        cy_we = ev_v && ev.save;
+        cy_wd = sg_ev ? {rs_n, wl[5], wl[4], wl[3], wl[2], wl[1], wl[0]} : {rs_n, (PXL-SRW)'(0), sr_n};
     end
     always_ff @(posedge clk) begin
-        if (cy_we) cy_mem[p4.col] <= cy_wd;
-        if (is.load) cy_q <= cy_mem[g_col[CW-1:0]];
-        if (p4.v) begin sr <= sr_n; rs <= rs_n; fill <= fill_n; oy <= oy_b + YW'(fire); end
+        if (cy_we) cy_mem[ev.col] <= cy_wd;
+        if (gst == G_UNIT && g_new) cy_q <= cy_mem[g_col[CW-1:0]];
+        if (ev_v) begin sr <= sr_n; rs <= rs_n; fill <= fill_n; oy <= oy_b + YW'(fire || fire_s); end
         if (rst) fill <= 3'd0;
     end
     logic            v_v;
     logic [95:0]     v_out;
     lr_wiener_v #(.N(8)) u_v (.clk, .rst, .v_in(fire), .bd(bit_depth), .coef(p4.vc), .hv, .v_out(v_v), .out(v_out));
+    // self-guided: the line three above the engine's newest, from the rows of a2 / b2 above, of and below it
+    logic            f_v;
+    logic [95:0]     f_out;
+    lr_sgr_f #(.N(8)) u_f (.clk, .rst, .v_in(fire_s), .bd(bit_depth), .odd(!sgt.par), .en0(sg_sp[15:14] != 2'd0), .en1(sg_sp[6:5] != 2'd0),
+                           .w0(g_xqd[7:0]), .w1(g_xqd[15:8]),
+                           .ab0_m(abr[0][1]), .ab0_c(abr[0][0]), .ab0_p(abn[0]), .ab1_m(abr[1][1]), .ab1_c(abr[1][0]), .ab1_p(abn[1]),
+                           .pix(rs_b[2 * 96 +: 96]), .v_out(f_v), .out(f_out));
 
     // ---------------------------------------------------------------- out: the filtered samples inside the plane of a Wiener unit, else the source
     typedef struct packed {
@@ -373,17 +488,18 @@ module lr_stream
         logic [YW-1:0] y;
         logic [95:0]   raw;
     } otag_t;
-    otag_t q5, q6;
+    otag_t q5, q6, q7, qo;
     always_ff @(posedge clk) begin
-        q5 <= '{wien: p4.wien, nv: p4.nv, col: p4.col, y: oy_b, raw: rs_b[2 * 96 +: 96]};
-        q6 <= q5;
+        q5 <= '{wien: ev.wien || ev.sgr, nv: ev.nv, col: ev.col, y: oy_b, raw: rs_b[2 * 96 +: 96]};
+        q6 <= q5; q7 <= q6;
     end
     always_comb begin
-        out_valid = v_v;
+        out_valid = v_v || f_v;
+        qo = f_v ? q7 : q6;                  // the self-guided line leaves a clock later than a Wiener line
         for (int l = 0; l < 8; l++)
-            out_line[l * 12 +: 12] = (q6.wien && 4'(l) < q6.nv) ? v_out[l * 12 +: 12] : q6.raw[l * 12 +: 12];
+            out_line[l * 12 +: 12] = !(qo.wien && 4'(l) < qo.nv) ? qo.raw[l * 12 +: 12] : f_v ? f_out[l * 12 +: 12] : v_out[l * 12 +: 12];
         out_n4 = n4;
-        out_col = ssx ? q6.col : CW'(q6.col << 1);
-        out_y = 9'(q6.y - y0);
+        out_col = ssx ? qo.col : CW'(qo.col << 1);
+        out_y = 9'(qo.y - y0);
     end
 endmodule
