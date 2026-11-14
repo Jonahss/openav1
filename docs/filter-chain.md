@@ -241,3 +241,37 @@ Plan for the stage around them (the luma part is built as described):
   8x8 block go into a small memory that the chroma stages read (they wait for luma).
 - Out: 8x8 blocks (or their lines) in column order to the super-res / restoration stage, with the deblocked stripe
   boundary lines the restoration stage needs taken from the same stream.
+
+## Restoration stage: built so far (2026-11-14, branch `lr-chain`, simulation only)
+
+- `rtl/lr_wiener_h.sv`, `rtl/lr_wiener_v.sv` (`lr_wiener_pkg.sv`): the Wiener filter's horizontal and vertical
+  passes for N samples of a line, two clocks each, lifted from `lr_top`. Suites `lr_wiener_unit` (8 lanes),
+  `lr_wiener_4`.
+- `rtl/lr_stream.sv`: the stage for one plane, Wiener units and units without restoration. It takes the CDEF stage's
+  line segments as they come (segment column by segment column, top to bottom):
+  - four rotating column buffers (block RAM); segment column C is filtered when column C + 1 has arrived, since a
+    line's horizontal pass reads three samples either side;
+  - the column's lines go through `lr_wiener_h` one a clock; the last six intermediate lines sit in a shift
+    register and `lr_wiener_v` gives the line three above the newest;
+  - the stripe rule becomes pushes of extra lines: before a stripe's first line the deblocked lines two and one
+    above it (the shift register starts afresh), after its last line the two deblocked lines below; the plane's
+    first and last lines are repeated three times. The four deblocked lines around a stripe boundary come from a
+    line store through a port (the store itself, fed from the deblock stage's output, is not built; the test
+    answers the port from the deblocked picture);
+  - the unit record (type, coefficients) is read from `mi_store`'s port at every stripe start;
+  - between bands it carries, per column, the six newest intermediate lines (16 bits a sample hold them at every
+    bit depth) and the three newest source lines: 1056 bits a segment column;
+  - samples and lines of the coded area outside the plane leave unchanged.
+- Its test (`tb/test_lr_stream.py`, suite `lr_stream_unit`) makes up pictures (CDEF and deblocked planes, any width
+  and height, 4:2:0 / 4:4:4 / 4:2:2 / mono, 8 / 10 / 12 bit) and unit maps, feeds them band by band for 64 and 128
+  line superblocks, and requires every sample of the coded area once and equal to `lr_model`. 17 deliberate faults
+  fail. One (the clamp of the lines below a stripe when the plane ends one line below the boundary) passed at first:
+  no picture had such a height; the test now draws heights around the stripe boundaries and counts them.
+- Rate, measured on 960-wide 4:2:0 pictures with the input never held back: 1.3 clocks a line over the three
+  planes (a luma segment line is 8 samples, a chroma one 4). A stripe boundary costs eight clocks a column (two for
+  the unit read, six extra lines), the copy of the boundary lines six on the arrival side.
+- Synthesis (out of context, 10 ns, 1024 segment columns): 3.4 ns of slack, 3,106 LUTs, 2,005 registers, 126 DSP
+  blocks, 35.5 block RAM tiles (30 of them the carried lines; half would do for 4K luma's 480 columns). The worst
+  path is the carried lines' memory into the vertical pass's multipliers.
+- Not done: self-guided units (they pass through unchanged, which is wrong for them), super-resolution in front of
+  the stage, the boundary line store, output back-pressure.
