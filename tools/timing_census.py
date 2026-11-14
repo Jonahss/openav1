@@ -10,6 +10,7 @@ def blk(pin):
     p = re.sub(r"^.*?/u/", "", p)
     p = re.sub(r"\[\d+\]", "", p)
     parts = [x for x in p.split("/") if not re.search(r"_reg(_|$)", x)]     # memory / register cells are not blocks
+    if not parts: return "(top)"                                    # an endpoint with no block path (a top-level register)
     if parts[0] != "u_dec": return "/".join(parts[:2])
     return "/".join(parts[1:1 + depth]) or "u_dec"
 g = defaultdict(list)
