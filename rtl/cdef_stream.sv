@@ -160,7 +160,7 @@ module cdef_stream
     logic [5*12*12-1:0] nb;
     logic [5*12-1:0]    nbok;
     logic signed [MIW+3:0] y_top;            // the block's first line in the picture
-    assign y_top = ($signed({2'b0, row0}) + (MIW+2)'(p_r)) <<< 2;
+    assign y_top = ((MIW+4)'($signed({2'b0, row0})) + (MIW+4)'(p_r)) <<< 2;
     always_comb begin
         for (int rr = 0; rr < 5; rr++)
             for (int cc = 0; cc < 12; cc++) begin
