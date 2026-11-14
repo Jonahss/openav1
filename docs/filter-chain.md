@@ -386,5 +386,30 @@ Plan for the stage around them (the luma part is built as described):
   straight to DDR replaces it later.
 - Mode info for three readers needs no new module: three `mi_store` written alike, as in the test wrappers;
   synthesis drops what an instance's unconnected ports leave unused.
-- Not done: super-resolution between CDEF and restoration, the writer to DDR, and the switch in `dec_top` (the
-  sequencer with one cursor, the release of finished rows to the flush, the holds).
+- Not done here: the writer to DDR. The switch in `dec_top` and super-resolution have their own sections below.
+
+## Super-resolution in the chain (2026-11-14, simulation only)
+
+Upscaling (7.16) is horizontal and works line by line, so it sits where restoration's two inputs pass: on CDEF's
+lines and on the deblocked boundary lines. Behind it everything is in the upscaled picture's columns.
+
+- `rtl/sr_stream.sv`: line segments in, column by column, line segments out at the upscaled picture's columns.
+  An output sample is an 8-tap filter around a source position that advances by at most one sample, so the 8 (4)
+  samples of an output column read at most 15 (11) neighbouring input samples: three input columns of 8, or four of
+  4. Arriving columns go into six rotating column buffers; an output column is set up lane by lane (its source
+  position, filter phase and eight clamped tap positions, a clock a lane), then its lines run one a clock through
+  the picks, the products, the sum, the rounding and the clamp. The two divisions for the step and the first
+  position use `sr_top`'s sequential divider, redone at every band. Without super-resolution the stage is wires.
+  Suite `sr_stream_unit`: made-up bands against `superres_model.upscale_row`, every denominator 9 to 16, both
+  segment widths, 1 to 150 lines a column, gaps on the input and holds on the output; 22 faults, all fail.
+- `rtl/lr_bconv.sv`: picks the boundary lines out of the deblock stage's blocks and sends them as line segments
+  with a tag (boundary, line), so that the same upscaler can take them; `lr_bstore` now stores segments by that
+  tag. Two slips of mine, both found by the tests: the converter kept four pending line pairs a column where a
+  128-line last band has five (six are possible), and the upscaler stayed busy in a band that brings no boundary
+  line at all (4:2:0 chroma's first band), so that band never ended.
+- In `fc_plane`: CDEF's FIFO -> `sr_stream` -> `lr_stream`, and blocks -> `lr_bconv` -> `sr_stream` -> `lr_bstore`.
+- Tests: a decoded frame is taken as the downscaled picture of a super-resolution frame (an upscaled width and a
+  denominator are drawn, and the restoration units, which live in the upscaled picture, are drawn afresh), and the
+  chain's output is compared with deblock -> CDEF -> `superres_model` -> `lr_model` inside the upscaled picture.
+  Suites `fc_plane_sr`, `fc_top_sr`, `fc_top_sr_odd` (4:2:0, 4:4:4, 4:2:2, mono; the pass with the filters switched
+  off as well).
