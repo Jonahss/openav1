@@ -1,5 +1,5 @@
-// Test wrapper: lr_stream with its boundary line store. The test writes the deblock stage's blocks (wr_*) instead of
-// answering the boundary port.
+// Test wrapper: lr_stream with its boundary line store and the converter in front of it. The test sends the deblock
+// stage's blocks (wr_*) instead of answering the boundary port.
 module lr_stage_tb_top
   import syn_pkg::*;
   import lr_pkg::*;
@@ -31,8 +31,13 @@ module lr_stage_tb_top
     output logic [1:0]      lrr_plane,
     output logic [SBW-1:0]  lrr_row, lrr_col,
     input  lr_rec_t         lrr_rec,
+    // the deblock stage's blocks, through lr_bconv: its own band (the test also runs bands of noise through it)
+    input  logic            wr_start,
     input  logic [MIW-1:0]  wr_row0,
+    input  logic [5:0]      wr_n_blk,
+    input  logic            wr_last_band,
     input  logic            wr_valid,
+    output logic            wr_ready,
     input  logic [191:0]    wr_blk,
     input  logic [CW-1:0]   wr_col,
     input  logic signed [6:0] wr_row,
@@ -46,6 +51,13 @@ module lr_stage_tb_top
     logic [SBW:0]   bl_k;
     logic [CW-1:0]  bl_col;
     logic [383:0]   bl_rd;
+    logic           bc_v, bc_last;
+    logic [95:0]    bc_line;
+    logic [8:0]     bc_tag;
     lr_stream #(.CW(CW)) u_lr (.*);
-    lr_bstore #(.CW(CW)) u_bs (.*);
+    lr_bconv #(.CW(CW)) u_bc (.clk, .rst, .ssx, .ssy, .band_start(wr_start), .row0(wr_row0), .n_blk(wr_n_blk), .last_band(wr_last_band),
+                              .in_valid(wr_valid), .in_ready(wr_ready), .in_blk(wr_blk), .in_col(wr_col), .in_row(wr_row),
+                              .out_valid(bc_v), .out_ready(1'b1), .out_line(bc_line), .out_tag(bc_tag), .out_last(bc_last));
+    lr_bstore #(.CW(CW)) u_bs (.clk, .rst, .ssx, .band_start(wr_start), .wr_valid(bc_v), .wr_line(bc_line), .wr_tag(bc_tag), .wr_last(bc_last),
+                               .bl_k, .bl_col, .bl_rd);
 endmodule

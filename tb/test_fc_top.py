@@ -24,7 +24,8 @@ import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 from host_regs import LF_FIELDS, lf_vals, CDEF_FIELDS, cdef_vals   # noqa: E402
 from test_lf_stage import blk_of, load_mi   # noqa: E402
-from test_fc_plane import load_units    # noqa: E402
+from test_fc_plane import load_units, models, with_superres    # noqa: E402
+import zlib                             # noqa: E402
 
 
 async def one_size(dut, hdr, pre, post, sb_lines, tag, stats):
@@ -32,6 +33,10 @@ async def one_size(dut, hdr, pre, post, sb_lines, tag, stats):
     sxy = [((hdr.subsampling_x if p else 0), (hdr.subsampling_y if p else 0)) for p in range(n)]
     cols = [len(range(0, hdr.MiCols, 1 << sxy[p][0])) for p in range(n)]
     W = [cols[p] * 4 for p in range(n)]; H = [(hdr.MiRows * 4) >> sxy[p][1] for p in range(n)]
+    sr = bool(getattr(hdr, "use_superres", 0))
+    up_w = [lrm.round2(hdr.UpscaledWidth, sxy[p][0]) for p in range(n)]; pl_h = [lrm.round2(hdr.FrameHeight, sxy[p][1]) for p in range(n)]
+    if sr:                                                   # the chain's output is the upscaled picture: its segment columns
+        W = [((up_w[p] + (4 if sxy[p][0] else 8) - 1) // (4 if sxy[p][0] else 8)) * (4 if sxy[p][0] else 8) for p in range(n)]
     seen = [[[0] * W[p] for _ in range(H[p])] for p in range(n)]
     band = sb_lines // 4
     out = [[] for _ in range(n)]
@@ -105,10 +110,12 @@ async def one_size(dut, hdr, pre, post, sb_lines, tag, stats):
                     if 4 * c4 + i >= W[p]:
                         continue
                     got = (v >> (12 * i)) & 0xFFF
+                    seen[p][y][4 * c4 + i] += 1
+                    if sr and (4 * c4 + i >= up_w[p] or y >= pl_h[p]):   # outside the upscaled picture
+                        continue
                     exp = post[p][y][4 * c4 + i]
                     assert got == exp, (f"{tag} plane {p} sb{sb_lines}: sample ({y}, {4 * c4 + i}) = {got}, model {exp} "
-                                        f"(pre-filter {pre[p][y][4 * c4 + i]}; band at line {y0}, lines {exp_lo}..{exp_hi - 1})")
-                    seen[p][y][4 * c4 + i] += 1
+                                        f"(band at line {y0}, lines {exp_lo}..{exp_hi - 1})")
             stats["lines"] += len(out[p])
     mon.cancel()
     for p in range(n):
@@ -134,12 +141,13 @@ async def one_frame(dut, tiles, tag, stats):
     for _d in decs:
         state.add(_d)
     pre = frame["planes"]
-    dbl = copy.deepcopy(pre)
-    lfm.LoopFilter(hdr, state, dbl).apply()
-    cdef_on = bool(hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc)
+    if os.environ.get("FC_SR") == "1":                       # the same decoded frame, taken as the downscaled picture of a super-resolution frame
+        hdr = with_superres(hdr, state, random.Random(zlib.crc32(tag.encode())))
+        stats["sr_frames"] += 1
+        tag += f" (super-res {hdr.FrameWidth} -> {hdr.UpscaledWidth}, denom {hdr.SuperresDenom})"
+    dbl, cdef, post, cd = models(hdr, state, pre)
+    cdef_on = cd is not None
     lr_on = not all(t == 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes])
-    cdef = cdm.Cdef(hdr, state, dbl).apply() if cdef_on else copy.deepcopy(dbl)
-    post = lrm.LoopRestoration(hdr, state, dbl, cdef).apply() if lr_on else cdef
     dut.hdr.value = TT.pack(TT.HDR_FIELDS, TT.hdr_vals(hdr, decs[0]))
     dut.lh.value = TT.pack(LF_FIELDS, lf_vals(hdr))
     dut.ch.value = TT.pack(CDEF_FIELDS, cdef_vals(hdr))
@@ -154,8 +162,7 @@ async def one_frame(dut, tiles, tag, stats):
     # the per-plane switch: the same frame with chroma's deblocking switched off by lf_on alone
     if hdr.NumPlanes > 1 and os.environ.get("FC_FORCE_OFF", "1") == "1":
         dbl2 = [copy.deepcopy(dbl[0])] + [copy.deepcopy(pre[p]) for p in range(1, hdr.NumPlanes)]
-        cdef2 = cdm.Cdef(hdr, state, dbl2).apply() if cdef_on else copy.deepcopy(dbl2)
-        post2 = lrm.LoopRestoration(hdr, state, dbl2, cdef2).apply() if lr_on else cdef2
+        post2 = models(hdr, state, dbl2, lf=False)[2]            # (luma is deblocked already, chroma is not to be)
         dut.lf_on.value = int(bool(lvl[0] or lvl[1]))
         await one_size(dut, hdr, pre, post2, only_sb or (64, 128)[stats["frames"] & 1], tag + " (chroma deblocking switched off)", stats)
         stats["chroma_lf_off_frames"] += 1; stats["chroma_lf_off_differs"] += any(post2[p] != post[p] for p in range(1, hdr.NumPlanes))
@@ -181,7 +188,7 @@ async def fc_top_vs_models(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, cdef_frames=0, lr_frames=0, mono=0, chroma_lf_off_frames=0, chroma_lf_off_differs=0, lines=0, by_lf=0, by_cdef=0, chroma_by_cdef=0, by_lr=0, in_samples=0, cycles=0,
+    stats = dict(frames=0, cdef_frames=0, lr_frames=0, mono=0, sr_frames=0, chroma_lf_off_frames=0, chroma_lf_off_differs=0, lines=0, by_lf=0, by_cdef=0, chroma_by_cdef=0, by_lr=0, in_samples=0, cycles=0,
                  skipped=0, skipped_superres=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:

@@ -8,8 +8,9 @@
 //   restoration: off when the plane's FrameRestorationType is NONE (hdr.lr_type)
 // Between CDEF and restoration sits a FIFO of lines: restoration takes a self-guided line in about 30 clocks, and
 // CDEF's output cannot wait line by line, so CDEF starts a block column only when the FIFO has room for all of it.
-// Not here: super-resolution (the frame must not use it), the stores shared between planes (mode info, luma's CDEF
-// directions for chroma), the row store itself.
+// Super-resolution (7.16) is two sr_stream in front of restoration (CDEF's lines, the boundary lines); what leaves
+// the plane is then in the upscaled picture's columns.
+// Not here: the stores shared between planes (mode info, luma's CDEF record for chroma), the row store itself.
 module fc_plane
   import syn_pkg::*;
   import lr_pkg::*;
@@ -96,6 +97,8 @@ module fc_plane
     logic [191:0] fi_blk;
     logic [29:0]  fi_vpar, fi_hpar;
     logic         lo_valid, lo_ready;
+    logic         cd_ready, bc_ready;        // a deblocked block goes to CDEF and past the boundary-line converter in the same clock
+    assign lo_ready = cd_ready && bc_ready;
     logic [191:0] lo_blk;
     logic [CW-1:0] lo_col;
     logic signed [6:0] lo_row;
@@ -117,7 +120,7 @@ module fc_plane
     logic         ff_in_ready;
     cdef_stream #(.NBMAX(NBMAX), .CW(CW)) u_cdef (.clk, .rst, .bit_depth(hdr.bit_depth), .ch, .luma(plane == 2'd0), .ssx, .ssy,
         .mi_rows(hdr.mi_rows), .mi_cols(hdr.mi_cols), .band_start, .row0(prow0), .pic_rows, .n_blk, .n_col, .first_band, .last_band,
-        .busy(c_busy), .band_done(), .in_valid(lo_valid), .in_ready(lo_ready), .in_blk(lo_blk),
+        .busy(c_busy), .band_done(), .in_valid(lo_valid && bc_ready), .in_ready(cd_ready), .in_blk(lo_blk),
         .rd_row(rd2_row), .rd_col(rd2_col), .rd_skip(rd2_skip), .cdr_row64, .cdr_col64, .cdr_val(cdef_on ? cdr_val : 4'd0),
         .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_info,
         .col_hold(cd_hold || ff_free < (FAW+1)'(160)),   // a column's lines: at most 4 (32 + 4), and four still on their way
@@ -134,12 +137,41 @@ module fc_plane
     logic           r_done;
     fc_lfifo #(.W(105), .AW(FAW)) u_ff (.clk, .rst, .in_valid(co_valid), .in_ready(ff_in_ready), .in_data({co_y, co_line}),
         .out_valid(ri_valid), .out_ready(ri_ready), .out_data({ri_y, ri_line}), .free(ff_free));
-    lr_bstore #(.CW(CW)) u_bs (.clk, .ssx, .ssy, .wr_row0(prow0), .wr_valid(lo_valid && lo_ready), .wr_blk(lo_blk), .wr_col(lo_col), .wr_row(lo_row),
+    // super-resolution (7.16) sits in front of restoration: on CDEF's lines and on the deblocked boundary lines.
+    // Behind it everything is in the upscaled picture's columns. Without super-resolution both upscalers are wires.
+    logic [PXW-1:0] dw_p, max_x_p;
+    logic [CW:0]    n_seg, n_seg_up, n_seg_up_b, n_col_lr;
+    logic signed [8:0] y_last;               // a column's last line from CDEF, counted from the band's first line
+    logic           su_valid, su_ready, su_last, sa_busy, sb_busy;
+    logic [95:0]    su_line;
+    logic [8:0]     su_tag;
+    logic           bc_v, bc_rdy, bc_last, bu_v, bu_last;
+    logic [95:0]    bc_line, bu_line;
+    logic [8:0]     bc_tag, bu_tag;
+    always_comb begin
+        dw_p = (lh.frame_width + PXW'(ssx)) >> ssx;
+        max_x_p = PXW'({(hdr.mi_cols >> ssx), 2'b00}) - PXW'(1);
+        n_seg = ssx ? n_col : (CW+1)'((n_col + (CW+1)'(1)) >> 1);
+        n_col_lr = ssx ? n_seg_up : (CW+1)'(n_seg_up << 1);
+        y_last = last_band ? 9'({n_blk, 2'b00}) - 9'sd1 : 9'({n_blk, 2'b00}) - (ssy ? 9'sd13 : 9'sd17);
+    end
+    sr_stream #(.CW(CW)) u_sra (.clk, .rst, .bit_depth(hdr.bit_depth), .use_sr(hdr.use_superres), .ssx, .down_w(dw_p), .up_w(fw_p), .max_x(max_x_p),
+        .band_start, .n_seg_in(n_seg), .n_seg_out(n_seg_up), .busy(sa_busy),
+        .in_valid(ri_valid), .in_ready(ri_ready), .in_line(ri_line), .in_tag(ri_y), .in_last(ri_y == y_last),
+        .out_valid(su_valid), .out_ready(su_ready), .out_line(su_line), .out_tag(su_tag), .out_last(su_last));
+    lr_bconv #(.CW(CW)) u_bc (.clk, .rst, .ssx, .ssy, .band_start, .row0(prow0), .n_blk, .last_band,
+        .in_valid(lo_valid && cd_ready), .in_ready(bc_ready), .in_blk(lo_blk), .in_col(lo_col), .in_row(lo_row),
+        .out_valid(bc_v), .out_ready(bc_rdy), .out_line(bc_line), .out_tag(bc_tag), .out_last(bc_last));
+    sr_stream #(.CW(CW)) u_srb (.clk, .rst, .bit_depth(hdr.bit_depth), .use_sr(hdr.use_superres), .ssx, .down_w(dw_p), .up_w(fw_p), .max_x(max_x_p),
+        .band_start, .n_seg_in(n_seg), .n_seg_out(n_seg_up_b), .busy(sb_busy),
+        .in_valid(bc_v), .in_ready(bc_rdy), .in_line(bc_line), .in_tag(bc_tag), .in_last(bc_last),
+        .out_valid(bu_v), .out_ready(1'b1), .out_line(bu_line), .out_tag(bu_tag), .out_last(bu_last));
+    lr_bstore #(.CW(CW)) u_bs (.clk, .rst, .ssx, .band_start, .wr_valid(bu_v), .wr_line(bu_line), .wr_tag(bu_tag), .wr_last(bu_last),
         .bl_k, .bl_col, .bl_rd);
     lr_stream #(.CW(CW)) u_lr (.clk, .rst, .bit_depth(hdr.bit_depth), .en(hdr.lr_type[2 * plane +: 2] != 2'd0), .plane, .ssx, .ssy,
         .pl_w((MIW+2)'(fw_p)), .pl_h((MIW+2)'(fh_p)), .u_log2, .u_rows(SBW'(ur)), .u_cols(SBW'(uc)),
-        .band_start, .row0(prow0), .pic_rows, .n_blk, .n_col, .first_band, .last_band, .busy(r_busy), .band_done(r_done),
-        .in_valid(ri_valid), .in_ready(ri_ready), .in_line(ri_line), .in_y(ri_y), .out_hold,
+        .band_start, .row0(prow0), .pic_rows, .n_blk, .n_col(n_col_lr), .first_band, .last_band, .busy(r_busy), .band_done(r_done),
+        .in_valid(su_valid), .in_ready(su_ready), .in_line(su_line), .in_y(su_tag), .out_hold,
         .lrr_plane, .lrr_row, .lrr_col, .lrr_rec, .bl_k, .bl_col, .bl_rd,
         .out_valid, .out_line, .out_n4, .out_col, .out_y);
 
@@ -153,7 +185,7 @@ module fc_plane
             if (band_start && !act) begin act <= 1'b1; done_l <= 1'b0; end
             if (r_done) done_l <= 1'b1;
             if (co_valid && !ff_in_ready) err_ovf <= 1'b1;
-            if (act && done_l && !f_busy && !s_busy && !c_busy && !r_busy) begin act <= 1'b0; done_l <= 1'b0; band_done <= 1'b1; end
+            if (act && done_l && !f_busy && !s_busy && !c_busy && !r_busy && !sa_busy && !sb_busy && !bc_v) begin act <= 1'b0; done_l <= 1'b0; band_done <= 1'b1; end
         end
     end
 endmodule

@@ -9,6 +9,7 @@ Env: TS_SEEDS / TS_W / TS_H / TS_FMT (generated frames), TS_IVF (frame 0 of real
 FC_SB (64 or 128: only that band size)."""
 import copy
 import os
+import zlib
 import random
 import sys
 from pathlib import Path
@@ -24,12 +25,63 @@ import cdef_model as cdm                # noqa: E402
 import lf_model as lfm                  # noqa: E402
 import lr_model as lrm                  # noqa: E402
 import recon_model as rm                # noqa: E402
+import superres_model as srm            # noqa: E402
+import av1_tables as T                  # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 from host_regs import LF_FIELDS, lf_vals, CDEF_FIELDS, cdef_vals   # noqa: E402
 from test_lf_stage import blk_of, load_mi   # noqa: E402
 from test_lr_top import lr_rec_vals     # noqa: E402
 from test_cdef_stream import yd_record  # noqa: E402
+
+
+def with_superres(hdr, state, rng):
+    """The frame's header as if the frame had been coded with super-resolution (FC_SR=1): the decoded picture is the
+    downscaled one, UpscaledWidth is a width that scales down to it by a denominator drawn here, and the restoration
+    units (which live in the upscaled picture, so there are more of them) are drawn afresh for every plane."""
+    h = copy.copy(hdr)
+    for _ in range(200):
+        d = rng.randint(9, 16)
+        uw = [u for u in range(hdr.FrameWidth * d // 8 - 2, hdr.FrameWidth * d // 8 + 3) if (u * 8 + d // 2) // d == hdr.FrameWidth]
+        if uw:
+            break
+    h.use_superres = 1; h.SuperresDenom = d; h.UpscaledWidth = rng.choice(uw)
+    h.FrameRestorationType = [rng.choice([1, 2, 3, 3]) if rng.random() < 0.85 else 0 for _ in range(3)]
+    lr_type = {}; wien = {}; sgr_set = {}; sgr_xqd = {}
+    for p in range(h.NumPlanes):
+        sx = h.subsampling_x if p else 0; sy = h.subsampling_y if p else 0
+        usz = h.LoopRestorationSize[p]
+        for ur in range(lrm.count_units_in_frame(usz, lrm.round2(h.FrameHeight, sy))):
+            for uc in range(lrm.count_units_in_frame(usz, lrm.round2(h.UpscaledWidth, sx))):
+                k = (p, ur, uc)
+                lr_type[k] = rng.choice([0, 1, 1, 1, 2, 2]) if h.FrameRestorationType[p] else 0
+                wien[k] = [[rng.randint(-5, 10), rng.randint(-23, 8), rng.randint(-17, 46)] for _ in range(2)]
+                st = rng.randrange(16)
+                if T.Sgr_Params[st][0] == 0:
+                    w0 = 0; w1 = rng.randint(-32, 95)
+                elif T.Sgr_Params[st][2] == 0:
+                    w0 = rng.randint(-96, 31); w1 = max(-32, min(95, 128 - w0))
+                else:
+                    w0 = rng.randint(-96, 31); w1 = rng.randint(-32, 95)
+                sgr_set[k] = st; sgr_xqd[k] = (w0, w1)
+    state.LrType = lr_type; state.LrWiener = wien; state.LrSgrSet = sgr_set; state.LrSgrXqd = sgr_xqd
+    return h
+
+
+def models(hdr, state, pre, lf=True, cdef=True):
+    """The frame-at-once models in a row: (deblocked, CDEF picture, final picture, the Cdef object or None). lf / cdef
+    False leave that filter out, as the chain's switches do. With super-resolution the deblocked and CDEF pictures
+    are upscaled (7.16) on their way into restoration, and the final picture is the upscaled one."""
+    dbl = copy.deepcopy(pre)
+    if lf:
+        lfm.LoopFilter(hdr, state, dbl).apply()
+    cdef_on = cdef and bool(hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc)
+    lr_on = not all(t == 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes])
+    cd = cdm.Cdef(hdr, state, dbl) if cdef_on else None
+    cdp = cd.apply() if cdef_on else copy.deepcopy(dbl)
+    du, cu = (srm.upscale(hdr, dbl), srm.upscale(hdr, cdp)) if getattr(hdr, "use_superres", 0) else (dbl, cdp)
+    post = lrm.LoopRestoration(hdr, state, du, cu).apply() if lr_on else cu
+    return dbl, cdp, post, cd
 
 
 async def load_units(dut, hdr, state):
@@ -56,6 +108,11 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, forc
     sy = hdr.subsampling_y if plane else 0
     cols = len(range(0, hdr.MiCols, 1 << sx))
     W = cols * 4; H = (hdr.MiRows * 4) >> sy
+    sr = bool(getattr(hdr, "use_superres", 0))
+    up_w = lrm.round2(hdr.UpscaledWidth, sx); pl_h = lrm.round2(hdr.FrameHeight, sy)
+    if sr:                                                   # the chain's output is the upscaled picture: its segment columns
+        segw = 4 if sx else 8
+        W = ((up_w + segw - 1) // segw) * segw
     seen = [[0] * W for _ in range(H)]
     dut.plane.value = plane
     lvl = hdr.loop_filter_level
@@ -142,10 +199,12 @@ async def one_plane(dut, hdr, pre, post, plane, sb_lines, ydir, tag, stats, forc
                 if 4 * c4 + k >= W:
                     continue
                 got = (v >> (12 * k)) & 0xFFF
+                seen[y][4 * c4 + k] += 1
+                if sr and (4 * c4 + k >= up_w or y >= pl_h):  # outside the upscaled picture: nothing reads it, the model only pads it
+                    continue
                 exp = post[plane][y][4 * c4 + k]
                 assert got == exp, (f"{tag} plane {plane} sb{sb_lines}: sample ({y}, {4 * c4 + k}) = {got}, model {exp} "
-                                    f"(pre-filter {pre[plane][y][4 * c4 + k]}; band at line {y0}, lines {exp_lo}..{exp_hi - 1})")
-                seen[y][4 * c4 + k] += 1
+                                    f"(band at line {y0}, lines {exp_lo}..{exp_hi - 1})")
         stats["lines"] += len(out)
     mon.cancel(); dr.cancel()
     missing = sum(1 for y in range(H) for x in range(W) if seen[y][x] != 1)
@@ -171,13 +230,13 @@ async def one_frame(dut, tiles, tag, stats):
     for _d in decs:
         state.add(_d)
     pre = frame["planes"]
-    dbl = copy.deepcopy(pre)
-    lfm.LoopFilter(hdr, state, dbl).apply()
-    cdef_on = bool(hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc)
+    if os.environ.get("FC_SR") == "1":                       # the same decoded frame, taken as the downscaled picture of a super-resolution frame
+        hdr = with_superres(hdr, state, random.Random(zlib.crc32(tag.encode())))
+        stats["sr_frames"] += 1; stats["sr_denoms"].add(hdr.SuperresDenom)
+        tag += f" (super-res {hdr.FrameWidth} -> {hdr.UpscaledWidth}, denom {hdr.SuperresDenom})"
+    dbl, cdef, post, cd = models(hdr, state, pre)
+    cdef_on = cd is not None
     lr_on = not all(t == 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes])
-    cd = cdm.Cdef(hdr, state, dbl) if cdef_on else None
-    cdef = cd.apply() if cdef_on else copy.deepcopy(dbl)
-    post = lrm.LoopRestoration(hdr, state, dbl, cdef).apply() if lr_on else cdef
     dirs = {}
 
     def ydir(r, c):                                          # the luma direction of the 8x8 block, as the luma stage stores it
@@ -200,7 +259,7 @@ async def one_frame(dut, tiles, tag, stats):
     # the switches: the same frame with deblocking and CDEF switched off by lf_on / cdef_on alone (the headers still
     # carry the levels and strengths, mi_store the cdef_idx), against restoration of the unfiltered picture
     if os.environ.get("FC_FORCE_OFF", "1") == "1":
-        post_off = lrm.LoopRestoration(hdr, state, copy.deepcopy(pre), copy.deepcopy(pre)).apply() if lr_on else pre
+        post_off = models(hdr, state, pre, lf=False, cdef=False)[2]
         dut.cdef_on.value = 0
         sb = only_sb or (64, 128)[stats["frames"] & 1]
         for plane in range(hdr.NumPlanes):
@@ -227,7 +286,7 @@ async def fc_plane_vs_models(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lf_off_planes=0, lr_off_planes=0, forced_off_planes=0, forced_off_differs=0, hold_clocks=0, hold_lines_max=0, lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
+    stats = dict(frames=0, cdef_frames=0, lr_frames=0, planes=0, lf_off_planes=0, lr_off_planes=0, forced_off_planes=0, forced_off_differs=0, hold_clocks=0, hold_lines_max=0, sr_frames=0, sr_denoms=set(), lines=0, by_lf=0, by_cdef=0, by_lr=0, units_n=0, units_w=0, units_s=0,
                  in_blocks=0, cycles=0, skipped=0, skipped_superres=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     if ivfs:
@@ -247,4 +306,5 @@ async def fc_plane_vs_models(dut):
     assert stats["frames"] > 0 and stats["by_lf"] > 0, stats
     assert stats["hold_lines_max"] <= 16, f"{stats['hold_lines_max']} lines came out after out_hold rose: more than OUT_SLACK"
     stats["clocks_per_block"] = round(stats["cycles"] / max(1, stats["in_blocks"]), 3)
+    stats["sr_denoms"] = sorted(stats["sr_denoms"])
     dut._log.info(f"OK: {stats}")

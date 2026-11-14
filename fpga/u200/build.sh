@@ -10,6 +10,7 @@
 #   U200_SB128=0          1: the window takes 128x128 superblocks too (128-line window rows: twice the frame-memory
 #                         UltraRAM; libaom's default superblock size from 720p up)
 #   U200_TE=1             tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
+#   U200_CHAIN=0          1: the streaming filter chain filters the picture (dec_top CHAIN, docs/filter-chain.md); needs U200_CORE=0
 #   U200_REF_RING=16     ref_fetch line buffers (reference rows in flight; 16 = single-engine speed, 8 closes TE=2 at 100 MHz)
 #   U200_INTER=0          1: the inter decoder (ref_fetch / mc_filt / warp_setup); needs a frame memory that is not
 #                         the window (docs/frame-memory.md), so 0 until that exists
@@ -40,7 +41,7 @@ mkdir -p "$out/stubs" "$out/work"
 # the rtl list = synth/vivado/run.sh's plus dec_host and phase_gen (keep in step with fpga/kv260/build.sh)
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq sym_path coef_rd blk_ctx
        pal_syntax mv_mem mf_band seg_band mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
-       mc_tables_pkg mc_filt fb_fetch ref_fetch warp_setup frame_mem_w edge_line frame_mem_uram recon_top cdef_pkg lr_pkg mi_store frame_state_w fs_load mf_project rec_fifo tile_engines lf_top cdef_top lr_top sr_top dec_top
+       mc_tables_pkg mc_filt fb_fetch ref_fetch warp_setup frame_mem_w edge_line frame_mem_uram recon_top cdef_pkg lr_pkg mi_store frame_state_w fs_load mf_project rec_fifo tile_engines lf_top cdef_top lr_top sr_top lf_cbuf lf_filt lf_edge lf_feed lf_stream cdef_row cdef_dir cdef_str cdef_stream lr_wiener_pkg lr_wiener_h lr_wiener_v lr_sgr_ab lr_sgr_f lr_stream lr_bconv lr_bstore sr_stream fc_lfifo fc_plane fc_top fc_rstore fc_out dec_top
        dec_host phase_gen"
 sources="$root/synth/vivado/frame_mem_pr.sv"
 for f in $files; do

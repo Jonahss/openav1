@@ -17,6 +17,7 @@ module fc_rstore
     parameter int FBX = 11,                  // log2 of the frame memory's sample columns / lines
     parameter int FBY = 11,
     parameter int CW = 10,                   // log2 of the most 4x4 columns of a plane (>= FBX - 2)
+    parameter int CWC = CW,                  // the same for a chroma plane's memories (CW - 1 when chroma is always subsampled)
     parameter int RBY = 6,                   // log2 of the 4x4 rows kept: luma, chroma
     parameter int RBC = 5
 ) (
@@ -43,13 +44,14 @@ module fc_rstore
     end
     generate for (genvar p = 0; p < 3; p++) begin : g_p
         localparam int RB = (p == 0) ? RBY : RBC;
-        localparam int AW = RB + CW;
+        localparam int CWP = (p == 0) ? CW : CWC;
+        localparam int AW = RB + CWP;
         logic [AW-1:0]  wa, ra;
         logic [MIW-1:0] rrow;
         always_comb begin
-            wa = {RB'(wy >> 2), CW'(wx >> 2)};
+            wa = {RB'(wy >> 2), CWP'(wx >> 2)};
             rrow = ((p != 0 && ssy) ? (row0 >> 1) : row0) + MIW'(bk_row[p]);
-            ra = {RB'(rrow), bk_col[p]};
+            ra = {RB'(rrow), CWP'(bk_col[p])};
         end
         for (genvar l = 0; l < 4; l++) begin : g_l
             (* ram_style = "block" *) logic [71:0] mem [1 << AW];
