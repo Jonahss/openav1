@@ -376,5 +376,15 @@ Plan for the stage around them (the luma part is built as described):
   and rewrites, blocks read back for three planes at once from the newest row and from older rows still in the
   ring; ten faults fail (the tenth, a read that does not hold its data, after the test began to move the address
   while it waits). Not in the decoder yet, not synthesised.
-- Not done: super-resolution between CDEF and restoration, the stores shared by three readers in the decoder (mode
-  info for the deblock stages, the unit records), the writer to DDR, and the switch in `dec_top`.
+- `rtl/fc_out.sv`: the chain's output into a picture memory of today's shape: the three planes' line segments go
+  through a FIFO each and out of two write ports, an aligned group of four samples a port a clock (eight samples
+  a clock in all; a 4:2:0 picture is three groups for every luma segment, so luma can pass 5.3 samples a clock,
+  just above what the chain delivers today). It raises the planes' `out_hold` with room left for the lines that
+  still follow. Suite `fc_out_unit`: 91,007 random segments, every group written once and in place, no FIFO
+  overflow; nine faults, eight fail and one is equivalent (a test of the ports left that the inner loop repeats).
+  This is for the first landing in the decoder (the restored picture's ring memory, flushed as today); the writer
+  straight to DDR replaces it later.
+- Mode info for three readers needs no new module: three `mi_store` written alike, as in the test wrappers;
+  synthesis drops what an instance's unconnected ports leave unused.
+- Not done: super-resolution between CDEF and restoration, the writer to DDR, and the switch in `dec_top` (the
+  sequencer with one cursor, the release of finished rows to the flush, the holds).
