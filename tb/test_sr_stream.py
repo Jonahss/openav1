@@ -32,12 +32,13 @@ async def sr_stream_vs_model(dut):
     async def taker():
         while True:
             await RisingEdge(dut.clk)
-            await ReadOnly()
-            if int(dut.out_valid.value) and int(dut.out_ready.value):
-                got.append((int(dut.out_line.value), int(dut.out_tag.value), int(dut.out_last.value)))
-            await Timer(1, "ns")
+            await Timer(1, "ns")                             # the taker is ready at random
             r = 0 if rng.random() < stall[0] else 1
             dut.out_ready.value = r; stats["stalls"] += 1 - r
+            await Timer(3, "ns")                             # after the sender has put its line (2 ns after the edge)
+            # out_valid and out_ready as the next clock edge will see them: that edge takes the line
+            if int(dut.out_valid.value) and r:
+                got.append((int(dut.out_line.value), int(dut.out_tag.value), int(dut.out_last.value)))
     cocotb.start_soon(taker())
     for b in range(bands):
         ssx = rng.random() < 0.4
