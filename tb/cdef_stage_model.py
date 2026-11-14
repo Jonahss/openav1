@@ -46,6 +46,9 @@ class CdefStage(cdm.Cdef):
     def _sub(self, plane):
         return self.h.subsampling_y if plane else 0
 
+    def _cols(self, c):
+        """Hook: the 8x8 block column about to be filtered (None: between block rows). CdefColStage narrows the window."""
+
     def feed(self, lines, last):
         """lines[plane] = [(y, line), ...] deblocked, in order, continuing where the last call stopped.
         Returns out[plane] = [(y, line), ...] final CDEF lines in order."""
@@ -69,7 +72,9 @@ class CdefStage(cdm.Cdef):
                 break
             for c in range(0, h.MiCols, 2):
                 idx = self.s.cdef_idx.get((r & ~15, c & ~15), -1)
+                self._cols(c)
                 self.block(r, c, idx)
+            self._cols(None)
             self.next_r = r + 2
             for p in range(h.NumPlanes):                       # deblocked lines above the next block row's reach go
                 sy = self._sub(p)
@@ -89,3 +94,51 @@ class CdefStage(cdm.Cdef):
             self.emitted[p] = max(self.emitted[p], done)
             res.append(fin)
         return res
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The same stage with the column context made explicit: while the 8x8 block at block column c is filtered, only the
+# deblocked samples from REACH columns left of the block to REACH columns right of it may be read (12 luma columns;
+# the chroma blocks likewise in their own sample grid). Any other column raises.
+class _Row:
+    __slots__ = ("data", "win")
+
+    def __init__(self, data, win):
+        self.data = data; self.win = win
+
+    def __getitem__(self, x):
+        if self.win.xlo is not None and not (self.win.xlo <= x < self.win.xhi):
+            raise IndexError(f"sample column {x} outside the block's window columns [{self.win.xlo}, {self.win.xhi})")
+        return self.data[x]
+
+    def __len__(self):
+        return len(self.data)
+
+
+class ColWindow(Window):
+    def __init__(self):
+        super().__init__()
+        self.xlo = self.xhi = None
+
+    def __getitem__(self, y):
+        return _Row(Window.__getitem__(self, y), self)
+
+
+COL_REACH = REACH
+
+
+class CdefColStage(CdefStage):
+    def __init__(self, hdr, state, heights):
+        super().__init__(hdr, state, heights)
+        self.cur = [ColWindow() for _ in range(hdr.NumPlanes)]
+
+    def _cols(self, c):
+        h = self.h
+        for p in range(h.NumPlanes):
+            w = self.cur[p]
+            if c is None:
+                w.xlo = w.xhi = None
+            else:
+                sx = h.subsampling_x if p else 0
+                x0 = (c * 4) >> sx
+                w.xlo = x0 - COL_REACH; w.xhi = x0 + (8 >> sx) + COL_REACH

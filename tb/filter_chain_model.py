@@ -15,6 +15,7 @@ import lr_stage_model as rst      # noqa: E402
 import superres_model as srm     # noqa: E402
 
 ENABLED = os.environ.get("TS_CHAIN_CHECK", "0") == "1"
+COLS = True          # the CDEF stage with its column window (cdef_stage_model.CdefColStage)
 stats = {"frames": 0, "cdef": 0, "lr": 0, "sr_partial": 0}
 
 
@@ -24,7 +25,7 @@ def chain(hdr, state, pre, sb_lines):
     lr_on = lr_wanted(hdr)
     heights = [len(pl) for pl in pre]
     lf = lst.DeblockStage(hdr, state)
-    cd = cst.CdefStage(hdr, state, heights)
+    cd = (cst.CdefColStage if COLS else cst.CdefStage)(hdr, state, heights)
     lr = rst.LrStage(hdr, state, heights)
     n = hdr.NumPlanes
     dbl = [[None] * heights[p] for p in range(n)]; out = [[None] * heights[p] for p in range(n)]; fin_lr = [[None] * heights[p] for p in range(n)]
