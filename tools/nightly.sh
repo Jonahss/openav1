@@ -82,6 +82,7 @@ runsh_one() {
 run decl_order         bash -c 'python3 tools/check_decl_order.py rtl/*.sv && echo "OK: {decl_order: clean}" || { echo "%Error: identifiers used before their declaration"; exit 1; }'
 run lf_edge_unit       TS_SEEDS=2,3,7,8,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_edge   # the deblocking edge decision (apply, size, strength) vs lf_model, every position of every plane
 run lf_edge_inter      TS_LF_VEC="$PWD/tb/vectors/lf_edge_inter" python tb/runner.py lf_edge   # six inter frames of Argon test47 / test6491 / test11 dumped by dec_inter_lr (TS_LF_VEC_OUT): reference and mode deltas, the skip-and-inter rule
+run lf_stage_unit      TS_SEEDS=2,3,7,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stage_tb_top test_lf_stage   # mi_store + lf_feed + lf_edge + lf_stream vs lf_model: the deblock stage with nothing supplied but what the decoder has
 run lf_filt_unit       python tb/runner.py lf_filt          # the deblocking sample filter of the streaming chain vs lf_model (one line across an edge)
 run lf_stream_unit     TS_SEEDS=2,3,7,8,9,10,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the streaming deblock stage vs lf_model, band by band (seeds 7, 20, 47, 70: samples that depend on the last column's vertical edge)
 run edge_line_unit     python tb/runner.py edge_line        # the unfiltered last-line copy (intra edge reads; LF a row earlier) vs a model
