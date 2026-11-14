@@ -774,7 +774,8 @@ module dec_top
                 .lr_we(lr_done), .lr_rec, .lrr_plane(fc_lrr_plane[p]), .lrr_row(fc_lrr_row[p]), .lrr_col(fc_lrr_col[p]), .lrr_rec(fc_lrr_rec[p]));
             assign rd2_skip[p] = 1'b0; assign fc_cdr_val[p] = 4'd0;           // a chroma plane's CDEF takes luma's record, not the store
         end
-        fc_rstore #(.FBX(FBX), .FBY(FBY), .CW(FCW), .RBY(6), .RBC(6)) u_rs (.clk, .ssy(hdr.ssy),
+        // (the window build is 4:2:0 only: its chroma planes need half the rows and half the columns)
+        fc_rstore #(.FBX(FBX), .FBY(FBY), .CW(FCW), .CWC(FRAME_WIN > 0 ? FCW - 1 : FCW), .RBY(6), .RBC(FRAME_WIN > 0 ? 5 : 6)) u_rs (.clk, .ssy(hdr.ssy),
             .we(w_rc_we), .be(w_rc_be), .wplane(w_rc_pl), .wx(w_rc_x), .wy(w_rc_y), .wdata(w_rc_d),
             .row0(lf_row_first), .bk_re, .bk_row, .bk_col, .bk_data);
         fc_top #(.NBMAX(32), .CW(FCW)) u_fc (.clk, .rst, .hdr, .lh, .ch, .lf_on(fc_lf_on), .cdef_on(fc_cdef_on),
