@@ -169,8 +169,16 @@ Built so far (branch `filter-chain`, simulation only, not in the decoder):
   strengths. With it the stage needs nothing but what the decoder has. `rtl/lf_stage_tb_top.sv` + `tb/test_lf_stage.py`
   (suite `lf_stage_unit`): 6 generated frames, 36 plane runs, identical; three deliberate faults in the neighbour
   and address logic each fail. 1.7 clocks a block on these small frames, start and end of each band included.
-- Not done: back-pressure on the output, pipeline registers for 100 MHz (both passes are one combinational step
-  today), the stage on inter frames end to end (the edge decision alone is), a picture wider than the test frames.
+- Pipelined since the first synthesis (out of context, 10 ns clock, K26 part, no placement): the single-step version
+  had a 14.3 ns path of 47 logic levels and its column buffers came out as 30,720 flip-flops. Now the column buffers
+  are five distributed RAMs with rotating roles (`rtl/lf_cbuf.sv`), `lf_filt` has a two-stage form (`PIPE`), pass A
+  takes three clocks and pass B decides an edge a clock before applying it. Same suites identical, plus
+  `lf_stream_short` / `lf_stage_short` (a last band shorter than the pipeline). Synthesis: **4.3 ns of slack at 10 ns,
+  21 levels** on the worst path (filter outputs into a column buffer), 4,763 registers, **33,375 LUTs for one plane**.
+  That is a synthesis estimate, before placement and routing. 1.5 clocks a block on the small test frames.
+- Not done: back-pressure on the output, a register between `lf_feed`'s strengths and `lf_stream` (not timed yet),
+  a chroma-only build without the 14-tap filter (area), the stage on inter frames end to end (the edge decision
+  alone is), a picture wider than the test frames, overlapping pass B's start with pass A (the 0.5 clock a block).
 
 Open points for this stage:
 - the row store's word: a 4x4 block (16 samples) read at once, written by reconstruction four samples at a time;
