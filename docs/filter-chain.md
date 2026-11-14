@@ -160,8 +160,17 @@ Built so far (branch `filter-chain`, simulation only, not in the decoder):
   once and equal to `lf_model`: 8 generated frames (48 plane runs, 57,600 blocks) and frame 0 of four real streams
   are identical; four deliberate faults each fail. One of them (the last column's vertical edge left out) passed the
   first seed list and the real frames, where no sample depends on that edge: seeds where samples do were added.
-- Not done: the strength computation from mode info (the test supplies it), back-pressure on the output, pipeline
-  registers for 100 MHz (both passes are one combinational step today), throughput measured.
+- `rtl/lf_edge.sv`: the edge decision (filtered or not, size, strength) for one position and pass, combinational,
+  lf_top's logic lifted out. Checked against `lf_model` on every position of generated frames, of three Argon frames
+  where the level falls back to the neighbour's, and of six inter frames dumped from the `dec_inter_lr` suite
+  (`tb/lf_edge_vec.py`, `tb/vectors/lf_edge_inter`); five deliberate faults each fail in one of the three suites.
+- `rtl/lf_feed.sv`: walks a band's blocks, reads mode info and transform sizes from `mi_store` and the block from
+  the row store one clock ahead, keeps the left and top neighbours, and hands `lf_stream` the block with both
+  strengths. With it the stage needs nothing but what the decoder has. `rtl/lf_stage_tb_top.sv` + `tb/test_lf_stage.py`
+  (suite `lf_stage_unit`): 6 generated frames, 36 plane runs, identical; three deliberate faults in the neighbour
+  and address logic each fail. 1.7 clocks a block on these small frames, start and end of each band included.
+- Not done: back-pressure on the output, pipeline registers for 100 MHz (both passes are one combinational step
+  today), the stage on inter frames end to end (the edge decision alone is), a picture wider than the test frames.
 
 Open points for this stage:
 - the row store's word: a 4x4 block (16 samples) read at once, written by reconstruction four samples at a time;
