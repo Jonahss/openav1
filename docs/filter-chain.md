@@ -191,3 +191,28 @@ Open points for this stage:
 - 128-line superblocks double the window height (or the band is taken as two 64-line halves: the stage model can
   already be fed 64-line bands of a 128 superblock stream, and that case is identical too);
 - 4:2:2 and 4:4:4 chroma heights.
+
+## CDEF stage: built so far and the plan (2026-11-13, branch `filter-chain`)
+
+Built (simulation only), each lifted from `cdef_top` and fuzzed against `cdef_model`, each with deliberate faults
+that fail:
+- `rtl/cdef_row.sv`: the sample filter for N samples of a line (8 lanes: a line of an 8x8 luma block a clock; 4: a
+  4:2:0 chroma line), four clocks. Suites `cdef_row_unit`, `cdef_row_4`.
+- `rtl/cdef_dir.sv`: the direction search of an 8x8 luma block, four clocks, a block a clock. Suite `cdef_dir_unit`.
+- `rtl/cdef_str.sv`: direction, strengths, the constrain() shifts and the tap-weight bit of a plane's block from the
+  frame's strengths, cdef_idx, the luma direction and variance. Suite `cdef_str_unit`.
+
+Plan for the stage around them (not built):
+- It takes the deblock stage's output as it comes: 4x4 blocks column by column, the band shifted up by 8 lines.
+  That shift is one 8x8 block row, so the blocks arrive aligned to CDEF's 8x8 grid.
+- Five rotating column buffers as in `lf_stream`, each a column of the band plus the lines carried from the band
+  above. The 8x8 block column C needs the 4x4 columns 2C - 1 .. 2C + 2 (12 luma samples wide, as the model's column
+  window): it is filtered top to bottom when column 2C + 2 has arrived.
+- A block row needs two lines below it, which the deblock stage sends with the next band: the CDEF stage runs one
+  more 8x8 row behind and carries the last 8x8 row plus two lines of each column (the model's 18 luma lines).
+- Per 8x8 block: skip flags and cdef_idx from `mi_store`, `cdef_dir` on the block, `cdef_str`, then its eight lines
+  through `cdef_row`, one a clock; a block that is not filtered is passed through.
+- Chroma: its own instances fed by the chroma deblock stages; the luma direction and the filter decision of every
+  8x8 block go into a small memory that the chroma stages read (they wait for luma).
+- Out: 8x8 blocks (or their lines) in column order to the super-res / restoration stage, with the deblocked stripe
+  boundary lines the restoration stage needs taken from the same stream.
