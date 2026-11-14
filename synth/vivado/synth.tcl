@@ -22,7 +22,9 @@ if {[info exists ::env(SYNTH_CLK2X)]} {
     close $fp
 }
 read_xdc -mode out_of_context $out/clk.xdc
-eval synth_design -top $::env(SYNTH_TOP) -part xck26-sfvc784-2LV-c -mode out_of_context -flatten_hierarchy none $::env(SYNTH_GENERICS)
+# SYNTH_PART: the part to size for (default the K26, which the gate flow's netlists are made for; xcu200-fsgd2104-2-e = the card)
+set part [expr {[info exists ::env(SYNTH_PART)] ? $::env(SYNTH_PART) : "xck26-sfvc784-2LV-c"}]
+eval synth_design -top $::env(SYNTH_TOP) -part $part -mode out_of_context -flatten_hierarchy none $::env(SYNTH_GENERICS)
 report_utilization -file $out/util.rpt
 report_utilization -hierarchical -hierarchical_depth 2 -file $out/util_hier.rpt
 report_ram_utilization -file $out/ram.rpt
