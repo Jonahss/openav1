@@ -17,8 +17,9 @@
 // cdef_row (8 lanes), one a clock. A block that is not filtered goes through cdef_row with both strengths 0, which
 // returns the samples unchanged.
 // Out: line segments of 8 samples: 8x8 block column, line counted from the band's first line (negative above it).
-// Rate: about 18 clocks an 8x8 block here (two row loads, the direction search, eight lines, in sequence); the plan
-// is 8 by running the search of the next block during the lines of the current one.
+// Rate: eight clocks an 8x8 block inside a column (the next block's rows, direction search, skip flags and parameters
+// are prepared during the current block's lines); the first block of a column and blocks one 4x4 row high (subsampled
+// chroma) take the steps in sequence, about 18 and 14 clocks.
 module cdef_stream
   import syn_pkg::*;
 #(
@@ -119,6 +120,15 @@ module cdef_stream
     logic signed [6:0] ld_r;                 // the block row being loaded into the window
     logic [2:0]      ld_n;                   // rows still to load before the block can be filtered
     logic [191:0]    win [4][4];             // [row r - 1 .. r + 2][column 2C - 1 .. 2C + 2]
+    // Look-ahead (blocks two 4x4 rows high): while a block's eight lines go out, the two rows the next block adds are
+    // read (nx3, nx4), its direction is searched, its skip flags and cdef_idx are read and its parameters formed, so
+    // that its lines follow without a gap: eight clocks a block inside a column.
+    logic [191:0]    nx3 [4], nx4 [4];
+    logic            la;                     // the block's lines are running with a next block being prepared
+    logic            la_blk;                 // addresses and the direction search are the next block's
+    logic            n_sk_all;
+    logic [2:0]      n_cidx;
+    logic            n_cidx_v;
     function automatic logic [2:0] slot_k(input logic [2:0] base, input logic [1:0] k);
         logic [3:0] t;
         t = 4'(base) + 4'(k);
@@ -148,7 +158,9 @@ module cdef_stream
     always_comb begin
         for (int i = 0; i < 8; i++)
             for (int j = 0; j < 8; j++)
-                dir_px[(8 * i + j) * 12 +: 12] = win[1 + i / 4][1 + j / 4][((i % 4) * 4 + (j % 4)) * 12 +: 12];
+                dir_px[(8 * i + j) * 12 +: 12] = la_blk ? ((i < 4) ? win[3][1 + j / 4][((i % 4) * 4 + (j % 4)) * 12 +: 12]
+                                                                   : nx3[1 + j / 4][((i % 4) * 4 + (j % 4)) * 12 +: 12])
+                                                        : win[1 + i / 4][1 + j / 4][((i % 4) * 4 + (j % 4)) * 12 +: 12];
     end
     logic        dir_go, dir_v;
     logic [2:0]  dir_d;
@@ -161,7 +173,7 @@ module cdef_stream
     logic        cidx_v;
     logic [MIW-1:0] b_mr, b_mc, b_mr1, b_mc1;    // the block's first 4x4 unit and the next (clamped to the picture)
     always_comb begin
-        b_mr = MIW'($signed({1'b0, row0}) + (MIW+1)'(p_r)) << ssy;
+        b_mr = MIW'($signed({1'b0, row0}) + (MIW+1)'(p_r) + (la_blk ? (MIW+1)'(2) : (MIW+1)'(0))) << ssy;
         b_mc = MIW'(p_c2) << ssx;
         b_mr1 = (b_mr + MIW'(1) < mi_rows) ? b_mr + MIW'(1) : mi_rows - MIW'(1);
         b_mc1 = (b_mc + MIW'(1) < mi_cols) ? b_mc + MIW'(1) : mi_cols - MIW'(1);
@@ -173,7 +185,7 @@ module cdef_stream
     logic [2:0]  s_dr; logic [11:0] s_pri, s_sec; logic [4:0] s_adjp, s_adjs; logic s_odd;
     logic [2:0]  dr_r; logic [11:0] pri_r, sec_r; logic [4:0] adjp_r, adjs_r; logic odd_r;
     logic [2:0]  yd_q;                       // chroma: the luma direction as read
-    cdef_str u_str (.ch, .cs, .ssx, .ssy, .idx(cidx), .luma, .ydir(luma ? dir_d : yd_q), .var_i(dir_var),
+    cdef_str u_str (.ch, .cs, .ssx, .ssy, .idx(la_blk ? n_cidx : cidx), .luma, .ydir(luma ? dir_d : yd_q), .var_i(dir_var),
                     .dr(s_dr), .pri(s_pri), .sec(s_sec), .adjp(s_adjp), .adjs(s_adjs), .priodd(s_odd));
     // the line's neighbourhood: 5 lines x 12 columns out of the window (16 lines x 16 columns; the block starts at 4, 4)
     logic [2:0]  p_l;                        // line of the block
@@ -210,7 +222,7 @@ module cdef_stream
     assign out_valid = row_vo; assign out_line = row_out; assign out_col = tg_c[3]; assign out_y = tg_y[3];
     assign out_n4 = bw4;
     // luma: the block's direction for the chroma stages, as cdef_dir delivers it
-    assign dw_we = luma && (pst == P_STR); assign dw_row = b_mr; assign dw_col = b_mc; assign dw_dir = dir_d;
+    assign dw_we = luma && ((pst == P_STR) || (pst == P_PIX && la && p_l == 3'd7)); assign dw_row = b_mr; assign dw_col = b_mc; assign dw_dir = dir_d;
 
     // ---------------------------------------------------------------- sequencing
     logic done_pend;
@@ -224,7 +236,7 @@ module cdef_stream
         if (rst) begin
             a_act <= 1'b0; a_col <= '0; a_row <= '0; a_slot <= '0; p_c2 <= '0; p_base <= 3'd5; pst <= P_IDLE; done_pend <= 1'b0;
             k_cnt <= '0; p_r <= '0; ld_r <= '0; ld_n <= '0; sk_cnt <= '0; sk_all <= 1'b0; filt <= 1'b0; cidx <= '0; cidx_v <= 1'b0;
-            p_l <= '0; wait_n <= '0; tail <= '0; ctx_a <= '0; ctx_wd <= '0;
+            p_l <= '0; wait_n <= '0; tail <= '0; ctx_a <= '0; ctx_wd <= '0; la <= 1'b0; la_blk <= 1'b0; n_sk_all <= 1'b0; n_cidx <= '0; n_cidx_v <= 1'b0;
             dr_r <= '0; pri_r <= '0; sec_r <= '0; adjp_r <= '0; adjs_r <= '0; odd_r <= 1'b0;
         end else begin
             if (band_start && !busy) begin
@@ -278,10 +290,36 @@ module cdef_stream
                     pri_r <= (cidx_v && !sk_all) ? s_pri : 12'd0;
                     sec_r <= (cidx_v && !sk_all) ? s_sec : 12'd0;
                     p_l <= 3'd0; pst <= P_PIX;
+                    la <= (bh4 == 2'd2) && (p_r < p_last);
                 end
                 P_PIX: begin
                     p_l <= p_l + 3'd1;
-                    if (p_l == ((bh4 == 2'd2) ? 3'd7 : 3'd3)) pst <= P_NEXT;
+                    if (la) begin
+                        // the next block alongside this block's lines
+                        case (p_l)
+                            3'd0: begin for (int k = 0; k < 4; k++) nx3[k] <= ld_blk[k]; ld_r <= ld_r + 7'sd1; end
+                            3'd1: begin
+                                for (int k = 0; k < 4; k++) nx4[k] <= ld_blk[k];
+                                ld_r <= ld_r + 7'sd1; la_blk <= 1'b1; dir_go <= 1'b1; sk_cnt <= 2'd0; n_sk_all <= 1'b1;
+                            end
+                            3'd2: sk_cnt <= 2'd1;                                   // first skip address out
+                            3'd3: begin n_sk_all <= n_sk_all && rd_skip; n_cidx_v <= cdr_val[3]; n_cidx <= cdr_val[2:0]; sk_cnt <= 2'd2; yd_q <= yd; end
+                            3'd4: begin n_sk_all <= n_sk_all && rd_skip; sk_cnt <= 2'd3; end
+                            3'd5: n_sk_all <= n_sk_all && rd_skip;
+                            3'd6: n_sk_all <= n_sk_all && rd_skip;                  // the fourth flag; the direction arrives
+                            default: begin                                          // line 7: the next block takes over
+                                for (int k = 0; k < 4; k++) begin
+                                    win[0][k] <= win[2][k]; win[1][k] <= win[3][k]; win[2][k] <= nx3[k]; win[3][k] <= nx4[k];
+                                end
+                                filt <= n_cidx_v && !n_sk_all; cidx <= n_cidx; cidx_v <= n_cidx_v; sk_all <= n_sk_all;
+                                dr_r <= s_dr; adjp_r <= s_adjp; adjs_r <= s_adjs; odd_r <= s_odd;
+                                pri_r <= (n_cidx_v && !n_sk_all) ? s_pri : 12'd0;
+                                sec_r <= (n_cidx_v && !n_sk_all) ? s_sec : 12'd0;
+                                p_r <= p_r + 7'sd2; p_l <= 3'd0; la_blk <= 1'b0;
+                                la <= (p_r + 7'sd2 < p_last);                       // and a block after that one?
+                            end
+                        endcase
+                    end else if (p_l == ((bh4 == 2'd2) ? 3'd7 : 3'd3)) pst <= P_NEXT;
                 end
                 P_NEXT: begin
                     if (p_r >= p_last) begin k_cnt <= 2'd0; ld_r <= 7'(n_blk) - 7'sd5; pst <= P_SAVE_RD; end
