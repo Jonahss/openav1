@@ -5,7 +5,14 @@
 //   pix    : p6 .. p0, q0 .. q6 (pix[0] = p6, pix[6] = p0, pix[7] = q0, pix[13] = q6), 12 bits each
 //   out    : the filtered samples at positions k = -6 .. 5 (out[0] = position -6 = p5, out[6] = q0), valid where mod
 //   mod    : position k is changed by the filter (a position not flagged keeps its sample)
-module lf_filt (
+//   PIPE   : 1 = two stages, as lf_top splits the filter: the decision (masks, filter choice, the first half of the
+//            narrow filter) is registered with the samples, the outputs follow a clock later (ce advances the stage);
+//            0 = combinational (clk and ce unused).
+module lf_filt #(
+    parameter int PIPE = 0
+) (
+    input  logic            clk,
+    input  logic            ce,
     input  logic [3:0]      bit_depth,
     input  logic            chroma,        // plane != 0: the wide filter is the 6-tap one
     input  logic [4:0]      filter_size,   // 4, 8 or 16 (7.14.3)
@@ -18,9 +25,13 @@ module lf_filt (
 );
     logic [3:0]  bd8;
     assign bd8 = bit_depth - 4'd8;
-    logic [12:0] p [0:6];
+    logic [12:0] p [0:6];                               // decision stage: the input samples
     logic [12:0] q [0:6];
     always_comb for (int j = 0; j < 7; j++) begin p[j] = 13'(pix[(6 - j) * 12 +: 12]); q[j] = 13'(pix[(7 + j) * 12 +: 12]); end
+    logic [14*12-1:0] pix_s;                            // output stage: the samples the outputs are formed from
+    logic [12:0] ps [0:6];
+    logic [12:0] qs [0:6];
+    always_comb for (int j = 0; j < 7; j++) begin ps[j] = 13'(pix_s[(6 - j) * 12 +: 12]); qs[j] = 13'(pix_s[(7 + j) * 12 +: 12]); end
     function automatic logic [12:0] adiff(input logic [12:0] a, input logic [12:0] b);
         adiff = (a > b) ? a - b : b - a;
     endfunction
@@ -61,13 +72,21 @@ module lf_filt (
     function automatic logic signed [13:0] c4(input logic signed [15:0] v, input logic signed [13:0] lo, input logic signed [13:0] hi);
         c4 = (v < 16'(lo)) ? lo : (v > 16'(hi)) ? hi : 14'(v);
     endfunction
+    logic signed [13:0] dp1, dp0, dq0, dq1, filt_a, filt_a_s;
+    logic        hev_s;
     always_comb begin
         off_s = 14'(13'd128 << bd8);
         lo_s = -(14'sd1 <<< (bit_depth - 4'd1));
         hi_s = (14'sd1 <<< (bit_depth - 4'd1)) - 14'sd1;
-        ps1 = 14'(p[1]) - off_s; ps0 = 14'(p[0]) - off_s; qs0 = 14'(q[0]) - off_s; qs1 = 14'(q[1]) - off_s;
-        filt = hev ? c4(16'(ps1) - 16'(qs1), lo_s, hi_s) : 14'sd0;
-        filt = c4(16'(filt) + 16'sd3 * (16'(qs0) - 16'(ps0)), lo_s, hi_s);
+    end
+    always_comb begin                                   // decision stage: the hev-gated difference and the 3 * (q0 - p0) clamp chain
+        dp1 = 14'(p[1]) - off_s; dp0 = 14'(p[0]) - off_s; dq0 = 14'(q[0]) - off_s; dq1 = 14'(q[1]) - off_s;
+        filt_a = hev ? c4(16'(dp1) - 16'(dq1), lo_s, hi_s) : 14'sd0;
+        filt_a = c4(16'(filt_a) + 16'sd3 * (16'(dq0) - 16'(dp0)), lo_s, hi_s);
+    end
+    always_comb begin                                   // output stage
+        ps1 = 14'(ps[1]) - off_s; ps0 = 14'(ps[0]) - off_s; qs0 = 14'(qs[0]) - off_s; qs1 = 14'(qs[1]) - off_s;
+        filt = filt_a_s;
         filter1 = c4(16'(filt) + 16'sd4, lo_s, hi_s) >>> 3;
         filter2 = c4(16'(filt) + 16'sd3, lo_s, hi_s) >>> 3;
         nq0 = 12'(c4(16'(qs0) - 16'(filter1), lo_s, hi_s) + off_s);
@@ -86,7 +105,7 @@ module lf_filt (
                 pidx = i + j;
                 if (pidx < -(n + 1)) pidx = -(n + 1);
                 if (pidx > n) pidx = n;
-                t = t + (((j < 0 ? -j : j) <= n2) ? 18'(pix[(7 + pidx) * 12 +: 12]) * 18'd2 : 18'(pix[(7 + pidx) * 12 +: 12]));
+                t = t + (((j < 0 ? -j : j) <= n2) ? 18'(pix_s[(7 + pidx) * 12 +: 12]) * 18'd2 : 18'(pix_s[(7 + pidx) * 12 +: 12]));
             end
         end
         wide_val = 12'((t + (18'd1 << (log2sz - 1))) >> log2sz);
@@ -100,32 +119,42 @@ module lf_filt (
         for (int i = -2; i <= 1; i++) w6[i + 2] = wide_val(i, 2, 1, 3);
     end
     typedef enum logic [1:0] {F_NONE, F_NARROW, F_WIDE8, F_WIDE16} fmode_t;
-    fmode_t fmode;
+    fmode_t fmode, fmode_s;
+    logic   chroma_s;
     always_comb begin
         if (!filter_mask) fmode = F_NONE;
         else if (filter_size == 5'd4 || !flat) fmode = F_NARROW;
         else if (filter_size == 5'd8 || !flat2) fmode = F_WIDE8;
         else fmode = F_WIDE16;
     end
+    generate if (PIPE != 0) begin : g_pipe
+        always_ff @(posedge clk) if (ce) begin
+            pix_s <= pix; fmode_s <= fmode; hev_s <= hev; filt_a_s <= filt_a; chroma_s <= chroma;
+        end
+    end else begin : g_comb
+        assign pix_s = pix; assign fmode_s = fmode; assign hev_s = hev; assign filt_a_s = filt_a; assign chroma_s = chroma;
+        logic unused_clk;
+        assign unused_clk = clk ^ ce;
+    end endgenerate
     always_comb begin
         for (int k = -6; k <= 5; k++) begin
             logic [11:0] o; logic v;
-            o = pix[(7 + k) * 12 +: 12]; v = 1'b0;
-            case (fmode)
+            o = pix_s[(7 + k) * 12 +: 12]; v = 1'b0;
+            case (fmode_s)
                 F_NARROW: begin
                     if (k == 0)  begin o = nq0; v = 1'b1; end
                     if (k == -1) begin o = np0; v = 1'b1; end
-                    if (k == 1)  begin o = nq1; v = !hev; end
-                    if (k == -2) begin o = np1; v = !hev; end
+                    if (k == 1)  begin o = nq1; v = !hev_s; end
+                    if (k == -2) begin o = np1; v = !hev_s; end
                 end
                 F_WIDE8: begin
-                    if (!chroma && k >= -3 && k <= 2) begin o = w8[k + 3]; v = 1'b1; end
-                    if (chroma && k >= -2 && k <= 1)  begin o = w6[k + 2]; v = 1'b1; end
+                    if (!chroma_s && k >= -3 && k <= 2) begin o = w8[k + 3]; v = 1'b1; end
+                    if (chroma_s && k >= -2 && k <= 1)  begin o = w6[k + 2]; v = 1'b1; end
                 end
                 F_WIDE16: begin o = w16[k + 6]; v = 1'b1; end
                 default: ;
             endcase
-            out[(k + 6) * 12 +: 12] = v ? o : pix[(7 + k) * 12 +: 12];
+            out[(k + 6) * 12 +: 12] = v ? o : pix_s[(7 + k) * 12 +: 12];
             mod[k + 6] = v;
         end
     end

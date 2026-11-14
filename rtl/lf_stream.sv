@@ -101,7 +101,7 @@ module lf_stream #(
         end
     end
     generate for (genvar gl = 0; gl < 4; gl++) begin : g_av
-        lf_filt u_f (.bit_depth, .chroma, .filter_size(vp[28:24]), .limit(vp[23:16]), .blimit(vp[15:8]), .thresh(vp[7:0]),
+        lf_filt u_f (.clk, .ce(1'b1), .bit_depth, .chroma, .filter_size(vp[28:24]), .limit(vp[23:16]), .blimit(vp[15:8]), .thresh(vp[7:0]),
                      .pix(a_pix[gl]), .out(a_out[gl]), .mod(a_mod[gl]));
     end endgenerate
 
@@ -143,7 +143,7 @@ module lf_stream #(
         end
     end
     generate for (genvar gc = 0; gc < 4; gc++) begin : g_bh
-        lf_filt u_f (.bit_depth, .chroma, .filter_size(hp[28:24]), .limit(hp[23:16]), .blimit(hp[15:8]), .thresh(hp[7:0]),
+        lf_filt u_f (.clk, .ce(1'b1), .bit_depth, .chroma, .filter_size(hp[28:24]), .limit(hp[23:16]), .blimit(hp[15:8]), .thresh(hp[7:0]),
                      .pix(b_pix[gc]), .out(b_out[gc]), .mod(b_mod[gc]));
     end endgenerate
 

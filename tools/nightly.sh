@@ -84,6 +84,7 @@ run lf_edge_unit       TS_SEEDS=2,3,7,8,20,47,70 TS_W=192 TS_H=160 python tb/run
 run lf_edge_inter      TS_LF_VEC="$PWD/tb/vectors/lf_edge_inter" python tb/runner.py lf_edge   # six inter frames of Argon test47 / test6491 / test11 dumped by dec_inter_lr (TS_LF_VEC_OUT): reference and mode deltas, the skip-and-inter rule
 run lf_stage_unit      TS_SEEDS=2,3,7,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stage_tb_top test_lf_stage   # mi_store + lf_feed + lf_edge + lf_stream vs lf_model: the deblock stage with nothing supplied but what the decoder has
 run lf_filt_unit       python tb/runner.py lf_filt          # the deblocking sample filter of the streaming chain vs lf_model (one line across an edge)
+run lf_filt_pipe       LFF_PIPE=1 python tb/runner.py lf_filt   # the same filter in its two-stage form (PIPE = 1): outputs from the stage registers alone
 run lf_stream_unit     TS_SEEDS=2,3,7,8,9,10,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the streaming deblock stage vs lf_model, band by band (seeds 7, 20, 47, 70: samples that depend on the last column's vertical edge)
 run edge_line_unit     python tb/runner.py edge_line        # the unfiltered last-line copy (intra edge reads; LF a row earlier) vs a model
 run mc_filt_unit       python tb/runner.py mc_filt          # the motion-compensation filter vs the model: fuzz + back-to-back (overlapped) runs

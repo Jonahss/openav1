@@ -3,7 +3,7 @@ line of 14 samples: random bit depth, plane kind, filter size and strength; the 
 (none, narrow with and without hev, 6-tap, 8-tap, 14-tap) fires often. The line after the model's filter must equal the
 RTL's out where mod is set and the input elsewhere (out must also repeat the input where mod is clear). Each of the
 six outcomes (none, narrow with and without hev, chroma 6-tap, luma 8-tap, luma 14-tap) must occur at least 200 times.
-Env: LFF_ITERS (default 30000), LFF_SEED."""
+Env: LFF_ITERS (default 30000), LFF_SEED, LFF_PIPE=1 (the two-stage build, PIPE = 1: see the scrambling below)."""
 import os
 import random
 import types
@@ -18,6 +18,8 @@ async def lf_filt_vs_model(dut):
     iters = int(os.environ.get("LFF_ITERS", "30000"))
     rng = random.Random(int(os.environ.get("LFF_SEED", "1")))
     kinds = {}
+    pipe = os.environ.get("LFF_PIPE", "0") == "1"
+    dut.clk.value = 0; dut.ce.value = 0
     for it in range(iters):
         bd = rng.choice([8, 10, 12])
         mx = (1 << bd) - 1
@@ -41,6 +43,17 @@ async def lf_filt_vs_model(dut):
         dut.limit.value = limit; dut.blimit.value = blimit; dut.thresh.value = thresh
         dut.pix.value = sum(v << (12 * i) for i, v in enumerate(line))
         await Timer(1, "ns")
+        if pipe:                                             # two-stage build: clock the decision stage in, then
+            dut.ce.value = 1; dut.clk.value = 1              # scramble the inputs (ce low): the outputs must come from
+            await Timer(1, "ns")                             # the stage's registers alone
+            dut.clk.value = 0; dut.ce.value = 0
+            dut.pix.value = rng.getrandbits(168); dut.filter_size.value = rng.choice([4, 8, 16])
+            dut.limit.value = rng.randint(1, 63); dut.blimit.value = rng.randint(1, 193); dut.thresh.value = rng.randint(0, 3)
+            await Timer(1, "ns")
+            dut.clk.value = 1                                # an edge without ce changes nothing
+            await Timer(1, "ns")
+            dut.clk.value = 0
+            await Timer(1, "ns")
         out = int(dut.out.value); mod = int(dut.mod.value)
         got = list(line)
         for k in range(-6, 6):
