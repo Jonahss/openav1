@@ -22,18 +22,22 @@ module fc_plane
 ) (
     input  logic            clk,
     input  logic            rst,
-    input  hdr_t            hdr,
-    input  lf_hdr_t         lh,
-    input  cdef_hdr_t       ch,
-    input  logic [1:0]      plane,
-    input  logic            lf_on,
-    input  logic            cdef_on,
-    input  logic            band_start,      // pulse while idle
-    input  logic [MIW-1:0]  row0,            // the band's first 4x4 luma row
-    input  logic [5:0]      n_blk,           // the plane's 4x4 block rows in the band
-    input  logic [CW:0]     n_col,           // the plane's 4x4 block columns
-    input  logic            first_band,
-    input  logic            last_band,
+    // The headers and the band's parameters are taken through a register stage of the plane's own (the _i ports): they
+    // hold still from before band_start to band_done, but they come from the host's registers and the frame sequencer,
+    // far away on the chip, and are compared against on every line (2026-11-14: 1,584 of the 1,931 paths that missed
+    // 100 MHz in the first card build with the chain ran from the host block into CDEF's line filter).
+    input  hdr_t            hdr_i,
+    input  lf_hdr_t         lh_i,
+    input  cdef_hdr_t       ch_i,
+    input  logic [1:0]      plane,           // a constant of the instance
+    input  logic            lf_on_i,
+    input  logic            cdef_on_i,
+    input  logic            band_start_i,    // pulse while idle; the plane starts a clock later
+    input  logic [MIW-1:0]  row0_i,          // the band's first 4x4 luma row
+    input  logic [5:0]      n_blk_i,         // the plane's 4x4 block rows in the band
+    input  logic [CW:0]     n_col_i,         // the plane's 4x4 block columns
+    input  logic            first_band_i,
+    input  logic            last_band_i,
     output logic            busy,
     output logic            band_done,
     output logic            err_ovf,         // a CDEF line found the FIFO full (never, if col_hold's arithmetic holds); stays set
@@ -75,6 +79,18 @@ module fc_plane
     output logic [CW-1:0]   out_col,         // the segment's first 4x4 column
     output logic signed [8:0] out_y          // the line, counted from the band's first line
 );
+    hdr_t            hdr;
+    lf_hdr_t         lh;
+    cdef_hdr_t       ch;
+    logic            lf_on, cdef_on, band_start, first_band, last_band;
+    logic [MIW-1:0]  row0;
+    logic [5:0]      n_blk;
+    logic [CW:0]     n_col;
+    always_ff @(posedge clk) begin
+        hdr <= hdr_i; lh <= lh_i; ch <= ch_i; lf_on <= lf_on_i; cdef_on <= cdef_on_i;
+        row0 <= row0_i; n_blk <= n_blk_i; n_col <= n_col_i; first_band <= first_band_i; last_band <= last_band_i;
+        band_start <= band_start_i && !rst;
+    end
     // ---------------------------------------------------------------- the plane's geometry
     logic            ssx, ssy;
     logic [MIW-1:0]  prow0, pic_rows;
@@ -182,7 +198,7 @@ module fc_plane
         band_done <= 1'b0;
         if (rst) begin done_l <= 1'b0; act <= 1'b0; err_ovf <= 1'b0; end
         else begin
-            if (band_start && !act) begin act <= 1'b1; done_l <= 1'b0; end
+            if (band_start_i && !act) begin act <= 1'b1; done_l <= 1'b0; end   // busy from the pulse itself
             if (r_done) done_l <= 1'b1;
             if (co_valid && !ff_in_ready) err_ovf <= 1'b1;
             if (act && done_l && !f_busy && !s_busy && !c_busy && !r_busy && !sa_busy && !sb_busy && !bc_v) begin act <= 1'b0; done_l <= 1'b0; band_done <= 1'b1; end
