@@ -775,9 +775,12 @@ module dec_top
             assign rd2_skip[p] = 1'b0; assign fc_cdr_val[p] = 4'd0;           // a chroma plane's CDEF takes luma's record, not the store
         end
         // (the window build is 4:2:0 only: its chroma planes need half the rows and half the columns)
-        fc_rstore #(.FBX(FBX), .FBY(FBY), .CW(FCW), .CWC(FRAME_WIN > 0 ? FCW - 1 : FCW), .RBY(6), .RBC(FRAME_WIN > 0 ? 5 : 6)) u_rs (.clk, .ssy(hdr.ssy),
+        // (its band row through a register here: it holds still for the whole band, and the read address is formed from it)
+        logic [MIW-1:0] rs_row0; logic rs_ssy;
+        always_ff @(posedge clk) begin rs_row0 <= lf_row_first; rs_ssy <= hdr.ssy; end
+        fc_rstore #(.FBX(FBX), .FBY(FBY), .CW(FCW), .CWC(FRAME_WIN > 0 ? FCW - 1 : FCW), .RBY(6), .RBC(FRAME_WIN > 0 ? 5 : 6)) u_rs (.clk, .ssy(rs_ssy),
             .we(w_rc_we), .be(w_rc_be), .wplane(w_rc_pl), .wx(w_rc_x), .wy(w_rc_y), .wdata(w_rc_d),
-            .row0(lf_row_first), .bk_re, .bk_row, .bk_col, .bk_data);
+            .row0(rs_row0), .bk_re, .bk_row, .bk_col, .bk_data);
         fc_top #(.NBMAX(32), .CW(FCW)) u_fc (.clk, .rst, .hdr, .lh, .ch, .lf_on(fc_lf_on), .cdef_on(fc_cdef_on),
             .band_start(lf_go), .row0(lf_row_first), .n_blk(fc_n_blk), .first_band(lf_next == SBW'(0)), .last_band(lf_next + SBW'(1) >= n_rows),
             .busy(fcb_busy), .band_done(fcb_done), .err_ovf(fc_ovf),

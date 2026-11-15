@@ -64,21 +64,23 @@ module fc_top
     logic [2:0][CW:0]      cd_col;
     logic [CW:0]           n_col_y, n_col_c;
     logic [5:0]            n_blk_c;
+    hdr_t                  hq;               // the header through a register of the chain's own (it is still long before a band starts)
+    always_ff @(posedge clk) hq <= hdr;
     always_comb begin
-        n_col_y = (CW+1)'(hdr.mi_cols);
-        n_col_c = (CW+1)'((hdr.mi_cols + MIW'(hdr.ssx)) >> hdr.ssx);
-        n_blk_c = 6'((n_blk + 6'(hdr.ssy)) >> hdr.ssy);
-        p_act = hdr.mono ? 3'b001 : 3'b111;
+        n_col_y = (CW+1)'(hq.mi_cols);
+        n_col_c = (CW+1)'((hq.mi_cols + MIW'(hq.ssx)) >> hq.ssx);
+        n_blk_c = 6'((n_blk + 6'(hq.ssy)) >> hq.ssy);
+        p_act = hq.mono ? 3'b001 : 3'b111;
         // luma's directions exist for the block columns before cd_col[0]; a chroma block column at 4x4 column c lies
         // under luma's 4x4 columns from c << ssx on, and luma's block column there is two 4x4 columns wide
         cd_hold[0] = 1'b0;
         for (int p = 1; p < 3; p++)
-            cd_hold[p] = (CW+2)'(cd_col[0]) < (((CW+2)'(cd_col[p]) << hdr.ssx) + (CW+2)'(2)) && (cd_col[0] < n_col_y);
+            cd_hold[p] = (CW+2)'(cd_col[0]) < (((CW+2)'(cd_col[p]) << hq.ssx) + (CW+2)'(2)) && (cd_col[0] < n_col_y);
     end
     generate for (genvar p = 0; p < 3; p++) begin : g_p
-        fc_plane #(.LUMA(p == 0 ? 1 : 0), .NBMAX(NBMAX), .CW(CW)) u_pl (.clk, .rst, .hdr, .lh, .ch, .plane(2'(p)), .lf_on(lf_on[p]), .cdef_on,
-            .band_start(band_start && p_act[p]), .row0, .n_blk(p == 0 ? n_blk : n_blk_c), .n_col(p == 0 ? n_col_y : n_col_c),
-            .first_band, .last_band, .busy(p_busy[p]), .band_done(p_done[p]), .err_ovf(p_ovf[p]),
+        fc_plane #(.LUMA(p == 0 ? 1 : 0), .NBMAX(NBMAX), .CW(CW)) u_pl (.clk, .rst, .hdr_i(hdr), .lh_i(lh), .ch_i(ch), .plane(2'(p)), .lf_on_i(lf_on[p]), .cdef_on_i(cdef_on),
+            .band_start_i(band_start && p_act[p]), .row0_i(row0), .n_blk_i(p == 0 ? n_blk : n_blk_c), .n_col_i(p == 0 ? n_col_y : n_col_c),
+            .first_band_i(first_band), .last_band_i(last_band), .busy(p_busy[p]), .band_done(p_done[p]), .err_ovf(p_ovf[p]),
             .bk_re(bk_re[p]), .bk_row(bk_row[p]), .bk_col(bk_col[p]), .bk_data(bk_data[p]),
             .rd_row(rd_row[p]), .rd_col(rd_col[p]), .rd_info(rd_info[p]), .txr_plane(txr_plane[p]), .txr_row(txr_row[p]), .txr_col(txr_col[p]),
             .txr_sz(txr_sz[p]), .rd2_row(rd2_row[p]), .rd2_col(rd2_col[p]), .rd2_skip(rd2_skip[p]),

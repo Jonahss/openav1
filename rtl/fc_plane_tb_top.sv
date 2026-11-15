@@ -83,8 +83,8 @@ module fc_plane_tb_top
         if (bm_we) bmem[{bm_col, bm_row[RW-1:0]}] <= bm_data;
         if (bk_re) bk_data <= bmem[{bk_col, bk_row[RW-1:0]}];
     end
-    fc_plane #(.LUMA(LUMA), .NBMAX(NBMAX), .CW(CW)) u_fc (.clk, .rst, .hdr, .lh, .ch, .plane, .lf_on, .cdef_on,
-        .band_start, .row0, .n_blk, .n_col, .first_band, .last_band, .busy, .band_done, .err_ovf,
+    fc_plane #(.LUMA(LUMA), .NBMAX(NBMAX), .CW(CW)) u_fc (.clk, .rst, .hdr_i(hdr), .lh_i(lh), .ch_i(ch), .plane, .lf_on_i(lf_on), .cdef_on_i(cdef_on),
+        .band_start_i(band_start), .row0_i(row0), .n_blk_i(n_blk), .n_col_i(n_col), .first_band_i(first_band), .last_band_i(last_band), .busy, .band_done, .err_ovf,
         .bk_re, .bk_row, .bk_col, .bk_data, .rd_row, .rd_col, .rd_info, .txr_plane, .txr_row, .txr_col, .txr_sz,
         .rd2_row, .rd2_col, .rd2_skip(rd2_info.skip), .cdr_row64, .cdr_col64, .cdr_val,
         .yd_row, .yd_col, .yd, .dw_we, .dw_row, .dw_col, .dw_info, .cd_col(), .cd_hold(1'b0), .lrr_plane, .lrr_row, .lrr_col, .lrr_rec,
