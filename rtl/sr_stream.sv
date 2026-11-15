@@ -120,6 +120,16 @@ module sr_stream
     logic        o_v, o_l;
     logic [8:0]  o_t;
     assign adv = !o_v || out_ready;
+    // the window's columns: the buffers from w_slot on (named signals: no arithmetic inside an array index)
+    logic [2:0]  ws [4];
+    logic [95:0] wq [4];
+    always_comb begin
+        ws[0] = w_slot;
+        ws[1] = (w_slot == 3'd5) ? 3'd0 : w_slot + 3'd1;
+        ws[2] = (w_slot >= 3'd4) ? w_slot - 3'd4 : w_slot + 3'd2;
+        ws[3] = (w_slot >= 3'd3) ? w_slot - 3'd3 : w_slot + 3'd3;
+        for (int i = 0; i < 4; i++) wq[i] = q[ws[i]];
+    end
     logic        rd;                         // a line is read this clock
     assign rd = (pst == P_RUN) && adv;
     function automatic logic [2:0] slot_add(input logic [2:0] b, input logic [2:0] k);
@@ -147,10 +157,10 @@ module sr_stream
         if (adv) begin
             r1_v <= rd; r1_l <= (r_j + 9'd1 == nl); r1_t <= tg[r_j[7:0]];
             // the window: three columns of 8, or four of 4
-            for (int i = 0; i < 4; i++)
-                for (int m = 0; m < 8; m++)
-                    if (ssx) begin if (m < 4) win[4 * i + m] <= q[slot_add(w_slot, 3'(i))][12 * m +: 12]; end
-                    else if (i < 3) win[8 * i + m] <= q[slot_add(w_slot, 3'(i))][12 * m +: 12];
+            // every window sample is assigned exactly once (as two loops whose targets overlapped by the segment width,
+            // Vivado built the window differently from the simulation for 8-sample segments: netlist replay, 2026-11-15)
+            for (int j = 0; j < 24; j++)
+                win[j] <= ssx ? ((j < 16) ? wq[j / 4][12 * (j % 4) +: 12] : 12'd0) : wq[j / 8][12 * (j % 8) +: 12];
             r2_v <= r1_v; r2_l <= r1_l; r2_t <= r1_t;
             for (int l = 0; l < 8; l++)
                 for (int k = 0; k < 8; k++) begin

@@ -332,6 +332,7 @@ module lr_stream
     logic [2:0]   p1_rc;
     logic         p1_c0, p1_last, p1_nxl;
     logic [95:0]  w_l, w_m, w_r;
+    logic [1:0]   sl_l, sl_r;
     logic [3:0]   nvr;
     logic [167:0] px_c, px2;
     logic [95:0]  raw2, raw3, raw4;
@@ -339,12 +340,13 @@ module lr_stream
         smp = s[i * 12 +: 12];
     endfunction
     always_comb begin
-        w_m = cb_q[p1_slot]; w_l = cb_q[p1_slot - 2'd1]; w_r = cb_q[p1_slot + 2'd1];
+        sl_l = p1_slot - 2'd1; sl_r = p1_slot + 2'd1;      // the neighbour columns' buffers (two bits: the four buffers go round)
+        w_m = cb_q[p1_slot]; w_l = cb_q[sl_l]; w_r = cb_q[sl_r];
         nvr = p1_nxl ? 4'({1'b0, lw}) + 4'd1 : segw;
         for (int i = 0; i < 14; i++) begin
             logic [3:0] xr, rr;
             xr = 4'(i - 3); rr = 4'(i - 3) - segw;
-            if (i < 3) px_c[i * 12 +: 12] = p1_c0 ? smp(w_m, 3'd0) : smp(w_l, 3'(int'(segw) + i - 3));
+            if (i < 3) px_c[i * 12 +: 12] = p1_c0 ? w_m[11:0] : ssx ? w_l[(1 + i) * 12 +: 12] : w_l[(5 + i) * 12 +: 12];   // the left column's last three samples
             else if (xr < segw) px_c[i * 12 +: 12] = smp(w_m, (xr >= p1.nv) ? 3'(p1.nv - 4'd1) : 3'(xr));
             else if (p1_last) px_c[i * 12 +: 12] = smp(w_m, 3'(p1.nv - 4'd1));
             else px_c[i * 12 +: 12] = smp(w_r, (rr >= nvr) ? 3'(nvr - 4'd1) : 3'(rr));
