@@ -79,12 +79,14 @@ def leaf_fields(t, prefix, hi):
     return out
 ins, outs = [], []
 port_struct = {}
+port_dims = {}
 kind = width = None; signed = False
 stype = None
 for decl in strip(ports).split(','):
     d = decl.strip()
     if not d: continue
-    # packed dimensions may be several ([2:0][5:0]: the filter chain's per-plane ports); a netlist has them as one vector
+    # packed dimensions may be several ([2:0][5:0]: the filter chain's per-plane ports); the harness holds them as one
+    # vector, the funcsim netlist has one port per element of the outer dimensions (\\bk_row[2] , width of the last one)
     dm = re.match(r'(input|output)\s+(?:(logic|wire|reg)\s+)?(signed\s+)?(?:(\w+_t)\s+)?((?:\[[^\]]+\]\s*)*)(\w+)\s*$', d)
     if dm:
         kind, _, sg, tname, dims, pname = dm.groups()
@@ -93,12 +95,15 @@ for decl in strip(ports).split(','):
         width = type_width(tname) if tname else 1
         for r in rngs: width *= rng_width(r)
         stype = tname if tname and typedefs[tname][0] == 'struct' and not rngs else None
+        if len(rngs) >= 2 and tname and typedefs[tname][0] == 'struct': sys.exit(f'array of structs as a port is not handled: {d}')
+        pdims = [(ev(r.split(':')[0]), ev(r.split(':')[1])) for r in rngs] if len(rngs) >= 2 else None
     else:
         bm = re.match(r'(\w+)\s*$', d)
         if not bm or kind is None: sys.exit(f'cannot parse port: {d}')
         pname = bm.group(1)
     (ins if kind == 'input' else outs).append((pname, width, signed))
     port_struct[pname] = stype
+    port_dims[pname] = pdims
 gen_ports = [x for x in (a.gen2x, a.genphase) if x]
 # A 2x-clock block's phase must be generated with the clock: recorded from a VCD it is sampled once per clk cycle, i.e. a
 # constant 0, and every half-cycle read of the double-pumped frame memory stays unobserved (2026-11-01: five netlist replays
@@ -129,7 +134,17 @@ gmask_body = ''.join("        gmask[%d:%d] = {%d{(%s)}};\n" % (pos[p][0], pos[p]
                      ' || '.join("e[%d]" % pos[g][0] for g in gates[p])) for p in gated)
 gmask_fn = ("    function automatic logic [NO-1:0] gmask(input logic [NO-1:0] e);   // 0 over outputs that are don't-care this cycle\n"
             "        gmask = '1;\n" + gmask_body + "    endfunction\n")
+def elems(dims):
+    """[(index suffix, offset in elements)] over the outer dimensions, e.g. [2:0] -> ('[2]', 2), ('[1]', 1), ('[0]', 0)."""
+    out = [('', 0)]
+    for hi, lo in dims:
+        n = abs(hi - lo) + 1
+        out = [(sfx + f'[{i}]', off * n + abs(i - lo)) for sfx, off in out for i in (range(hi, lo - 1, -1) if hi >= lo else range(hi, lo + 1))]
+    return out
 def conn(p, w, stype):
+    if port_dims.get(p):
+        iw = abs(port_dims[p][-1][0] - port_dims[p][-1][1]) + 1
+        return ', '.join(f'.\\{p}{sfx} ({p}[{k * iw + iw - 1}:{k * iw}])' if iw > 1 else f'.\\{p}{sfx} ({p}[{k}])' for sfx, k in elems(port_dims[p][:-1]))
     if stype is None: return f'.{p}({p})'
     return ', '.join(f'.\\{nm} ({p}[{hi}:{lo}])' if hi != lo else f'.\\{nm} ({p}[{hi}])' for nm, hi, lo in leaf_fields(stype, p, w - 1))
 netlist_ports = ', '.join([f'.{a.clk}({a.clk})'] + [f'.{g}({g})' for g in gen_ports] + [conn(p, w, port_struct[p]) for p, w, _ in ins_v + outs])
@@ -154,7 +169,7 @@ module replay_{name};
     logic {a.clk} = 0;
 ''' + ''.join(f'    logic {g} = 0;\n' for g in gen_ports) + '\n'.join('    ' + decl(p, w, s) for p, w, s in ins_v + outs) + f'''
 `ifdef NETLIST
-    // the funcsim netlist flattens struct ports into one port per leaf field
+    // the funcsim netlist has one port per leaf field of a struct port and per element of a port with several packed dimensions
     {name} dut ({netlist_ports});
 `else
     {name} dut (.*);
