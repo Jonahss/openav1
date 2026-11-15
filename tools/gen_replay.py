@@ -84,12 +84,15 @@ stype = None
 for decl in strip(ports).split(','):
     d = decl.strip()
     if not d: continue
-    dm = re.match(r'(input|output)\s+(?:(logic|wire|reg)\s+)?(signed\s+)?(?:(\w+_t)\s+)?(\[([^\]]+)\])?\s*(\w+)\s*$', d)
+    # packed dimensions may be several ([2:0][5:0]: the filter chain's per-plane ports); a netlist has them as one vector
+    dm = re.match(r'(input|output)\s+(?:(logic|wire|reg)\s+)?(signed\s+)?(?:(\w+_t)\s+)?((?:\[[^\]]+\]\s*)*)(\w+)\s*$', d)
     if dm:
-        kind, _, sg, tname, _, rng, pname = dm.groups()
+        kind, _, sg, tname, dims, pname = dm.groups()
         signed = bool(sg)
-        width = type_width(tname) if tname else (rng_width(rng) if rng else 1)
-        stype = tname if tname and typedefs[tname][0] == 'struct' else None
+        rngs = re.findall(r'\[([^\]]+)\]', dims)
+        width = type_width(tname) if tname else 1
+        for r in rngs: width *= rng_width(r)
+        stype = tname if tname and typedefs[tname][0] == 'struct' and not rngs else None
     else:
         bm = re.match(r'(\w+)\s*$', d)
         if not bm or kind is None: sys.exit(f'cannot parse port: {d}')
