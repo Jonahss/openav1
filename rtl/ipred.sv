@@ -642,11 +642,9 @@ module ipred #(
     // dup[i]=buf[i-2] (i==0 -> buf[-1]), dup[i+1]=buf[i-1], dup[i+2]=buf[i], dup[i+3]=buf[i+1] (clamped to numPx-1).
     // Writes buf[2i-1] and buf[2i]. Processing i descending keeps every read original except buf[1] (saved).
     logic [PW-1:0] up_s, up_d2;
-    int up_i, up_i0, up_i3;                           // i = k-1 and the clamped tap positions i-2, i+1
+    int up_i;                                         // i = k-1
     always_comb begin
         up_i  = int'(k) - 1;
-        up_i0 = (up_i - 2 < -1) ? -1 : up_i - 2;
-        up_i3 = (up_i + 1 > int'(ef_sz) - 1) ? int'(ef_sz) - 1 : up_i + 1;
     end
     always_comb begin
         int i, n, s;

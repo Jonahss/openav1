@@ -94,7 +94,7 @@ module pal_syntax
     logic [2:0]  d1 [64];
     logic [2:0]  d2 [64];
     logic [2:0]  dcur [64];
-    logic [3:0]  ns_w, ns_m, ns_v;
+    logic [3:0]  ns_m, ns_v;
     // colour maps
     // colour maps: one write per clock from the FSM (through cm_*), one registered read (pm_idx): block RAM
     logic [2:0]  cmap_y  [0:4095];
@@ -425,7 +425,6 @@ module pal_syntax
                 end
                 T_NS: begin
                     // color_index_map_y/uv = read_ns(n): w = FloorLog2(n) + 1, m = (1 << w) - n, v = L(w - 1)
-                    ns_w <= ns_w_c;
                     ns_m <= 4'((5'd1 << ns_w_c) - 5'(n));
                     lit_n <= ns_w_c - 4'd1; lit_val <= '0; lit_ret <= T_NS_W; st <= P_LIT;
                 end

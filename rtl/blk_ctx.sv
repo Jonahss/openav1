@@ -125,7 +125,6 @@ module blk_ctx
     logic [MIW-1:0] q_r, q_c;
     logic [4:0]  q_bs;
     logic [5:0]  q_bw4, q_bh4;
-    logic        q_au, q_al;
     logic [4:0]  sbm;                          // row mask inside the superblock (15 or 31)
     assign sbm = sb128 ? 5'd31 : 5'd15;
     logic [MIW-1:0] rm1, cm1;
@@ -449,8 +448,6 @@ module blk_ctx
         rn_c = (rp != 0 && ssx) ? 6'(((rb_c + MIW'(rb_bw4)) >> 1) - (rb_c >> 1)) : rb_bw4;
         rn_r = (rp != 0 && ssy) ? 6'(((rb_r + MIW'(rb_bh4)) >> 1) - (rb_r >> 1)) : rb_bh4;
     end
-    logic tbusy;
-    assign tbusy = (tst != T_IDLE) || (rstt != R_IDLE);
     logic [7:0] t_wd;                          // {dc category, cul level} being written in T_LW
     // ---- above level context RAM port: the reset engine, the level write, the context read
     always_comb begin

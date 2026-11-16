@@ -142,7 +142,7 @@ module tile_syntax
     logic clear_above, clear_left, sbrow_end;
     logic nb_req_b, nb_req_p, nb_req, nb_valid;
     logic [MIW-1:0] nb_r, nb_c; logic [4:0] nb_bs;
-    logic avail_u, avail_l, has_chroma, avail_u_chroma, avail_l_chroma;
+    logic avail_u, avail_l, has_chroma;
     logic [3:0] a_ymode, l_ymode; logic a_skip, l_skip; logic [4:0] a_misize, l_misize, a_txsz, l_txsz;
     logic [3:0] a_pal_y, l_pal_y, a_pal_uv, l_pal_uv, seg_ul, seg_u, seg_l;
     logic [95:0] a_col_y, l_col_y, a_col_u, l_col_u;
@@ -164,7 +164,7 @@ module tile_syntax
                    .ssx(hdr.ssx), .ssy(hdr.ssy), .mono(hdr.mono), .sb128(hdr.sb128),
                    .clear_above, .clear_left, .sbrow_end,
                    .blk_req(nb_req), .blk_r(nb_r), .blk_c(nb_c), .blk_bsize(nb_bs), .nb_valid,
-                   .avail_u, .avail_l, .has_chroma, .avail_u_chroma, .avail_l_chroma,
+                   .avail_u, .avail_l, .has_chroma, .avail_u_chroma(), .avail_l_chroma(),
                    .a_ymode, .l_ymode, .a_skip, .l_skip, .a_misize, .l_misize, .a_txsz, .l_txsz, .a_is_inter, .l_is_inter, .a_recs, .l_recs,
                    .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .seg_ul, .seg_u, .seg_l, .a_col_y, .l_col_y, .a_col_u, .l_col_u,
                    .blk_we(ctx_we), .w_ymode, .w_skip, .w_seg, .w_txsz, .w_is_inter, .w_vartx, .w_txsz_col, .w_txsz_row, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u, .wbusy(ctx_wbusy),
@@ -173,7 +173,7 @@ module tile_syntax
     assign ctx_tbusy = 1'b0;   // blk_ctx's tx path is single-request; blk_syntax serialises its own use
 
     // ------------------------------------------------------------------ blk_syntax
-    logic b_start, b_busy, b_unsup, sb_start;
+    logic b_start, b_unsup, sb_start;
     logic bq_go; logic [CDF_AW-1:0] bq_addr; logic [3:0] bq_n; logic [1:0] bq_kind;
     // motion info of the frame (intra block copy)
     logic mvm_we, mvm_busy, mvm_clr, mvr_written; logic [MIW-1:0] mvm_r, mvm_c, mvr_row, mvr_col; logic [5:0] mvm_bw4, mvm_bh4; mv_ent_t mvm_data, mvr_ent;
@@ -198,7 +198,7 @@ module tile_syntax
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     tx_rec_t b_tx;
     always_comb begin tx_rec = b_tx; tx_rec.slot = q_slot_w; end
-    blk_syntax #(.INTER(INTER)) u_blk (.clk, .rst, .hdr, .ihdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(b_busy),
+    blk_syntax #(.INTER(INTER)) u_blk (.clk, .rst, .hdr, .ihdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(),
                       .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec(b_tx), .tx_ack, .blk_ack, .pal_hold,
                       .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u,
                       .pm_plane, .pm_x, .pm_y, .pm_idx,
@@ -240,8 +240,6 @@ module tile_syntax
     assign sb4 = hdr.sb128 ? 6'd32 : 6'd16;
     logic [5:0] half4, quarter4;
     logic [4:0] sub_size, split_size;
-    logic [3:0] part_now;
-    logic [15:0] psum;
     logic [1:0] part_ctx;
     logic [2:0] bsl;
     always_comb begin
@@ -277,9 +275,9 @@ module tile_syntax
     logic want_horz;                           // which bool we are decoding (1: split_or_horz, 0: split_or_vert)
 
     // loop-restoration unit syntax at superblock start
-    logic lr_start, lr_busy, lr_fin, lr_active;
+    logic lr_start, lr_fin, lr_active;
     logic lq_go; logic [CDF_AW-1:0] lq_addr; logic [3:0] lq_n; logic [1:0] lq_kind;
-    lr_syntax u_lr (.clk, .rst, .hdr, .tile_start, .start(lr_start), .r(sb_r), .c(sb_c), .sb128(hdr.sb128), .busy(lr_busy), .done(lr_fin),
+    lr_syntax u_lr (.clk, .rst, .hdr, .tile_start, .start(lr_start), .r(sb_r), .c(sb_c), .sb128(hdr.sb128), .busy(), .done(lr_fin),
                     .lr_done, .lr_rec, .sq_go(lq_go), .sq_addr(lq_addr), .sq_n(lq_n), .sq_kind(lq_kind), .sq_done(k_done), .sq_sym(k_sym));
 
     // control sequencer mux: blk_syntax when a block is active, lr_syntax at superblock start, else the partition FSM

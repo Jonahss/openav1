@@ -57,7 +57,6 @@ module lf_top
     logic [4:0]  cur_tx, prv_tx;
     logic [1:0]  i4;                                    // sample index along the edge (0..3)
     logic [4:0]  filter_size;                           // 4, 8 or 16
-    logic [5:0]  lvl;
     logic [7:0]  limit, blimit, thresh;
     logic [11:0] pix [0:13];                            // pix[7 + k] = pixel k (k = -7..6): p_j = pix[6-j], q_j = pix[7+j]
     logic [3:0]  kk, n_rd;                              // read counter / count
@@ -73,7 +72,7 @@ module lf_top
     assign n_rg  = (n_rd == 4'd14) ? 2'd3 : 2'd1;      // groups - 1: 4 groups for a 16-wide filter, else 2
     assign rbase = (n_rd == 4'd14) ? -5'sd8 : -5'sd4;
     logic signed [4:0] wk;                              // write position k
-    logic signed [4:0] w_lo, w_hi;
+    logic signed [4:0] w_hi;
     // horizontal edges: the 4 columns of the position at once. pixc[c][7 + k] = column c's sample k rows from the
     // edge; cc = column being decided; colout[c][k + 6] = {modified, value} for k = -6..5 of column c
     logic [11:0] pixc [0:3][0:13];
@@ -280,7 +279,6 @@ module lf_top
     end
     always_ff @(posedge clk) begin fmode_r <= fmode; hev_r <= hev; filt_a_r <= filt_a_n; end
     logic [11:0] out_pix;
-    logic        out_valid;                             // this k is modified
     logic signed [4:0] f_lo, f_hi;                      // range of modified positions for the decided filter
     always_comb begin
         case (fmode_r)
@@ -315,7 +313,7 @@ module lf_top
         endcase
         return {v, o};
     endfunction
-    always_comb {out_valid, out_pix} = lf_out(wk);
+    always_comb out_pix = 12'(lf_out(wk));               // the value (the modified bit is not needed here)
     // vertical edges: the group rd_g written back whole, modified lanes replaced
     logic [47:0] grp_out, grp_h;
     always_comb begin                                    // horizontal edges: row wk of the 4 columns
@@ -392,7 +390,7 @@ module lf_top
                 begin
                     logic [29:0] s;
                     s = (str_cur[29:24] != 6'd0) ? str_cur : str_prv;
-                    lvl <= s[29:24]; limit <= s[23:16]; blimit <= s[15:8]; thresh <= s[7:0];
+                    limit <= s[23:16]; blimit <= s[15:8]; thresh <= s[7:0];
                     if (!apply_filter || s[29:24] == 6'd0) st <= L_NEXT;
                     else begin
                         i4 <= 2'd0; kk <= 4'd0;
