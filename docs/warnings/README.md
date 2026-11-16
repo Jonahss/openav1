@@ -94,3 +94,30 @@ With the three switched-off kinds enabled: 312 UNUSEDSIGNAL, 196 UNUSEDPARAM, 8 
 4. Synthesis leftovers that remain after 3.
 5. Waiver file complete; `warn_census.py --gate` in `fpga/u200/build.sh`; lint of every configuration in the nightly.
 6. The out-of-context gate synthesis, the Tiny Tapeout flow, the tooling.
+
+## Log
+
+### 2026-11-16, afternoon
+
+- **Simulator lint per configuration** (`tools/lint_all.sh`): a default-parameter lint called error flags unused that
+  the image configuration reads (`fsl_err`, `pj_err`), so the lint runs in four configurations. Before the cleanup:
+  image CHAIN=1 294 UNUSEDSIGNAL, image CHAIN=0 244, intra-only small 301, defaults CHAIN=1 312; 75 signals unused in
+  all four.
+- **66 of those 75 removed** (f38b037): 24 submodule outputs became explicitly open pins. The other 9 are module input
+  ports or are read by a testbench or the ILA probe list. After: 229 / 179 / 236 / 247. Full nightly on that commit:
+  63 pass, 0 fail.
+- **PINCONNECTEMPTY** flags `.port()`, which is the idiom that states an output is left open on purpose. It will be
+  waived as a kind (switched off in `tb/runner.py` with this paragraph as the reason), not per site.
+- **Second census, u200-fc6clte2s90p-e062b8f**: decoder 3455, shell 24, vendor 785. Gone as intended: Vivado 12-1008,
+  Project 1-498, Runs 36-537, TIMING-29. `impl_1` printed everything (no cut-off); the synthesis runs of this build
+  started before the init file existed and are still cut off (41 kinds). New in the shell list, both worth reading:
+  Place 46-14 (the placer calls the design highly congested) and Route 35-468 (17 pins that are both setup- and
+  hold-critical).
+- **TIMING-9 read** (`report_cdc` on the routed design): one Critical, CDC-11, the XDMA's `user_reset_reg` fanning out
+  to more than one synchroniser, one of them the decoder reset block's first stage (`rst_dec ... syncstages_ff_reg[0]`),
+  behind a false path. It is the PCIe core's reset entering our reset block; 23 Warning rows not yet read.
+- **Open finding, `dec_host.sv` auto-flush**: `if (row_final && !fq_full) fq_w <= fq_w + 1` drops a released row
+  without a trace when eight flushes are outstanding. Whether that can occur is not known. Either show it cannot, or
+  give it a sticky error bit in STATUS like the chain's FIFO overflow flags.
+- **Open finding, `blk_syntax`**: the removed `a_ok` / `l_ok` (neighbour available AND written) were never read; the
+  context logic uses availability alone. Probably equivalent inside a tile; to confirm against the MV store.
