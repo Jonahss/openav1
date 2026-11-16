@@ -303,11 +303,14 @@ module lf_top
                     default: ;
                 endcase
             end
+            // The taps are picked by constant index (2026-11-16): w8[int'(k) + 3] indexed outside the array for the k that are
+            // not modified (v = 0), which Vivado reports as Synth 8-324 and is free to build as it likes; lr_stream's
+            // cast index was built differently from the simulation (2026-11-15).
             F_WIDE8: begin
-                if (plane == 2'd0) begin v = (k >= -5'sd3) && (k <= 5'sd2); o = w8[int'(k) + 3]; end
-                else begin v = (k >= -5'sd2) && (k <= 5'sd1); o = w6[int'(k) + 2]; end
+                if (plane == 2'd0) begin v = (k >= -5'sd3) && (k <= 5'sd2); for (int j = 0; j < 6; j++) if (int'(k) == j - 3) o = w8[j]; end
+                else begin v = (k >= -5'sd2) && (k <= 5'sd1); for (int j = 0; j < 4; j++) if (int'(k) == j - 2) o = w6[j]; end
             end
-            F_WIDE16: begin v = (k >= -5'sd6) && (k <= 5'sd5); o = w16[int'(k) + 6]; end
+            F_WIDE16: begin v = (k >= -5'sd6) && (k <= 5'sd5); for (int j = 0; j < 12; j++) if (int'(k) == j - 6) o = w16[j]; end
             default: ;
         endcase
         return {v, o};
