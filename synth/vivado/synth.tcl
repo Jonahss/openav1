@@ -14,8 +14,9 @@ if {[info exists ::env(SYNTH_CLK2X)]} {
     puts $fp "create_clock -period 5.000 -name clk2x \[get_ports clk2x\]"
     # the double-pumped memory samples clk-domain requests only on the clk-aligned clk2x edge and changes its
     # read data only there (rtl/frame_mem_uram.sv), so every clk <-> clk2x path is a full clk cycle
+    # slow -> fast: the hold exception needs -end (2026-11-16, fpga/u200/sys.xdc), or hold is checked half a clk period early
     puts $fp "set_multicycle_path -setup 2 -from \[get_clocks clk\] -to \[get_clocks clk2x\]"
-    puts $fp "set_multicycle_path -hold 1 -from \[get_clocks clk\] -to \[get_clocks clk2x\]"
+    puts $fp "set_multicycle_path -hold 1 -end -from \[get_clocks clk\] -to \[get_clocks clk2x\]"
     # fast -> slow: the launch is the clk-aligned clk2x edge, one clk2x period before the default (-start)
     puts $fp "set_multicycle_path -setup 2 -start -from \[get_clocks clk2x\] -to \[get_clocks clk\]"
     puts $fp "set_multicycle_path -hold 1 -start -from \[get_clocks clk2x\] -to \[get_clocks clk\]"
