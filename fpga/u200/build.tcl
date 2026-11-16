@@ -28,6 +28,9 @@ add_files -norecurse $::env(U200_SOURCES)
 set_property file_type SystemVerilog [get_files -filter {NAME =~ *.sv}]
 set_property file_type Verilog [get_files -filter {NAME =~ *_v.v}]
 add_files -fileset constrs_1 -norecurse $root/fpga/u200/sys.xdc
+# sys.xdc names the MMCM's clocks, which exist only once the block design is linked: read at synthesis it failed
+# evaluation (Vivado 12-1008, Project 1-498) and was read again afterwards. Implementation only (2026-11-16).
+set_property USED_IN {implementation} [get_files $root/fpga/u200/sys.xdc]
 if {[info exists ::env(U200_PBLOCK)] && $::env(U200_PBLOCK) eq "1"} {
     add_files -fileset constrs_1 -norecurse $root/fpga/u200/pcie_pblock.xdc
     set_property USED_IN {implementation} [get_files $root/fpga/u200/pcie_pblock.xdc]
@@ -241,7 +244,16 @@ if {[info exists ::env(U200_STRATEGY)] && $::env(U200_STRATEGY) ne ""} {
     puts "impl strategy: $::env(U200_STRATEGY)"
 }
 # the implementation-time constraints are the KV260's (the cells have the same names in this block design)
+# the hook scripts belong to the project (Runs 36-537 otherwise)
+add_files -fileset utils_1 -norecurse [list $root/fpga/kv260/pre_opt.tcl $root/fpga/u200/msg_limit.tcl]
 set_property STEPS.OPT_DESIGN.TCL.PRE $root/fpga/kv260/pre_opt.tcl [get_runs impl_1]
+# Every run prints every warning (2026-11-16): Vivado stops a message kind after 100 instances per run, which makes
+# a warning census a lower bound (45 kinds were cut off in u200-fc3rf16te2e100p-c86eb7f). The limit is a parameter of
+# the run's own Vivado process, so it is set in a hook of each run.
+set nlim 0
+foreach r [get_runs -filter {IS_SYNTHESIS}] { set_property STEPS.SYNTH_DESIGN.TCL.PRE $root/fpga/u200/msg_limit.tcl $r; incr nlim }
+set_property STEPS.INIT_DESIGN.TCL.PRE $root/fpga/u200/msg_limit.tcl [get_runs impl_1]
+puts "MSG_LIMIT hook on $nlim synthesis runs and impl_1"
 launch_runs synth_1 -jobs 8
 wait_on_run synth_1
 # the out-of-context module runs (dec_host is the long one) must be done before implementation links the design: with
