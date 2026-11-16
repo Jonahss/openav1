@@ -16,7 +16,7 @@ if {[llength [get_ports -quiet clk2x]]} { set_property HD.CLK_SRC BUFGCTRL_X0Y1 
 set fmregs [get_cells -quiet -hier -filter {(NAME =~ *u_fb*/g_uram[*].u || NAME =~ *u_fb*/*_sel_r_reg*) && IS_SEQUENTIAL}]
 if {0 && [llength $fmregs]} {   # read data registered at E_a since 2026-10-27: single-cycle paths, no exception
     set_multicycle_path -setup 2 -from $fmregs -to [get_clocks clk2x]
-    set_multicycle_path -hold 1 -from $fmregs -to [get_clocks clk2x]
+    set_multicycle_path -hold 1 -end -from $fmregs -to [get_clocks clk2x]
 }
 opt_design
 place_design
