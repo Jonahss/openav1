@@ -5,7 +5,7 @@
 // Each plane has a FIFO of segments; out_hold rises while a FIFO has fewer than HOLD_AT free entries, which leaves
 // room for the lines the chain still sends after a hold (fc_plane's OUT_SLACK). The two ports are dealt out plane
 // after plane starting from a plane that moves on every clock, so no plane waits behind another for long; a
-// two-group segment may be split over two clocks.
+// two-group segment may be split over two clocks. The write ports are registers (one clock after the deal).
 // A segment's line is counted from the band's first line in its plane (signed: the chain's output for a band starts
 // above it); y0 is that line in the picture, per plane, and must hold from the band's start until the band's last
 // segment has been taken in (not until it is written: the FIFO keeps the picture line).
@@ -50,36 +50,71 @@ module fc_out #(
         assign out_hold[p] = f_free[p] < (FAW+1)'(HOLD_AT);
         assign two[p] = f_q[p][W-1];
     end endgenerate
-    assign busy = |f_v;
-    // deal the two ports
-    logic [2:0] half_n;
+    // The two ports are dealt out and then REGISTERED (2026-11-16). Until then they left this module as logic behind the
+    // FIFOs' block-RAM outputs: the deal, the group's column adder, dec_top's mux and the frame memory's address
+    // arithmetic in one clock, 25 logic levels into the memory's request registers. Once the clk -> clk2x hold check
+    // was anchored correctly (fpga/u200/sys.xdc) that path missed setup at 100 and at 90 MHz. The deal is written out
+    // as the few cases it has, instead of a loop counting the ports left: the FIFOs' pop (their read enable) hangs
+    // on it.
+    //   port 0: the first plane, in this clock's order, with a segment: its next group
+    //   port 1: that segment's second group if it still has both; else the next plane's next group
+    // A plane served on port 0 always finishes its segment in this clock; a plane served on port 1 finishes unless
+    // its segment has both groups left (then the second waits: half).
+    logic [2:0][FBX-1:0]   gx0, gx1;         // the head segment's two group columns
+    logic [2:0][FBY-1:0]   gy;
+    logic [2:0]            both;             // the head segment has both groups still to write
+    generate for (genvar p = 0; p < 3; p++) begin : g_h
+        assign gx0[p] = FBX'({f_q[p][96 + FBY +: CW], 2'b00});
+        assign gx1[p] = FBX'({f_q[p][96 + FBY +: CW], 2'b00}) + FBX'(4);
+        assign gy[p]  = f_q[p][96 +: FBY];
+        assign both[p] = f_v[p] && two[p] && !half[p];
+    end endgenerate
+    logic [1:0]            o0, o1, o2;       // the planes in this clock's order
+    logic [1:0]            pa, pb;           // the first plane with a segment, and the one after it with a segment
+    logic                  va, vb;
+    logic [1:0]            n_we;
+    logic [1:0][1:0]       n_wplane;
+    logic [1:0][FBX-1:0]   n_wx;
+    logic [1:0][FBY-1:0]   n_wy;
+    logic [1:0][47:0]      n_wdata;
+    logic [2:0]            half_n;
     always_comb begin
-        int left;
-        left = 2;
-        we = '0; wplane = '0; wx = '0; wy = '0; wdata = '0; f_pop = '0; half_n = half;
-        for (int k = 0; k < 3; k++) begin
-            int p;
-            p = (int'(rr) + k) % 3;
-            if (f_v[p] && left > 0) begin
-                // the groups of the head segment still to write: the second alone, or the first (and the second)
-                for (int g = 0; g < 2; g++) begin
-                    if (left > 0 && ((g == 0 && !half[p]) || (g == 1 && two[p]))) begin
-                        we[2 - left] = 1'b1;
-                        wplane[2 - left] = 2'(p);
-                        wx[2 - left] = FBX'({f_q[p][96 + FBY +: CW], 2'b00}) + FBX'(4 * g);
-                        wy[2 - left] = f_q[p][96 +: FBY];
-                        wdata[2 - left] = f_q[p][48 * g +: 48];
-                        left = left - 1;
-                        if (g == 1 || !two[p]) begin f_pop[p] = 1'b1; half_n[p] = 1'b0; end
-                        else half_n[p] = 1'b1;
-                    end
-                end
+        case (rr)
+            2'd0:    begin o0 = 2'd0; o1 = 2'd1; o2 = 2'd2; end
+            2'd1:    begin o0 = 2'd1; o1 = 2'd2; o2 = 2'd0; end
+            default: begin o0 = 2'd2; o1 = 2'd0; o2 = 2'd1; end
+        endcase
+        va = 1'b1; vb = 1'b1; pa = o0; pb = o1;
+        if (f_v[o0])      begin pa = o0; if (f_v[o1]) pb = o1; else if (f_v[o2]) pb = o2; else vb = 1'b0; end
+        else if (f_v[o1]) begin pa = o1; if (f_v[o2]) pb = o2; else vb = 1'b0; end
+        else if (f_v[o2]) begin pa = o2; vb = 1'b0; end
+        else              begin va = 1'b0; vb = 1'b0; end
+        n_we = '0; n_wplane = '0; n_wx = '0; n_wy = '0; n_wdata = '0; f_pop = '0; half_n = half;
+        if (va) begin
+            // port 0: plane pa's next group (its second if the first is written already)
+            n_we[0] = 1'b1; n_wplane[0] = pa; n_wy[0] = gy[pa];
+            n_wx[0] = half[pa] ? gx1[pa] : gx0[pa];
+            n_wdata[0] = half[pa] ? f_q[pa][48 +: 48] : f_q[pa][0 +: 48];
+            f_pop[pa] = 1'b1; half_n[pa] = 1'b0;
+            if (both[pa]) begin
+                // port 1: the same segment's second group
+                n_we[1] = 1'b1; n_wplane[1] = pa; n_wy[1] = gy[pa]; n_wx[1] = gx1[pa]; n_wdata[1] = f_q[pa][48 +: 48];
+            end else if (vb) begin
+                // port 1: the next plane's next group; a segment with both groups left keeps its second
+                n_we[1] = 1'b1; n_wplane[1] = pb; n_wy[1] = gy[pb];
+                n_wx[1] = half[pb] ? gx1[pb] : gx0[pb];
+                n_wdata[1] = half[pb] ? f_q[pb][48 +: 48] : f_q[pb][0 +: 48];
+                if (both[pb]) half_n[pb] = 1'b1;
+                else begin f_pop[pb] = 1'b1; half_n[pb] = 1'b0; end
             end
         end
     end
+    assign busy = (|f_v) || (|we);           // a segment waits in a FIFO, or a group is on the ports in this clock
     always_ff @(posedge clk) begin
-        if (rst) begin half <= '0; rr <= 2'd0; err_ovf <= 1'b0; end
+        wplane <= n_wplane; wx <= n_wx; wy <= n_wy; wdata <= n_wdata;
+        if (rst) begin half <= '0; rr <= 2'd0; err_ovf <= 1'b0; we <= '0; end
         else begin
+            we <= n_we;
             half <= half_n;
             rr <= (rr == 2'd2) ? 2'd0 : rr + 2'd1;
             if (|(in_valid & ~f_in_ready)) err_ovf <= 1'b1;
