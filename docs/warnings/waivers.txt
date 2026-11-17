@@ -1,0 +1,2 @@
+# tools/warn_census.py waivers: <owner|*>  <ID>  <regex on the message, or *>  # reason + section of docs/warnings/README.md
+# (none yet: every kind is read first, see README.md)

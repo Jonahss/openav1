@@ -1,0 +1,1789 @@
+%Warning-PINCONNECTEMPTY: rtl/sym_path.sv:36:43: Instance pin connected by name with empty reference: 'resp_wb_valid'
+   36 |                  .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng, .resp_cdf, .resp_cnt);
+      |                                           ^~~~~~~~~~~~~
+                          ... For warning description see https://verilator.org/warn/PINCONNECTEMPTY?v=5.053
+                          ... Use "/* verilator lint_off PINCONNECTEMPTY */" and lint_on around source to disable this message.
+%Warning-PINCONNECTEMPTY: rtl/tile_syntax.sv:88:43: Instance pin connected by name with empty reference: 'resp_wb_valid'
+   88 |                  .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng, .resp_cdf, .resp_cnt);
+      |                                           ^~~~~~~~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/tile_syntax.sv:104:98: Instance pin connected by name with empty reference: 'row_out'
+  104 |     sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(c_busy), .done(c_done), .sym(c_sym),
+      |                                                                                                  ^~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:125:79: Instance pin connected by name with empty reference: 'band_done'
+  125 |         .band_start, .n_blk, .n_col, .first_band, .last_band, .busy(s_busy), .band_done(),
+      |                                                                               ^~~~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:139:25: Instance pin connected by name with empty reference: 'band_done'
+  139 |         .busy(c_busy), .band_done(), .in_valid(lo_valid && bc_ready), .in_ready(cd_ready), .in_blk(lo_blk),
+      |                         ^~~~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:144:52: Instance pin connected by name with empty reference: 'out_n4'
+  144 |         .out_valid(co_valid), .out_line(co_line), .out_n4(), .out_col(), .out_y(co_y));
+      |                                                    ^~~~~~
+%Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:144:63: Instance pin connected by name with empty reference: 'out_col'
+  144 |         .out_valid(co_valid), .out_line(co_line), .out_n4(), .out_col(), .out_y(co_y));
+      |                                                               ^~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:492:105: Instance pin connected by name with empty reference: 'rdata4'
+  492 |             .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata({fb2_rdata4_u[11:0], fb2_rdata_u}), .rdata4(),
+      |                                                                                                         ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:146:25: Bits of signal are not used: 'm_axi_bresp'[0]
+                                             : ... note: In instance 'dec_host'
+  146 |     input  logic [1:0]  m_axi_bresp,
+      |                         ^~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/UNUSEDSIGNAL?v=5.053
+                       ... Use "/* verilator lint_off UNUSEDSIGNAL */" and lint_on around source to disable this message.
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:185:19: Bits of signal are not used: 'hdr_f'[511:245]
+                                             : ... note: In instance 'dec_host'
+  185 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+      |                   ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:185:26: Bits of signal are not used: 'rh_f'[511:213]
+                                             : ... note: In instance 'dec_host'
+  185 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+      |                          ^~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:185:32: Bits of signal are not used: 'lh_f'[511:385]
+                                             : ... note: In instance 'dec_host'
+  185 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+      |                                ^~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:185:38: Bits of signal are not used: 'ch_f'[511:101]
+                                             : ... note: In instance 'dec_host'
+  185 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+      |                                      ^~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:186:20: Bits of signal are not used: 'ih_f'[2047:1175]
+                                             : ... note: In instance 'dec_host'
+  186 |     logic [2047:0] ih_f;
+      |                    ^~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:211:35: Signal is not used: 'tile_done'
+                                             : ... note: In instance 'dec_host'
+  211 |     logic              tile_busy, tile_done, tile_done_lvl, unsupported;
+      |                                   ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:213:36: Signal is not used: 'frame_done'
+                                             : ... note: In instance 'dec_host'
+  213 |     logic              frame_busy, frame_done, frame_done_lvl;
+      |                                    ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:215:24: Signal is not used: 'blk_done'
+                                             : ... note: In instance 'dec_host'
+  215 |     logic              blk_done, tx_done, lr_done;
+      |                        ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:215:34: Signal is not used: 'tx_done'
+                                             : ... note: In instance 'dec_host'
+  215 |     logic              blk_done, tx_done, lr_done;
+      |                                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:215:43: Signal is not used: 'lr_done'
+                                             : ... note: In instance 'dec_host'
+  215 |     logic              blk_done, tx_done, lr_done;
+      |                                           ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:216:24: Signal is not used: 'blk_rec'
+                                             : ... note: In instance 'dec_host'
+  216 |     blk_rec_t          blk_rec;
+      |                        ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:217:24: Signal is not used: 'tx_rec'
+                                             : ... note: In instance 'dec_host'
+  217 |     tx_rec_t           tx_rec;
+      |                        ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:218:24: Signal is not used: 'lr_rec'
+                                             : ... note: In instance 'dec_host'
+  218 |     lr_rec_t           lr_rec;
+      |                        ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:407:21: Signal is not used: 'fq'
+                                             : ... note: In instance 'dec_host'
+  407 |     logic [SBW-1:0] fq [FQ];
+      |                     ^~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:446:27: Bits of signal are not used: 'd_g1'[47:44,35:32,23:20,11:8]
+                                             : ... note: In instance 'dec_host'
+  446 |     logic [47:0]    d_g0, d_g1;                               
+      |                           ^~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:717:18: Bits of signal are not used: 'aw_a'[1:0]
+                                             : ... note: In instance 'dec_host'
+  717 |     logic [11:0] aw_a, ar_a;
+      |                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:717:24: Bits of signal are not used: 'ar_a'[1:0]
+                                             : ... note: In instance 'dec_host'
+  717 |     logic [11:0] aw_a, ar_a;
+      |                        ^~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:739:18: Bits of signal are not used: 'ctrl_nx'[31:25,23:0]
+                                             : ... note: In instance 'dec_host'
+  739 |     logic [31:0] ctrl_nx;                                    
+      |                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:158:37: Signal is not driven, nor used: 'q_slot_w'
+                                            : ... note: In instance 'dec_host.u_dec'
+  158 |     logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
+      |                                     ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:237:138: Signal is not used: 'tx_inflight'
+                                             : ... note: In instance 'dec_host.u_dec'
+  237 |     logic ev_valid, ev_pop, tx_rel; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
+      |                                                                                                                                          ^~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:275:26: Bits of signal are not used: 'fc_rd_row'[38:13]
+                                            : ... note: In instance 'dec_host.u_dec'
+  275 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+      |                          ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:275:37: Bits of signal are not used: 'fc_rd_col'[38:13]
+                                            : ... note: In instance 'dec_host.u_dec'
+  275 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+      |                                     ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:275:48: Bits of signal are not used: 'fc_rd2_row'[38:13]
+                                            : ... note: In instance 'dec_host.u_dec'
+  275 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+      |                                                ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:275:60: Bits of signal are not used: 'fc_rd2_col'[38:13]
+                                            : ... note: In instance 'dec_host.u_dec'
+  275 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+      |                                                            ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:275:72: Bits of signal are not used: 'fc_txr_row'[38:13]
+                                            : ... note: In instance 'dec_host.u_dec'
+  275 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+      |                                                                        ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:275:84: Bits of signal are not used: 'fc_txr_col'[38:13]
+                                            : ... note: In instance 'dec_host.u_dec'
+  275 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+      |                                                                                    ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:276:26: Bits of signal are not used: 'fc_txr_plane'[5:2]
+                                            : ... note: In instance 'dec_host.u_dec'
+  276 |     logic [2:0][1:0]     fc_txr_plane, fc_lrr_plane;
+      |                          ^~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:276:40: Bits of signal are not used: 'fc_lrr_plane'[5:2]
+                                            : ... note: In instance 'dec_host.u_dec'
+  276 |     logic [2:0][1:0]     fc_txr_plane, fc_lrr_plane;
+      |                                        ^~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:277:26: Bits of signal are not used: 'fc_cdr_row64'[26:9]
+                                            : ... note: In instance 'dec_host.u_dec'
+  277 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
+      |                          ^~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:277:40: Bits of signal are not used: 'fc_cdr_col64'[26:9]
+                                            : ... note: In instance 'dec_host.u_dec'
+  277 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
+      |                                        ^~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:277:54: Bits of signal are not used: 'fc_lrr_row'[26:9]
+                                            : ... note: In instance 'dec_host.u_dec'
+  277 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
+      |                                                      ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:277:66: Bits of signal are not used: 'fc_lrr_col'[26:9]
+                                            : ... note: In instance 'dec_host.u_dec'
+  277 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
+      |                                                                  ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:326:31: Signal is not used: 'lr_we2'
+                                            : ... note: In instance 'dec_host.u_dec'
+  326 |     logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata; logic lr_we4; logic [3:0] lr_be4; logic [47:0] lr_wdata4, lr0_rdata4, lr1_rdata4;
+      |                               ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:326:146: Signal is not used: 'lr_wdata'
+                                             : ... note: In instance 'dec_host.u_dec'
+  326 |     logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata; logic lr_we4; logic [3:0] lr_be4; logic [47:0] lr_wdata4, lr0_rdata4, lr1_rdata4;
+      |                                                                                                                                                  ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:412:35: Bits of signal are not used: 's_rdata'[23:12]
+                                            : ... note: In instance 'dec_host.u_dec'
+  412 |             logic [23:0] m_rdata, s_rdata; logic [95:0] m_rdata4, s_rdata4;
+      |                                   ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:447:138: Bits of signal are not used: 'fb1_rdata4'[95:48]
+                                             : ... note: In instance 'dec_host.u_dec'
+  447 |     logic [1:0] fb1_re; logic [3:0] fb1_rplane; logic [2*FBX-1:0] fb1_rx; logic [2*FBY-1:0] fb1_ry; logic [23:0] fb1_rdata; logic [95:0] fb1_rdata4;
+      |                                                                                                                                          ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:476:18: Signal is not used: 'fb2_rdata_u'
+                                            : ... note: In instance 'dec_host.u_dec'
+  476 |     logic [11:0] fb2_rdata_u; logic [47:0] fb2_rdata4_u;
+      |                  ^~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:476:44: Signal is not used: 'fb2_rdata4_u'
+                                            : ... note: In instance 'dec_host.u_dec'
+  476 |     logic [11:0] fb2_rdata_u; logic [47:0] fb2_rdata4_u;
+      |                                            ^~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/fs_load.sv:20:27: Bits of signal are not used: 'hdr'[218:0]
+                                           : ... note: In instance 'dec_host.u_dec.g_fsl.u_fsl'
+   20 |     input  hdr_t          hdr,
+      |                           ^~~
+%Warning-UNUSEDSIGNAL: rtl/fs_load.sv:39:27: Bits of signal are not used: 'm_axi_rresp'[0]
+                                           : ... note: In instance 'dec_host.u_dec.g_fsl.u_fsl'
+   39 |     input  logic [1:0]    m_axi_rresp,
+      |                           ^~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/fs_load.sv:141:21: Bits of signal are not used: 'row_acc'[255:192]
+                                            : ... note: In instance 'dec_host.u_dec.g_fsl.u_fsl'
+  141 |     logic [255:0]   row_acc;                                  
+      |                     ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/mf_project.sv:28:27: Bits of signal are not used: 'hdr'[218:0]
+                                              : ... note: In instance 'dec_host.u_dec.g_fsl.u_pj'
+   28 |     input  hdr_t          hdr,
+      |                           ^~~
+%Warning-UNUSEDSIGNAL: rtl/mf_project.sv:51:27: Bits of signal are not used: 'm_axi_rresp'[0]
+                                              : ... note: In instance 'dec_host.u_dec.g_fsl.u_pj'
+   51 |     input  logic [1:0]    m_axi_rresp,
+      |                           ^~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/mf_project.sv:196:21: Bits of signal are not used: 'c0_w'[31:29]
+                                               : ... note: In instance 'dec_host.u_dec.g_fsl.u_pj'
+  196 |     logic [31:0]    c0_w; logic [2:0] c0_src; logic [MIW-2:0] c0_y, c0_x;
+      |                     ^~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:36:25: Bits of signal are not used: 'hdr'[164,157:74,65:56,54:0]
+                                             : ... note: In instance 'dec_host.u_dec.u_rc'
+   36 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:42:25: Signal is not used: 'ev_blk'
+                                             : ... note: In instance 'dec_host.u_dec.u_rc'
+   42 |     input  blk_rec_t    ev_blk,
+      |                         ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:168:18: Bits of signal are not used: 'b'[1418,1407:1373,1336:1041,1002,942:941]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  168 |     blk_rec_t    b;                                           
+      |                  ^
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:175:18: Bits of signal are not used: 'bt'[1422,1418,1385:1381,1372:1337,1038:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  175 |     blk_rec_t    bt;
+      |                  ^~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:236:77: Bits of function variable are not used: 'row'[12:7]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  236 |     function automatic logic [ML2R+ML2C-5:0] mm_index(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+      |                                                                             ^~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:260:18: Bits of signal are not used: 'ib_fx'[2:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  260 |     logic [3:0]  ib_fx, ib_fy;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:260:25: Bits of signal are not used: 'ib_fy'[2:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  260 |     logic [3:0]  ib_fx, ib_fy;
+      |                         ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:21: Bits of signal are not used: 'ib_rx0'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+      |                     ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:29: Bits of signal are not used: 'ib_rx1'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+      |                             ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:37: Bits of signal are not used: 'ib_ry0'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+      |                                     ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:45: Bits of signal are not used: 'ib_ry1'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+      |                                             ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:298:37: Signal is not used: 'ws_busy'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  298 |     logic        ws_start, ws_mode, ws_busy, ws_done, ws_valid;
+      |                                     ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:606:21: Bits of function variable are not used: 'i'[31:2]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  606 |         int d0, d1, i, c0, c1;
+      |                     ^
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:342:18: Signal is not used: 'mc_fin'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  342 |     logic        mc_fin;                                      
+      |                  ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:375:24: Signal is not used: 'st_buf'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  375 |     logic        st_l, st_buf, st_warp;
+      |                        ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:435:37: Bits of signal are not used: 'ob_b_x'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  435 |     logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
+      |                                     ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:435:45: Bits of signal are not used: 'ob_b_y'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  435 |     logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
+      |                                             ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:486:30: Signal is not driven, nor used: 'mb_a2_pair'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  486 |     logic [135:0] mb_a_pair, mb_a2_pair;
+      |                              ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:487:37: Signal is not driven, nor used: 'mb_a2_x'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  487 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
+      |                                     ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:487:46: Signal is not driven, nor used: 'mb_a2_y'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  487 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
+      |                                              ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:487:55: Bits of signal are not used: 'mb_b_x'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  487 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
+      |                                                       ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:487:63: Bits of signal are not used: 'mb_b_y'[14:11]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  487 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
+      |                                                               ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:488:27: Signal is not driven, nor used: 'mb_a2_be'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  488 |     logic [3:0]  mb_a_be, mb_a2_be, mb_b_be;
+      |                           ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:489:18: Signal is not driven, nor used: 'mb_a2_m'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  489 |     logic [6:0]  mb_a2_m [4];                                 
+      |                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:586:50: Bits of function variable are not used: 'ih'[1174:1154,1148:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  586 |     function automatic int rel_dist(input ihdr_t ih, input logic [7:0] oa, input logic [7:0] ob);
+      |                                                  ^~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:623:60: Bits of function variable are not used: 'ih'[1174:1071,1056:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  623 |     function automatic logic [1:0] gm_type_of(input ihdr_t ih, input logic [3:0] r);
+      |                                                            ^~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:644:18: Bits of signal are not used: 'nb_ay'[7:4]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  644 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:644:25: Bits of signal are not used: 'nb_ly'[7:4]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  644 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+      |                         ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:644:32: Bits of signal are not used: 'nb_auv'[3:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  644 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+      |                                ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:644:40: Bits of signal are not used: 'nb_luv'[3:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  644 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+      |                                        ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:933:38: Bits of signal are not used: 'cw'[9:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  933 |                         logic [18:0] cw, ch;
+      |                                      ^~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:933:42: Bits of signal are not used: 'ch'[9:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc'
+  933 |                         logic [18:0] cw, ch;
+      |                                          ^~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1324:24: Signal is not used: 'th_c'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1324 |     logic [5:0]  tw_c, th_c;                                
+      |                        ^~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1455:39: Signal is not used: 'itx_busy'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1455 |     logic itx_we, itx_clr, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data; logic [4*TW-1:0] res_data4;
+      |                                       ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1455:144: Signal is not used: 'res_data'
+                                                : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1455 |     logic itx_we, itx_clr, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data; logic [4*TW-1:0] res_data4;
+      |                                                                                                                                                ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1460:40: Signal is not used: 'ip_busy'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1460 |     logic edge_we, edge_we4, ip_start, ip_busy, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data; logic [47:0] edge_data4; logic [47:0] ip_pix4; logic [5:0] ip_ox, ip_oy;
+      |                                        ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1470:37: Signal is not used: 'cl_busy'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1470 |     logic cl_lwe, cl_dwe, cl_start, cl_busy, cl_done, cl_ov; logic [9:0] cl_laddr, cl_daddr; logic [11:0] cl_ldata, cl_ddata, cl_pix; logic [4:0] cl_ox, cl_oy;
+      |                                     ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1534:18: Bits of signal are not used: 'px2_i'[6:5]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1534 |     logic [6:0]  px2_i, px2_j;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1534:25: Bits of signal are not used: 'px2_j'[6:5]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1534 |     logic [6:0]  px2_i, px2_j;
+      |                         ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1537:40: Bits of signal are not used: 'p2ci'[6]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1537 |     logic        p2_valid; logic [6:0] p2ci, p2cj;          
+      |                                        ^~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1537:46: Bits of signal are not used: 'p2cj'[6]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1537 |     logic        p2_valid; logic [6:0] p2ci, p2cj;          
+      |                                              ^~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1542:18: Bits of signal are not used: 'sd_k'[10]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1542 |     logic [10:0] sd_k;
+      |                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1563:18: Signal is not driven, nor used: 'pal_first'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1563 |     logic        pal_first;
+      |                  ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1564:21: Signal is not driven, nor used: 'cur_x'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1564 |     logic [PXW-1:0] cur_x, cur_y;
+      |                     ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1564:28: Signal is not driven, nor used: 'cur_y'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1564 |     logic [PXW-1:0] cur_x, cur_y;
+      |                            ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1576:21: Bits of signal are not used: 'e_rx'[14:11]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1576 |     logic [PXW-1:0] e_rx, e_ry;
+      |                     ^~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1576:27: Bits of signal are not used: 'e_ry'[14:11]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1576 |     logic [PXW-1:0] e_rx, e_ry;
+      |                           ^~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1609:18: Bits of signal are not used: 'dq_ci2'[6:5]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1609 |     logic [6:0]  dq_ci2, dq_cj2;
+      |                  ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1609:26: Bits of signal are not used: 'dq_cj2'[6:5]
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1609 |     logic [6:0]  dq_ci2, dq_cj2;
+      |                          ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1641:34: Signal is not used: 'padd_xx'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1641 |     logic [6:0]  add_xx, add_yy, padd_xx, padd_yy;
+      |                                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1641:43: Signal is not used: 'padd_yy'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc'
+ 1641 |     logic [6:0]  add_xx, add_yy, padd_xx, padd_yy;
+      |                                           ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/mi_store.sv:51:28: Bits of signal are not used: 'lrr_row'[8:4]
+                                            : ... note: In instance 'dec_host.u_dec.u_mi'
+   51 |     input  logic [SBW-1:0] lrr_row, lrr_col,
+      |                            ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/mi_store.sv:51:37: Bits of signal are not used: 'lrr_col'[8:5]
+                                            : ... note: In instance 'dec_host.u_dec.u_mi'
+   51 |     input  logic [SBW-1:0] lrr_row, lrr_col,
+      |                                     ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/mi_store.sv:94:72: Bits of function variable are not used: 'row'[12:8]
+                                            : ... note: In instance 'dec_host.u_dec.u_mi'
+   94 |     function automatic logic [ML2R+ML2C-1:0] idx(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+      |                                                                        ^~~
+%Warning-UNUSEDSIGNAL: rtl/mi_store.sv:94:99: Bits of function variable are not used: 'col'[12:9]
+                                            : ... note: In instance 'dec_host.u_dec.u_mi'
+   94 |     function automatic logic [ML2R+ML2C-1:0] idx(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+      |                                                                                                   ^~~
+%Warning-UNUSEDSIGNAL: rtl/mi_store.sv:143:73: Bits of function variable are not used: 'r64'[8:4]
+                                             : ... note: In instance 'dec_host.u_dec.u_mi'
+  143 |     function automatic logic [ML2R+ML2C-9:0] uidx(input logic [SBW-1:0] r64, input logic [SBW-1:0] c64);
+      |                                                                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/mi_store.sv:143:100: Bits of function variable are not used: 'c64'[8:5]
+                                              : ... note: In instance 'dec_host.u_dec.u_mi'
+  143 |     function automatic logic [ML2R+ML2C-9:0] uidx(input logic [SBW-1:0] r64, input logic [SBW-1:0] c64);
+      |                                                                                                    ^~~
+%Warning-UNUSEDSIGNAL: rtl/lf_top.sv:18:25: Bits of signal are not used: 'hdr'[218:167,163,157:0]
+                                          : ... note: In instance 'dec_host.u_dec.u_lf'
+   18 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/lf_top.sv:37:25: Signal is not used: 'fb_rdata'
+                                          : ... note: In instance 'dec_host.u_dec.u_lf'
+   37 |     input  logic [11:0] fb_rdata,
+      |                         ^~~~~~~~
+%Warning-UNUSEDPARAM: rtl/lf_top.sv:44:20: Parameter is not used: 'MAX_LOOP_FILTER'
+                                         : ... note: In instance 'dec_host.u_dec.u_lf'
+   44 |     localparam int MAX_LOOP_FILTER = 63;
+      |                    ^~~~~~~~~~~~~~~
+                      ... For warning description see https://verilator.org/warn/UNUSEDPARAM?v=5.053
+                      ... Use "/* verilator lint_off UNUSEDPARAM */" and lint_on around source to disable this message.
+%Warning-UNUSEDSIGNAL: rtl/lf_top.sv:60:18: Signal is not used: 'lvl'
+                                          : ... note: In instance 'dec_host.u_dec.u_lf'
+   60 |     logic [5:0]  lvl;
+      |                  ^~~
+%Warning-UNUSEDSIGNAL: rtl/lf_top.sv:76:24: Signal is not driven, nor used: 'w_lo'
+                                          : ... note: In instance 'dec_host.u_dec.u_lf'
+   76 |     logic signed [4:0] w_lo, w_hi;
+      |                        ^~~~
+%Warning-UNUSEDSIGNAL: rtl/lf_top.sv:105:60: Bits of function variable are not used: 'info'[40:35]
+                                           : ... note: In instance 'dec_host.u_dec.u_lf'
+  105 |     function automatic logic [29:0] strength(input mi_lf_t info, input logic [1:0] pl, input logic ps);
+      |                                                            ^~~~
+%Warning-UNUSEDSIGNAL: rtl/lf_top.sv:138:25: Bits of function variable are not used: 'bl'[8]
+                                           : ... note: In instance 'dec_host.u_dec.u_lf'
+  138 |             logic [8:0] bl;
+      |                         ^~
+%Warning-UNUSEDSIGNAL: rtl/lf_top.sv:283:18: Signal is not used: 'out_valid'
+                                           : ... note: In instance 'dec_host.u_dec.u_lf'
+  283 |     logic        out_valid;                              
+      |                  ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:18:25: Bits of signal are not used: 'hdr'[218:167,163,158:0]
+                                            : ... note: In instance 'dec_host.u_dec.u_cdef'
+   18 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:19:25: Bits of signal are not used: 'ch'[97:96]
+                                            : ... note: In instance 'dec_host.u_dec.u_cdef'
+   19 |     input  cdef_hdr_t   ch,
+      |                         ^~
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:26:25: Bits of signal are not used: 'rd_info'[40:36,34:0]
+                                            : ... note: In instance 'dec_host.u_dec.u_cdef'
+   26 |     input  mi_lf_t      rd_info,
+      |                         ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:34:25: Signal is not used: 'src_rdata'
+                                            : ... note: In instance 'dec_host.u_dec.u_cdef'
+   34 |     input  logic [11:0] src_rdata,
+      |                         ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:53:11: Signal is not driven, nor used: 'done_pend'
+                                            : ... note: In instance 'dec_host.u_dec.u_cdef'
+   53 |     logic done_pend;
+      |           ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:58:18: Bits of signal are not used: 'skips'[3]
+                                            : ... note: In instance 'dec_host.u_dec.u_cdef'
+   58 |     logic [3:0]  skips;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:155:17: Bits of signal are not used: 'd'[31:3]
+                                             : ... note: In instance 'dec_host.u_dec.u_cdef'
+  155 |             int d;
+      |                 ^
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:235:74: Bits of function variable are not used: 'k'[31:1]
+                                             : ... note: In instance 'dec_host.u_dec.u_cdef'
+  235 |     function automatic int tap_dy(input int d, input int kind, input int k, input int sg);
+      |                                                                          ^
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:240:74: Bits of function variable are not used: 'k'[31:1]
+                                             : ... note: In instance 'dec_host.u_dec.u_cdef'
+  240 |     function automatic int tap_dx(input int d, input int kind, input int k, input int sg);
+      |                                                                          ^
+%Warning-UNUSEDSIGNAL: rtl/cdef_top.sv:363:56: Bits of function variable are not used: 'l'[31:2]
+                                             : ... note: In instance 'dec_host.u_dec.u_cdef'
+  363 |     function automatic logic [11:0] cdef_out(input int l);
+      |                                                        ^
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:29:25: Bits of signal are not used: 'hdr'[244:167,163,158:48,5:0]
+                                          : ... note: In instance 'dec_host.u_dec.u_lr'
+   29 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:43:25: Signal is not used: 's0_rdata'
+                                          : ... note: In instance 'dec_host.u_dec.u_lr'
+   43 |     input  logic [11:0] s0_rdata, s1_rdata,
+      |                         ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:43:35: Signal is not used: 's1_rdata'
+                                          : ... note: In instance 'dec_host.u_dec.u_lr'
+   43 |     input  logic [11:0] s0_rdata, s1_rdata,
+      |                                   ^~~~~~~~
+%Warning-UNUSEDPARAM: rtl/lr_top.sv:54:72: Parameter is not used: 'RESTORE_SGRPROJ'
+                                         : ... note: In instance 'dec_host.u_dec.u_lr'
+   54 |     localparam logic [1:0] RESTORE_NONE = 2'd0, RESTORE_WIENER = 2'd1, RESTORE_SGRPROJ = 2'd2;
+      |                                                                        ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/lr_top.sv:56:20: Parameter is not used: 'W'
+                                         : ... note: In instance 'dec_host.u_dec.u_lr'
+   56 |     localparam int W = 1 << FBX;
+      |                    ^
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:151:23: Bits of function variable are not used: 'r'[15:4]
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  151 |         logic [PXW:0] r;
+      |                       ^
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:213:18: Bits of signal are not used: 'rec'[83:62]
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  213 |     lr_rec_t     rec;
+      |                  ^~~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:253:35: Signal is not used: 'e_p'
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  253 |     logic [1:0]  r_p; logic [6:0] e_p;
+      |                                   ^~~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:255:18: Signal is not used: 's_val'
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  255 |     logic [11:0] s_val;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:256:18: Signal is not used: 'one_over_n'
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  256 |     logic [8:0]  one_over_n;
+      |                  ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:257:18: Signal is not used: 'n_p'
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  257 |     logic [5:0]  n_p;
+      |                  ^~~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:437:75: Bits of function variable are not used: 'fi'[2:1]
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  437 |     function automatic logic [23:0] f_of(input logic p, input logic [2:0] fi, input logic [15:0] fa, input logic [28:0] fb, input logic [11:0] pix);
+      |                                                                           ^~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:465:46: Bits of signal are not used: 'x4'[14:11]
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  465 |     logic v4; okind_t kind4; logic [PXW-1:0] x4; logic [3:0] be4; logic [1:0] plane4; logic [FBY-1:0] y4;
+      |                                              ^~
+%Warning-UNUSEDSIGNAL: rtl/lr_top.sv:534:57: Bits of function variable are not used: 'l'[31:2]
+                                           : ... note: In instance 'dec_host.u_dec.u_lr'
+  534 |     function automatic logic [11:0] sgr_blend(input int l);
+      |                                                         ^
+%Warning-UNUSEDSIGNAL: rtl/sr_top.sv:22:25: Bits of signal are not used: 'hdr'[244:232,218:167,163,158:21,5:0]
+                                          : ... note: In instance 'dec_host.u_dec.u_sr'
+   22 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/sr_top.sv:23:25: Bits of signal are not used: 'lh'[354:0]
+                                          : ... note: In instance 'dec_host.u_dec.u_sr'
+   23 |     input  lf_hdr_t     lh,                    
+      |                         ^~
+%Warning-UNUSEDSIGNAL: rtl/sr_top.sv:80:26: Bits of signal are not used: 'dv_quo'[31]
+                                          : ... note: In instance 'dec_host.u_dec.u_sr'
+   80 |     logic [31:0] dv_num, dv_quo, dv_num2;
+      |                          ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/sr_top.sv:81:18: Bits of signal are not used: 'dv_rem'[32]
+                                          : ... note: In instance 'dec_host.u_dec.u_sr'
+   81 |     logic [32:0] dv_rem;
+      |                  ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/sr_top.sv:102:29: Bits of signal are not used: 'sxp'[14:11]
+                                           : ... note: In instance 'dec_host.u_dec.u_sr'
+  102 |             logic [PXW-1:0] sxp;
+      |                             ^~~
+%Warning-UNUSEDSIGNAL: rtl/edge_line.sv:22:29: Bits of signal are not used: 'wx'[1:0]
+                                             : ... note: In instance 'dec_host.u_dec.u_el'
+   22 |     input  logic [FBX-1:0]  wx,
+      |                             ^~
+%Warning-UNUSEDSIGNAL: rtl/edge_line.sv:44:25: Bits of function variable are not used: 's'[10:1]
+                                             : ... note: In instance 'dec_host.u_dec.u_el'
+   44 |         logic [FBY-1:0] s;
+      |                         ^
+%Warning-UNUSEDSIGNAL: rtl/frame_mem_uram.sv:80:88: Bits of function variable are not used: 'x'[1:0]
+                                                  : ... note: In instance 'dec_host.u_dec.g_fb0_uram.g_mirror.u_fbm'
+   80 |     function automatic logic [AW-1:0] waddr(input logic [1:0] p, input logic [FBX-1:0] x, input logic [FBY-1:0] y);
+      |                                                                                        ^
+%Warning-UNUSEDSIGNAL: rtl/frame_mem_uram.sv:121:21: Signal is not used: 'rq_sel'
+                                                   : ... note: In instance 'dec_host.u_dec.g_fb0_uram.g_mirror.u_fbm'
+  121 |     logic [SW-1:0]  rq_sel [2];
+      |                     ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:25:27: Bits of signal are not used: 'hdr'[218:164,162:0]
+                                                 : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+   25 |     input  hdr_t          hdr,
+      |                           ^~~
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:26:27: Bits of signal are not used: 'ihdr'[1174:7]
+                                                 : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+   26 |     input  ihdr_t         ihdr,
+      |                           ^~~~
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:42:27: Bits of signal are not used: 'fs_rd_beat'[8:7]
+                                                 : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+   42 |     input  logic [8:0]    fs_rd_beat,
+      |                           ^~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:99:61: Bits of function variable are not used: 'b'[1453:1041,1002,957:0]
+                                                 : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+   99 |     function automatic logic [28:0] mv_word(input blk_rec_t b, input logic [6:0] dneg);
+      |                                                             ^
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:141:21: Bits of signal are not used: 'cur'[79]
+                                                  : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+  141 |     qent_t          cur;
+      |                     ^~~
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:142:21: Signal is not driven, nor used: 'f_r'
+                                                  : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+  142 |     logic [MIW-1:0] f_r, f_c, r_end, c_end;     
+      |                     ^~~
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:151:21: Bits of signal are not used: 's_line'[12:5]
+                                                  : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+  151 |     logic [MIW-1:0] s_line, m_line;                           
+      |                     ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/frame_state_w.sv:151:29: Bits of signal are not used: 'm_line'[12:4]
+                                                  : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+  151 |     logic [MIW-1:0] s_line, m_line;                           
+      |                             ^~~~~~
+%Warning-UNUSEDPARAM: rtl/q_tables_pkg.sv:1575:18: Parameter is not used: 'QM_ROM_SIZE'
+                                                 : ... note: In instance 'dec_host.u_dec.g_fsw.u_fsw'
+ 1575 |   localparam int QM_ROM_SIZE = 100320;      
+      |                  ^~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:355:16: Bits of function variable are not used: 'i0'[31:10]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  355 |         int i, i0, i3;
+      |                ^~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:355:20: Bits of function variable are not used: 'i3'[31:10]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  355 |         int i, i0, i3;
+      |                    ^~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:386:20: Bits of signal are not used: 'dc_q3'[31:12]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  386 |     logic [31:0]   dc_q3, dc_q5;
+      |                    ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:386:27: Bits of signal are not used: 'dc_q5'[31:12]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  386 |     logic [31:0]   dc_q3, dc_q5;
+      |                           ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:404:37: Bits of signal are not used: 'fi_wupl'[83:0]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  404 |     logic [8*PW-1:0] fi_wq, fi_wup, fi_wupl, fi_wleft;
+      |                                     ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:404:46: Bits of signal are not used: 'fi_wleft'[83:48,35:0]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  404 |     logic [8*PW-1:0] fi_wq, fi_wup, fi_wupl, fi_wleft;
+      |                                              ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:418:43: Bits of function variable are not used: 'a0'[31:10]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  418 |         int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
+      |                                           ^~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:418:47: Bits of function variable are not used: 'a1'[31:10]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  418 |         int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
+      |                                               ^~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:418:51: Bits of function variable are not used: 'l0'[31:10]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  418 |         int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
+      |                                                   ^~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:418:55: Bits of function variable are not used: 'l1'[31:10]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  418 |         int base, idx, maxb, idx2, base2, a0, a1, l0, l1;
+      |                                                       ^~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:630:83: Bits of function variable are not used: 'q'[31:3]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  630 |     function automatic logic [PW-1:0] ef_src(input int m, input int kk, input int q);
+      |                                                                                   ^
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:645:15: Signal is not used: 'up_i0'
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  645 |     int up_i, up_i0, up_i3;                            
+      |               ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:645:22: Signal is not used: 'up_i3'
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  645 |     int up_i, up_i0, up_i3;                            
+      |                      ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:714:35: Bits of function variable are not used: 'slot'[31:3]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  714 |     task automatic post(input int slot, input logic side, input int idx, input logic [PW-1:0] d);
+      |                                   ^~~~
+%Warning-UNUSEDSIGNAL: rtl/ipred.sv:714:69: Bits of function variable are not used: 'idx'[31:10]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_ip'
+  714 |     task automatic post(input int slot, input logic side, input int idx, input logic [PW-1:0] d);
+      |                                                                     ^~~
+%Warning-UNUSEDSIGNAL: rtl/mc_filt.sv:157:18: Signal is not used: 'p_xf0'
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_mc'
+  157 |     logic [9:0]  p_xf0, p_yf0;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/mc_filt.sv:165:25: Signal is not used: 'v_two'
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_mc'
+  165 |     logic        q_two, v_two;                            
+      |                         ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/mc_filt.sv:250:28: Bits of signal are not used: 'f_cur'[389,369:368]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_mc'
+  250 |     fent_t       f_d, f_q, f_cur;                         
+      |                            ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/mc_filt.sv:338:77: Bits of function variable are not used: 'l'[31:5]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_mc'
+  338 |                                              input logic [4:0] g, input int l, input logic signed [7:0] i1);
+      |                                                                             ^
+%Warning-UNUSEDSIGNAL: rtl/mc_filt.sv:352:57: Signal is not used: 'v1_k'
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_mc'
+  352 |     logic        v1_v, v1_c, v1_two, v1_b;  logic [6:0] v1_k, v1_i;  logic [4:0] v1_g;  logic [3:0] v1_ph;
+      |                                                         ^~~~
+%Warning-UNUSEDSIGNAL: rtl/mc_filt.sv:388:18: Bits of signal are not used: 'nrow_calc'[9:0]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_mc'
+  388 |     logic [18:0] nrow_calc;
+      |                  ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/mc_filt.sv:438:38: Bits of signal are not used: 'p'[5:0]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_mc'
+  438 |                         logic [16:0] p;
+      |                                      ^
+%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:77:27: Signal is not used: 'm_axi_rlast'
+                                             : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_rf'
+   77 |     input  logic          m_axi_rlast,
+      |                           ^~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:99:31: Signal is not used: 'q_y0'
+                                             : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_rf'
+   99 |     logic signed [16:0] q_x0, q_y0;
+      |                               ^~~~
+%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:111:18: Bits of signal are not used: 'mul'[47:40]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_rf'
+  111 |     logic [47:0] mul;                                      
+      |                  ^~~
+%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:203:26: Bits of signal are not used: 'cc'[15:7]
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_rf'
+  203 |             logic [15:0] cc;
+      |                          ^~
+%Warning-UNUSEDPARAM: rtl/tile_syntax.sv:79:79: Parameter is not used: 'P_VERT_4'
+                                              : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+   79 |                            P_VERT_A = 4'd6, P_VERT_B = 4'd7, P_HORZ_4 = 4'd8, P_VERT_4 = 4'd9;
+      |                                                                               ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:84:40: Signal is not used: 'resp_rng'
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+   84 |     logic [3:0] resp_sym; logic [15:0] resp_rng; logic [239:0] resp_cdf; logic [5:0] resp_cnt;
+      |                                        ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:95:25: Signal is not used: 'c_busy'
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+   95 |     logic c_go, c_done, c_busy, k_go, k_done, k_busy; logic [CDF_AW-1:0] c_addr, k_addr; logic [3:0] c_n, k_n, c_sym, k_sym; logic [1:0] c_kind, k_kind;
+      |                         ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:145:41: Signal is not used: 'avail_u_chroma'
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+  145 |     logic avail_u, avail_l, has_chroma, avail_u_chroma, avail_l_chroma;
+      |                                         ^~~~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:145:57: Signal is not used: 'avail_l_chroma'
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+  145 |     logic avail_u, avail_l, has_chroma, avail_u_chroma, avail_l_chroma;
+      |                                                         ^~~~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:176:20: Signal is not used: 'b_busy'
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+  176 |     logic b_start, b_busy, b_unsup, sb_start;
+      |                    ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:243:17: Signal is not driven, nor used: 'part_now'
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+  243 |     logic [3:0] part_now;
+      |                 ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:244:18: Signal is not driven, nor used: 'psum'
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+  244 |     logic [15:0] psum;
+      |                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:280:21: Signal is not used: 'lr_busy'
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
+  280 |     logic lr_start, lr_busy, lr_fin, lr_active;
+      |                     ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/fb_fetch.sv:53:18: Bits of signal are not used: 'cx_lo'[1:0]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_ff'
+   53 |     logic [15:0] cx_lo, cx_hi;                             
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/fb_fetch.sv:56:18: Bits of signal are not used: 'src_y'[15:11]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_ff'
+   56 |     logic [15:0] src_y;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/fb_fetch.sv:90:26: Bits of signal are not used: 'cc'[15:7]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_ff'
+   90 |             logic [15:0] cc;
+      |                          ^~
+%Warning-UNUSEDPARAM: rtl/itx2d.sv:48:19: Parameter is not used: 'NLANES'
+                                        : ... note: In instance 'dec_host.u_dec.u_rc.u_itx'
+   48 |     parameter int NLANES = 4               
+      |                   ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/itx2d.sv:249:32: Signal is not used: 'e_busy'
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_itx'
+  249 |     logic             e_start, e_busy, e_done;
+      |                                ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/itx2d.sv:267:33: Bits of signal are not used: 'st_i'[6]
+                                          : ... note: In instance 'dec_host.u_dec.u_rc.u_itx'
+  267 |     logic [6:0]       ri, ld_i, st_i;
+      |                                 ^~~~
+%Warning-UNUSEDSIGNAL: rtl/coef_rd.sv:87:18: Signal is not driven, nor used: 'ctx_base'
+                                           : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_coef'
+   87 |     logic [5:0]  ctx_base;                    
+      |                  ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/coef_rd.sv:128:30: Bits of signal are not used: 'sidx_q'[10]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_coef'
+  128 |     logic [10:0] c_nx, sidx, sidx_q;
+      |                              ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/coef_rd.sv:226:46: Signal is not used: 'a_eob_extra'
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_coef'
+  226 |     logic [CDF_AW-1:0] a_txb_skip, a_eob_pt, a_eob_extra, a_base_eob, a_base, a_br, a_dc_sign;
+      |                                              ^~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:128:18: Signal is not driven, nor used: 'q_au'
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
+  128 |     logic        q_au, q_al;
+      |                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:128:24: Signal is not driven, nor used: 'q_al'
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
+  128 |     logic        q_au, q_al;
+      |                        ^~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:257:21: Bits of signal are not used: 'wcol4'[12:5]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
+  257 |     logic [MIW-1:0] wcol4;
+      |                     ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:359:19: Signal is not used: 't_aw'
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
+  359 |     logic [127:0] t_aw, t_lw;
+      |                   ^~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:441:21: Bits of signal are not used: 'rc0'[12:10]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
+  441 |     logic [MIW-1:0] rc0, rr0;              
+      |                     ^~~
+%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:441:26: Bits of signal are not used: 'rr0'[12:5]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
+  441 |     logic [MIW-1:0] rc0, rr0;              
+      |                          ^~~
+%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:452:11: Signal is not used: 'tbusy'
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
+  452 |     logic tbusy;
+      |           ^~~~~
+%Warning-UNUSEDPARAM: rtl/blk_syntax.sv:120:43: Parameter is not used: 'TX_16X16'
+                                              : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  120 |     localparam logic [4:0] TX_4X4 = 5'd0, TX_16X16 = 5'd2, TX_32X32 = 5'd3, TX_64X64 = 5'd4, TX_16X32 = 5'd9, TX_32X16 = 5'd10;
+      |                                           ^~~~~~~~
+%Warning-UNUSEDPARAM: rtl/blk_syntax.sv:120:77: Parameter is not used: 'TX_64X64'
+                                              : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  120 |     localparam logic [4:0] TX_4X4 = 5'd0, TX_16X16 = 5'd2, TX_32X32 = 5'd3, TX_64X64 = 5'd4, TX_16X32 = 5'd9, TX_32X16 = 5'd10;
+      |                                                                             ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:180:18: Signal is not driven, nor used: 'cfl_signs'
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  180 |     logic [2:0]  cfl_signs;
+      |                  ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:192:18: Bits of signal are not used: 'lit_val'[15]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  192 |     logic [15:0] lit_val;
+      |                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:236:18: Bits of signal are not used: 'a_ent'[88:87,78:8]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  236 |     mv_ent_t     a_ent, l_ent;                               
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:236:25: Bits of signal are not used: 'l_ent'[88:87,78:8]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  236 |     mv_ent_t     a_ent, l_ent;                               
+      |                         ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:237:18: Signal is not used: 'a_ok'
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  237 |     logic        a_ok, l_ok;                                 
+      |                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:237:24: Signal is not used: 'l_ok'
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  237 |     logic        a_ok, l_ok;                                 
+      |                        ^~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:255:18: Bits of signal are not used: 'ws_ent'[88:87,46:13,7:0]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  255 |     mv_ent_t     ws_ent;                                  
+      |                  ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:377:17: Signal is not used: 'sbm4'
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  377 |     logic [3:0] sbm4;                             
+      |                 ^~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:655:18: Bits of signal are not used: 'vt_arec'[22:15,3:0]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  655 |     logic [23:0] vt_arec, vt_lrec;
+      |                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:655:27: Bits of signal are not used: 'vt_lrec'[22:15,3:0]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+  655 |     logic [23:0] vt_arec, vt_lrec;
+      |                           ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:1041:77: Bits of signal are not used: 'dy'[19:16]
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+ 1041 |                             logic signed [19:0] cmy, cmx, bmy, bmx, sy, sx, dy, dx;
+      |                                                                             ^~
+%Warning-UNUSEDSIGNAL: rtl/blk_syntax.sv:1041:81: Bits of signal are not used: 'dx'[19:16]
+                                                : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk'
+ 1041 |                             logic signed [19:0] cmy, cmx, bmy, bmx, sy, sx, dy, dx;
+      |                                                                                 ^~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:10:25: Bits of signal are not used: 'hdr'[244:167,163:48]
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   10 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:25:31: Bits of signal are not used: 'sq_sym'[3:2]
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   25 |     input  logic [3:0]        sq_sym
+      |                               ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:42:18: Signal is not used: 'usz_log2'
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   42 |     logic [3:0]  usz_log2;                      
+      |                  ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:43:18: Signal is not used: 'sub_x'
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   43 |     logic        sub_x, sub_y;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:43:25: Signal is not used: 'sub_y'
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   43 |     logic        sub_x, sub_y;
+      |                         ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:44:21: Signal is not used: 'unit_rows'
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   44 |     logic [SBW-1:0] unit_rows, unit_cols, ur_start, ur_end, uc_start, uc_end, ur, uc;
+      |                     ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:44:32: Signal is not used: 'unit_cols'
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   44 |     logic [SBW-1:0] unit_rows, unit_cols, ur_start, ur_end, uc_start, uc_end, ur, uc;
+      |                                ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:44:43: Signal is not used: 'ur_start'
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   44 |     logic [SBW-1:0] unit_rows, unit_cols, ur_start, ur_end, uc_start, uc_end, ur, uc;
+      |                                           ^~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:60:24: Bits of signal are not used: 'se_result'[8]
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   60 |     logic signed [8:0] se_result;
+      |                        ^~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:61:18: Signal is not used: 'ns_w'
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   61 |     logic [3:0]  ns_w;
+      |                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/lr_syntax.sv:65:18: Bits of signal are not used: 'lit_val'[15]
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_lr'
+   65 |     logic [15:0] lit_val;
+      |                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/mv_mem.sv:74:72: Bits of function variable are not used: 'row'[12:6]
+                                          : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_mvm'
+   74 |     function automatic logic [ML2R+ML2C-1:0] idx(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+      |                                                                        ^~~
+%Warning-UNUSEDSIGNAL: rtl/mv_mem.sv:74:99: Bits of function variable are not used: 'col'[12:9]
+                                          : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_mvm'
+   74 |     function automatic logic [ML2R+ML2C-1:0] idx(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+      |                                                                                                   ^~~
+%Warning-UNUSEDSIGNAL: rtl/mf_band.sv:17:28: Bits of signal are not used: 'w_y8'[11:8]
+                                           : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_mf'
+   17 |     input  logic [MIW-2:0] w_y8, w_x8,
+      |                            ^~~~
+%Warning-UNUSEDSIGNAL: rtl/mf_band.sv:17:34: Bits of signal are not used: 'w_x8'[11:8]
+                                           : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_mf'
+   17 |     input  logic [MIW-2:0] w_y8, w_x8,
+      |                                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/mf_band.sv:21:28: Bits of signal are not used: 'rd_y8'[11:8]
+                                           : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_mf'
+   21 |     input  logic [MIW-2:0] rd_y8, rd_x8,
+      |                            ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/mf_band.sv:21:35: Bits of signal are not used: 'rd_x8'[11:8]
+                                           : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_mf'
+   21 |     input  logic [MIW-2:0] rd_y8, rd_x8,
+      |                                   ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/seg_band.sv:13:28: Bits of signal are not used: 'w_row'[12:9]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_sp'
+   13 |     input  logic [MIW-1:0] w_row,
+      |                            ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/seg_band.sv:14:28: Bits of signal are not used: 'w_wc'[8:5]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_sp'
+   14 |     input  logic [MIW-5:0] w_wc,              
+      |                            ^~~~
+%Warning-UNUSEDSIGNAL: rtl/seg_band.sv:16:28: Bits of signal are not used: 'rd_row'[12:9]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_sp'
+   16 |     input  logic [MIW-1:0] rd_row,
+      |                            ^~~~~~
+%Warning-UNUSEDSIGNAL: rtl/seg_band.sv:17:28: Bits of signal are not used: 'rd_wc'[8:5]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.g_bands.u_sp'
+   17 |     input  logic [MIW-5:0] rd_wc,
+      |                            ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:24:25: Bits of signal are not used: 'hdr'[244:167,164:163,158:0]
+                                              : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
+   24 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:32:28: Bits of signal are not used: 'br'[12:4]
+                                              : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
+   32 |     input  logic [MIW-1:0] br,
+      |                            ^~
+%Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:88:18: Bits of signal are not used: 'lit_val'[15]
+                                              : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
+   88 |     logic [15:0] lit_val;
+      |                  ^~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:97:18: Signal is not used: 'ns_w'
+                                              : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
+   97 |     logic [3:0]  ns_w, ns_m, ns_v;
+      |                  ^~~~
+%Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:241:18: Bits of signal are not used: 'dr'[6]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
+  241 |     logic [6:0]  dr;                                         
+      |                  ^~
+%Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:284:21: Bits of signal are not used: 'v'[3]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
+  284 |         logic [3:0] v;
+      |                     ^
+%Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:441:37: Bits of signal are not used: 'v'[3]
+                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
+  441 |                         logic [3:0] v;
+      |                                     ^
+%Warning-UNUSEDSIGNAL: rtl/mv_stack.sv:21:25: Bits of signal are not used: 'hdr'[166:164,162:0]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_mvs'
+   21 |     input  hdr_t        hdr,
+      |                         ^~~
+%Warning-UNUSEDSIGNAL: rtl/mv_stack.sv:22:25: Bits of signal are not used: 'ihdr'[1174:1166,1163:1159,1157:1085,1077:1071,48:0]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_mvs'
+   22 |     input  ihdr_t       ihdr,
+      |                         ^~~~
+%Warning-UNUSEDSIGNAL: rtl/mv_stack.sv:76:13: Bits of function variable are not used: 'k'[31:10]
+                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_mvs'
+   76 |         int k;
+      |             ^
+%Warning-UNUSEDSIGNAL: rtl/mv_stack.sv:131:18: Bits of signal are not used: 'ent_q'[87,7:0]
+                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_mvs'
+  131 |     mv_ent_t     ent_q;
+      |                  ^~~~~
+%Warning-UNUSEDSIGNAL: rtl/itx_pair.sv:19:34: Bits of signal are not used: 'rx'[35:22]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   19 |     logic signed [TW+13:0] x, y, rx, ry;
+      |                                  ^~
+%Warning-UNUSEDSIGNAL: rtl/itx_pair.sv:19:38: Bits of signal are not used: 'ry'[35:22]
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   19 |     logic signed [TW+13:0] x, y, rx, ry;
+      |                                      ^~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:5:18: Parameter is not used: 'CDF_COEF_ROWS'
+                                             : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+    5 |   localparam int CDF_COEF_ROWS = 855;    
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:6:18: Parameter is not used: 'CDF_INTRA_ROWS'
+                                             : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+    6 |   localparam int CDF_INTRA_ROWS = 1269;    
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:10:18: Parameter is not used: 'CDF_TXB_SKIP_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   10 |   localparam int CDF_TXB_SKIP_N = 2;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:12:18: Parameter is not used: 'CDF_TXB_SKIP_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   12 |   localparam int CDF_TXB_SKIP_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:15:18: Parameter is not used: 'CDF_EOB_PT_16_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   15 |   localparam int CDF_EOB_PT_16_S0 = 2;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:16:18: Parameter is not used: 'CDF_EOB_PT_16_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   16 |   localparam int CDF_EOB_PT_16_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:19:18: Parameter is not used: 'CDF_EOB_PT_32_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   19 |   localparam int CDF_EOB_PT_32_S0 = 2;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:20:18: Parameter is not used: 'CDF_EOB_PT_32_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   20 |   localparam int CDF_EOB_PT_32_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:23:18: Parameter is not used: 'CDF_EOB_PT_64_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   23 |   localparam int CDF_EOB_PT_64_S0 = 2;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:24:18: Parameter is not used: 'CDF_EOB_PT_64_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   24 |   localparam int CDF_EOB_PT_64_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:27:18: Parameter is not used: 'CDF_EOB_PT_128_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   27 |   localparam int CDF_EOB_PT_128_S0 = 2;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:28:18: Parameter is not used: 'CDF_EOB_PT_128_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   28 |   localparam int CDF_EOB_PT_128_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:31:18: Parameter is not used: 'CDF_EOB_PT_256_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   31 |   localparam int CDF_EOB_PT_256_S0 = 2;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:32:18: Parameter is not used: 'CDF_EOB_PT_256_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   32 |   localparam int CDF_EOB_PT_256_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:35:18: Parameter is not used: 'CDF_EOB_PT_512_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   35 |   localparam int CDF_EOB_PT_512_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:38:18: Parameter is not used: 'CDF_EOB_PT_1024_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   38 |   localparam int CDF_EOB_PT_1024_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:40:18: Parameter is not used: 'CDF_EOB_EXTRA_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   40 |   localparam int CDF_EOB_EXTRA_N = 2;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:43:18: Parameter is not used: 'CDF_EOB_EXTRA_S2'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   43 |   localparam int CDF_EOB_EXTRA_S2 = 1;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:45:18: Parameter is not used: 'CDF_DC_SIGN_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   45 |   localparam int CDF_DC_SIGN_N = 2;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:47:18: Parameter is not used: 'CDF_DC_SIGN_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   47 |   localparam int CDF_DC_SIGN_S1 = 1;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:49:18: Parameter is not used: 'CDF_COEFF_BASE_EOB_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   49 |   localparam int CDF_COEFF_BASE_EOB_N = 3;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:52:18: Parameter is not used: 'CDF_COEFF_BASE_EOB_S2'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   52 |   localparam int CDF_COEFF_BASE_EOB_S2 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:54:18: Parameter is not used: 'CDF_COEFF_BASE_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   54 |   localparam int CDF_COEFF_BASE_N = 4;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:57:18: Parameter is not used: 'CDF_COEFF_BASE_S2'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   57 |   localparam int CDF_COEFF_BASE_S2 = 1;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:59:18: Parameter is not used: 'CDF_COEFF_BR_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   59 |   localparam int CDF_COEFF_BR_N = 4;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:62:18: Parameter is not used: 'CDF_COEFF_BR_S2'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   62 |   localparam int CDF_COEFF_BR_S2 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:64:18: Parameter is not used: 'CDF_PARTITION_W8_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   64 |   localparam int CDF_PARTITION_W8_N = 4;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:65:18: Parameter is not used: 'CDF_PARTITION_W8_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   65 |   localparam int CDF_PARTITION_W8_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:67:18: Parameter is not used: 'CDF_PARTITION_W16_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   67 |   localparam int CDF_PARTITION_W16_N = 10;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:68:18: Parameter is not used: 'CDF_PARTITION_W16_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   68 |   localparam int CDF_PARTITION_W16_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:70:18: Parameter is not used: 'CDF_PARTITION_W32_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   70 |   localparam int CDF_PARTITION_W32_N = 10;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:71:18: Parameter is not used: 'CDF_PARTITION_W32_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   71 |   localparam int CDF_PARTITION_W32_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:73:18: Parameter is not used: 'CDF_PARTITION_W64_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   73 |   localparam int CDF_PARTITION_W64_N = 10;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:74:18: Parameter is not used: 'CDF_PARTITION_W64_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   74 |   localparam int CDF_PARTITION_W64_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:76:18: Parameter is not used: 'CDF_PARTITION_W128_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   76 |   localparam int CDF_PARTITION_W128_N = 8;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:77:18: Parameter is not used: 'CDF_PARTITION_W128_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   77 |   localparam int CDF_PARTITION_W128_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:79:18: Parameter is not used: 'CDF_INTRABC_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   79 |   localparam int CDF_INTRABC_N = 2;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:81:18: Parameter is not used: 'CDF_INTRA_FRAME_Y_MODE_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   81 |   localparam int CDF_INTRA_FRAME_Y_MODE_N = 13;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:83:18: Parameter is not used: 'CDF_INTRA_FRAME_Y_MODE_S1'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   83 |   localparam int CDF_INTRA_FRAME_Y_MODE_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:85:18: Parameter is not used: 'CDF_UV_MODE_CFL_ALLOWED_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   85 |   localparam int CDF_UV_MODE_CFL_ALLOWED_N = 14;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:86:18: Parameter is not used: 'CDF_UV_MODE_CFL_ALLOWED_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   86 |   localparam int CDF_UV_MODE_CFL_ALLOWED_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:88:18: Parameter is not used: 'CDF_UV_MODE_CFL_NOT_ALLOWED_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   88 |   localparam int CDF_UV_MODE_CFL_NOT_ALLOWED_N = 13;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:89:18: Parameter is not used: 'CDF_UV_MODE_CFL_NOT_ALLOWED_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   89 |   localparam int CDF_UV_MODE_CFL_NOT_ALLOWED_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:91:18: Parameter is not used: 'CDF_SEGMENT_ID_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   91 |   localparam int CDF_SEGMENT_ID_N = 8;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:92:18: Parameter is not used: 'CDF_SEGMENT_ID_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   92 |   localparam int CDF_SEGMENT_ID_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:94:18: Parameter is not used: 'CDF_SEGMENT_ID_PREDICTED_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   94 |   localparam int CDF_SEGMENT_ID_PREDICTED_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:95:18: Parameter is not used: 'CDF_SEGMENT_ID_PREDICTED_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   95 |   localparam int CDF_SEGMENT_ID_PREDICTED_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:97:18: Parameter is not used: 'CDF_SKIP_N'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   97 |   localparam int CDF_SKIP_N = 2;
+      |                  ^~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:98:18: Parameter is not used: 'CDF_SKIP_S0'
+                                              : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   98 |   localparam int CDF_SKIP_S0 = 1;
+      |                  ^~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:100:18: Parameter is not used: 'CDF_DELTA_Q_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  100 |   localparam int CDF_DELTA_Q_N = 4;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:102:18: Parameter is not used: 'CDF_DELTA_LF_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  102 |   localparam int CDF_DELTA_LF_N = 4;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:104:18: Parameter is not used: 'CDF_DELTA_LF_MULTI_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  104 |   localparam int CDF_DELTA_LF_MULTI_N = 4;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:105:18: Parameter is not used: 'CDF_DELTA_LF_MULTI_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  105 |   localparam int CDF_DELTA_LF_MULTI_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:107:18: Parameter is not used: 'CDF_ANGLE_DELTA_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  107 |   localparam int CDF_ANGLE_DELTA_N = 7;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:108:18: Parameter is not used: 'CDF_ANGLE_DELTA_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  108 |   localparam int CDF_ANGLE_DELTA_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:110:18: Parameter is not used: 'CDF_CFL_SIGN_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  110 |   localparam int CDF_CFL_SIGN_N = 8;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:112:18: Parameter is not used: 'CDF_CFL_ALPHA_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  112 |   localparam int CDF_CFL_ALPHA_N = 16;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:113:18: Parameter is not used: 'CDF_CFL_ALPHA_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  113 |   localparam int CDF_CFL_ALPHA_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:115:18: Parameter is not used: 'CDF_PALETTE_Y_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  115 |   localparam int CDF_PALETTE_Y_MODE_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:117:18: Parameter is not used: 'CDF_PALETTE_Y_MODE_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  117 |   localparam int CDF_PALETTE_Y_MODE_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:119:18: Parameter is not used: 'CDF_PALETTE_Y_SIZE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  119 |   localparam int CDF_PALETTE_Y_SIZE_N = 7;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:120:18: Parameter is not used: 'CDF_PALETTE_Y_SIZE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  120 |   localparam int CDF_PALETTE_Y_SIZE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:122:18: Parameter is not used: 'CDF_PALETTE_UV_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  122 |   localparam int CDF_PALETTE_UV_MODE_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:123:18: Parameter is not used: 'CDF_PALETTE_UV_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  123 |   localparam int CDF_PALETTE_UV_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:125:18: Parameter is not used: 'CDF_PALETTE_UV_SIZE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  125 |   localparam int CDF_PALETTE_UV_SIZE_N = 7;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:126:18: Parameter is not used: 'CDF_PALETTE_UV_SIZE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  126 |   localparam int CDF_PALETTE_UV_SIZE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:128:18: Parameter is not used: 'CDF_PALETTE_SIZE_2_Y_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  128 |   localparam int CDF_PALETTE_SIZE_2_Y_COLOR_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:129:18: Parameter is not used: 'CDF_PALETTE_SIZE_2_Y_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  129 |   localparam int CDF_PALETTE_SIZE_2_Y_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:131:18: Parameter is not used: 'CDF_PALETTE_SIZE_2_UV_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  131 |   localparam int CDF_PALETTE_SIZE_2_UV_COLOR_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:132:18: Parameter is not used: 'CDF_PALETTE_SIZE_2_UV_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  132 |   localparam int CDF_PALETTE_SIZE_2_UV_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:134:18: Parameter is not used: 'CDF_PALETTE_SIZE_3_Y_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  134 |   localparam int CDF_PALETTE_SIZE_3_Y_COLOR_N = 3;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:135:18: Parameter is not used: 'CDF_PALETTE_SIZE_3_Y_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  135 |   localparam int CDF_PALETTE_SIZE_3_Y_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:137:18: Parameter is not used: 'CDF_PALETTE_SIZE_3_UV_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  137 |   localparam int CDF_PALETTE_SIZE_3_UV_COLOR_N = 3;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:138:18: Parameter is not used: 'CDF_PALETTE_SIZE_3_UV_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  138 |   localparam int CDF_PALETTE_SIZE_3_UV_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:140:18: Parameter is not used: 'CDF_PALETTE_SIZE_4_Y_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  140 |   localparam int CDF_PALETTE_SIZE_4_Y_COLOR_N = 4;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:141:18: Parameter is not used: 'CDF_PALETTE_SIZE_4_Y_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  141 |   localparam int CDF_PALETTE_SIZE_4_Y_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:143:18: Parameter is not used: 'CDF_PALETTE_SIZE_4_UV_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  143 |   localparam int CDF_PALETTE_SIZE_4_UV_COLOR_N = 4;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:144:18: Parameter is not used: 'CDF_PALETTE_SIZE_4_UV_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  144 |   localparam int CDF_PALETTE_SIZE_4_UV_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:146:18: Parameter is not used: 'CDF_PALETTE_SIZE_5_Y_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  146 |   localparam int CDF_PALETTE_SIZE_5_Y_COLOR_N = 5;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:147:18: Parameter is not used: 'CDF_PALETTE_SIZE_5_Y_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  147 |   localparam int CDF_PALETTE_SIZE_5_Y_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:149:18: Parameter is not used: 'CDF_PALETTE_SIZE_5_UV_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  149 |   localparam int CDF_PALETTE_SIZE_5_UV_COLOR_N = 5;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:150:18: Parameter is not used: 'CDF_PALETTE_SIZE_5_UV_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  150 |   localparam int CDF_PALETTE_SIZE_5_UV_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:152:18: Parameter is not used: 'CDF_PALETTE_SIZE_6_Y_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  152 |   localparam int CDF_PALETTE_SIZE_6_Y_COLOR_N = 6;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:153:18: Parameter is not used: 'CDF_PALETTE_SIZE_6_Y_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  153 |   localparam int CDF_PALETTE_SIZE_6_Y_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:155:18: Parameter is not used: 'CDF_PALETTE_SIZE_6_UV_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  155 |   localparam int CDF_PALETTE_SIZE_6_UV_COLOR_N = 6;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:156:18: Parameter is not used: 'CDF_PALETTE_SIZE_6_UV_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  156 |   localparam int CDF_PALETTE_SIZE_6_UV_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:158:18: Parameter is not used: 'CDF_PALETTE_SIZE_7_Y_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  158 |   localparam int CDF_PALETTE_SIZE_7_Y_COLOR_N = 7;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:159:18: Parameter is not used: 'CDF_PALETTE_SIZE_7_Y_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  159 |   localparam int CDF_PALETTE_SIZE_7_Y_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:161:18: Parameter is not used: 'CDF_PALETTE_SIZE_7_UV_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  161 |   localparam int CDF_PALETTE_SIZE_7_UV_COLOR_N = 7;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:162:18: Parameter is not used: 'CDF_PALETTE_SIZE_7_UV_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  162 |   localparam int CDF_PALETTE_SIZE_7_UV_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:164:18: Parameter is not used: 'CDF_PALETTE_SIZE_8_Y_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  164 |   localparam int CDF_PALETTE_SIZE_8_Y_COLOR_N = 8;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:165:18: Parameter is not used: 'CDF_PALETTE_SIZE_8_Y_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  165 |   localparam int CDF_PALETTE_SIZE_8_Y_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:167:18: Parameter is not used: 'CDF_PALETTE_SIZE_8_UV_COLOR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  167 |   localparam int CDF_PALETTE_SIZE_8_UV_COLOR_N = 8;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:168:18: Parameter is not used: 'CDF_PALETTE_SIZE_8_UV_COLOR_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  168 |   localparam int CDF_PALETTE_SIZE_8_UV_COLOR_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:170:18: Parameter is not used: 'CDF_FILTER_INTRA_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  170 |   localparam int CDF_FILTER_INTRA_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:171:18: Parameter is not used: 'CDF_FILTER_INTRA_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  171 |   localparam int CDF_FILTER_INTRA_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:173:18: Parameter is not used: 'CDF_FILTER_INTRA_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  173 |   localparam int CDF_FILTER_INTRA_MODE_N = 5;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:175:18: Parameter is not used: 'CDF_TX_8X8_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  175 |   localparam int CDF_TX_8X8_N = 2;
+      |                  ^~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:176:18: Parameter is not used: 'CDF_TX_8X8_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  176 |   localparam int CDF_TX_8X8_S0 = 1;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:178:18: Parameter is not used: 'CDF_TX_16X16_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  178 |   localparam int CDF_TX_16X16_N = 3;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:179:18: Parameter is not used: 'CDF_TX_16X16_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  179 |   localparam int CDF_TX_16X16_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:181:18: Parameter is not used: 'CDF_TX_32X32_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  181 |   localparam int CDF_TX_32X32_N = 3;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:182:18: Parameter is not used: 'CDF_TX_32X32_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  182 |   localparam int CDF_TX_32X32_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:184:18: Parameter is not used: 'CDF_TX_64X64_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  184 |   localparam int CDF_TX_64X64_N = 3;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:185:18: Parameter is not used: 'CDF_TX_64X64_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  185 |   localparam int CDF_TX_64X64_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:187:18: Parameter is not used: 'CDF_INTRA_TX_TYPE_SET1_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  187 |   localparam int CDF_INTRA_TX_TYPE_SET1_N = 7;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:189:18: Parameter is not used: 'CDF_INTRA_TX_TYPE_SET1_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  189 |   localparam int CDF_INTRA_TX_TYPE_SET1_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:191:18: Parameter is not used: 'CDF_INTRA_TX_TYPE_SET2_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  191 |   localparam int CDF_INTRA_TX_TYPE_SET2_N = 5;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:193:18: Parameter is not used: 'CDF_INTRA_TX_TYPE_SET2_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  193 |   localparam int CDF_INTRA_TX_TYPE_SET2_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:195:18: Parameter is not used: 'CDF_USE_WIENER_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  195 |   localparam int CDF_USE_WIENER_N = 2;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:197:18: Parameter is not used: 'CDF_USE_SGRPROJ_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  197 |   localparam int CDF_USE_SGRPROJ_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:199:18: Parameter is not used: 'CDF_RESTORATION_TYPE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  199 |   localparam int CDF_RESTORATION_TYPE_N = 3;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:201:18: Parameter is not used: 'CDF_TXFM_SPLIT_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  201 |   localparam int CDF_TXFM_SPLIT_N = 2;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:202:18: Parameter is not used: 'CDF_TXFM_SPLIT_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  202 |   localparam int CDF_TXFM_SPLIT_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:204:18: Parameter is not used: 'CDF_INTER_TX_TYPE_SET1_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  204 |   localparam int CDF_INTER_TX_TYPE_SET1_N = 16;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:205:18: Parameter is not used: 'CDF_INTER_TX_TYPE_SET1_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  205 |   localparam int CDF_INTER_TX_TYPE_SET1_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:207:18: Parameter is not used: 'CDF_INTER_TX_TYPE_SET2_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  207 |   localparam int CDF_INTER_TX_TYPE_SET2_N = 12;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:209:18: Parameter is not used: 'CDF_INTER_TX_TYPE_SET3_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  209 |   localparam int CDF_INTER_TX_TYPE_SET3_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:210:18: Parameter is not used: 'CDF_INTER_TX_TYPE_SET3_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  210 |   localparam int CDF_INTER_TX_TYPE_SET3_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:212:18: Parameter is not used: 'CDF_MV_JOINT_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  212 |   localparam int CDF_MV_JOINT_N = 4;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:213:18: Parameter is not used: 'CDF_MV_JOINT_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  213 |   localparam int CDF_MV_JOINT_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:215:18: Parameter is not used: 'CDF_MV_CLASS_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  215 |   localparam int CDF_MV_CLASS_N = 11;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:217:18: Parameter is not used: 'CDF_MV_CLASS_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  217 |   localparam int CDF_MV_CLASS_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:219:18: Parameter is not used: 'CDF_MV_CLASS0_BIT_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  219 |   localparam int CDF_MV_CLASS0_BIT_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:221:18: Parameter is not used: 'CDF_MV_CLASS0_BIT_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  221 |   localparam int CDF_MV_CLASS0_BIT_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:223:18: Parameter is not used: 'CDF_MV_CLASS0_FR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  223 |   localparam int CDF_MV_CLASS0_FR_N = 4;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:226:18: Parameter is not used: 'CDF_MV_CLASS0_FR_S2'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  226 |   localparam int CDF_MV_CLASS0_FR_S2 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:228:18: Parameter is not used: 'CDF_MV_CLASS0_HP_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  228 |   localparam int CDF_MV_CLASS0_HP_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:230:18: Parameter is not used: 'CDF_MV_CLASS0_HP_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  230 |   localparam int CDF_MV_CLASS0_HP_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:232:18: Parameter is not used: 'CDF_MV_SIGN_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  232 |   localparam int CDF_MV_SIGN_N = 2;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:234:18: Parameter is not used: 'CDF_MV_SIGN_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  234 |   localparam int CDF_MV_SIGN_S1 = 1;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:236:18: Parameter is not used: 'CDF_MV_BIT_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  236 |   localparam int CDF_MV_BIT_N = 2;
+      |                  ^~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:239:18: Parameter is not used: 'CDF_MV_BIT_S2'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  239 |   localparam int CDF_MV_BIT_S2 = 1;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:241:18: Parameter is not used: 'CDF_MV_FR_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  241 |   localparam int CDF_MV_FR_N = 4;
+      |                  ^~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:243:18: Parameter is not used: 'CDF_MV_FR_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  243 |   localparam int CDF_MV_FR_S1 = 1;
+      |                  ^~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:245:18: Parameter is not used: 'CDF_MV_HP_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  245 |   localparam int CDF_MV_HP_N = 2;
+      |                  ^~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:247:18: Parameter is not used: 'CDF_MV_HP_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  247 |   localparam int CDF_MV_HP_S1 = 1;
+      |                  ^~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:249:18: Parameter is not used: 'CDF_Y_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  249 |   localparam int CDF_Y_MODE_N = 13;
+      |                  ^~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:250:18: Parameter is not used: 'CDF_Y_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  250 |   localparam int CDF_Y_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:252:18: Parameter is not used: 'CDF_IS_INTER_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  252 |   localparam int CDF_IS_INTER_N = 2;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:253:18: Parameter is not used: 'CDF_IS_INTER_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  253 |   localparam int CDF_IS_INTER_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:255:18: Parameter is not used: 'CDF_SKIP_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  255 |   localparam int CDF_SKIP_MODE_N = 2;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:256:18: Parameter is not used: 'CDF_SKIP_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  256 |   localparam int CDF_SKIP_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:258:18: Parameter is not used: 'CDF_COMP_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  258 |   localparam int CDF_COMP_MODE_N = 2;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:259:18: Parameter is not used: 'CDF_COMP_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  259 |   localparam int CDF_COMP_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:261:18: Parameter is not used: 'CDF_COMP_REF_TYPE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  261 |   localparam int CDF_COMP_REF_TYPE_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:262:18: Parameter is not used: 'CDF_COMP_REF_TYPE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  262 |   localparam int CDF_COMP_REF_TYPE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:264:18: Parameter is not used: 'CDF_UNI_COMP_REF_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  264 |   localparam int CDF_UNI_COMP_REF_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:266:18: Parameter is not used: 'CDF_UNI_COMP_REF_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  266 |   localparam int CDF_UNI_COMP_REF_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:268:18: Parameter is not used: 'CDF_COMP_REF_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  268 |   localparam int CDF_COMP_REF_N = 2;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:270:18: Parameter is not used: 'CDF_COMP_REF_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  270 |   localparam int CDF_COMP_REF_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:272:18: Parameter is not used: 'CDF_COMP_BWD_REF_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  272 |   localparam int CDF_COMP_BWD_REF_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:274:18: Parameter is not used: 'CDF_COMP_BWD_REF_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  274 |   localparam int CDF_COMP_BWD_REF_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:276:18: Parameter is not used: 'CDF_SINGLE_REF_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  276 |   localparam int CDF_SINGLE_REF_N = 2;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:278:18: Parameter is not used: 'CDF_SINGLE_REF_S1'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  278 |   localparam int CDF_SINGLE_REF_S1 = 1;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:280:18: Parameter is not used: 'CDF_COMPOUND_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  280 |   localparam int CDF_COMPOUND_MODE_N = 8;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:281:18: Parameter is not used: 'CDF_COMPOUND_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  281 |   localparam int CDF_COMPOUND_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:283:18: Parameter is not used: 'CDF_NEW_MV_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  283 |   localparam int CDF_NEW_MV_N = 2;
+      |                  ^~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:284:18: Parameter is not used: 'CDF_NEW_MV_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  284 |   localparam int CDF_NEW_MV_S0 = 1;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:286:18: Parameter is not used: 'CDF_ZERO_MV_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  286 |   localparam int CDF_ZERO_MV_N = 2;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:287:18: Parameter is not used: 'CDF_ZERO_MV_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  287 |   localparam int CDF_ZERO_MV_S0 = 1;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:289:18: Parameter is not used: 'CDF_REF_MV_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  289 |   localparam int CDF_REF_MV_N = 2;
+      |                  ^~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:290:18: Parameter is not used: 'CDF_REF_MV_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  290 |   localparam int CDF_REF_MV_S0 = 1;
+      |                  ^~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:292:18: Parameter is not used: 'CDF_DRL_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  292 |   localparam int CDF_DRL_MODE_N = 2;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:293:18: Parameter is not used: 'CDF_DRL_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  293 |   localparam int CDF_DRL_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:295:18: Parameter is not used: 'CDF_INTERP_FILTER_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  295 |   localparam int CDF_INTERP_FILTER_N = 3;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:296:18: Parameter is not used: 'CDF_INTERP_FILTER_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  296 |   localparam int CDF_INTERP_FILTER_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:298:18: Parameter is not used: 'CDF_MOTION_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  298 |   localparam int CDF_MOTION_MODE_N = 3;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:299:18: Parameter is not used: 'CDF_MOTION_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  299 |   localparam int CDF_MOTION_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:301:18: Parameter is not used: 'CDF_USE_OBMC_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  301 |   localparam int CDF_USE_OBMC_N = 2;
+      |                  ^~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:302:18: Parameter is not used: 'CDF_USE_OBMC_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  302 |   localparam int CDF_USE_OBMC_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:304:18: Parameter is not used: 'CDF_INTER_INTRA_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  304 |   localparam int CDF_INTER_INTRA_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:305:18: Parameter is not used: 'CDF_INTER_INTRA_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  305 |   localparam int CDF_INTER_INTRA_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:307:18: Parameter is not used: 'CDF_INTER_INTRA_MODE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  307 |   localparam int CDF_INTER_INTRA_MODE_N = 4;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:308:18: Parameter is not used: 'CDF_INTER_INTRA_MODE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  308 |   localparam int CDF_INTER_INTRA_MODE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:310:18: Parameter is not used: 'CDF_WEDGE_INTER_INTRA_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  310 |   localparam int CDF_WEDGE_INTER_INTRA_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:311:18: Parameter is not used: 'CDF_WEDGE_INTER_INTRA_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  311 |   localparam int CDF_WEDGE_INTER_INTRA_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:313:18: Parameter is not used: 'CDF_WEDGE_INDEX_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  313 |   localparam int CDF_WEDGE_INDEX_N = 16;
+      |                  ^~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:314:18: Parameter is not used: 'CDF_WEDGE_INDEX_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  314 |   localparam int CDF_WEDGE_INDEX_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:316:18: Parameter is not used: 'CDF_COMP_GROUP_IDX_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  316 |   localparam int CDF_COMP_GROUP_IDX_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:317:18: Parameter is not used: 'CDF_COMP_GROUP_IDX_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  317 |   localparam int CDF_COMP_GROUP_IDX_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:319:18: Parameter is not used: 'CDF_COMPOUND_IDX_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  319 |   localparam int CDF_COMPOUND_IDX_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:320:18: Parameter is not used: 'CDF_COMPOUND_IDX_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  320 |   localparam int CDF_COMPOUND_IDX_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:322:18: Parameter is not used: 'CDF_COMPOUND_TYPE_N'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  322 |   localparam int CDF_COMPOUND_TYPE_N = 2;
+      |                  ^~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/cdf_map_pkg.sv:323:18: Parameter is not used: 'CDF_COMPOUND_TYPE_S0'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+  323 |   localparam int CDF_COMPOUND_TYPE_S0 = 1;
+      |                  ^~~~~~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/tx_tables_pkg.sv:4:18: Parameter is not used: 'SCAN_ROM_ENTRIES'
+                                               : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+    4 |   localparam int SCAN_ROM_ENTRIES = 3344;
+      |                  ^~~~~~~~~~~~~~~~
+%Warning-UNUSEDPARAM: rtl/blk_tables_pkg.sv:1423:26: Parameter is not used: 'BLOCK_INVALID'
+                                                   : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+ 1423 |   localparam logic [4:0] BLOCK_INVALID = 5'd22;
+      |                          ^~~~~~~~~~~~~
+%Warning-UNUSEDSIGNAL: rtl/cdef_pkg.sv:50:56: Function variable is not used: 'odd'
+                                            : ... note: In instance 'dec_host.u_dec.u_rc.u_itx.u_lvl.g_unit[31].u_pair'
+   50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
+      |                                                        ^~~
+- V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
+- Verilator: Built from 68.684 MB sources in 77 modules, into 27.860 MB in 38 C++ files needing 0.000 MB
+- Verilator: Walltime 5.891 s (elab=0.802, cvt=4.366, bld=0.000); cpu 5.891 s on 1 threads; allocated 269.777 MB

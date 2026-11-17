@@ -39,9 +39,7 @@ module lr_syntax
 
     logic [1:0]  plane;
     logic [1:0]  frt;                          // FrameRestorationType[plane]
-    logic [3:0]  usz_log2;                     // 6..8
-    logic        sub_x, sub_y;
-    logic [SBW-1:0] unit_rows, unit_cols, ur_start, ur_end, uc_start, uc_end, ur, uc;
+    logic [SBW-1:0] ur_end, uc_start, uc_end, ur, uc;
     logic [1:0]  rtype;
     logic signed [6:0] coef [2][3];
     logic        pss;
@@ -58,7 +56,6 @@ module lr_syntax
     logic [7:0]  se_mk;
     logic [7:0]  se_v;
     logic signed [8:0] se_result;
-    logic [3:0]  ns_w;
     logic [8:0]  ns_m;
     // literal reader
     logic [3:0]  lit_n;
@@ -168,9 +165,8 @@ module lr_syntax
                             ucs = SBW'((ns + (20'd1 << dl) - 20'd1) >> dl);
                             uce = SBW'((ne + (20'd1 << dl) - 20'd1) >> dl);
                         end
-                        frt <= hdr.lr_type[2*plane +: 2]; usz_log2 <= lg; sub_x <= sx; sub_y <= sy;
-                        unit_rows <= urows; unit_cols <= ucols;
-                        ur_start <= urs; ur_end <= (ure < urows) ? ure : urows;
+                        frt <= hdr.lr_type[2*plane +: 2];
+                        ur_end <= (ure < urows) ? ure : urows;
                         uc_start <= ucs; uc_end <= (uce < ucols) ? uce : ucols;
                         ur <= urs; uc <= ucs;
                         if (urs >= ((ure < urows) ? ure : urows) || ucs >= ((uce < ucols) ? uce : ucols)) plane <= plane + 2'd1;
@@ -258,7 +254,7 @@ module lr_syntax
                         logic [3:0] w;
                         n = se_num - se_mk;
                         w = (n >= 128) ? 4'd8 : (n >= 64) ? 4'd7 : (n >= 32) ? 4'd6 : (n >= 16) ? 4'd5 : (n >= 8) ? 4'd4 : (n >= 4) ? 4'd3 : (n >= 2) ? 4'd2 : 4'd1;
-                        ns_w <= w; ns_m <= (9'd1 << w) - 9'(n);
+                        ns_m <= (9'd1 << w) - 9'(n);
                         lit_n <= w - 4'd1; lit_val <= '0; lit_ret <= SE_NS_W; st <= S_LIT;
                     end else begin
                         lit_n <= 4'd1; lit_val <= '0; lit_ret <= SE_MORE_W; st <= S_LIT;

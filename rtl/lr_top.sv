@@ -250,18 +250,11 @@ module lr_top
     endfunction
     // ---------------------------------------------------------------- self-guided: a2 / b2 per box position, then F + blend
     logic        pss;
-    logic [1:0]  r_p; logic [6:0] e_p;
+    logic [1:0]  r_p;
     logic [15:0] sp;
-    logic [11:0] s_val;
-    logic [8:0]  one_over_n;
-    logic [5:0]  n_p;
     always_comb begin
         sp = sgr_params(rec.sgr_set);
         r_p = pss ? sp[6:5] : sp[15:14];
-        e_p = pss ? 7'(sp[4:0]) : sp[13:7];
-        s_val = sgr_s(rec.sgr_set, pss);
-        one_over_n = sgr_one_over_n(r_p);
-        n_p = (r_p == 2'd1) ? 6'd9 : 6'd25;
     end
     // box position: A/B row ai (0 .. hh+1 = block row -1 .. hh), column ax (seg_x0-1 .. seg_x1+1)
     logic [2:0]  ai;

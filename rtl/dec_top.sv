@@ -155,7 +155,7 @@ module dec_top
     output logic [1:0]        final_buf            // the buffer holding the final picture of this frame (2 with LR, 1 with CDEF, else 0)
 );
     logic ts_done, tx_ack, pm_plane;
-    logic [9:0] q_addr; logic [2:0] q_slot_w, q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
+    logic [9:0] q_addr; logic [2:0] q_slot_r; logic signed [20:0] q_data; logic [5:0] pm_x, pm_y; logic [2:0] pm_idx;
     logic ts_unsup;                                 // tile_syntax's; the window build adds its own limits below
     // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
     // superblock row up), the filters' info and reconstruction's mode map 64 rows (the four superblock rows live
@@ -323,13 +323,13 @@ module dec_top
 
     // loop restoration: reads fb0 (deblocked) and fb1 (CdefFrame) while lr_busy, writes fb2 (LrFrame)
     lr_rec_t lrr_rec;
-    logic lr_s0_re, lr_s1_re, lr_we2; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic [11:0] lr_wdata; logic lr_we4; logic [3:0] lr_be4; logic [47:0] lr_wdata4, lr0_rdata4, lr1_rdata4;
+    logic lr_s0_re, lr_s1_re; logic [1:0] lr_splane, lr_dplane; logic [FBX-1:0] lr_sx, lr_dx; logic [FBY-1:0] lr_sy, lr_dy; logic lr_we4; logic [3:0] lr_be4; logic [47:0] lr_wdata4, lr0_rdata4, lr1_rdata4;
     lr_top #(.FBX(FBX), .FBY(FBY)) u_lr (.clk, .rst, .hdr, .start(lr_start_i), .ly_first(lr_ly_first), .ly_last(lr_ly_last), .busy(lr_busy), .done(lr_done_o),
                                          .lrr_plane(o_lrr_plane), .lrr_row(o_lrr_row), .lrr_col(o_lrr_col), .lrr_rec,
                                          .s0_re(lr_s0_re), .s1_re(lr_s1_re), .s_plane(lr_splane), .s_x(lr_sx), .s_y(lr_sy), .s0_rdata(lr0_rdata), .s0_rdata4(lr0_rdata4),
                                          .s1_rdata(lr_from_deblocked_i ? lr0_rdata : lr1_rdata), .s1_rdata4(lr_from_deblocked_i ? lr0_rdata4 : lr1_rdata4),
                                          .d4_we(lr_we4), .d4_be(lr_be4), .d4_wdata(lr_wdata4),
-                                         .d_we(lr_we2), .d_plane(lr_dplane), .d_x(lr_dx), .d_y(lr_dy), .d_wdata(lr_wdata));
+                                         .d_we(), .d_plane(lr_dplane), .d_x(lr_dx), .d_y(lr_dy), .d_wdata());
 
     logic sr_re, sr_we; logic [1:0] sr_plane, sr_dplane; logic [FBX-1:0] sr_sx, sr_dx; logic [FBY-1:0] sr_sy, sr_dy; logic [11:0] sr_wdata;
     logic sr0, sr1;
@@ -473,7 +473,6 @@ module dec_top
                                                                             .h_plane, .h_x, .h_y, .h_rdata(h_rdata1), .h_rdata4(h_rdata41), .h_ok(h_ok1));
     end endgenerate
     // fb2 = LrFrame. writes: LR
-    logic [11:0] fb2_rdata_u; logic [47:0] fb2_rdata4_u;
     logic w_lr_we; logic [3:0] w_lr_be; logic [1:0] w_lr_pl; logic [FBX-1:0] w_lr_x; logic [FBY-1:0] w_lr_y; logic [47:0] w_lr_d;
     assign w_lr_we = lr_we4; assign w_lr_be = lr_be4; assign w_lr_pl = lr_dplane; assign w_lr_x = lr_dx; assign w_lr_y = lr_dy; assign w_lr_d = lr_wdata4;
     // the ring's two write ports: restoration's on port 0, or the chain's two (fc_out)
@@ -485,16 +484,15 @@ module dec_top
     assign lrf_y  = (CHAIN != 0) ? {fo_y[1], fo_y[0]} : {FBY'(0), w_lr_y};
     assign lrf_d  = (CHAIN != 0) ? {fo_d[1], fo_d[0]} : {48'd0, w_lr_d};
     generate if (FRAME_URAM != 0 && FRAME_WIN2 < 0) begin : g_fb2_none
-        assign fb2_rdata_u = '0; assign fb2_rdata4_u = '0; assign h_rdata2 = '0; assign h_rdata42 = '0; assign h_ok2 = 1'b1;
+        assign h_rdata2 = '0; assign h_rdata42 = '0; assign h_ok2 = 1'b1;
     end else if (FRAME_URAM != 0) begin : g_fb2_uram
         // the LR frame as an UltraRAM ring: one writer (LR), no decoder-side reader, so the host port is always served
         frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN2), .SB128(SB128)) u_fb2 (.clk, .clk2x, .phase, .sb128(hdr.sb128),
-            .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata({fb2_rdata4_u[11:0], fb2_rdata_u}), .rdata4(),
+            .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
             .we(lrf_we), .w_be(lrf_be), .w_plane(lrf_pl), .w_x(lrf_x), .w_y(lrf_y), .w_data(lrf_d),
             .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42), .h_ok(h_ok2));
-        assign fb2_rdata4_u[47:12] = '0;
     end else begin : g_fb2_model
-        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(fb2_rdata_u), .rdata4(fb2_rdata4_u),
+        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
                                                                             .we(lrf_we), .w_be(lrf_be), .w_plane(lrf_pl), .w_x(lrf_x), .w_y(lrf_y), .w_data(lrf_d),
                                                                             .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42), .h_ok(h_ok2));
     end endgenerate

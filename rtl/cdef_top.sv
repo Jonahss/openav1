@@ -50,7 +50,6 @@ module cdef_top
         C_COPY_RD, C_NEXT
     } st_t;
     st_t st;
-    logic done_pend;
 
     // ---------------------------------------------------------------- block loop
     logic [MIW-1:0] r, c;                                  // 8x8 block position in 4x4 units (step 2)

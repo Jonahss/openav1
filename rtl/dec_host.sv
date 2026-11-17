@@ -208,14 +208,10 @@ module dec_host
     logic [15:0]       sp_d1;
     logic [245:0]      def_data;
     logic [7:0]        start;                                // tile, frame, lf, cdef, sr, lr, state load, cdf save
-    logic              tile_busy, tile_done, tile_done_lvl, unsupported;
+    logic              tile_busy, tile_done_lvl, unsupported;
     logic [31:0]       perf_syn_stall, perf_rec_idle;
-    logic              frame_busy, frame_done, frame_done_lvl;
+    logic              frame_busy, frame_done_lvl;
     logic              lf_busy, lf_done, cdef_busy, cdef_done, sr_busy, sr_done, lr_busy, lr_done_o;
-    logic              blk_done, tx_done, lr_done;
-    blk_rec_t          blk_rec;
-    tx_rec_t           tx_rec;
-    lr_rec_t           lr_rec;
     logic [11:0]       h_rdata;
     logic [47:0]       h_rdata4;
     logic              h_ok;
@@ -223,7 +219,6 @@ module dec_host
     logic [FBX-1:0]    h_x_m;
     logic [FBY-1:0]    h_y_m;
     logic           row_final, flush_done;
-    logic [SBW-1:0] row_final_idx;
     logic [1:0]     final_buf;
     logic           flush_rd;                                // the host port belongs to a running flush (reads the final buffer)
     logic           dma_busy, dma_done, dma_err;
@@ -284,15 +279,15 @@ module dec_host
         .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]), .cur_planes, .cur_fmt16(fmt16),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
-        .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done, .tile_done_lvl, .unsupported, .mem_err, .perf_syn_stall, .perf_rec_idle,
-        .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done, .frame_done_lvl,
-        .row_final, .row_final_idx, .flush_done,
+        .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done(), .tile_done_lvl, .unsupported, .mem_err, .perf_syn_stall, .perf_rec_idle,
+        .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done(), .frame_done_lvl,
+        .row_final, .row_final_idx(), .flush_done,
         .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_line, .fs_rd_beat, .fs_rd_buf, .fs_rd_data,
         .lf_start(start[2]), .lf_busy, .lf_done,
         .cdef_start(start[3]), .cdef_busy, .cdef_done,
         .sr_start(start[4]), .sr_buf(ctrl[3]), .sr_busy, .sr_done,
         .lr_start(start[5]), .lr_from_deblocked(ctrl[2]), .lr_busy, .lr_done_o,
-        .blk_done, .blk_rec, .tx_done, .tx_rec, .lr_done, .lr_rec,
+        .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
         .h_buf(flush_rd ? final_buf : ctrl[5:4]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4, .h_ok, .final_buf
     );
     logic [CDF_AW-1:0] def_addr_r;
@@ -401,10 +396,9 @@ module dec_host
     // ---------------------------------------------------------------- picture DMA engine (AXI4 write master)
     logic [31:0]    dma_cfg;
     logic           dma_start;                               // pulse from the AXI-Lite side
-    // auto-flush (window builds): released rows queue here; a run then covers that row's lines of every plane,
-    // from per-plane row cursors that advance as rows are flushed (no multiply: rows flush in order)
-    localparam int FQ = 8;
-    logic [SBW-1:0] fq [FQ];
+    // auto-flush (window builds): released rows are counted here (fq_w / fq_r, up to 8 outstanding; rows flush in order,
+    // so the row number is not kept); a run then covers that row's lines of every plane, from per-plane row cursors
+    // that advance as rows are flushed (no multiply)
     logic [3:0]     fq_w, fq_r;
     logic           fq_empty, fq_full;
     assign fq_empty = (fq_w == fq_r);
@@ -514,7 +508,7 @@ module dec_host
             for (int p = 0; p < 3; p++) begin fl_addr[p] <= '0; fl_y[p] <= '0; end
         end else begin
             // released rows into the queue; a frame start rewinds the cursors to the plane bases
-            if (row_final && !fq_full) begin fq[fq_w[2:0]] <= row_final_idx; fq_w <= fq_w + 1'b1; end
+            if (row_final && !fq_full) begin fq_w <= fq_w + 1'b1; end
             if (start[1]) begin
                 for (int p = 0; p < 3; p++) begin fl_addr[p] <= dma_base[p]; fl_y[p] <= '0; end
                 fl_rows <= '0; dma_err <= 1'b0;              // the error bit covers the whole frame's flushes (2026-10-30 audit)

@@ -295,7 +295,7 @@ module recon_top
     logic signed [15:0] w_al [2], w_be [2], w_ga [2], w_de [2];
     logic [1:0]  w_cand;                                     // lists that may warp (setup decides the validity)
     logic        wl;                                         // the list being set up
-    logic        ws_start, ws_mode, ws_busy, ws_done, ws_valid;
+    logic        ws_start, ws_mode, ws_done, ws_valid;
     logic [143:0] ws_p, ws_gm;
     logic signed [15:0] ws_alpha, ws_beta, ws_gamma, ws_delta;
     logic [15:0] ws_midx, ws_midy;
@@ -339,7 +339,6 @@ module recon_top
     logic        mc_out_tag;                                 // the run record the outputs belong to
     logic        srun;                                       // run record written by the next start (toggles per run)
     logic        mc_tag;                                     // the record of the run being started (registered with mc_start, as run_buf is)
-    logic        mc_fin;                                     // mc_done latched (the OBMC pipeline may still be draining at the pulse)
     // Block-ahead fetch (docs/reference-prefetch.md step B, 2026-11-03): a strip's reference patch is fetched into one of
     // mc_filt's two patch buffers while the filter still runs the previous strip from the other, so a fetch's round trip
     // hides behind a run. The sequencer moves on as soon as a run starts: the registers the output path reads during a
@@ -372,7 +371,7 @@ module recon_top
     logic        pq_ii_active [0:1], pq_ii_wedge [0:1]; logic [3:0] pq_ii_mode [0:1]; logic [2:0] pq_ii_lsh [0:1];
     logic        pq_mb_active [0:1], pq_mb_diff [0:1]; logic [3:0] pq_post [0:1]; logic pq_mask_type [0:1];
     // the run being started: mc_filt samples these with mc_start, the cycle after run_go
-    logic        st_l, st_buf, st_warp;
+    logic        st_l, st_warp;
     logic [6:0]  st_sw, st_sh; logic [1:0] st_i0, st_i1; logic [9:0] st_xf0, st_yf0; logic [11:0] st_xs, st_ys;
     logic signed [15:0] st_wa, st_wb, st_wg, st_wd; logic [15:0] st_wsx, st_wsy; logic [2:0] st_mode; logic [4:0] st_wt0, st_wt1;
     logic        pq_empty, pq_full, qh_ready, run_go;
@@ -483,10 +482,9 @@ module recon_top
                 if (blk_last_started[p] && pred_done[p] && !(blk_take && (1'(p) == nb_par))) blk_ready_q[p] <= 1'b1;
         end
     end
-    logic [135:0] mb_a_pair, mb_a2_pair;
-    logic [PXW-1:0] mb_a_x, mb_a_y, mb_a2_x, mb_a2_y, mb_b_x, mb_b_y;
-    logic [3:0]  mb_a_be, mb_a2_be, mb_b_be;
-    logic [6:0]  mb_a2_m [4];                                // DIFFWTD luma: the mask computed in A, carried to A2
+    logic [135:0] mb_a_pair;
+    logic [PXW-1:0] mb_a_x, mb_a_y, mb_b_x, mb_b_y;
+    logic [3:0]  mb_a_be, mb_b_be;
     logic [47:0] mb_b_pix;
     logic [3:0]  mc_post;                                    // InterPostRound of the block's compound prediction
     always_ff @(posedge clk) begin
@@ -681,14 +679,13 @@ module recon_top
                            mode_type: (b.ymode >= 5'd13 && b.ymode != 5'd15 && b.ymode != 5'd23)};   // 7.14.4 modeType
     always_ff @(posedge clk) begin
         mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0; blk_last_run <= 1'b0; blk_ready_set <= 1'b0; blk_last_run_q <= 1'b0;
-        if (mc_done) mc_fin <= 1'b1;
         if (mc_busy) run_v <= 1'b0;
         if (rf_done) done_cnt <= done_cnt + 3'd1;
         if (!rst && run_go) begin
             // the run thread: the oldest queued run's patch is in and the horizontal side is free; mc_filt samples st_* with
             // mc_start next cycle, the output path reads the record rq_*[srun] (as before)
-            mc_start <= 1'b1; run_v <= 1'b1; mc_fin <= 1'b0; mc_tag <= srun; srun <= !srun; run_buf <= pq_buf[pq_h[0]];
-            st_l <= pq_l[pq_h[0]]; st_buf <= pq_buf[pq_h[0]]; st_warp <= pq_warp[pq_h[0]]; st_sw <= pq_sw[pq_h[0]]; st_sh <= pq_sh[pq_h[0]];
+            mc_start <= 1'b1; run_v <= 1'b1; mc_tag <= srun; srun <= !srun; run_buf <= pq_buf[pq_h[0]];
+            st_l <= pq_l[pq_h[0]]; st_warp <= pq_warp[pq_h[0]]; st_sw <= pq_sw[pq_h[0]]; st_sh <= pq_sh[pq_h[0]];
             st_i0 <= pq_i0[pq_h[0]]; st_i1 <= pq_i1[pq_h[0]]; st_xf0 <= pq_xf0[pq_h[0]]; st_yf0 <= pq_yf0[pq_h[0]]; st_xs <= pq_xs[pq_h[0]]; st_ys <= pq_ys[pq_h[0]];
             st_wa <= pq_wa[pq_h[0]]; st_wb <= pq_wb[pq_h[0]]; st_wg <= pq_wg[pq_h[0]]; st_wd <= pq_wd[pq_h[0]]; st_wsx <= pq_wsx[pq_h[0]]; st_wsy <= pq_wsy[pq_h[0]];
             st_mode <= pq_mode[pq_h[0]]; st_wt0 <= pq_wt0[pq_h[0]]; st_wt1 <= pq_wt1[pq_h[0]];
@@ -701,7 +698,7 @@ module recon_top
             pq_h <= pq_h + 2'd1;
         end
         if (rst) begin
-            bst <= B_IDLE; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; mc_fin <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0; cur_par <= 1'b0;
+            bst <= B_IDLE; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0; cur_par <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             acc_cnt <= 3'd0; done_cnt <= 3'd0; pq_h <= 2'd0; pq_t <= 2'd0; ibc_acc <= 1'b0; ibc_has_rf <= 1'b0; pq_last <= '{default: 1'b0};
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
@@ -1137,10 +1134,10 @@ module recon_top
         .ls_a00(b.ls[0 +: 32]), .ls_a01(b.ls[32 +: 32]), .ls_a11(b.ls[64 +: 32]), .ls_bx0(b.ls[96 +: 32]),
         .ls_bx1(b.ls[128 +: 32]), .ls_by0(b.ls[160 +: 32]), .ls_by1(b.ls[192 +: 32]),
         .mv_row(16'(b.mv_row)), .mv_col(16'(b.mv_col)), .mid_x(ws_midx), .mid_y(ws_midy), .gm_p(ws_gm),
-        .busy(ws_busy), .done(ws_done), .valid(ws_valid), .p(ws_p),
+        .busy(), .done(ws_done), .valid(ws_valid), .p(ws_p),
         .alpha(ws_alpha), .beta(ws_beta), .gamma(ws_gamma), .delta(ws_delta));
     end else begin : g_nows
-        assign ws_busy = 1'b0; assign ws_done = 1'b0; assign ws_valid = 1'b0; assign ws_p = '0;
+        assign ws_done = 1'b0; assign ws_valid = 1'b0; assign ws_p = '0;
         assign ws_alpha = '0; assign ws_beta = '0; assign ws_gamma = '0; assign ws_delta = '0;
     end endgenerate
 
@@ -1321,7 +1318,7 @@ module recon_top
     logic        sub_x, sub_y;
     logic [6:0]  tw_px, th_px;                             // transform width / height in pixels
     logic [2:0]  l2w, l2h;
-    logic [5:0]  tw_c, th_c;                               // coefficient dims: min(32, w/h)
+    logic [5:0]  tw_c;                                     // coefficient width: min(32, w)
     logic [2:0]  tw_cl2;                                   // log2(tw_c): the coefficient row stride is a power of two
     // the quantizer-matrix level base as a table (qm_lvl 0..14 x 6688): written as a product it was a multiplier in
     // front of the ROM address; with the row stride as a shift the scan ROM -> address -> qm ROM path drops its DSP
@@ -1395,7 +1392,6 @@ module recon_top
         l2w = tx_w_log2(t.txsz); l2h = tx_h_log2(t.txsz);
         tw_c = (tw_px > 7'd32) ? 6'd32 : 6'(tw_px);
         tw_cl2 = (tw_c == 6'd4) ? 3'd2 : (tw_c == 6'd8) ? 3'd3 : (tw_c == 6'd16) ? 3'd4 : 3'd5;
-        th_c = (th_px > 7'd32) ? 6'd32 : 6'(th_px);
         step_x = 5'(tw_px >> 2); step_y = 5'(th_px >> 2);
         mi_row = MIW'((t.y << sub_y) >> 2); mi_col = MIW'((t.x << sub_x) >> 2);
         sb_row_p = 6'((mi_row & MIW'(hdr.sb128 ? 31 : 15)) >> sub_y);
@@ -1452,29 +1448,29 @@ module recon_top
 
     // ================================================================ sub-blocks
     // itx2d
-    logic itx_we, itx_clr, itx_start, itx_busy, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [TW-1:0] res_data; logic [4*TW-1:0] res_data4;
+    logic itx_we, itx_clr, itx_start, itx_done; logic [9:0] itx_addr; logic [TW-1:0] itx_data; logic [11:0] res_addr; logic [4*TW-1:0] res_data4;
     itx2d #(.TW(TW), .NLANES(ITX_LANES)) u_itx (.clk, .rst, .coef_clr(itx_clr), .coef_we(itx_we), .coef_addr(itx_addr), .coef_data(itx_data),
                             .start(itx_start), .tx_sz(t.txsz), .tx_type(t.lossless ? 4'd0 : t.txtype), .bit_depth(hdr.bit_depth), .lossless(t.lossless),
-                            .busy(itx_busy), .done(itx_done), .res_addr, .res_data, .res_data4);
+                            .busy(), .done(itx_done), .res_addr, .res_data(), .res_data4);
     // ipred
-    logic edge_we, edge_we4, ip_start, ip_busy, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data; logic [47:0] edge_data4; logic [47:0] ip_pix4; logic [5:0] ip_ox, ip_oy;
+    logic edge_we, edge_we4, ip_start, ip_done, ip_ov; logic [1:0] edge_side; logic [7:0] edge_idx; logic [11:0] edge_data; logic [47:0] edge_data4; logic [47:0] ip_pix4; logic [5:0] ip_ox, ip_oy;
     logic ft_sel;
     assign ft_sel = (is_dir(mode) && !((t.plane == 2'd0) && bt.use_fi)) ? ((t.plane == 2'd0) ? ft_y : ft_uv) : 1'b0;
     ipred #(.PW(12)) u_ip (.clk, .rst, .edge_we, .edge_side, .edge_idx, .edge_data, .edge_we4, .edge_data4,
                            .start(ip_start), .mode, .use_filter_intra(!ii_run && (t.plane == 2'd0) && bt.use_fi), .filter_intra_mode(bt.fi_mode),
                            .angle_delta(ii_run ? 3'sd0 : (t.plane == 2'd0) ? bt.angle_y : bt.angle_uv), .log2w(l2w), .log2h(l2h), .bit_depth(hdr.bit_depth),
                            .have_left(have_l), .have_above(have_a), .filter_type(ft_sel), .edge_filter_en(rh.enable_intra_edge_filter),
-                           .above_px, .left_px, .busy(ip_busy), .done(ip_done),
+                           .above_px, .left_px, .busy(), .done(ip_done),
                            .out_valid(ip_ov), .out_x(ip_ox), .out_y(ip_oy), .out_pix4(ip_pix4));
     // cfl
-    logic cl_lwe, cl_dwe, cl_start, cl_busy, cl_done, cl_ov; logic [9:0] cl_laddr, cl_daddr; logic [11:0] cl_ldata, cl_ddata, cl_pix; logic [4:0] cl_ox, cl_oy;
+    logic cl_lwe, cl_dwe, cl_start, cl_done, cl_ov; logic [9:0] cl_laddr, cl_daddr; logic [11:0] cl_ldata, cl_ddata, cl_pix; logic [4:0] cl_ox, cl_oy;
     logic [PXW-1:0] lx0, ly0;
     assign lx0 = PXW'(t.x << sub_x); assign ly0 = PXW'(t.y << sub_y);
     logic [6:0] l_av_w, l_av_h;
     assign l_av_w = 7'(max_luma_w - lx0); assign l_av_h = 7'(max_luma_h - ly0);
     cfl #(.PW(12)) u_cfl (.clk, .rst, .luma_we(cl_lwe), .luma_addr(cl_laddr), .luma_data(cl_ldata), .dc_we(cl_dwe), .dc_addr(cl_daddr), .dc_data(cl_ddata),
                           .start(cl_start), .log2w(l2w), .log2h(l2h), .sub_x, .sub_y, .alpha((t.plane == 2'd1) ? bt.cfl_u : bt.cfl_v),
-                          .bit_depth(hdr.bit_depth), .luma_avail_w(l_av_w), .luma_avail_h(l_av_h), .busy(cl_busy), .done(cl_done),
+                          .bit_depth(hdr.bit_depth), .luma_avail_w(l_av_w), .luma_avail_h(l_av_h), .busy(), .done(cl_done),
                           .out_valid(cl_ov), .out_x(cl_ox), .out_y(cl_oy), .out_pix(cl_pix));
     // quantizer matrix ROM
     logic [16:0] qm_addr; logic [7:0] qm_data;
@@ -1560,8 +1556,6 @@ module recon_top
         sc_ci = 7'(s_pos >> s_bwl);
         sc_cj = 7'(s_pos & ((10'd1 << s_bwl) - 10'd1));
     end
-    logic        pal_first;
-    logic [PXW-1:0] cur_x, cur_y;
     logic [11:0] mid_m1, mid_p1, mid;
     assign mid = 12'(13'd1 << (hdr.bit_depth - 4'd1));
     assign mid_m1 = mid - 12'd1;
@@ -1638,9 +1632,7 @@ module recon_top
     end
     // recon add datapath: residual columns cj .. cj+3 of row ci map to the aligned picture group starting at
     // add_xx (reversed when flip_lr); (ci, cj) is the group being read, (pci, pcj) the one being added and written
-    logic [6:0]  add_xx, add_yy, padd_xx, padd_yy;
-    assign padd_xx = flip_lr ? 7'(tw_px - 7'd4 - pcj) : pcj;
-    assign padd_yy = flip_ud ? 7'(th_px - 7'd1 - pci) : pci;
+    logic [6:0]  add_xx, add_yy;
     // The written group's picture position, registered with (pci, pcj): the flip arithmetic and the block offset
     // then sit a cycle ahead of the frame memory's write address (31 logic levels from the transform-size register
     // to the UltraRAM address pin was the core build's worst clock-crossing path at 100 MHz).

@@ -177,7 +177,6 @@ module blk_syntax
     logic        use_fi;
     logic [2:0]  fi_mode;
     logic [4:0]  txsz;
-    logic [2:0]  cfl_signs;
     logic [1:0]  sign_u, sign_v;
     // persistent across blocks
     logic [7:0]  cur_qidx;
@@ -234,7 +233,6 @@ module blk_syntax
     logic        mv_hp, mv_int, mv_hp_en;
     st_t         seg_ret;
     mv_ent_t     a_ent, l_ent;                              // neighbours (r - 1, c) and (r, c - 1)
-    logic        a_ok, l_ok;                                // ... available and written
     logic        nb_rd;                                     // blk_syntax owns the mv_mem read port (else the stack)
     logic [MIW-1:0] nb_row, nb_col, mvs_rd_row, mvs_rd_col;
     // segment map band scan (get_segment_id: the minimum over the block)
@@ -374,8 +372,6 @@ module blk_syntax
     end
     logic [4:0] sb_bs;
     assign sb_bs = sb_size_bsize(hdr.sb128);
-    logic [3:0] sbm4;                            // superblock 4x4 mask
-    assign sbm4 = hdr.sb128 ? 4'd15 : 4'd15;     // (unused; cdef units are 64x64 in both cases)
     logic [1:0] cdef_unit;
     assign cdef_unit = {br[4] & hdr.sb128, bc[4] & hdr.sb128};
 
@@ -829,10 +825,10 @@ module blk_syntax
                     // (mv_mem answers two cycles after the address: the *_W states cover the latency)
                     S_NBA: st <= S_NBA_W;
                     S_NBA_W: st <= S_NBA_W2;
-                    S_NBA_W2: begin a_ent <= mvr_ent; a_ok <= avail_u && mvr_written; st <= S_NBL; end
+                    S_NBA_W2: begin a_ent <= mvr_ent; st <= S_NBL; end
                     S_NBL: st <= S_NBL_W;
                     S_NBL_W: st <= S_NBL_W2;
-                    S_NBL_W2: begin l_ent <= mvr_ent; l_ok <= avail_l && mvr_written; seg_pre <= 1'b1; st <= S_ISEG; end
+                    S_NBL_W2: begin l_ent <= mvr_ent; seg_pre <= 1'b1; st <= S_ISEG; end
                     // inter_segment_id(preSkip = seg_pre) (5.11.8)
                     S_ISEG: begin
                         if (!hdr.seg_enabled) begin seg <= 3'd0; lossless <= hdr.lossless[0]; st <= seg_pre ? S_SKM : S_CDEF; end

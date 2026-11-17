@@ -246,7 +246,7 @@ module itx2d #(
     end
 
     logic [64*TW-1:0] pk_in, pk_out;    // packed engine input (shift-in from the top) / output (shift-out)
-    logic             e_start, e_busy, e_done;
+    logic             e_start, e_done;
     logic [2:0]       e_prog;
     logic [4:0]       e_r;
     logic [64*TW-1:0] e_out;
@@ -255,7 +255,7 @@ module itx2d #(
         e_r    = col ? col_clamp : row_clamp;
     end
     itx_lvl #(.TW(TW)) u_lvl (.clk, .rst, .start(e_start), .prog(e_prog), .r(e_r), .in_vec(pk_in),
-                              .busy(e_busy), .done(e_done), .out_vec(e_out));
+                              .busy(), .done(e_done), .out_vec(e_out));
     logic [64*TW-1:0] ld_vec_f;         // the loaded row as a flat vector
     // streamed rows (ADST4 / identity / WHT): a 4-stage pipeline, one row per clock —
     //   1 read row ri -> rd_r   2 rd_r -> mask / pre-scale -> ld_row   3 ld_row -> itx_row -> st_row

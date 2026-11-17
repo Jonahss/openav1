@@ -84,7 +84,6 @@ module coef_rd
     logic [9:0]  pos;
     logic [4:0]  row, col;                   // pos >> bwl, pos & (width-1)  (adjusted, < 32)
     logic [3:0]  level;
-    logic [5:0]  ctx_base;                   // 0..41
     logic [4:0]  ctx_br;                     // 0..20
     logic [1:0]  br_i;
     logic        sign;
@@ -223,7 +222,7 @@ module coef_rd
             default: return 4 * s;
         endcase
     endfunction
-    logic [CDF_AW-1:0] a_txb_skip, a_eob_pt, a_eob_extra, a_base_eob, a_base, a_br, a_dc_sign;
+    logic [CDF_AW-1:0] a_txb_skip, a_eob_pt, a_base_eob, a_base, a_br, a_dc_sign;
     logic [3:0] n_eob_pt;
     logic [2:0] br_ctx_sz;
     always_comb begin
@@ -237,7 +236,6 @@ module coef_rd
             3'd5: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_512 + int'(cfg_ptype));                          n_eob_pt = 4'(CDF_EOB_PT_512_N - 1); end
             default: begin a_eob_pt = CDF_AW'(CDF_EOB_PT_1024 + int'(cfg_ptype));                     n_eob_pt = 4'(CDF_EOB_PT_1024_N - 1); end
         endcase
-        a_eob_extra = CDF_AW'(CDF_EOB_EXTRA + mul5(tx_sz_ctx, CDF_EOB_EXTRA_S0) + (cfg_ptype ? CDF_EOB_EXTRA_S1 : 0) + int'(eob_pt) - 3);
         a_base_eob  = CDF_AW'(CDF_COEFF_BASE_EOB + mul5(tx_sz_ctx, CDF_COEFF_BASE_EOB_S0) + (cfg_ptype ? CDF_COEFF_BASE_EOB_S1 : 0) + int'(ctx_eob));
         a_base      = CDF_AW'(CDF_COEFF_BASE + mul5(tx_sz_ctx, CDF_COEFF_BASE_S0) + (cfg_ptype ? CDF_COEFF_BASE_S1 : 0) + int'(ctx_base_now));
         br_ctx_sz   = tx_sz_ctx > 3'd3 ? 3'd3 : tx_sz_ctx;
