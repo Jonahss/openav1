@@ -71,6 +71,12 @@ module fc_rstore
                     if (we_r && wplane_r == 2'(p) && wy_r[1:0] == 2'(l) && be_r[b / 2]) mem[wa][9 * b +: 9] <= wd72[9 * b +: 9];
                 if (bk_re[p]) q <= mem[ra];
             end
+`ifndef SYNTHESIS
+            // the write register is unseen only if no read asks for a word whose write is still in it
+            always_ff @(posedge clk)
+                if (bk_re[p] && we_r && wplane_r == 2'(p) && wy_r[1:0] == 2'(l) && ra == wa)
+                    $fatal(1, "fc_rstore: plane %0d line %0d read of a word still in the write register", p, l);
+`endif
             for (genvar i = 0; i < 4; i++) begin : g_i
                 assign bk_data[p][(4 * l + i) * 12 +: 12] = q[18 * i +: 12];
             end

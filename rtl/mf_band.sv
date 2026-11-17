@@ -6,6 +6,9 @@
 // clears the field at one position a cycle and stores a cell's seven destinations in one cycle (we[r], w_row / w_col
 // at [16r +: 16]); the host's register path writes one reference (we = 1 << ref). Read one position per cycle
 // (registered, 1-cycle latency). An entry is {valid, row, col}: valid = 0 is the spec's MV_INVALID hole.
+// The write port goes through a register (a write lands one clock later): its sources are the host's register file
+// and the projection engine, its sinks seven memories in each tile engine (2026-11-17: 96-99 % route on these paths
+// in both routed images). The field is written before the tiles of a frame read it; a simulation check holds that.
 module mf_band
   import syn_pkg::*;
 #(
@@ -26,14 +29,24 @@ module mf_band
     logic [AW-1:0] wa, ra;
     logic [32:0]   rdata [7];
     logic [2:0]    rd_ref_q;
-    assign wa = {w_y8[MFL2R-1:0], w_x8[MFL2C-1:0]};
+    logic [6:0]    we_r;
+    logic          w_valid_r;
+    logic [111:0]  w_row_r, w_col_r;
+    always_ff @(posedge clk) begin
+        we_r <= we; w_valid_r <= w_valid; w_row_r <= w_row; w_col_r <= w_col;
+        wa <= {w_y8[MFL2R-1:0], w_x8[MFL2C-1:0]};
+    end
     assign ra = {rd_y8[MFL2R-1:0], rd_x8[MFL2C-1:0]};
     for (genvar r = 0; r < 7; r++) begin : g_ref
         logic [32:0] mem [0:(1 << AW) - 1];
         always_ff @(posedge clk) begin
-            if (we[r]) mem[wa] <= {w_valid, w_row[16 * r +: 16], w_col[16 * r +: 16]};
+            if (we_r[r]) mem[wa] <= {w_valid_r, w_row_r[16 * r +: 16], w_col_r[16 * r +: 16]};
             rdata[r] <= mem[ra];
         end
+`ifndef SYNTHESIS
+        always_ff @(posedge clk)
+            if (we_r[r] && rd_ref == 3'(r) && ra == wa) $fatal(1, "mf_band: reference %0d read of an entry still in the write register", r);
+`endif
     end
     always_ff @(posedge clk) rd_ref_q <= rd_ref;
     logic [32:0] rsel;
