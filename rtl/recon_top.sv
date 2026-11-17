@@ -244,7 +244,7 @@ module recon_top
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
                               B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_R4, B_IBC_R5, B_IBC_WR,
-                              B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIP2, B_MC_FETCH, B_MC_NEXT, B_MC_DRAIN, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
+                              B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIPM, B_MC_STRIP2, B_MC_FETCH, B_MC_NEXT, B_MC_DRAIN, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
@@ -316,6 +316,12 @@ module recon_top
     logic        ff_fb_re; logic [1:0] ff_fb_plane; logic [FBX-1:0] ff_fb_x; logic [FBY-1:0] ff_fb_y;
     logic [6:0]  rf_w, rf_h;                                 // ref_fetch request: unit size in reference samples (strip size unscaled)
     logic signed [38:0] sc_bx, sc_by;                        // 7.11.3.3: origX * xScale, origY * yScale (strip 1 of 2)
+    // The products of a warp or scaled strip take a clock of their own (B_MC_STRIPM): from the header registers through
+    // the motion vector, the multiply and the add into sc_bx / sc_by was 19 levels and failed the routed 100 MHz image
+    // (2026-11-17: ih_w -> sc_by, -0.128 ns). B_MC_STRIP registers the operands: x = ma0 n0 + ma1 n1 + cx, y = mb0 n0 + mb1 n1 + cy.
+    logic signed [23:0] sc_ma0, sc_ma1, sc_mb0, sc_mb1;
+    logic signed [21:0] sc_n0, sc_n1;
+    logic signed [38:0] sc_cx, sc_cy;
     logic [11:0] sc_xs, sc_ys;                               // xStep / yStep
     logic [6:0]  sc_sw, sc_sh;
     logic [PXW-1:0] mc_px, mc_py;                            // strip origin
@@ -870,8 +876,9 @@ module recon_top
                         // block_warp (7.11.3.5): the 8x8's centre in luma units through the affine model (16.16);
                         // the integer / fractional parts and the 15 x 15 region come in B_MC_STRIP2
                         srcx = 22'((22'(px) + 22'd4) << mc_sx); srcy = 22'((22'(py) + 22'd4) << mc_sy);
-                        sc_bx <= 39'(w_p[mc_l][2]) * 39'(srcx) + 39'(w_p[mc_l][3]) * 39'(srcy) + 39'(w_p[mc_l][0]);
-                        sc_by <= 39'(w_p[mc_l][4]) * 39'(srcx) + 39'(w_p[mc_l][5]) * 39'(srcy) + 39'(w_p[mc_l][1]);
+                        sc_ma0 <= w_p[mc_l][2]; sc_ma1 <= w_p[mc_l][3]; sc_cx <= 39'(w_p[mc_l][0]);
+                        sc_mb0 <= w_p[mc_l][4]; sc_mb1 <= w_p[mc_l][5]; sc_cy <= 39'(w_p[mc_l][1]);
+                        sc_n0 <= srcx; sc_n1 <= srcy;
                         sc_xs <= 12'd1024; sc_ys <= 12'd1024; mc_xf0 <= 10'd32; mc_yf0 <= 10'd32;
                         rf_w <= 7'd8; rf_h <= 7'd8;
                     end else if (!mc_scl) begin
@@ -911,10 +918,16 @@ module recon_top
                         xsc = ref_scales[32 * int'(slot) +: 16]; ysc = ref_scales[32 * int'(slot) + 16 +: 16];
                         ox = (22'(signed'({7'b0, mc_ux})) <<< 4) + 22'(mvx2) + 22'sd8;
                         oy = (22'(signed'({7'b0, mc_uy})) <<< 4) + 22'(mvy2) + 22'sd8;
-                        sc_bx <= ox * 39'(signed'({1'b0, xsc})) - 39'sd131072;
-                        sc_by <= oy * 39'(signed'({1'b0, ysc})) - 39'sd131072;
+                        sc_ma0 <= 24'(signed'({1'b0, xsc})); sc_ma1 <= 24'sd0; sc_cx <= -39'sd131072;
+                        sc_mb0 <= 24'sd0; sc_mb1 <= 24'(signed'({1'b0, ysc})); sc_cy <= -39'sd131072;
+                        sc_n0 <= ox; sc_n1 <= oy;
                         sc_xs <= 12'((xsc + 16'd8) >> 4); sc_ys <= 12'((ysc + 16'd8) >> 4);         // Round2Signed(xScale, 4)
                     end
+                    bst <= ((unit_warp && w_use[mc_l]) || mc_scl) ? B_MC_STRIPM : B_MC_STRIP2;
+                end
+                B_MC_STRIPM: begin
+                    sc_bx <= 39'(sc_ma0) * 39'(sc_n0) + 39'(sc_ma1) * 39'(sc_n1) + sc_cx;
+                    sc_by <= 39'(sc_mb0) * 39'(sc_n0) + 39'(sc_mb1) * 39'(sc_n1) + sc_cy;
                     bst <= B_MC_STRIP2;
                 end
                 B_MC_STRIP2: begin
