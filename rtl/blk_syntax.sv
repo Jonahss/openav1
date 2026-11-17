@@ -106,6 +106,7 @@ module blk_syntax
     input  mv_ent_t     mvr_ent,
     input  logic        mvr_written,
     // motion field band read port (temporal MV candidates)
+    output logic        mf_re,
     output logic [2:0]  mf_ref,
     output logic [MIW-2:0] mf_y8, mf_x8,
     input  logic        mf_valid,
@@ -410,7 +411,7 @@ module blk_syntax
                     .st0_row(mvs_st0_row), .st0_col(mvs_st0_col), .st1_row(mvs_st1_row), .st1_col(mvs_st1_col), .gmv_row(mvs_gmv_row), .gmv_col(mvs_gmv_col),
                     .new_mv_ctx(mvs_new_ctx), .ref_mv_ctx(mvs_ref_ctx), .zero_mv_ctx(mvs_zero_ctx), .drl_ctx(mvs_drl),
                     .rd_row(mvs_rd_row), .rd_col(mvs_rd_col), .rd_ent(mvr_ent), .rd_written(mvr_written),
-                    .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col);
+                    .mf_re, .mf_ref, .mf_y8, .mf_x8, .mf_valid, .mf_row, .mf_col);
     function automatic logic [2:0] ob_limit(input logic [5:0] n4);   // min(4, log2(n4)) for n4 in 1 .. 32
         if (n4 >= 6'd16) return 3'd4;
         if (n4 >= 6'd8) return 3'd3;

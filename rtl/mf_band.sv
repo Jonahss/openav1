@@ -5,7 +5,7 @@
 // One memory per reference, so a write can touch every reference of a position at once: the projection engine
 // clears the field at one position a cycle and stores a cell's seven destinations in one cycle (we[r], w_row / w_col
 // at [16r +: 16]); the host's register path writes one reference (we = 1 << ref). Read one position per cycle
-// (registered, 1-cycle latency). An entry is {valid, row, col}: valid = 0 is the spec's MV_INVALID hole.
+// (registered, 1-cycle latency, on rd_en: the output holds between reads). An entry is {valid, row, col}: valid = 0 is the spec's MV_INVALID hole.
 // The write port goes through a register (a write lands one clock later): its sources are the host's register file
 // and the projection engine, its sinks seven memories in each tile engine (2026-11-17: 96-99 % route on these paths
 // in both routed images). The field is written before the tiles of a frame read it; a simulation check holds that.
@@ -20,6 +20,7 @@ module mf_band
     input  logic [MIW-2:0] w_y8, w_x8,
     input  logic        w_valid,
     input  logic [111:0] w_row, w_col,
+    input  logic        rd_en,
     input  logic [2:0]  rd_ref,
     input  logic [MIW-2:0] rd_y8, rd_x8,
     output logic        rd_valid,
@@ -41,14 +42,14 @@ module mf_band
         logic [32:0] mem [0:(1 << AW) - 1];
         always_ff @(posedge clk) begin
             if (we_r[r]) mem[wa] <= {w_valid_r, w_row_r[16 * r +: 16], w_col_r[16 * r +: 16]};
-            rdata[r] <= mem[ra];
+            if (rd_en) rdata[r] <= mem[ra];
         end
 `ifndef SYNTHESIS
         always_ff @(posedge clk)
-            if (we_r[r] && rd_ref == 3'(r) && ra == wa) $fatal(1, "mf_band: reference %0d read of an entry still in the write register", r);
+            if (rd_en && we_r[r] && rd_ref == 3'(r) && ra == wa) $fatal(1, "mf_band: reference %0d read of an entry still in the write register", r);
 `endif
     end
-    always_ff @(posedge clk) rd_ref_q <= rd_ref;
+    always_ff @(posedge clk) if (rd_en) rd_ref_q <= rd_ref;
     logic [32:0] rsel;
     assign rsel = (rd_ref_q == 3'd7) ? 33'd0 : rdata[rd_ref_q];
     assign rd_valid = rsel[32];

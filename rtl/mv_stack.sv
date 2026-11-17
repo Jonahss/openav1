@@ -40,6 +40,7 @@ module mv_stack
     input  mv_ent_t     rd_ent,
     input  logic        rd_written,
     // motion field band read port (1-cycle latency)
+    output logic        mf_re,               // the read whose answer M_TPL_CAP0 / M_TPL_CAP1 takes the clock after
     output logic [2:0]  mf_ref,
     output logic [MIW-2:0] mf_y8, mf_x8,
     input  logic        mf_valid,
@@ -183,6 +184,7 @@ module mv_stack
         if (sbias(ex_ref) != sbias(ref0)) begin ex_r0 = -ex_mr; ex_c0 = -ex_mc; end else begin ex_r0 = ex_mr; ex_c0 = ex_mc; end
         // temporal read address
         mf_ref = 3'((st == M_TPL_WAIT1 || st == M_TPL_CAP1 ? ref1 : ref0) - 4'd1);
+        mf_re  = (st == M_TPL_WAIT0) || (st == M_TPL_WAIT1);
         mf_y8  = (MIW-1)'(t_row >>> 1);
         mf_x8  = (MIW-1)'(t_col >>> 1);
         // position of the current spatial scan step
