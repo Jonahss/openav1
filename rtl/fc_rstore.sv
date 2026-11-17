@@ -11,6 +11,10 @@
 // read; sample (line l, column c) at bits (4 l + c) * 12, as lf_feed takes it.
 // Words are 72 bits: a sample in the low 12 bits of an 18-bit lane (two 9-bit bytes), so that the lane enables are
 // byte-write enables of block RAM.
+// The write port goes through a register (a write lands in the memory one clock later than frame_mem_w issues it):
+// its sources are the reconstruction stage's write logic and its sinks block RAM pins all over the store, a net that
+// was the longest of the decoder in the routed 100 MHz image (2026-11-17: 9.4 ns of route in a 10 ns path). The chain
+// reads a band only after the band's reconstruction is over, so the clock goes unseen.
 module fc_rstore
   import syn_pkg::*;
 #(
@@ -37,10 +41,16 @@ module fc_rstore
     input  logic [2:0][CW-1:0]  bk_col,
     output logic [2:0][191:0]   bk_data
 );
-    logic [71:0] wd72;
-    always_comb begin
-        wd72 = '0;
-        for (int i = 0; i < 4; i++) wd72[18 * i +: 12] = wdata[12 * i +: 12];
+    logic            we_r;
+    logic [3:0]      be_r;
+    logic [1:0]      wplane_r;
+    logic [FBX-1:0]  wx_r;
+    logic [FBY-1:0]  wy_r;
+    logic [71:0]     wd72;
+    always_ff @(posedge clk) begin
+        we_r <= we; be_r <= be; wplane_r <= wplane; wx_r <= wx; wy_r <= wy;
+        wd72 <= '0;
+        for (int i = 0; i < 4; i++) wd72[18 * i +: 12] <= wdata[12 * i +: 12];
     end
     generate for (genvar p = 0; p < 3; p++) begin : g_p
         localparam int RB = (p == 0) ? RBY : RBC;
@@ -49,7 +59,7 @@ module fc_rstore
         logic [AW-1:0]  wa, ra;
         logic [MIW-1:0] rrow;
         always_comb begin
-            wa = {RB'(wy >> 2), CWP'(wx >> 2)};
+            wa = {RB'(wy_r >> 2), CWP'(wx_r >> 2)};
             rrow = ((p != 0 && ssy) ? (row0 >> 1) : row0) + MIW'(bk_row[p]);
             ra = {RB'(rrow), CWP'(bk_col[p])};
         end
@@ -58,7 +68,7 @@ module fc_rstore
             logic [71:0] q;
             always_ff @(posedge clk) begin
                 for (int b = 0; b < 8; b++)
-                    if (we && wplane == 2'(p) && wy[1:0] == 2'(l) && be[b / 2]) mem[wa][9 * b +: 9] <= wd72[9 * b +: 9];
+                    if (we_r && wplane_r == 2'(p) && wy_r[1:0] == 2'(l) && be_r[b / 2]) mem[wa][9 * b +: 9] <= wd72[9 * b +: 9];
                 if (bk_re[p]) q <= mem[ra];
             end
             for (genvar i = 0; i < 4; i++) begin : g_i
