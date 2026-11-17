@@ -158,7 +158,7 @@ module recon_top
         R_PAL, R_PAL_LAST,
         R_EDGE, R_IP_START, R_IP_W,
         R_CFL_L, R_CFL_D, R_CFL_D2, R_CFL_START, R_CFL_W,
-        R_RESID, R_DQ, R_DQ_LAST, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4,
+        R_RESID, R_DQ, R_DQ_LAST, R_DQ_LAST2, R_ITX_START, R_ITX_W, R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4,
         R_FIN, R_MIW
     } rst_t;
     rst_t rs;
@@ -1610,6 +1610,13 @@ module recon_top
     // the cycle before; stage 1 forms the effective quantiser (qm multiply) and registers it with the coefficient
     // and position, stage 2 multiplies, shifts, clamps and writes the itx bank. (In one cycle the two chained
     // multiplies into the bank RAM were the decoder's worst path, -3.8 ns at 100 MHz.)
+    // Stage 3 (2026-11-17): the product is registered (dq_full_r, the multiplier's own output register) and the
+    // absolute value, shift, clamp and the bank write follow the clock after; q_eff_r -> the 40-bit multiply -> clamp ->
+    // the transform engine's write vector was 18 levels and 249 near-critical endpoints of the routed 100 MHz image.
+    // R_DQ_LAST2 is the extra clock the last coefficient needs to land.
+    logic        dq_v3;
+    logic [6:0]  dq_ci3, dq_cj3;
+    logic signed [39:0] dq_full_r;
     logic [17:0] q_eff, q_eff_r;
     logic signed [20:0] q_data_r;
     logic        dq_v2;                                     // stage 2 holds a coefficient to write
@@ -1628,12 +1635,12 @@ module recon_top
             q_eff = use_qm ? 18'((prod + 23'd16) >> 5) : 18'(qv);
         end
         dq_full = 40'(q_data_r) * 40'(signed'({1'b0, q_eff_r}));
-        dq_abs = (dq_full < 0) ? 24'(-dq_full) : 24'(dq_full);           // & 0xFFFFFF
+        dq_abs = (dq_full_r < 0) ? 24'(-dq_full_r) : 24'(dq_full_r);       // & 0xFFFFFF
         dq_sh = dq_abs >> dq_shift;
         lim_pos = 21'sd1 <<< (5'(hdr.bit_depth) + 5'd7);          // 1 << (7 + BitDepth), up to 2^19
         begin
             logic signed [24:0] v;
-            v = (dq_full < 0) ? -$signed({1'b0, dq_sh}) : $signed({1'b0, dq_sh});
+            v = (dq_full_r < 0) ? -$signed({1'b0, dq_sh}) : $signed({1'b0, dq_sh});
             if (v < -25'(lim_pos)) dq_out = TW'(-25'(lim_pos));
             else if (v > 25'(lim_pos) - 25'sd1) dq_out = TW'(25'(lim_pos) - 25'sd1);
             else dq_out = TW'(v);
@@ -1642,6 +1649,7 @@ module recon_top
     always_ff @(posedge clk) begin                            // dequant stage 1 -> 2
         dq_v2 <= p_valid && (rs == R_DQ || rs == R_DQ_LAST) && !rst;
         dq_ci2 <= pci; dq_cj2 <= pcj; q_eff_r <= q_eff; q_data_r <= q_data;
+        dq_v3 <= dq_v2 && !rst; dq_ci3 <= dq_ci2; dq_cj3 <= dq_cj2; dq_full_r <= dq_full;
     end
     // recon add datapath: residual columns cj .. cj+3 of row ci map to the aligned picture group starting at
     // add_xx (reversed when flip_lr); (ci, cj) is the group being read, (pci, pcj) the one being added and written
@@ -1745,7 +1753,7 @@ module recon_top
             end
             R_CFL_W: if (cl_ov) begin fb2_we = 1'b1; fb2_x = FBX'(t.x + PXW'(cl_ox)); fb2_y = FBY'(t.y + PXW'(cl_oy)); fb2_wdata = cl_pix; end
             // dequant: one coefficient per clock (address (ci, cj) out, the previous position's data in)
-            R_DQ, R_DQ_LAST, R_ITX_START: if (dq_v2) begin itx_we = 1'b1; itx_addr = {dq_ci2[4:0], dq_cj2[4:0]}; itx_data = dq_out; end
+            R_DQ, R_DQ_LAST, R_DQ_LAST2, R_ITX_START: if (dq_v3) begin itx_we = 1'b1; itx_addr = {dq_ci3[4:0], dq_cj3[4:0]}; itx_data = dq_out; end
             // residual add: read the group at (ci, cj) through port 1, write the previous group through port 4
             R_ADD, R_ADD_LAST, R_ADD_LAST2, R_ADD_LAST3, R_ADD_LAST4: begin
                 if (rs == R_ADD) begin fb_re = 1'b1; fb_x = FBX'(t.x + PXW'(add_xx)); fb_y = FBY'(t.y + PXW'(add_yy)); end
@@ -1923,7 +1931,8 @@ module recon_top
                     p_valid <= sd_valid; pci <= sc_ci; pcj <= sc_cj;
                     if (sk >= t.eob && !sd_valid) rs <= R_DQ_LAST;
                 end
-                R_DQ_LAST: begin p_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; rs <= R_ITX_START; end
+                R_DQ_LAST: begin p_valid <= 1'b0; ci <= 7'd0; cj <= 7'd0; rs <= R_DQ_LAST2; end
+                R_DQ_LAST2: rs <= R_ITX_START;
                 R_ITX_START: begin itx_start <= 1'b1; rs <= R_ITX_W; end   // the last coefficient lands this cycle
                 R_ITX_W: if (itx_done) begin p_valid <= 1'b0; rs <= R_ADD; end
                 R_ADD: begin                             // read group (ci, cj..cj+3); the previous group is added and written this cycle
