@@ -246,10 +246,55 @@ async def pulse_and_wait(dut, start_sig, done_sig, tag, limit=60_000_000, busy_s
     return cycles
 
 
+PIPE = bool(os.environ.get("TS_PIPE"))             # the frame sequencer runs the filters behind the tiles (the only way with CHAIN)
+CHAIN = bool(int(os.environ.get("CHAIN", "0")))
+
+
+async def pipe_start(dut, th0, n_tile_cols):
+    """Start a frame under the sequencer: it needs the filter headers before the first row completes, and the
+    tile-column count."""
+    dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(th0))
+    dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(th0))
+    dut.n_tile_cols.value = n_tile_cols
+    dut.pipe_en.value = 1
+    dut.frame_start.value = 1
+    await RisingEdge(dut.clk)
+    await Timer(1, "ns")
+    dut.frame_start.value = 0
+
+
+async def pipe_wait(dut, hdr, tag, stats):
+    """After the last tile of a sequencer frame: wait for frame done. Returns the buffer that holds the final picture."""
+    cycles = 0
+    while not int(dut.frame_done_lvl.value):
+        await ClockCycles(dut.clk, 64)
+        cycles += 64
+        assert cycles < 120_000_000, (f"{tag}: frame did not finish (lf {int(dut.lf_next.value)} cd {int(dut.cd_next.value)} "
+                                      f"sr {int(dut.sr_next.value)} lr {int(dut.lr_next.value)} rows {int(dut.n_rows.value)})")
+    await Timer(1, "ns")
+    stats["pipe_tail_cycles"] = stats.get("pipe_tail_cycles", 0) + cycles
+    dut._log.info(f"{tag}: pipelined filters finished ~{cycles} cycles after the last tile")
+    buf = 0
+    if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
+        buf = 1
+    if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
+        buf = 2
+    if CHAIN:                                           # the streaming filter chain writes the final picture into fb2, whatever is enabled
+        buf = 2
+    dut.pipe_en.value = 0
+    return buf
+
+
 async def finish_frame(dut, hdr, decs, planes, tag, stats):
     """After all tiles: run the in-loop filters up to STAGE in both the model and the RTL. Returns the planes to
     compare and which frame buffer holds the RTL result (0 = deblocked frame, 1 = CdefFrame)."""
     buf = 0
+    if PIPE:
+        # Under the sequencer every enabled filter runs, so the pictures that can be compared are the reconstruction
+        # (only with the chain, which leaves fb0 as reconstructed; the old deblocking filter works in place there) and
+        # the final picture.
+        assert STAGE == "lr" or (STAGE == "recon" and CHAIN), \
+            f"TS_PIPE compares the final picture (TS_STAGE=lr) or, with CHAIN=1, the reconstruction (recon), not '{STAGE}'"
     if STAGE in ("lf", "cdef", "lr"):
         state = xf.FrameState(hdr)
         for d in decs:
@@ -257,36 +302,43 @@ async def finish_frame(dut, hdr, decs, planes, tag, stats):
         pre_chain = copy.deepcopy(planes) if fcm.ENABLED else None
         lev.dump(hdr, state, decs[0], tag)                   # TS_LF_VEC_OUT: this frame's edge-decision vectors for test_lf_edge
         lfm.LoopFilter(hdr, state, planes).apply()
-        dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
-        stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)
+        if not PIPE:
+            dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
+            stats["lf_cycles"] += await pulse_and_wait(dut, dut.lf_start, dut.lf_done, tag)
         deblocked = planes
         deblocked_chain = planes; cdef_chain = None; final_chain = None
         if STAGE in ("cdef", "lr") and hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
             planes = cdm.Cdef(hdr, state, planes).apply()
             cdef_chain = planes
             cdv.dump(hdr, state, deblocked, planes, tag)     # TS_CDEF_VEC_OUT: this frame for test_cdef_stream
-            dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
-            stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
+            if not PIPE:
+                dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(hdr))
+                stats["cdef_cycles"] += await pulse_and_wait(dut, dut.cdef_start, dut.cdef_done, tag)
             buf = 1
         if STAGE == "lr" and hdr.use_superres:
             # 7.16: both LR inputs are upscaled in place (the deblocked frame, and the CDEF frame when there is one);
             # from here on the pictures are UpscaledWidth wide (compare_frame and the reference store follow)
             deblocked = srm.upscale(hdr, deblocked)
             planes = srm.upscale(hdr, planes) if buf == 1 else deblocked
-            for sb in ([0, 1] if buf == 1 else [0]):
+            for sb in ([] if PIPE else [0, 1] if buf == 1 else [0]):
                 dut.sr_buf.value = sb
                 stats["sr_cycles"] = stats.get("sr_cycles", 0) + await pulse_and_wait(dut, dut.sr_start, dut.sr_done, tag)
         if STAGE == "lr" and any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
             # CDEF off: CdefFrame == deblocked frame (the RTL reads fb0 for both sources via lr_from_deblocked)
             planes_cdef = planes if buf == 1 else [[row[:] for row in p] for p in planes]
-            dut.lr_from_deblocked.value = 0 if buf == 1 else 1
             planes = lrm.LoopRestoration(hdr, state, deblocked, planes_cdef).apply()
             final_chain = planes
-            stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000)
+            if not PIPE:
+                dut.lr_from_deblocked.value = 0 if buf == 1 else 1
+                stats["lr_cycles"] += await pulse_and_wait(dut, dut.lr_start, dut.lr_done_o, tag, 120_000_000)
             buf = 2
         if fcm.ENABLED:                                      # the streaming chain's models against the pictures above
             fcm.check_frame(hdr, state, pre_chain, deblocked_chain, cdef_chain, final_chain, tag)
             stats["chain_checked"] = dict(fcm.stats)
+    if PIPE:
+        buf = await pipe_wait(dut, hdr, tag, stats)
+        if STAGE == "recon":
+            buf = 0                                          # fb0: the reconstruction, which the chain leaves as it is
     return planes, buf
 
 
@@ -395,20 +447,10 @@ async def rtl_only_stream(dut, path, stats):
                        ((h_k.FrameHeight + (h_k.subsampling_y if p_ else 0)) >> (h_k.subsampling_y if p_ else 0))
                        for p_ in range(h_k.NumPlanes)) * (1 if h_k.BitDepth == 8 else 2)
         pictures = {}                                      # decoded frame -> read-back planes (md5 mode)
-        PIPE = bool(os.environ.get("TS_PIPE"))
         for fi, tile_idx in enumerate(d.frames):
             hdr0 = None
             if PIPE:
-                # the sequencer needs the filter headers before the first row completes, and the tile-column count
-                th0 = d.tiles[tile_idx[0]][0]
-                dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(th0))
-                dut.ch.value = TT.pack(TC.CDEF_FIELDS, TC.cdef_vals(th0))
-                dut.n_tile_cols.value = len({d.tiles[ti][0].MiColStart for ti in tile_idx})
-                dut.pipe_en.value = 1
-                dut.frame_start.value = 1
-                await RisingEdge(dut.clk)
-                await Timer(1, "ns")
-                dut.frame_start.value = 0
+                await pipe_start(dut, d.tiles[tile_idx[0]][0], len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
             for ti in tile_idx:
                 th, data = d.tiles[ti]
                 dec = tm.TileDecoder(th, data, None)          # header helper only (get_qindex); nothing is decoded
@@ -421,22 +463,7 @@ async def rtl_only_stream(dut, path, stats):
             tag = f"{Path(path).name} frame {fi}"
             buf = 0
             if PIPE:
-                # wait for the sequencer: the filters have been running behind the tiles
-                cycles = 0
-                while not int(dut.frame_done_lvl.value):
-                    await ClockCycles(dut.clk, 64)
-                    cycles += 64
-                    assert cycles < 120_000_000, f"{tag}: frame did not finish (lf {int(dut.lf_next.value)} cd {int(dut.cd_next.value)} sr {int(dut.sr_next.value)} lr {int(dut.lr_next.value)} rows {int(dut.n_rows.value)})"
-                await Timer(1, "ns")
-                stats["pipe_tail_cycles"] = stats.get("pipe_tail_cycles", 0) + cycles
-                dut._log.info(f"{tag}: pipelined filters finished ~{cycles} cycles after the last tile")
-                if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
-                    buf = 1
-                if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
-                    buf = 2
-                if os.environ.get("CHAIN"):                    # the streaming filter chain writes the final picture into fb2, whatever is enabled
-                    buf = 2
-                dut.pipe_en.value = 0
+                buf = await pipe_wait(dut, hdr, tag, stats)   # the filters have been running behind the tiles
             # in-loop filters, driven by the frame header alone (host-driven mode)
             if not PIPE:
               dut.lh.value = TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr))
@@ -683,6 +710,8 @@ async def dec_vs_model(dut):
                 blocks_all = []
                 hdr0 = None
                 decs = []
+                if PIPE:
+                    await pipe_start(dut, d.tiles[tile_idx[0]][0], len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
                 for ti in tile_idx:
                     th, data = d.tiles[ti]
                     tag = f"{Path(path).name} frame {fi} tile ({th.MiColStart},{th.MiRowStart})"
@@ -717,6 +746,8 @@ async def dec_vs_model(dut):
         events = []
         blocks_all = []
         decs = []
+        if PIPE:
+            await pipe_start(dut, d.tiles[0][0], len({th_.MiColStart for th_, _ in d.tiles}))
         for ti, (th, data) in enumerate(d.tiles):
             tag = f"seed {seed} {fmt} bd{args['bd']} tile {ti} ({th.MiColStart},{th.MiRowStart})"
             dec = RecFrame(th, data, frame)
