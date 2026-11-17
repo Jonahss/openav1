@@ -298,6 +298,8 @@ async def dec_inter_vs_model(dut):
             # ---- tiles: the model decodes each, the RTL follows, records compared
             frame = {"refs": store}
             events, blocks_all, decs, summaries = [], [], [], []
+            if TD.PIPE:                                   # the frame runs under the sequencer (the only way with CHAIN): test_dec_top.pipe_start
+                await TD.pipe_start(dut, th0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
             for k, ti in enumerate(tile_idx):
                 th, data = d.tiles[ti]
                 ttag = f"{tag} tile ({th.MiColStart},{th.MiRowStart})"
