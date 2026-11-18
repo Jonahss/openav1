@@ -201,10 +201,11 @@ START_LOAD, START_SAVE = 1 << 6, 1 << 7
 FS_LD_BUSY, FS_LD_DONE, FS_LD_ERR, FS_SV_BUSY, FS_SV_DONE, FS_SV_ERR = 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7
 CDF_AREA_BYTES = M.ROWS * 32
 ID_VALUE = 0xA71D0001
-ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 6, 1 << 14, 1 << 15
-START_TILE, START_FRAME, START_LF = 1, 2, 4
+ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 1, 1 << 2, 1 << 14, 1 << 15
+START_TILE, START_FRAME = 1, 2
 ST_FRAME_DONE = 1 << 4
-CTRL_RST, CTRL_PIPE, CTRL_EOS = 1, 1 << 1, 1 << 8
+CTRL_RST, CTRL_PIPE, CTRL_EOS = 1, 1 << 1, 1 << 8   # CTRL_PIPE: images built before 2026-11-18 run a frame under the sequencer only with it; later ones ignore it
+CTRL_FB2 = 2 << 4                                    # the host port reads fb2, the final picture (0: fb0, the reconstruction)
 HDR_WORDS, RH_WORDS, LH_WORDS = 8, 7, 13     # words of each header window actually written
 IH_WORDS = (sum(w for _, w in IHDR_FIELDS) + 31) // 32
 
@@ -772,11 +773,6 @@ class HostDecoder:
         self.stats["tiles"] += len(tiles)
         self.stats["bytes"] += sum(len(d) for _, d in tiles)
 
-    def loop_filter(self, hdr, tag):
-        self.write_wide(R_LH, pack(LF_FIELDS, lf_vals(hdr)), LH_WORDS)
-        self.wr(R_START, START_LF)
-        self.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, f"{tag}: loop filter done")
-
     def read_sample(self, plane, x, y):
         a = (plane << 28) | (y << 14) | x
         self.wr(R_HADDR, a)
@@ -839,22 +835,17 @@ class HostDecoder:
         return planes, total
 
     # -- a whole stream
-    def check_core_build(self, hdr, tag, window=False, n_tile_cols=1):
-        if os.environ.get("HOST_SKIP_CORE_CHECK"):           # debugging on a full build: run the tiles / deblocking only, no CDEF / LR
-            return
-        if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:
-            raise HostError(f"{tag}: CDEF is not in the core build (encode with --enable-cdef=0)")
-        if any(t != 0 for t in hdr.FrameRestorationType[:hdr.NumPlanes]):
-            raise HostError(f"{tag}: loop restoration is not in the core build (encode with --enable-restoration=0)")
-        if window:
-            if hdr.use_128x128_superblock:
-                raise HostError(f"{tag}: the window build takes 64-pixel superblocks (encode with --sb-size=64)")
-            if hdr.NumPlanes > 1 and not (hdr.subsampling_x and hdr.subsampling_y):
-                raise HostError(f"{tag}: the window build takes 4:2:0 or monochrome")
-            if n_tile_cols != 1:
-                raise HostError(f"{tag}: the window build takes one tile column (encode with --tile-columns=0)")
-            if hdr.allow_intrabc:
-                raise HostError(f"{tag}: intra block copy is not in the window build")
+    def check_window(self, hdr, tag, n_tile_cols=1):
+        """What a window build (FRAME_WIN > 0) cannot take, said before the frame instead of by a sticky flag after it."""
+        if hdr.use_128x128_superblock and not getattr(self, "geom", {}).get("sb128"):
+            raise HostError(f"{tag}: this image takes 64-pixel superblocks (encode with --sb-size=64)")
+        if hdr.NumPlanes > 1 and not (hdr.subsampling_x and hdr.subsampling_y):
+            raise HostError(f"{tag}: the window build takes 4:2:0 or monochrome")
+        if n_tile_cols != 1:
+            raise HostError(f"{tag}: {n_tile_cols} tile columns: this path feeds one tile at a time, and a window releases a row "
+                            "only when every column of it is decoded (--inter feeds tile rows to several engines)")
+        if hdr.allow_intrabc:
+            raise HostError(f"{tag}: intra block copy is not in the window build")
 
     @staticmethod
     def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None, sb128=False, te=1):
@@ -885,39 +876,38 @@ class HostDecoder:
         if st & DMA_ERR:
             raise HostError(f"{tag}: a row flush reported a write error (DMA_STATUS 0x{st:08x})")
 
-    def decode_frames(self, dec, stage="lf", visible=True, name="stream", packed=True, dma=None, pipe=False, want_planes=True, window=False):
+    def decode_frames(self, dec, visible=True, name="stream", packed=True, dma=None, want_planes=True, window=False):
         """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
-        per coded frame, planes as lists of rows of samples. dma: (base address, read(offset, n) -> bytes) to take
-        the picture through the DMA engine instead of the registers. pipe: the deblocking filter runs under the
-        frame sequencer, overlapped with the tiles (stage lf). want_planes=False with dma leaves the picture in
+        per coded frame, planes as lists of rows of samples: the final picture. Every frame runs under the frame
+        sequencer, the filter chain behind the tiles. dma: (base address, read(offset, n) -> bytes) to take the
+        picture through the DMA engine instead of the registers. want_planes=False with dma leaves the picture in
         memory and yields planes=None (the unpack into Python lists costs ~8 ms a CIF frame). window: a window
-        build (FRAME_WIN > 0): the planes are programmed before the frame and auto-flushed row by row; needs dma
-        and pipe."""
+        build (FRAME_WIN > 0): the planes are programmed before the frame and auto-flushed row by row; needs dma."""
         for fi, tile_idx in enumerate(dec.frames):
             tag = f"{name} frame {fi}"
             hdr0 = dec.tiles[tile_idx[0]][0]
-            self.check_core_build(hdr0, tag, window, len({dec.tiles[ti][0].MiColStart for ti in tile_idx}))
+            n_cols = len({dec.tiles[ti][0].MiColStart for ti in tile_idx})
+            if window:
+                self.check_window(hdr0, tag, n_cols)
             t = {}
             t0 = time.monotonic()
             self.reset()
             if window:
-                assert dma is not None and pipe and stage == "lf", "a window build decodes pipelined frames into DDR"
+                assert dma is not None, "a window build decodes into DDR"
                 seq, layout, total = dma_regs(hdr0, dma[0], visible)
                 seq = [(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in seq]
                 self.write_seq(seq)
-            if pipe and stage == "lf":
-                self.frame_pipe_start(hdr0, len({dec.tiles[ti][0].MiColStart for ti in tile_idx}))
+            self.frame_pipe_start(hdr0, n_cols)
             for ti in tile_idx:
                 th, data = dec.tiles[ti]
                 self.run_tile(th, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})")
             t["tiles"] = time.monotonic() - t0
             t0 = time.monotonic()
-            if pipe and stage == "lf":
-                self.frame_pipe_finish(tag)
-            elif stage == "lf":
-                self.loop_filter(hdr0, tag)
+            self.frame_pipe_finish(tag)
             t["lf"] = time.monotonic() - t0
             t0 = time.monotonic()
+            if not window:
+                self.wr(R_CTRL, CTRL_FB2)                    # the host port and the DMA read take the final picture
             if dma is not None and window:
                 base, read = dma
                 self.flush_wait(tag)

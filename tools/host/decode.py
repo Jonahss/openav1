@@ -5,9 +5,8 @@ exactly as the simulation test does.
     sudo tools/host/decode.py streams/synth/natural_lf_only_8bit.ivf -o out.yuv [--ref refout/natural_lf_only_8bit.yuv]
     python tools/host/decode.py clip.ivf --xdma 0 --inter --y4m clip.y4m      # the U200: a playable file (fpga/u200/stream_to_video.sh)
 Output is planar, visible size, 8-bit as bytes and >8-bit as 16-bit little-endian (dav1d's `-o x.yuv` layout), shown
-frames in output order; --ref compares every sample against such a file and reports the mismatches. --stage recon
-skips the loop filter (and then the picture is the reconstruction, not dav1d's). Exit status 0 when every frame
-decoded and (with --ref) matched.
+frames in output order; --ref compares every sample against such a file and reports the mismatches. Exit status 0
+when every frame decoded and (with --ref) matched.
 """
 import argparse
 import ctypes
@@ -161,7 +160,6 @@ def main():
     ap.add_argument("--y4m", help="write every shown frame as YUV4MPEG2 (constant picture size): ffplay x.y4m, or ffmpeg -i x.y4m out.mp4")
     ap.add_argument("--fps", help="frame rate written into the .y4m header (default: the IVF header's rate/scale, else 30)")
     ap.add_argument("--base", type=lambda x: int(x, 0), default=0xA0000000)
-    ap.add_argument("--stage", choices=("lf", "recon"), default="lf")
     ap.add_argument("--frames", type=int, help="stop after this many coded frames")
     ap.add_argument("--single", action="store_true", help="read the picture sample by sample (HDATA) instead of packed")
     ap.add_argument("--slow", action="store_true", help="pure Python register traffic (no libhostregs.so)")
@@ -169,8 +167,7 @@ def main():
     ap.add_argument("--overlap", action="store_true", help="with --inter: read each picture back while the card decodes the next frame (output lags one frame; --show shows the newest)")
     ap.add_argument("--show", action="store_true", help="with --dma / --dma-base: also put each picture on the screen (8-bit 4:2:0, RGB565 fb0); with --xdma: every output picture on the host's /dev/fb0 (32 bpp, 1:1 from the top-left corner)")
     ap.add_argument("--flip", action="store_true", help="with --show: the picture turned by 180 degrees (panel mounted upside down)")
-    ap.add_argument("--pipe", action="store_true", help="deblocking under the frame sequencer, overlapped with the tiles")
-    ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma --pipe")
+    ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma")
     ap.add_argument("--inter", action="store_true", help="RING build with inter: every stage under the sequencer, the model decoding alongside for the "
                     "frame sequence, references = the flushed pictures in a pool of --pool frame buffers in the DMA region; implies --window")
     ap.add_argument("--pool", type=int, default=10, help="with --inter: frame buffers carved from the DMA region (at least 9: 8 reference slots + the frame being decoded; 8 stalled the 1080p clip at frame 8, 2026-10-30)")
@@ -190,7 +187,7 @@ def main():
     if args.inter:
         args.window = True
     if args.window:
-        args.dma = True; args.pipe = True
+        args.dma = True
     if args.xdma is not None:
         args.dma = True
         if args.dma_base is None:
@@ -284,8 +281,8 @@ def main():
                     t["model_planes"] = mp
                 yield fi, hdr, planes, t
         else:
-            yield from host.decode_frames(d, stage=args.stage, name=Path(args.stream).name, packed=not args.single,
-                                          dma=(stage.base, stage.read) if stage else None, pipe=args.pipe,
+            yield from host.decode_frames(d, name=Path(args.stream).name, packed=not args.single,
+                                          dma=(stage.base, stage.read) if stage else None,
                                           want_planes=bool(out or ref or y4m or screen) or stage is None, window=args.window)
     pending = {}                                 # coded frame -> (hdr, planes, from the model?) until its last display
     phase = {"tiles": 0.0, "finish": 0.0, "lf": 0.0, "read": 0.0, "n": 0}   # host phase totals over the board-decoded frames
