@@ -2,9 +2,12 @@
 test_dec_top, but every header, CDF default row, tile byte, start and pixel read goes through the register map,
 exactly as software on the board does it. With TS_TRANSCRIPT=<file> the register traffic is written out
 (tb/axil.py format) for tools/host/play.py to replay on the KV260 against the bitstream.
-Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (recon | lf | lr: lr = CDEF / super-res / LR under the frame
-sequencer, pipelined builds with fb1 / fb2 rings), TS_TRANSCRIPT; or TS_IVF=<a.ivf,b.ivf>
-to run real streams (intra, no CDEF / LR: the core build) against dav1d's pictures in refout/ (TS_REF_DIR).
+Every frame runs under the frame sequencer (the streaming filter chain's only mode, docs/filter-chain.md): the chain
+filters each superblock row behind the tiles and writes the final picture into fb2.
+Env: TS_SEEDS, TS_W / TS_H (default 64x64), TS_FMT, TS_STAGE (lr, the default: the final picture, read from fb2 or
+from the row flush with TS_WIN=1; recon: the reconstruction the chain leaves in fb0, builds without the window only),
+TS_DMA=1 (read-back through the DMA engine), TS_TRANSCRIPT; or TS_IVF=<a.ivf,b.ivf> to run real intra streams against
+dav1d's pictures in refout/ (TS_REF_DIR).
 """
 import copy
 import os
@@ -31,9 +34,10 @@ import xcheck_frame as xf               # noqa: E402
 from axil import AxiLite, write_transcript   # noqa: E402
 from axi_mem import AxiMem                    # noqa: E402
 
-STAGE = os.environ.get("TS_STAGE", "recon")
-PIPE = os.environ.get("TS_PIPE", "0") == "1" and STAGE in ("lf", "lr")   # the in-loop filters under the frame sequencer
+STAGE = os.environ.get("TS_STAGE", "lr")
+assert STAGE in ("recon", "lr"), f"TS_STAGE={STAGE}: the pictures to compare are the final one (lr) and the reconstruction (recon)"
 WIN = os.environ.get("TS_WIN", "0") == "1"                           # window build: rows auto-flushed into the AXI memory
+assert not (WIN and STAGE == "recon"), "TS_STAGE=recon reads fb0 after the frame: not with the window build (fb0 is a ring)"
 CORE = os.environ.get("TS_CORE", "0") == "1"                         # the core build: CDEF / LR nulled, so their recordings are skipped
 
 
@@ -57,17 +61,13 @@ async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None, clear=True, visi
 
 
 def model_filters(hdr0, decs, planes):
-    """The model's in-loop filters after the tiles, as far as STAGE: deblocking in place; then (STAGE lr) CDEF, the
-    super-resolution upscale of both LR inputs, loop restoration. Returns the planes the RTL's final buffer holds."""
+    """The model's in-loop filters after the tiles: deblocking in place, CDEF, the super-resolution upscale of both
+    LR inputs, loop restoration. Returns the planes the RTL's final buffer holds."""
     state = xf.FrameState(hdr0)
     for _d in decs:
         state.add(_d)
     pre_chain = copy.deepcopy(planes) if fcm.ENABLED else None
     lfm.LoopFilter(hdr0, state, planes).apply()
-    if STAGE != "lr":
-        if fcm.ENABLED:
-            fcm.check_frame(hdr0, state, pre_chain, planes, None, None, "dec_host")
-        return planes
     deblocked = planes
     deblocked_chain = planes; cdef_chain = None; final_chain = None
     cdef_on = hdr0.enable_cdef and not hdr0.CodedLossless and not hdr0.allow_intrabc
@@ -87,12 +87,12 @@ def model_filters(hdr0, decs, planes):
 
 
 async def pipe_finish(ax, tag):
-    await ax.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, 120_000_000, tag)
+    await ax.poll(R_STATUS, ST_FRAME_DONE, ST_FRAME_DONE, 120_000_000, tag, stop=ST_UNSUP)
     await ax.write(R_CTRL, 0)
 
 import host_regs as HR                   # noqa: E402
 from host_regs import (HostDecoder, R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR,   # noqa: E402
-                       R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, R_DMA_BEATS, ST_TILE_DONE, ST_UNSUP, ST_LF_DONE, START_TILE, START_LF, CTRL_RST, CTRL_EOS,
+                       R_HDATA2, R_HDATA4, R_DEF, R_HDR, R_RH, R_LH, R_DMA_BEATS, ST_TILE_DONE, ST_UNSUP, START_TILE, CTRL_RST, CTRL_EOS,
                        HDR_WORDS, RH_WORDS, LH_WORDS, words, plane_size, dma_regs, unpack_dma, R_DMA_START, R_DMA_STATUS,
                        DMA_BUSY, DMA_DONE, DMA_ERR, START_FRAME, ST_FRAME_DONE, CTRL_PIPE, DMA_FLUSH_BUSY, DMA_CFG_AUTO, R_DMA_CFG,
                        dma_layout)
@@ -116,13 +116,17 @@ async def run_tile(ax, th, dec, data, tag, stats, rows=None):
     await ax.write(R_START, START_TILE)
     data = data + bytes(int(os.environ.get("TS_PAD", "0")))    # TS_PAD=N: N explicit zero bytes after the tile (padding experiment)
     # the bytes: whole words, the FIFO's free count read before each burst
-    pos = 0
+    pos = 0; idle = 0
     while pos < len(data):
         st = await ax.read(R_STATUS, record=False)
         free = st >> 16
         if free == 0:
+            idle += 1                                            # (a decoder that stopped taking bytes: say so instead of waiting for ever)
+            assert not (st & ST_UNSUP), f"{tag}: RTL flagged unsupported syntax with {len(data) - pos} bytes to push (status 0x{st:08x})"
+            assert idle < 20_000, f"{tag}: the tile FIFO never freed a word ({pos} of {len(data)} bytes pushed, status 0x{st:08x})"
             await ClockCycles(ax.clk, 64)
             continue
+        idle = 0
         # every push is one FIFO word, a single tail byte included: the budget counts pushes, not bytes (2026-10-15:
         # a 3-byte tail budgeted as one word overflowed a nearly full FIFO and the last byte of the tile was lost)
         for _ in range(free):
@@ -137,8 +141,7 @@ async def run_tile(ax, th, dec, data, tag, stats, rows=None):
                 pos += 1
     ctrl = await ax.read(R_CTRL, record=False)
     await ax.write(R_CTRL, ctrl | CTRL_EOS)
-    st = await ax.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, 400_000_000, tag)
-    assert not (st & ST_UNSUP), f"{tag}: RTL flagged unsupported syntax"
+    st = await ax.poll(R_STATUS, ST_TILE_DONE | ST_UNSUP, ST_TILE_DONE, 400_000_000, tag, stop=ST_UNSUP)   # (unsupported ends the wait)
     assert not (st & (1 << 14)), f"{tag}: the tile FIFO dropped a push (overflow or a split write)"
     stats["tiles"] += 1
     stats["bytes"] += len(data)
@@ -254,6 +257,8 @@ async def read_back(ax, hdr, planes, tag, stats, visible=False, mem=None):
     advancing by itself) unless TS_READ=single, which reads every sample through HADDR / HDATA; with TS_DMA=1
     (mem: the AxiMem) through the DMA engine into memory, and the memory image is compared."""
     packed = os.environ.get("TS_READ", "packed") != "single"
+    if not WIN:                                                  # the host port's buffer (CTRL[5:4]): fb2 holds the chain's final picture
+        await ax.write(R_CTRL, (2 if STAGE == "lr" else 0) << 4)
     if os.environ.get("TS_DMA", "0") == "1":
         base = DMA_BASE + (stats["frames"] % 3) * 0x100000      # a different base per frame
         if WIN:                                                  # the rows were flushed as they finished: wait for the last
@@ -384,18 +389,12 @@ async def dec_host_streams(dut):
                 await ax.write(R_CTRL, CTRL_RST)
                 await ClockCycles(dut.clk, 4)
                 await ax.write(R_CTRL, 0)
-                if PIPE:
-                    await pipe_start(ax, hdr0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}), DMA_BASE, mem)
+                await pipe_start(ax, hdr0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}), DMA_BASE, mem)
                 for ti in tile_idx:
                     th, data = d.tiles[ti]
                     dec = tm.TileDecoder(th, data, None)      # header helper only (get_qindex); nothing is decoded
                     await run_tile(ax, th, dec, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})", stats)
-                if PIPE:
-                    await pipe_finish(ax, tag)
-                else:
-                    await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
-                    await ax.write(R_START, START_LF)
-                    await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
+                await pipe_finish(ax, tag)
                 outs = [o for o, k in enumerate(shown) if k == fi]
                 if not outs:
                     continue
@@ -429,8 +428,7 @@ async def dec_host_streams(dut):
             # With fb1 / fb2 rings (FRAME_WIN1 / FRAME_WIN2 >= 0, docs/picture-memory.md) they run and are checked.
             dut._log.info(f"{tag}: CDEF / loop restoration are not in the core window build, skipped")
             continue
-        if PIPE:
-            await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)
+        await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)
         for ti, (th, data) in enumerate(d.tiles):
             dec = TD.RecFrame(th, data, frame)
             dec.decode_tile()
@@ -440,15 +438,9 @@ async def dec_host_streams(dut):
             if stats.get("rb_checks", 0) < 2 and not th.disable_cdf_update:
                 await check_cdf_readback(ax, dec, f"{tag} tile {ti}", stats)
         planes = frame["planes"]
-        if STAGE in ("lf", "lr"):
+        if STAGE == "lr":
             planes = model_filters(hdr0, decs, planes)
-            if PIPE:
-                await pipe_finish(ax, tag)
-            else:
-                assert STAGE == "lf", "TS_STAGE=lr needs TS_PIPE=1 (the frame sequencer runs CDEF / SR / LR)"
-                await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr0)), LH_WORDS)
-                await ax.write(R_START, START_LF)
-                await ax.poll(R_STATUS, ST_LF_DONE, ST_LF_DONE, 50_000_000, tag)
+        await pipe_finish(ax, tag)
         await read_back(ax, hdr0, planes, tag, stats, mem=mem)
         stats["frames"] += 1
         dut._log.info(f"{tag} {W}x{H}: frame identical ({len(d.tiles)} tiles, {len(transcript) if transcript else 0} register ops so far)")

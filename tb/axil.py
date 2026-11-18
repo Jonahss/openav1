@@ -82,13 +82,18 @@ class AxiLite:
         if _GAP: await ClockCycles(self.clk, _GAP)
         return v
 
-    async def poll(self, addr, mask, value, limit=10_000_000, tag=""):
-        """Read until (v & mask) == value; returns the last value read. Recorded as one P line."""
-        cycles = 0
+    async def poll(self, addr, mask, value, limit=10_000_000, tag="", stop=0):
+        """Read until (v & mask) == value; returns the last value read. Recorded as one P line.
+        stop: bits that end the poll at once with an assertion (an error flag the wait can never outlive)."""
+        cycles = 0; reads = 0
         while True:
             v = await self.read(addr, record=False)
             if (v & mask) == value:
                 break
+            reads += 1
+            if reads % 4096 == 0:                                 # a wait this long is worth a line: what the register says
+                self.dut._log.info(f"{tag}: poll 0x{addr:03x} & 0x{mask:x} for 0x{value:x}: 0x{v:08x} after {cycles} cycles")
+            assert not (v & stop), f"{tag}: poll 0x{addr:03x} read 0x{v:08x}: error bits 0x{v & stop:x} set while waiting for 0x{value:x}"
             await ClockCycles(self.clk, self.poll_gap)
             cycles += self.poll_gap
             assert cycles < limit, f"{tag}: poll 0x{addr:03x} & 0x{mask:x} != 0x{value:x} (last 0x{v:08x}) after {cycles} cycles"

@@ -9,7 +9,7 @@ The frame sequence follows tb/seq_model.py (inherited CDFs through the DEF windo
 field through the band registers, slot table and ref_frame_idx through 0x400 / 0x600). Frames the window build
 cannot take (sb128, 4:4:4 / 4:2:2, several tile columns, intra block copy) and frames outside TS_FRAMES are
 decoded by the model only; a reference the RTL did not produce is loaded into the AXI memory at a slot address.
-Env: TS_IVF=a.obu[,b.obu] (required), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_PIPE / TS_WIN / TS_DMA are 1.
+Env: TS_IVF=a.obu[,b.obu] (required), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_WIN / TS_DMA are 1.
 """
 import json
 import os
@@ -22,7 +22,7 @@ from cocotb.utils import get_sim_time
 CLK_NS = 10                                                  # Clock(dut.clk, 10, unit="ns") below
 
 os.environ["TS_STAGE"] = "lr"
-os.environ["TS_PIPE"] = os.environ["TS_WIN"] = os.environ["TS_DMA"] = "1"
+os.environ["TS_WIN"] = os.environ["TS_DMA"] = "1"
 import test_dec_host as TH                                   # noqa: E402
 import test_dec_top as TD                                    # noqa: E402
 import test_dec_inter as TI                                  # noqa: E402

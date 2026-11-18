@@ -124,24 +124,22 @@ run dec_top_small      CHAIN=1 TS_PIPE=1 TS_SEEDS=12 python tb/runner.py dec_top
 run dec_top_intra0     CHAIN=1 TS_PIPE=1 INTER=0 TS_SEEDS=12 python tb/runner.py dec_top          # the intra-only build (INTER=0: the K26 board)
 run dec_top_large      CHAIN=1 TS_PIPE=1 TS_SEEDS=101,102,103,104,105,106 TS_W=256 TS_H=160 python tb/runner.py dec_top
 # the core FPGA configuration through its AXI-Lite host interface (rtl/dec_host.sv): registers, FIFO, read-back
-run dec_host_core      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=1,2,3,4 TS_W=128 TS_H=96 TS_STAGE=lf python tb/runner.py dec_host
-run dec_host_dma       FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=5,6,7 TS_W=120 TS_H=72 TS_STAGE=lf TS_DMA=1 python tb/runner.py dec_host
-run dec_host_pipe      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=8,9 TS_W=128 TS_H=96 TS_STAGE=lf TS_PIPE=1 TS_DMA=1 python tb/runner.py dec_host
+run dec_host_core      CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN2=0 TS_SEEDS=1,2,3,4 TS_W=128 TS_H=96 python tb/runner.py dec_host                 # read-back through HDATA
+run dec_host_dma       CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN2=0 TS_SEEDS=5,6,7 TS_W=120 TS_H=72 TS_DMA=1 python tb/runner.py dec_host          # read-back through the DMA engine
+run dec_host_pipe      CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN2=0 TS_SEEDS=8,9 TS_W=128 TS_H=96 TS_DMA=1 python tb/runner.py dec_host
+run dec_host_recon     CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN2=0 TS_SEEDS=1,9 TS_W=128 TS_H=96 TS_STAGE=recon TS_DMA=1 python tb/runner.py dec_host     # the reconstruction the chain leaves in fb0
 # the RING build (docs/picture-memory.md step A): every frame buffer an UltraRAM ring (fb0 + mirror, fb0s, fb1, fb2), CDEF / SR / LR
 # under the frame sequencer, the final picture flushed row by row; seeds 7 / 17 / 20 have CDEF + LR, 8 neither; 5 rows at 320 wrap the rings
 # (fb0 needs 3 + CDEF + LR = 5 rows: recon, LF, CDEF, LR in flight plus the hold slot; a shallower ring flags the frame unsupported)
-run dec_host_ring      CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 TS_STAGE=lr TS_PIPE=1 TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
-run dec_host_ring_tall CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_SEEDS=28,32 TS_W=128 TS_H=320 TS_STAGE=lr TS_PIPE=1 TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
+run dec_host_ring      CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
+run dec_host_ring_tall CHAIN=1 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_SEEDS=28,32 TS_W=128 TS_H=320 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
 # inter streams through dec_host (registers, sequencer, flush; references = the flushed pictures, as on the board): tb/test_dec_host_inter.py
 run dec_host_inter     CHAIN=1 FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
 runsh corpus_full_rtl  TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
-# the same corpus and the ring / inter host suites with the streaming filter chain inside the decoder (dec_top CHAIN=1, docs/filter-chain.md):
+# the same corpus with the streaming filter chain inside the decoder (dec_top CHAIN=1, docs/filter-chain.md):
 # pipelined frames only; the final picture is in fb2 whatever the frame enables
 runsh corpus_chain     CHAIN=1 TS_PIPE=1 TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
-run dec_host_ring_chain FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 CHAIN=1 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 TS_STAGE=lr TS_PIPE=1 TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
-run dec_host_tall_chain FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 CHAIN=1 TS_SEEDS=28,32 TS_W=128 TS_H=320 TS_STAGE=lr TS_PIPE=1 TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
-run dec_host_inter_chain FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 CHAIN=1 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
 ARGON=$PWD/streams/argon/profile0_core/streams
 if [ -d "$ARGON" ]; then
