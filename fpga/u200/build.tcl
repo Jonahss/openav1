@@ -92,7 +92,7 @@ connect_bd_net [get_bd_pins ddr/c0_ddr4_ui_clk] [get_bd_pins rst_ddr/slowest_syn
 connect_bd_net [get_bd_pins ddr/c0_ddr4_ui_clk_sync_rst] [get_bd_pins rst_ddr/ext_reset_in]
 connect_bd_net [get_bd_pins rst_ddr/peripheral_aresetn] [get_bd_pins ddr/c0_ddr4_aresetn]
 
-# The decoder clocks: the same hand-instantiated MMCM as fpga/kv260/build.tcl (clk and clk2x exactly 2:1 from one
+# The decoder clocks: a hand-instantiated MMCM, as on the KV260 (docs/kv260-bringup.md; clk and clk2x exactly 2:1 from one
 # VCO; the clock wizard does not honour the ratio), from the DDR4 controller's 100 MHz user clock.
 set m 0
 for {set cand 16} {$cand >= 8} {incr cand -1} {
@@ -143,7 +143,7 @@ connect_bd_net [get_bd_pins xdma/axi_aresetn] [get_bd_pins rst_dec/ext_reset_in]
 connect_bd_net [get_bd_pins clkgen/locked] [get_bd_pins rst_dec/dcm_locked]
 if {$twin} {
     # The Tiny Tapeout twin instead of the decoder (U200_TWIN=1, driven by tt-msac fpga/u200/build.sh): tt_twin_v, the chip
-    # behind its 24 pins on two 32-bit GPIO words exactly as fpga/kv260/build.tcl of the chip repo wires it on the KV260,
+    # behind its 24 pins on two 32-bit GPIO words exactly as the chip repo's KV260 build wired it,
     # chip clock and GPIO clock = clkgen/clk_out1 (U200_MHZ=50: the chip's 50 MHz), at BAR0 offset 0 (twin.py --dev
     # /dev/xdma0_user --base 0). 2026-11-07, the KV260 having died the same day.
     set gpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio:2.0 gpio]
@@ -242,10 +242,10 @@ if {[info exists ::env(U200_STRATEGY)] && $::env(U200_STRATEGY) ne ""} {
     set_property strategy $::env(U200_STRATEGY) [get_runs impl_1]
     puts "impl strategy: $::env(U200_STRATEGY)"
 }
-# the implementation-time constraints are the KV260's (the cells have the same names in this block design)
+# the implementation-time constraints (pre_opt.tcl: written for the KV260 block design, whose cell names this one keeps)
 # the hook scripts belong to the project (Runs 36-537 otherwise)
-add_files -fileset utils_1 -norecurse [list $root/fpga/kv260/pre_opt.tcl $root/fpga/u200/msg_limit.tcl]
-set_property STEPS.OPT_DESIGN.TCL.PRE $root/fpga/kv260/pre_opt.tcl [get_runs impl_1]
+add_files -fileset utils_1 -norecurse [list $root/fpga/u200/pre_opt.tcl $root/fpga/u200/msg_limit.tcl]
+set_property STEPS.OPT_DESIGN.TCL.PRE $root/fpga/u200/pre_opt.tcl [get_runs impl_1]
 # Every run prints every warning (2026-11-16): Vivado stops a message kind after 100 instances per run, which makes
 # a warning census a lower bound (45 kinds were cut off in u200-fc3rf16te2e100p-c86eb7f). The limit is a parameter of
 # the run's own Vivado process, so it is set in a hook of each run.

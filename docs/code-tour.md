@@ -12,7 +12,7 @@ names if they have moved. The demo that runs this whole path on the Alveo U200 i
   in-loop filters), `tb/seq_model.py` (what carries from frame to frame). It is slow and it is the oracle: every RTL block
   is fuzzed against it, and on the card it still runs alongside for inter streams (section 6).
 - **The RTL** (`rtl/`): the same processes in SystemVerilog. `rtl/dec_top.sv` is the decoder; `rtl/dec_host.sv` wraps it in
-  a register file and FIFOs for a host; `fpga/u200/` and `fpga/kv260/` put that behind PCIe or the Kria's ARM cores.
+  a register file and FIFOs for a host; `fpga/u200/` puts that behind PCIe.
 
 ## 1. The stream file -> OBUs -> headers (host, Python)
 

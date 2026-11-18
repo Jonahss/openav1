@@ -109,7 +109,7 @@ module dec_host
     input  logic        clk2x,
     input  logic        phase,
     input  logic        aresetn,
-    // AXI4-Lite slave (the block design wraps this in fpga/kv260/dec_host_v.v, which carries the interface attributes)
+    // AXI4-Lite slave (the block design wraps this in fpga/u200/dec_host_v.v, which carries the interface attributes)
     input  logic [11:0] s_axi_awaddr,
     input  logic        s_axi_awvalid,
     output logic        s_axi_awready,

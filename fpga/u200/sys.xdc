@@ -1,8 +1,8 @@
 # Alveo U200: bitstream / configuration bank settings (UG1289; the config bank is 1.8 V) and the clock
-# relationship of the double-pumped frame memory, as fpga/kv260/sys.xdc (clk and clk2x from one MMCM, aligned;
+# relationship of the double-pumped frame memory, as it was on the KV260 (clk and clk2x from one MMCM, aligned;
 # clk -> clk2x paths (requests captured at E_b) are a full clk cycle; the read data comes back registered at E_a
 # (frame_mem_uram), so clk2x -> clk paths are single cycles; the phase generator's alignment path is excepted in
-# fpga/kv260/pre_opt.tcl, which this build also runs). The pin locations come from the board interfaces (AMD's
+# fpga/u200/pre_opt.tcl). The pin locations come from the board interfaces (AMD's
 # au200 board files through the XDMA, util_ds_buf and DDR4 IP constraints), not from here; build.tcl prints the
 # chosen pins at the end for checking.
 set_property CFGBVS GND [current_design]

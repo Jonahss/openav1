@@ -2,7 +2,7 @@
 # Build the Alveo U200 bitstream of the decoder behind the AXI-Lite host interface, with the host side over PCIe
 # (XDMA) instead of the Kria's PS: same dec_host, same register map, same host protocol (tb/host_regs.py).
 #   fpga/u200/build.sh [tag]
-# Environment (defaults = the 1080p window build that runs on the KV260, at 100 MHz):
+# Environment (the defaults are an intra 1080p window build at 100 MHz; the card images set theirs):
 #   U200_MHZ=100          decoder clock (the frame memory runs at 2x); the MMCM dividers are computed from the
 #                         DDR4 controller's 100 MHz user clock, so 50 / 80 / 100 / 125 / 160 / 200 work directly
 #   U200_FBX=11 U200_FBY=11 U200_WIN=3   frame memory geometry (window of 3 superblock rows at full 1080p width;
@@ -34,15 +34,15 @@ export U200_FBX=${U200_FBX:-11} U200_FBY=${U200_FBY:-11} U200_WIN=${U200_WIN:-3}
 export U200_WIN2=${U200_WIN2:-3} U200_DDR=${U200_DDR:-1} U200_BOARD_REPO=${U200_BOARD_REPO:-$HOME/vivado-dl/boards} U200_SB128=${U200_SB128:-0} U200_TE=${U200_TE:-1} U200_REF_RING=${U200_REF_RING:-16}
 [ -d "$U200_BOARD_REPO/au200" ] || { echo "no board files at $U200_BOARD_REPO/au200 (unpack au200_board_files_*.zip there)" >&2; exit 1; }
 mkdir -p "$out/work"
-# the rtl list = synth/vivado/run.sh's plus dec_host and phase_gen (keep in step with fpga/kv260/build.sh)
+# the rtl list = synth/vivado/run.sh's plus dec_host and phase_gen 
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq sym_path coef_rd blk_ctx
        pal_syntax mv_mem mf_band seg_band mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
        mc_tables_pkg mc_filt fb_fetch ref_fetch warp_setup frame_mem_w edge_line frame_mem_uram recon_top cdef_pkg lr_pkg mi_store frame_state_w fs_load mf_project rec_fifo tile_engines lf_cbuf lf_filt lf_edge lf_feed lf_stream cdef_row cdef_dir cdef_str cdef_stream lr_wiener_pkg lr_wiener_h lr_wiener_v lr_sgr_ab lr_sgr_f lr_stream lr_bconv lr_bstore sr_stream fc_lfifo fc_plane fc_top fc_rstore fc_out dec_top
        dec_host phase_gen"
 sources="$root/synth/vivado/frame_mem_pr.sv"
 for f in $files; do sources="$sources $root/rtl/$f.sv"; done
-# the Verilog shells of the KV260 flow (the module-reference flow wants a Verilog top): shared, not copied
-sources="$sources $root/fpga/kv260/dec_host_v.v $root/fpga/kv260/phase_gen_v.v"
+# the Verilog shells (the module-reference flow wants a Verilog top)
+sources="$sources $here/dec_host_v.v $here/phase_gen_v.v"
 export U200_SOURCES=$sources
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): the runs execute in
 # proj/u200.runs/<run>/, so proj/rtl must be the rtl directory

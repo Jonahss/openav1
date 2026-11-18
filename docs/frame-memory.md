@@ -222,7 +222,7 @@ RAM that was read is loaded at the same E_b; the data is valid for the whole of 
 consumer's logic have a full clk cycle. Writes captured at E_b(k) land at E_b(k+1). A write issued in cycle t is visible
 to the reads issued in t+1 and a read issued in the same cycle as a write to the same word sees the old data: the same
 ordering as before, so tb/ and the model see only the extra cycle. The simulation model (rtl/frame_mem.sv) registers
-its outputs twice. fpga/kv260/pre_opt.tcl excepts the RAM / select -> clk paths as two clk2x cycles (honest: those
+its outputs twice. fpga/u200/pre_opt.tcl (then fpga/kv260/) excepts the RAM / select -> clk paths as two clk2x cycles (honest: those
 registers change only at E_b) and the write-request registers -> RAM paths likewise; the read-request paths stay
 single-cycle.
 

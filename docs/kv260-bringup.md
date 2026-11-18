@@ -2,7 +2,8 @@
 
 > **2026-11-18.** The "core build" this note brings up (CDEF and loop restoration as null stubs, deblocking started by
 > the host) no longer exists in the RTL: the streaming filter chain is the only filter path and every frame runs under
-> the frame sequencer. The board is out of service; `fpga/kv260/build.sh` has not been run since.
+> the frame sequencer. The board is out of service and its build flow (`fpga/kv260/`, `tools/host/load.sh`) was removed the same day; the last
+> commit that has it is b68b35f. This note stays as the record of the bring-up.
 
 Status (2026-10-14): **the core decoder decodes on the board, bit-exact.** First bitstream (50 MHz decoder /
 100 MHz memory, 99.5k LUT, 40 URAM, WNS +0.7 ns; with the packed reads 99.8k LUT, WNS +2.4 ns): seed 1 and seeds 2-7 (4:2:0 / 4:4:4 / mono, 8/10/12-bit,

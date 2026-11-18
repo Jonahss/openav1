@@ -52,7 +52,7 @@ DDR4 C0 `adr[0]` AT36, C1 `ba[0]` AU24, LED0 BC21.
 - **`clkgen`** (`clkgen_v.v`, written by `build.tcl`): the KV260's hand-instantiated `MMCME4_ADV`, same divider
   search, same exactly-2:1 `clk` / `clk2x` from one VCO (100 MHz in -> VCO 1600 -> /16 and /8 at `U200_MHZ=100`).
   The clock wizard is still not used (it does not honour the ratio; `docs/kv260-bringup.md`).
-- **`host`** (`dec_host` through the KV260's Verilog shell `fpga/kv260/dec_host_v.v`) and **`pg`** (`phase_gen`),
+- **`host`** (`dec_host` through its Verilog shell `fpga/u200/dec_host_v.v`) and **`pg`** (`phase_gen`),
   in the `clk` domain. Default geometry = the KV260 1080p window build: FBX = FBY = 11, `FRAME_WIN = 3`,
   `FRAME_URAM = 1`, `INTER = 0`, CDEF / LR as null stubs (`U200_CORE=1`). Reset: `rst_dec` (`proc_sys_reset`) from
   XDMA's `axi_aresetn` and the MMCM lock, so a PCIe-side reset of the card resets the decoder.
