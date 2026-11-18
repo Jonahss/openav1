@@ -175,7 +175,7 @@ module cdef_stream
     cdef_dir u_dir (.clk, .rst, .v_in(dir_go), .px(dir_px), .cs, .v_out(dir_v), .dir(dir_d), .var_o(dir_var));
     // skip flags and cdef_idx
     logic [1:0]  sk_cnt;
-    logic        sk_all, filt;               // all four units skipped so far; the block is filtered
+    logic        sk_all;                     // all four units skipped so far
     logic [2:0]  cidx;
     logic        cidx_v;
     logic [MIW-1:0] b_mr, b_mc, b_mr1, b_mc1;    // the block's first 4x4 unit and the next (clamped to the picture)
@@ -247,7 +247,7 @@ module cdef_stream
         band_done <= 1'b0; dir_go <= 1'b0; ctx_we <= 1'b0;
         if (rst) begin
             a_act <= 1'b0; a_col <= '0; a_row <= '0; a_slot <= '0; p_c2 <= '0; p_base <= 3'd5; pst <= P_IDLE; done_pend <= 1'b0;
-            k_cnt <= '0; p_r <= '0; ld_r <= '0; ld_n <= '0; sk_cnt <= '0; sk_all <= 1'b0; filt <= 1'b0; cidx <= '0; cidx_v <= 1'b0;
+            k_cnt <= '0; p_r <= '0; ld_r <= '0; ld_n <= '0; sk_cnt <= '0; sk_all <= 1'b0; cidx <= '0; cidx_v <= 1'b0;
             p_l <= '0; wait_n <= '0; tail <= '0; ctx_a <= '0; ctx_wd <= '0; la <= 1'b0; la_blk <= 1'b0; n_sk_all <= 1'b0; n_cidx <= '0; n_cidx_v <= 1'b0;
             dr_r <= '0; pri_r <= '0; sec_r <= '0; adjp_r <= '0; adjs_r <= '0; odd_r <= 1'b0;
         end else begin
@@ -297,7 +297,6 @@ module cdef_stream
                     if (luma ? dir_v : (wait_n != 3'd0)) pst <= P_STR;
                 end
                 P_STR: begin
-                    filt <= f_cur;
                     dr_r <= s_dr; adjp_r <= s_adjp; adjs_r <= s_adjs; odd_r <= s_odd;
                     pri_r <= f_cur ? s_pri : 12'd0;
                     sec_r <= f_cur ? s_sec : 12'd0;
@@ -316,7 +315,6 @@ module cdef_stream
                                 for (int k = 0; k < 4; k++) begin
                                     win[0][k] <= win[1][k]; win[1][k] <= win[2][k]; win[2][k] <= win[3][k]; win[3][k] <= nx3[k];
                                 end
-                                filt <= f_nxt;
                                 dr_r <= s_dr; adjp_r <= s_adjp; adjs_r <= s_adjs; odd_r <= s_odd;
                                 pri_r <= f_nxt ? s_pri : 12'd0;
                                 sec_r <= f_nxt ? s_sec : 12'd0;
@@ -341,7 +339,7 @@ module cdef_stream
                                 for (int k = 0; k < 4; k++) begin
                                     win[0][k] <= win[2][k]; win[1][k] <= win[3][k]; win[2][k] <= nx3[k]; win[3][k] <= nx4[k];
                                 end
-                                filt <= f_nxt; cidx <= n_cidx; cidx_v <= n_cidx_v; sk_all <= n_sk_all;
+                                cidx <= n_cidx; cidx_v <= n_cidx_v; sk_all <= n_sk_all;
                                 dr_r <= s_dr; adjp_r <= s_adjp; adjs_r <= s_adjs; odd_r <= s_odd;
                                 pri_r <= f_nxt ? s_pri : 12'd0;
                                 sec_r <= f_nxt ? s_sec : 12'd0;

@@ -362,9 +362,8 @@ module lr_stream
     end
 
     // ---------------------------------------------------------------- horizontal pass, the last lines, vertical pass
-    logic            h_v;
     logic [8*21-1:0] h_out;
-    lr_wiener_h #(.N(8)) u_h (.clk, .rst, .v_in(p2.v && !p2.sgr), .bd(bit_depth), .coef(p2_hc), .px(px2), .v_out(h_v), .out(h_out));
+    lr_wiener_h #(.N(8)) u_h (.clk, .rst, .v_in(p2.v && !p2.sgr), .bd(bit_depth), .coef(p2_hc), .px(px2), .v_out(), .out(h_out));
 
     // ---------------------------------------------------------------- self-guided: the engine
     logic [167:0]  wl [6];                   // the last six lines (0 the newest), 14 samples each
@@ -380,7 +379,7 @@ module lr_stream
     logic [29:0]   bx5a, bx3a;
     logic [17:0]   bx5b, bx3b;
     logic [15:0]   sg_sp;
-    logic          ab_v, ab_v1;
+    logic          ab_v;
     logic [8:0]    ab_a0, ab_a1;
     logic [21:0]   ab_b0, ab_b1;
     logic [3:0]    ab_k;
@@ -429,7 +428,7 @@ module lr_stream
     lr_sgr_ab u_ab0 (.clk, .rst, .v_in(bx_v), .bd(bit_depth), .r1(1'b0), .s(sgr_s(g_set, 1'b0)), .box_a(bx5a), .box_b(bx5b),
                      .v_out(ab_v), .a2(ab_a0), .b2(ab_b0));
     lr_sgr_ab u_ab1 (.clk, .rst, .v_in(bx_v), .bd(bit_depth), .r1(1'b1), .s(sgr_s(g_set, 1'b1)), .box_a(bx3a), .box_b(bx3b),
-                     .v_out(ab_v1), .a2(ab_a1), .b2(ab_b1));
+                     .v_out(), .a2(ab_a1), .b2(ab_b1));
 
     // ---------------------------------------------------------------- the last lines, vertical pass
     // carried between bands, per column: the six newest intermediate lines (16 bits hold them at every bit depth; a

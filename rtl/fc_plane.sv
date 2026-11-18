@@ -156,9 +156,9 @@ module fc_plane
     // super-resolution (7.16) sits in front of restoration: on CDEF's lines and on the deblocked boundary lines.
     // Behind it everything is in the upscaled picture's columns. Without super-resolution both upscalers are wires.
     logic [PXW-1:0] dw_p, max_x_p;
-    logic [CW:0]    n_seg, n_seg_up, n_seg_up_b, n_col_lr;
+    logic [CW:0]    n_seg, n_seg_up, n_col_lr;
     logic signed [8:0] y_last;               // a column's last line from CDEF, counted from the band's first line
-    logic           su_valid, su_ready, su_last, sa_busy, sb_busy;
+    logic           su_valid, su_ready, sa_busy, sb_busy;
     logic [95:0]    su_line;
     logic [8:0]     su_tag;
     logic           bc_v, bc_rdy, bc_last, bu_v, bu_last;
@@ -174,12 +174,12 @@ module fc_plane
     sr_stream #(.CW(CW)) u_sra (.clk, .rst, .bit_depth(hdr.bit_depth), .use_sr(hdr.use_superres), .ssx, .down_w(dw_p), .up_w(fw_p), .max_x(max_x_p),
         .band_start, .n_seg_in(n_seg), .n_seg_out(n_seg_up), .busy(sa_busy),
         .in_valid(ri_valid), .in_ready(ri_ready), .in_line(ri_line), .in_tag(ri_y), .in_last(ri_y == y_last),
-        .out_valid(su_valid), .out_ready(su_ready), .out_line(su_line), .out_tag(su_tag), .out_last(su_last));
+        .out_valid(su_valid), .out_ready(su_ready), .out_line(su_line), .out_tag(su_tag), .out_last());
     lr_bconv #(.CW(CW)) u_bc (.clk, .rst, .ssx, .ssy, .band_start, .row0(prow0), .n_blk, .last_band,
         .in_valid(lo_valid && cd_ready), .in_ready(bc_ready), .in_blk(lo_blk), .in_col(lo_col), .in_row(lo_row),
         .out_valid(bc_v), .out_ready(bc_rdy), .out_line(bc_line), .out_tag(bc_tag), .out_last(bc_last));
     sr_stream #(.CW(CW)) u_srb (.clk, .rst, .bit_depth(hdr.bit_depth), .use_sr(hdr.use_superres), .ssx, .down_w(dw_p), .up_w(fw_p), .max_x(max_x_p),
-        .band_start, .n_seg_in(n_seg), .n_seg_out(n_seg_up_b), .busy(sb_busy),
+        .band_start, .n_seg_in(n_seg), .n_seg_out(), .busy(sb_busy),
         .in_valid(bc_v), .in_ready(bc_rdy), .in_line(bc_line), .in_tag(bc_tag), .in_last(bc_last),
         .out_valid(bu_v), .out_ready(1'b1), .out_line(bu_line), .out_tag(bu_tag), .out_last(bu_last));
     lr_bstore #(.CW(CW)) u_bs (.clk, .rst, .ssx, .band_start, .wr_valid(bu_v), .wr_line(bu_line), .wr_tag(bu_tag), .wr_last(bu_last),

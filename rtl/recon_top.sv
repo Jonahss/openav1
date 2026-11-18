@@ -39,7 +39,6 @@ module recon_top
     input  logic        ev_valid,
     input  logic [1:0]  ev_kind,              // 0 transform block, 1 block record, 2 superblock start
     input  logic [MIW-1:0] ev_sb_r, ev_sb_c,
-    input  blk_rec_t    ev_blk,
     input  tx_rec_t     ev_tx,
     output logic        ev_pop,
     // early block take (rec_fifo, 2026-11-09): the head's block parity, a taken head, the next untaken block record

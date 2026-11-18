@@ -81,18 +81,18 @@ module tile_syntax
     // ------------------------------------------------------------------ shared decode resources
     logic req_valid, req_ready, resp_valid;
     logic [1:0] req_kind; logic [3:0] req_n; logic [239:0] req_cdf; logic [5:0] req_cnt;
-    logic [3:0] resp_sym; logic [15:0] resp_rng; logic [239:0] resp_cdf; logic [5:0] resp_cnt;
+    logic [3:0] resp_sym; logic [239:0] resp_cdf; logic [5:0] resp_cnt;
     logic msac_init;
     msac u_msac (.clk, .rst, .in_data, .in_valid, .in_ready, .in_eos, .init(msac_init), .cdf_update_en(!hdr.disable_cdf_update),
                  .req_valid, .req_ready, .req_kind, .req_n, .req_cdf, .req_cnt,
-                 .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng, .resp_cdf, .resp_cnt);
+                 .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng(), .resp_cdf, .resp_cnt);
 
     logic rd_en, wb_we, wb_pre, cdf_init, cdf_busy; logic [CDF_AW-1:0] rd_addr, wb_addr, wb_pre_addr; logic [245:0] rd_data, wb_data;
     cdf_store u_cdf (.clk, .rst, .def_we, .def_addr, .def_data, .init(cdf_init), .busy(cdf_busy),
                      .rd_en, .rd_addr, .rd_data, .wb_we, .wb_addr, .wb_data, .wb_pre, .wb_pre_addr);
 
     // two sequencer masters: 'c' = coef_rd, 'k' = control (partition FSM + blk_syntax)
-    logic c_go, c_done, c_busy, k_go, k_done, k_busy; logic [CDF_AW-1:0] c_addr, k_addr; logic [3:0] c_n, k_n, c_sym, k_sym; logic [1:0] c_kind, k_kind;
+    logic c_go, c_done, k_go, k_done, k_busy; logic [CDF_AW-1:0] c_addr, k_addr; logic [3:0] c_n, k_n, c_sym, k_sym; logic [1:0] c_kind, k_kind;
     logic [15:0] k_f; logic [245:0] k_row;
     logic c_rd_en, k_rd_en, c_wb_we, k_wb_we, c_wb_pre, k_wb_pre, c_req_valid, k_req_valid;
     logic [CDF_AW-1:0] c_rd_addr, k_rd_addr, c_wb_addr, k_wb_addr, c_wb_pre_addr, k_wb_pre_addr;
@@ -101,7 +101,7 @@ module tile_syntax
     logic sel_k;
     assign sel_k = k_busy || k_go;            // control never issues while coef_rd has a symbol in flight
 
-    sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(c_busy), .done(c_done), .sym(c_sym),
+    sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(), .done(c_done), .sym(c_sym),
                     .cdf_rd_en(c_rd_en), .cdf_rd_addr(c_rd_addr), .cdf_rd_data(rd_data),
                     .cdf_wb_we(c_wb_we), .cdf_wb_addr(c_wb_addr), .cdf_wb_data(c_wb_data), .cdf_wb_pre(c_wb_pre), .cdf_wb_pre_addr(c_wb_pre_addr),
                     .req_valid(c_req_valid), .req_ready(req_ready && !sel_k), .req_kind(c_req_kind), .req_n(c_req_n), .req_cdf(c_req_cdf), .req_cnt(c_req_cnt),

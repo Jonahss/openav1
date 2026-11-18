@@ -355,7 +355,7 @@ module blk_ctx
     logic [MIW-1:0] t_x4, t_y4;
     logic [5:0]  t_w4, t_h4;
     logic [4:0]  t_sz, t_bs;
-    logic [127:0] t_aw, t_lw;
+    logic [127:0] t_lw;
     typedef enum logic [2:0] {T_IDLE, T_RD, T_RD2, T_OUT, T_LW} t_t;   // T_LW: level write, word read the clock before
     t_t tst;
     logic t_pend, t_we_pend, rbc_pend;
@@ -365,7 +365,7 @@ module blk_ctx
 
     // The context aggregates (max level, nonzero, dc-sign sum over the block's above and left entries) are
     // computed from the above word as it lands from the RAM (al_rdata, T_RD2) and the already-read left word,
-    // and registered; T_OUT derives the contexts from the registers. (Computed in T_OUT from t_aw, the
+    // and registered; T_OUT derives the contexts from the registers. (Computed in T_OUT from a registered copy of the above word, the
     // 16-entry max trees plus the context compare chain were tile_syntax's worst path, 44 LUT levels.)
     logic [7:0] top_max, left_max;
     logic       above_nz, left_nz;
@@ -490,7 +490,7 @@ module blk_ctx
                     tst <= T_RD2;
                 end
                 T_RD2: begin
-                    t_aw <= al_rdata; tst <= T_OUT;
+                    tst <= T_OUT;
                     top_max_r <= top_max; left_max_r <= left_max; above_nz_r <= above_nz; left_nz_r <= left_nz;
                     dcs_wide_r <= dcs_wide;
                 end
