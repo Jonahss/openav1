@@ -437,12 +437,12 @@ async def rtl_only_stream(dut, path, stats):
                             for row_ in rows_:
                                 dfh.write(row_)
                 if bad and os.environ.get("TS_DUMP"):
-                    # every frame buffer (0 deblocked, 1 CDEF, 2 restored; upscaled in place when superres) for
-                    # stage-by-stage comparison with tools/model_stages.py
+                    # both frame buffers (fb0 the reconstruction, fb2 the final picture) for comparison with
+                    # tools/model_stages.py
                     ddir = os.environ["TS_DUMP"]
                     os.makedirs(ddir, exist_ok=True)
-                    for fb in range(3):
-                        dut.h_buf.value = fb
+                    for fb, hb in ((0, 0), (2, 1)):
+                        dut.h_buf.value = hb
                         await Timer(1, "ns")
                         with open(os.path.join(ddir, f"{Path(path).stem}_frame{fi}_fb{fb}.yuv"), "wb") as dfh:
                             for p_ in range(hdr.NumPlanes):
@@ -459,7 +459,7 @@ async def rtl_only_stream(dut, path, stats):
                                         rowv.append(int(dut.h_rdata.value))
                                         await Timer(1, "ns")
                                     dfh.write(bytes(rowv) if hdr.BitDepth == 8 else struct.pack("<%dH" % Wp, *rowv))
-                    dut.h_buf.value = buf
+                    dut.h_buf.value = 1
                     dut._log.info(f"{tag}: frame buffers dumped to {ddir}")
                 assert not bad, f"{tag} plane {plane}: {len(bad)} / {W * H} pixels differ from dav1d (y, x, rtl, dav1d), first {bad[:10]}"
             stats["frames"] += 1
@@ -467,11 +467,11 @@ async def rtl_only_stream(dut, path, stats):
                 pictures[fi] = planes_rb
             shown_txt = f"shown as picture(s) {outs}" if outs else "hidden (never shown)"
             if md5_ref is None and outs:
-                dut._log.info(f"{tag}: identical to dav1d ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]}, {shown_txt})")
+                dut._log.info(f"{tag}: identical to dav1d ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, {shown_txt})")
             elif md5_ref is None:
                 dut._log.info(f"{tag}: decoded ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}), {shown_txt}: nothing to compare")
             else:
-                dut._log.info(f"{tag}: decoded ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}, stages up to {['deblock', 'cdef', 'lr'][buf]}); md5 pending")
+                dut._log.info(f"{tag}: decoded ({hdr.FrameWidth}x{hdr.FrameHeight} bd{hdr.BitDepth}); md5 pending")
         if md5_ref is not None:
             for k in shown:
                 for rows in pictures[k]:
