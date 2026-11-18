@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# vk: the build hooks talk to Vikunja (the tracker on the Pi) through this. Tracking must never break a build: any
+# failure is written to ~/logs/vk-hook.log and the caller goes on (it then gets an empty ticket id).
+python3 ~/.local/opt/vikunja/vkapi.py "$@" 2>> ~/logs/vk-hook.log || { echo "$(date -Is) vk $1 failed" >> ~/logs/vk-hook.log; true; }

@@ -7,7 +7,8 @@ case "$(uname -m)" in
   *)       _openav1_lib=. ;;
 esac
 # system verilator/yosys (apt) win; the OSS CAD Suite (yosys + slang, used for synthesis) is appended
-export PATH="$OPENAV1_ROOT/prefix-trace/bin:$PATH:$OPENAV1_ROOT/toolchain/oss-cad-suite/bin"
+# bin/: the launchers of the build machine (gate rung, card image, nightly: bin/README.md)
+export PATH="$OPENAV1_ROOT/bin:$OPENAV1_ROOT/prefix-trace/bin:$PATH:$OPENAV1_ROOT/toolchain/oss-cad-suite/bin"
 export LD_LIBRARY_PATH="$OPENAV1_ROOT/prefix-trace/lib/$_openav1_lib:$OPENAV1_ROOT/prefix-trace/lib:${LD_LIBRARY_PATH:-}"
 export DAV1D_TRACE_BIN="$OPENAV1_ROOT/prefix-trace/bin/dav1d"
 export OPENAV1_YOSYS="$OPENAV1_ROOT/toolchain/oss-cad-suite/bin/yosys"
