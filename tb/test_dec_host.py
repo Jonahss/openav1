@@ -26,9 +26,7 @@ import filter_chain_model as fcm       # noqa: E402
 import cdef_model as cdm                # noqa: E402
 import lr_model as lrm                  # noqa: E402
 import superres_model as srm            # noqa: E402
-import test_cdef_top as TC              # noqa: E402
 import test_dec_top as TD               # noqa: E402
-import test_lf_top as TL                # noqa: E402
 import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 from axil import AxiLite, write_transcript   # noqa: E402
@@ -38,7 +36,6 @@ STAGE = os.environ.get("TS_STAGE", "lr")
 assert STAGE in ("recon", "lr"), f"TS_STAGE={STAGE}: the pictures to compare are the final one (lr) and the reconstruction (recon)"
 WIN = os.environ.get("TS_WIN", "0") == "1"                           # window build: rows auto-flushed into the AXI memory
 assert not (WIN and STAGE == "recon"), "TS_STAGE=recon reads fb0 after the frame: not with the window build (fb0 is a ring)"
-CORE = os.environ.get("TS_CORE", "0") == "1"                         # the core build: CDEF / LR nulled, so their recordings are skipped
 
 
 async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None, clear=True, visible=True):
@@ -52,7 +49,7 @@ async def pipe_start(ax, hdr, n_tile_cols, base=None, mem=None, clear=True, visi
             await ax.write(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v)
         if clear:
             mem.mem.clear()
-    await write_wide(ax, R_LH, TT.pack(TL.LF_FIELDS, TL.lf_vals(hdr)), LH_WORDS)
+    await write_wide(ax, R_LH, TT.pack(HR.LF_FIELDS, HR.lf_vals(hdr)), LH_WORDS)
     if hdr.enable_cdef and not hdr.CodedLossless and not hdr.allow_intrabc:        # the CDEF header: the sequencer starts CDEF itself
         await write_wide(ax, HR.R_CH, TT.pack(HR.CDEF_FIELDS, HR.cdef_vals(hdr)), HR.CH_WORDS)
     await ax.write(R_CTRL, CTRL_PIPE | (n_tile_cols << 16))
@@ -383,9 +380,6 @@ async def dec_host_streams(dut):
             for fi, tile_idx in enumerate(d.frames):
                 tag = f"{Path(path).name} frame {fi}"
                 hdr0 = d.tiles[tile_idx[0]][0]
-                if CORE:
-                    assert not (hdr0.enable_cdef and not hdr0.CodedLossless and not hdr0.allow_intrabc), f"{tag}: CDEF is not in the core build"
-                    assert not any(t != 0 for t in hdr0.FrameRestorationType[:hdr0.NumPlanes]), f"{tag}: loop restoration is not in the core build"
                 await ax.write(R_CTRL, CTRL_RST)
                 await ClockCycles(dut.clk, 4)
                 await ax.write(R_CTRL, 0)
@@ -421,12 +415,6 @@ async def dec_host_streams(dut):
         h0 = d.tiles[0][0]
         if WIN and not HostDecoder.window_ok(h0, len({th.MiColStart for th, _ in d.tiles}), sb128=bool(int(os.environ.get("SB128", "0"))), fbx=int(os.environ.get("FBX", "9")), fby=int(os.environ.get("FBY", "9"))):
             dut._log.info(f"{tag}: outside the window build's limits (sb128 / non-4:2:0 / tile columns / intrabc), skipped")
-            continue
-        if WIN and CORE and ((h0.enable_cdef and not h0.CodedLossless and not h0.allow_intrabc) or any(t != 0 for t in h0.FrameRestorationType[:h0.NumPlanes])):
-            # the core window build (TS_CORE=1: the K26 bitstream) has no CDEF / loop restoration (nulled): a recording
-            # with them busy cannot be replayed on that netlist (seed 7, 2026-10-17: STATUS bits 7 / 10 / 11 differed).
-            # With fb1 / fb2 rings (FRAME_WIN1 / FRAME_WIN2 >= 0, docs/picture-memory.md) they run and are checked.
-            dut._log.info(f"{tag}: CDEF / loop restoration are not in the core window build, skipped")
             continue
         await pipe_start(ax, d.tiles[0][0], len({th.MiColStart for th, _ in d.tiles}), DMA_BASE, mem)
         for ti, (th, data) in enumerate(d.tiles):

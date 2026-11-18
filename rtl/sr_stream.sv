@@ -15,7 +15,7 @@
 //     clamped tap positions, relative to the window's first column;
 //   - then its lines run one a clock: the window columns' line is read, each lane's 8 samples are picked and
 //     multiplied by the phase's taps, summed, rounded by 7 bits and clamped to the bit depth.
-// stepX and initialSubpelX are two divisions (sr_top's sequential divider, 64 clocks), redone at every band_start.
+// stepX and initialSubpelX are two divisions (a sequential divider, 64 clocks), redone at every band_start.
 // Lines below the picture are filtered like the others (nothing reads them).
 module sr_stream
   import syn_pkg::*;

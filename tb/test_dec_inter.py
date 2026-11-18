@@ -5,7 +5,7 @@ header / band ports as the host will program them). The reference pictures are t
 frames (STAGE deep: TS_STAGE=recon compares and references the pre-filter pictures, upscaled when super-res so the reference geometry is the stream's, lr the final ones): they are
 written into the AXI memory model that ref_fetch reads, at one base per (slot, plane), and the slot table
 registers point the RTL at them. So a motion compensation bug cannot hide in a filter bug and vice versa.
-Env: TS_IVF=a.obu,b.obu (required), TS_STAGE (recon | lf | cdef | lr), TS_FRAMES, TD_DEBUG.
+Env: TS_IVF=a.obu,b.obu (required), TS_STAGE (recon | lr), TS_FRAMES, TD_DEBUG.
 """
 import os
 from pathlib import Path
@@ -201,8 +201,8 @@ async def dec_inter_vs_model(dut):
                 dut.phase.value = 0
         dut.phase.value = 0
         cocotb.start_soon(phase_gen())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "ihdr", "rh", "lh", "ch", "lf_start", "cdef_start", "lr_start",
-              "pipe_en", "frame_start", "n_tile_cols", "lr_from_deblocked", "h_buf", "h_plane", "h_x", "h_y", "mf_we", "sp_we",
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "ihdr", "rh", "lh", "ch",
+              "frame_start", "n_tile_cols", "h_buf", "h_plane", "h_x", "h_y", "mf_we", "sp_we",
               "ref_slot", "ref_planes", "ref_dims", "ref_scales", "ref_fmt16"):
         if hasattr(dut, s):
             getattr(dut, s).value = 0
@@ -215,8 +215,8 @@ async def dec_inter_vs_model(dut):
     await ClockCycles(dut.clk, 3)
     dut.rst.value = 0
     await RisingEdge(dut.clk)
-    stats = dict(frames=0, inter_frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0, lf_cycles=0, cdef_cycles=0,
-                 lr_cycles=0, stage=TD.STAGE, ref_loads=0)
+    stats = dict(frames=0, inter_frames=0, tiles=0, blocks=0, txblocks=0, pixels=0, cycles=0,
+                 stage=TD.STAGE, ref_loads=0)
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
     assert ivfs, "TS_IVF=<stream.obu>[,...] is required"
     frames_sel = {int(x) for x in os.environ.get("TS_FRAMES", "").split(",") if x}
@@ -298,8 +298,7 @@ async def dec_inter_vs_model(dut):
             # ---- tiles: the model decodes each, the RTL follows, records compared
             frame = {"refs": store}
             events, blocks_all, decs, summaries = [], [], [], []
-            if TD.PIPE:                                   # the frame runs under the sequencer (the only way with CHAIN): test_dec_top.pipe_start
-                await TD.pipe_start(dut, th0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
+            await TD.pipe_start(dut, th0, len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
             for k, ti in enumerate(tile_idx):
                 th, data = d.tiles[ti]
                 ttag = f"{tag} tile ({th.MiColStart},{th.MiRowStart})"

@@ -169,6 +169,11 @@ Inter day one on the card, after the intra checklist above:
 
 ## The inter build (RING memory, 2026-10-24)
 
+> **2026-11-18.** `U200_CORE`, `U200_WIN1` and `U200_CHAIN` no longer exist: the streaming filter chain is the only filter
+> path (`docs/filter-chain.md`), with fb0 and fb2 as the two rings. The build is
+> `U200_INTER=1 U200_WIN=5 U200_WIN2=3 fpga/u200/build.sh <tag>` plus the geometry and timing variables of the
+> image in use (`docs/checkpoints/`).
+
 `U200_CORE=0 U200_INTER=1 U200_WIN=5 U200_WIN1=3 U200_WIN2=3 fpga/u200/build.sh <tag>`: the whole decoder with every
 frame buffer on UltraRAM rings (`docs/picture-memory.md`, step A: fb0 + its mirror fb0m, SR's fb0s, fb1, fb2),
 CDEF / super-res / LR under the frame sequencer, the final picture flushed row by row to DDR and the references

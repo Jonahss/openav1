@@ -1,11 +1,10 @@
 // Deblocking sample filter (spec 7.14.6) for one line of samples across an edge, combinational: the masks, the narrow
-// filter and the 6 / 8 / 14-tap wide filters, as in lf_top (which filters one such line per clock out of the frame
-// memory). The streaming deblock stage (docs/filter-chain.md) instantiates four of these side by side per pass, one per
+// filter and the 6 / 8 / 14-tap wide filters. The streaming deblock stage (docs/filter-chain.md) instantiates four of these side by side per pass, one per
 // sample line of a 4x4 edge unit.
 //   pix    : p6 .. p0, q0 .. q6 (pix[0] = p6, pix[6] = p0, pix[7] = q0, pix[13] = q6), 12 bits each
 //   out    : the filtered samples at positions k = -6 .. 5 (out[0] = position -6 = p5, out[6] = q0), valid where mod
 //   mod    : position k is changed by the filter (a position not flagged keeps its sample)
-//   PIPE   : 1 = two stages, as lf_top splits the filter: the decision (masks, filter choice, the first half of the
+//   PIPE   : 1 = two stages: the decision (masks, filter choice, the first half of the
 //            narrow filter) is registered with the samples, the outputs follow a clock later (ce advances the stage);
 //            0 = combinational (clk and ce unused).
 //   LUMA   : 0 = a chroma-only build: `chroma` is taken as 1, which leaves the narrow and the 6-tap filter and lets
@@ -19,7 +18,7 @@ module lf_filt #(
     input  logic [3:0]      bit_depth,
     input  logic            chroma,        // plane != 0: the wide filter is the 6-tap one
     input  logic [4:0]      filter_size,   // 4, 8 or 16 (7.14.3)
-    input  logic [7:0]      limit,         // 7.14.4 (as lf_top: limit <= 63, blimit <= 193, thresh <= 3)
+    input  logic [7:0]      limit,         // 7.14.4 (limit <= 63, blimit <= 193, thresh <= 3)
     input  logic [7:0]      blimit,
     input  logic [7:0]      thresh,
     input  logic [14*12-1:0] pix,

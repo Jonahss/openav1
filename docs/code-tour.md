@@ -44,11 +44,11 @@ tile layout) and the tile groups (the compressed tile bytes, kept as `dec.tiles[
 registers that become `hdr_t`/`rec_hdr_t`/`lf_hdr_t`/`cdef_hdr_t`, and the DMA engine that flushes finished rows to DDR.
 It instantiates `dec_top`.
 
-`rtl/dec_top.sv` (module at line 5) is the pipeline. `tile_engines` (`u_ts`, line 135) holds TE copies of
+`rtl/dec_top.sv` (module at line 6) is the pipeline. `tile_engines` (`u_ts`, line 202) holds TE copies of
 `rtl/tile_syntax.sv`: `msac` (the arithmetic decoder, spec 8.2, literal), `sym_seq`/`sym_path` (which symbol comes next),
 `cdf_store` (the adaptive probability tables), `blk_syntax` (line 202 of tile_syntax.sv: partition, modes, MVs, the MV
 candidate stack `mv_stack`, palette), `coef_rd` (coefficients). The output of this stage is a stream of blocks: mode
-info into `mi_store` (`u_mi`, 185) and coefficients plus prediction parameters into reconstruction.
+info into `mi_store` (`u_mi`, 265) and coefficients plus prediction parameters into reconstruction.
 
 ## 4. Reconstruction (RTL)
 
@@ -60,9 +60,11 @@ then add-and-clip into the picture memory. Everything is sized by the superblock
 
 ## 5. In-loop filters and the picture memory (RTL)
 
-Under the frame sequencer in `dec_top.sv`: `lf_top` (200, deblocking), `cdef_top` (207), `sr_top` (229, super-resolution),
-`lr_top` (216, loop restoration). The picture memory is `frame_mem_uram` rings: `u_fb` + `u_fbm` (273/281: reconstruction
-and its mirror, 5 superblock rows), `u_fb1` (333, after CDEF, 3 rows), `u_fb2` (350, after restoration, 3 rows). As the
+Under the frame sequencer in `dec_top.sv` (line 336): the streaming filter chain `fc_top` (`u_fc`, 531: deblocking,
+CDEF, super-resolution and loop restoration for the three planes, band by band = superblock row by superblock row;
+`docs/filter-chain.md`), fed from its row store `fc_rstore` (`u_rs`, 528: a mirror of reconstruction's writes) and
+writing through `fc_out` (`u_fo`, 539). The picture memory is two `frame_mem_uram` rings: `u_fb` (309: the
+reconstruction, 5 superblock rows on the card) and `u_fb2` (322: the final picture, 3 rows). As the
 last filter finishes a row, the DMA engine in `dec_host.sv` writes it to DDR (`R_DMA_*`), and for inter streams that DDR
 picture is the reference the next frames fetch (`R_SLOT` table).
 

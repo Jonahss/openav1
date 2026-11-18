@@ -1,11 +1,11 @@
-// CDEF sample filter (spec 7.15.3) for N samples of one line at a time: cdef_top's four-lane pipeline (stages B to E
-// there) lifted out with the lane count as a parameter, for the streaming CDEF stage (docs/filter-chain.md): eight
+// CDEF sample filter (spec 7.15.3) for N samples of one line at a time, a pipeline of four stages (B to E) with the lane
+// count as a parameter, for the streaming CDEF stage (docs/filter-chain.md): eight
 // lanes filter one line of an 8x8 luma block a clock, four a line of a 4:2:0 chroma block.
 //   nb   : the line's neighbourhood, 5 lines x (N + 4) columns of deblocked samples, 12 bits each: sample (line rr,
 //          column cc) at bits (rr * (N + 4) + cc) * 12; output sample l is the one at line 2, column l + 2
 //   nbok : the same positions: the sample exists (inside the picture's coded area, CdefAvailable)
 //   dr, pri, sec, adjp, adjs, priodd : the block's direction, strengths, the two constrain() shifts
-//          (max(0, damping - FloorLog2(strength))) and (priStr >> coeffShift) & 1, as cdef_top forms them
+//          (max(0, damping - FloorLog2(strength))) and (priStr >> coeffShift) & 1
 //   out  : the N filtered samples, four clocks after v_in (v_out)
 // Stages: taps selected by direction; constrain() times the tap weight and the min / max over the present taps;
 // three partial sums; the sum, rounding and clamp.

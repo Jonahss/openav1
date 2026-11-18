@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """check_lf_stream.py [seeds] [W] [H]: the streaming-order deblocking model (tb/lf_stream_model.py) against the
-specification-order model on generated frames (as tb/test_lf_top.py makes them), for superblock rows of 64 and 128
+specification-order model on generated frames (as tb/test_lf_stream.py makes them), for superblock rows of 64 and 128
 lines and horizontal-edge lags of 0..3 columns. Lag 2 must be identical everywhere; the smaller lags are run to show
 that the check can fail (a lag of 0 filters horizontal edges before the vertical edges to their right)."""
 import copy, random, sys

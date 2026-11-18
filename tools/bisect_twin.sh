@@ -12,7 +12,7 @@ A=/home/jonahss/openav1/streams/argon/profile0_core/streams
 [ -f $A/$stream.obu ] || { echo "no stream $A/$stream.obu"; exit 1; }
 tag=${TAG:-$(date +%H%M%S)}; V=~/measure1080/bisect-$stream-$tag.txt; : > $V
 # TE=2 REF_RING=8 = the card image (2026-11-10: three census-15 streams passed the TE=1 twin on the broken commit and failed with the card configuration)
-ENV="FBX=11 FBY=11 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=${TE:-2} REF_RING=${REF_RING:-8} ${EXTRA:-}"
+ENV="FBX=11 FBY=11 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=${TE:-2} REF_RING=${REF_RING:-8} ${EXTRA:-}"
 [ "${STAGE_A:-0}" = 1 ] || ENV="$ENV TS_FSTATE_B=1"
 [ "$frame" = all ] || ENV="$ENV TS_FRAMES=$frame"
 echo "bisect $stream frame $frame: $* ($(date -u +%H:%MZ), env $ENV)" >> $V

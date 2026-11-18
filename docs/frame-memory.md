@@ -1,5 +1,10 @@
 # Frame memory for the FPGA builds
 
+> **2026-11-18.** The frame-wide filter stages (`lf_top`, `cdef_top`, `sr_top`, `lr_top`) and the buffers that existed for
+> them (fb1, the fb0 mirror fb0m, super-resolution's fb0s; `FRAME_WIN1`) were removed when the streaming filter chain
+> became the only filter path (`docs/filter-chain.md`, last section). Today: fb0 = the reconstruction, fb2 = the final
+> picture, both UltraRAM rings. The text below is the design as written at its date.
+
 Written 2026-10-13 after the first place-and-route of the core build (`docs/itx-level-engine.md` has the
 transform side). Status: design; no RTL yet.
 

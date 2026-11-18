@@ -1,4 +1,4 @@
-// CDEF direction search (spec 7.15.2) for one 8x8 luma block: cdef_top's four-stage search lifted out for the
+// CDEF direction search (spec 7.15.2) for one 8x8 luma block: a four-stage search, a module of its own for the
 // streaming CDEF stage (docs/filter-chain.md). A block may enter every clock.
 //   px  : the block's 64 deblocked samples, sample (line i, column j) at bits (8 i + j) * 12
 //   cs  : bit_depth - 8

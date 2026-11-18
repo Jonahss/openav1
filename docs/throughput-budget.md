@@ -1,5 +1,10 @@
 # Throughput budget (first census, 2026-10-23)
 
+> **2026-11-18.** The frame-wide filter stages (`lf_top`, `cdef_top`, `sr_top`, `lr_top`) and the buffers that existed for
+> them (fb1, the fb0 mirror fb0m, super-resolution's fb0s; `FRAME_WIN1`) were removed when the streaming filter chain
+> became the only filter path (`docs/filter-chain.md`, last section). Today: fb0 = the reconstruction, fb2 = the final
+> picture, both UltraRAM rings. The text below is the design as written at its date.
+
 Question: how far is the decoder from real-time, stage by stage? Answer from numbers already on disk: the
 lr-stage Argon inter batches (`~/openav1-wt-lr/logs/lr*_summary.txt` on atium: 325 profile-0 streams through the
 whole pipeline, `tb/test_dec_inter.py` at `TS_STAGE=lr`, every frame identical to dav1d). The testbench runs the

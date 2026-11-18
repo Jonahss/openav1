@@ -1,6 +1,7 @@
 # Streaming filter chain: a proposal (2026-11-13)
 
-Status: **sketch for discussion, no RTL yet.** It follows from `docs/4k60-budget.md`: the three in-loop filters are
+Status: **built, and since 2026-11-18 the decoder's only filter path** (the last section; the text between is the
+proposal and the build log as written at the time). It follows from `docs/4k60-budget.md`: the three in-loop filters are
 frame-wide, 4 to 8 times short of 4K60, and built on a frame-memory port that cannot pass 4 samples a clock.
 
 ## What changes
@@ -413,3 +414,16 @@ lines and on the deblocked boundary lines. Behind it everything is in the upscal
   chain's output is compared with deblock -> CDEF -> `superres_model` -> `lr_model` inside the upscaled picture.
   Suites `fc_plane_sr`, `fc_top_sr`, `fc_top_sr_odd` (4:2:0, 4:4:4, 4:2:2, mono; the pass with the filters switched
   off as well).
+
+## The chain is the only filter path (2026-11-18)
+
+The build parameter `CHAIN` is gone and so are the frame-wide stages it switched to (`lf_top`, `cdef_top`, `sr_top`,
+`lr_top`), their frame buffer fb1, the mirror of fb0 they read (fb0m) and super-resolution's fb0s, the host-started
+filter mode (`pipe_en` = 0, `START` bits 2 to 5) and the "core build" with CDEF and restoration stubbed out. What is
+left in `dec_top.sv`: reconstruction writes fb0 (one read and one write port in use), the sequencer starts one band of
+the chain per decoded superblock row, the chain writes fb2. Every frame runs under the sequencer; a tile started
+without `frame_start` is flagged unsupported.
+
+How it was retired: every whole-decoder suite of the nightly was first moved onto the chain (2026-11-17/18), then
+the old path was deleted. The new `dec_top` was checked cycle for cycle against the last build that had both paths
+(`CHAIN = 1`): the same simulated time at every "frame identical" line of the generated-stream suite.

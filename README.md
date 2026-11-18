@@ -167,21 +167,23 @@ separately.
 | Intra prediction (7.11.2): 13 modes, edge filter/upsampling, filter-intra | `tb/intra_model.py` | `rtl/ipred.sv` | 25 k dav1d prediction blocks |
 | Chroma from luma (7.11.5) | `tb/intra_model.py` | `rtl/cfl.sv` | 264 dav1d blocks + fuzz |
 | Dequantisation, edge preparation, palette prediction, reconstruction, frame buffer | `tb/recon_model.py` | `rtl/recon_top.sv`, `rtl/frame_mem.sv` | whole frames == model: all 21 corpus streams (44 frames, 4.9 M pixels) + 18 generated frames |
-| Deblocking loop filter (7.14) | `tb/lf_model.py` | `rtl/lf_top.sv`, `rtl/mi_store.sv` | 6 real frames, 37 k filtered pixels == model; model == dav1d |
-| CDEF (7.15) | `tb/cdef_model.py` | `rtl/cdef_top.sv` | 4 real frames, 172 k filtered pixels == model; model == dav1d |
-| Loop restoration (7.17): Wiener + self-guided | `tb/lr_model.py` | `rtl/lr_top.sv` | 2 real frames, 32 k filtered pixels == model; model == dav1d |
+| Deblocking loop filter (7.14) | `tb/lf_model.py` | `rtl/lf_edge.sv`, `rtl/lf_filt.sv`, `rtl/lf_feed.sv`, `rtl/lf_stream.sv`, `rtl/mi_store.sv` | stage and chain unit suites against the model in the nightly (`tools/nightly.sh`), and every whole-decoder suite's final picture; model == dav1d |
+| CDEF (7.15) | `tb/cdef_model.py` | `rtl/cdef_dir.sv`, `rtl/cdef_str.sv`, `rtl/cdef_row.sv`, `rtl/cdef_stream.sv` | stage and chain unit suites against the model in the nightly (`tools/nightly.sh`), and every whole-decoder suite's final picture; model == dav1d |
+| Loop restoration (7.17): Wiener + self-guided | `tb/lr_model.py` | `rtl/lr_stream.sv`, `rtl/lr_wiener_h.sv`, `rtl/lr_wiener_v.sv`, `rtl/lr_sgr_ab.sv`, `rtl/lr_sgr_f.sv`, `rtl/lr_bstore.sv` | stage and chain unit suites against the model in the nightly (`tools/nightly.sh`), and every whole-decoder suite's final picture; model == dav1d |
 | Intra block copy (5.11.7 / 7.10.2 / 7.11.3 with the current frame as reference) | `tb/tile_model.py`, `tb/recon_model.py` | `rtl/mv_stack.sv`, `rtl/mv_mem.sv`, `rtl/blk_syntax.sv`, `rtl/recon_top.sv` | model == dav1d on 4 Argon intrabc streams (test4592/8304/5297/5366: 1.04 M symbols, 22 k coefficient blocks, 21 pictures); RTL syntax == model on test4592 + test8304 (10 k blocks); full RTL picture == dav1d on test4592 |
 | Inter block syntax (5.11.7-5.11.33): references, MV prediction (7.10.2: spatial, temporal, global, compound candidates, DRL), MV differences, motion modes, compound types, inter-intra, switchable filters | `tb/tile_model.py`, `tb/seq_model.py` (CDF / segmentation / motion-field inheritance, 7.9 projection) | `rtl/blk_syntax.sv`, `rtl/mv_stack.sv`, `rtl/mv_mem.sv`, `rtl/mf_band.sv`, `rtl/seg_band.sv` | model == dav1d on 758 / 766 Argon inter streams (header parser 779 / 779); RTL record- and symbol-exact on 260+ Argon inter streams + 3 netlist replays |
 | Motion compensation (7.11.3): reference fetch with edge replication, 8-tap separable filters, scaled references, AVERAGE / DISTANCE / wedge / DIFFWTD compounds, OBMC, inter-intra, local + global warp | `tb/recon_model.py` | `rtl/ref_fetch.sv`, `rtl/mc_filt.sv`, `rtl/warp_setup.sv`, `rtl/recon_top.sv` | block fuzz (hundreds of units each) + netlist replays; whole-frame: 300 / 329 recon-exact Argon profile-0 inter streams bit-exact through all filters at `TS_STAGE=lr`; profiles 1 + 2: 584 streams run, 5 flagged -> 2 bugs fixed 2026-10-25, 3 watchdog false alarms |
 | Host interface: register file, frame sequencer, DMA flush of finished rows, reference slot table, AXI read master | `tb/host_regs.py` (the board driver) | `rtl/dec_host.sv`, `rtl/rec_fifo.sv`, `rtl/frame_mem*.sv` | inter frames through `dec_host` with the flushed pictures as references (Argon test47 / 6641 / 648 / 8854, multi-tile rows, super-res + CDEF + LR); gate-level replays of the whole decoder every round |
-| Super-resolution (7.16) | `tb/superres_model.py` | `rtl/sr_top.sv` (in-place row upscaler) | model == dav1d on 4 Argon upscaling frames; full RTL picture == dav1d on test60 (60->67), test5644 (255->447), test7463 (1260->2048 with CDEF + self-guided restoration) |
+| Super-resolution (7.16) | `tb/superres_model.py` | `rtl/sr_stream.sv` (line segments upscaled inside the filter chain) | model == dav1d on 4 Argon upscaling frames; `sr_stream` and the chain's super-resolution suites against the model; full RTL picture == dav1d on the Argon feature streams of the nightly (`argon_features`) |
 | Film grain synthesis (7.18.3) | not planned for the core: conformance references are grain-free (Argon md5_no_film_grain) | — | — |
 
-`rtl/dec_top.sv` is the integrated decoder (intra and inter): tile bytes + parsed headers in; the in-loop filters
-(deblocking, CDEF, super-resolution, loop restoration) either run over the finished frame on request
-(host-driven mode) or, with `pipe_en`, trail the tile decoder by superblock rows under a frame sequencer so
-that a frame takes as long as its slowest stage rather than the sum (`TS_PIPE=1` in the testbench). The output
-picture is read from the frame buffer the last stage wrote.
+`rtl/dec_top.sv` is the integrated decoder (intra and inter): tile bytes + parsed headers in. The in-loop filters
+(deblocking, CDEF, super-resolution, loop restoration) are one streaming chain (`rtl/fc_top.sv`,
+`docs/filter-chain.md`) that trails the tile decoder by superblock rows under a frame sequencer, so a frame takes as
+long as its slowest stage rather than the sum. Reconstruction writes fb0; the chain reads its own row store and writes
+the final picture into fb2, which the host reads or the DMA engine flushes to DDR row by row. (Until 2026-11-18 there
+were also frame-wide filter stages, `lf_top` / `cdef_top` / `sr_top` / `lr_top`, selectable by a build parameter;
+they are gone, with their frame buffer fb1.)
 
 Throughput (2026-09-28, simulated cycles for a 640x360 8-bit corpus frame, bit-exact with dav1d throughout):
 ~16 M on 09-27 (one sample per cycle everywhere, stages one after another) → ~1.1 M now (tile decoder 0.56 M,

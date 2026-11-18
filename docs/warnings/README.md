@@ -121,3 +121,12 @@ With the three switched-off kinds enabled: 312 UNUSEDSIGNAL, 196 UNUSEDPARAM, 8 
   give it a sticky error bit in STATUS like the chain's FIFO overflow flags.
 - **Open finding, `blk_syntax`**: the removed `a_ok` / `l_ok` (neighbour available AND written) were never read; the
   context logic uses availability alone. Probably equivalent inside a tile; to confirm against the MV store.
+
+### 2026-11-18
+
+- **Three lint configurations, not four** (`tools/lint_all.sh`): the `CHAIN` parameter and the frame-wide filter stages
+  are gone, so there is one image configuration (`dec_host-image`), the intra-only small one and the defaults. Counts
+  of the new `dec_top` / `dec_host` against the last four-configuration run are in `docs/warnings/lint/`; two notes
+  are new and waived as benign: `dec_host` `start[5:2]` (the START bits of the removed stages: written by older host
+  software, read by nothing) and unused fields of `dec_top`'s `cd_rd_info` (the chain takes only the skip flag from the
+  second mode-info read).

@@ -2,7 +2,7 @@
 band (superblock rows of 64 and of 128 lines), block column by block column, with the edge strengths the model uses;
 every block the stage sends out must equal the model's final picture, and every sample of the plane's coded area must
 come out exactly once. Input valid is dropped at random.
-Env: TS_SEEDS / TS_W / TS_H / TS_FMT (generated frames, as test_lf_top), TS_IVF (frame 0 of real streams)."""
+Env: TS_SEEDS / TS_W / TS_H / TS_FMT (generated frames), TS_IVF (frame 0 of real streams)."""
 import copy
 import os
 import random

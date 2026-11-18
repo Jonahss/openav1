@@ -26,22 +26,18 @@ EXTRA = {"fc_lfifo": [], "sr_stream": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "bl
          "dec_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "q_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                      "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mf_band.sv", "seg_band.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv", "tile_syntax.sv",
                      "itx_pair.sv", "itx_lvl.sv", "itx_row.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "mc_tables_pkg.sv", "mc_filt.sv", "fb_fetch.sv", "ref_fetch.sv", "warp_setup.sv", "frame_mem.sv", "frame_mem_w.sv", "edge_line.sv", "frame_mem_uram.sv", "recon_top.sv",
-                     "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "frame_state_w.sv", "fs_load.sv", "mf_project.sv", "rec_fifo.sv", "tile_engines.sv", "lf_top.sv", "cdef_top.sv", "lr_top.sv", "sr_top.sv"],
-         "mv_stack_tb": ["blk_tables_pkg.sv", "syn_pkg.sv", "mv_mem.sv", "mf_band.sv", "mv_stack.sv"],
-         "lf_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lf_top.sv"],
-         "lr_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "lr_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "lr_top.sv"],
-         "cdef_tb_top": ["blk_tables_pkg.sv", "tx_tables_pkg.sv", "cdf_map_pkg.sv", "syn_pkg.sv", "cdef_pkg.sv", "frame_mem.sv", "frame_mem_w.sv", "mi_store.sv", "cdef_top.sv"]}
-if os.environ.get("CHAIN"):                                     # the streaming filter chain inside the decoder (dec_top CHAIN)
-    EXTRA["dec_top"] = EXTRA["dec_top"] + [f for f in ("lf_cbuf.sv", "lf_filt.sv", "lf_edge.sv", "lf_feed.sv", "lf_stream.sv", "cdef_dir.sv", "cdef_str.sv",
-                                                         "cdef_row.sv", "cdef_stream.sv", "lr_wiener_pkg.sv", "lr_wiener_h.sv", "lr_wiener_v.sv", "lr_sgr_ab.sv",
-                                                         "lr_sgr_f.sv", "lr_stream.sv", "lr_bconv.sv", "lr_bstore.sv", "sr_stream.sv", "fc_lfifo.sv", "fc_plane.sv", "fc_top.sv", "fc_rstore.sv",
-                                                         "fc_out.sv") if f not in EXTRA["dec_top"]]
+                     "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "frame_state_w.sv", "fs_load.sv", "mf_project.sv", "rec_fifo.sv", "tile_engines.sv",
+                     # the streaming filter chain
+                     "lf_cbuf.sv", "lf_filt.sv", "lf_edge.sv", "lf_feed.sv", "lf_stream.sv", "cdef_dir.sv", "cdef_str.sv", "cdef_row.sv", "cdef_stream.sv",
+                     "lr_wiener_pkg.sv", "lr_wiener_h.sv", "lr_wiener_v.sv", "lr_sgr_ab.sv", "lr_sgr_f.sv", "lr_stream.sv", "lr_bconv.sv", "lr_bstore.sv",
+                     "sr_stream.sv", "fc_lfifo.sv", "fc_plane.sv", "fc_top.sv", "fc_rstore.sv", "fc_out.sv"],
+         "mv_stack_tb": ["blk_tables_pkg.sv", "syn_pkg.sv", "mv_mem.sv", "mf_band.sv", "mv_stack.sv"]}
 EXTRA["dec_host"] = EXTRA["dec_top"] + ["dec_top.sv"]          # the AXI-Lite host interface around the decoder
 sources = [ROOT / "rtl" / f for f in EXTRA.get(top, [])] + [ROOT / "rtl" / f"{top}.sv"]
 # frame-buffer / per-4x4 state capacity for the frame-level tops (dec_top, *_tb_top): FBX/FBY = log2 pixels,
 # ML2 = log2 4x4 units (FBX-2 / FBY-2 covers the same picture). Defaults fit 1024x512; Argon needs more.
 params = {}
-if top in ("dec_top", "dec_host", "lf_tb_top", "cdef_tb_top", "lr_tb_top") and os.environ.get("FBX"):
+if top in ("dec_top", "dec_host") and os.environ.get("FBX"):
     params = {"FBX": int(os.environ["FBX"]), "FBY": int(os.environ.get("FBY", os.environ["FBX"]))}
 # tile_syntax alone: FBX/FBY size its motion-info memory and the inter bands like dec_top does for a frame of that size
 if top == "tile_syntax":
@@ -57,7 +53,7 @@ if top == "tile_syntax":
 # replayed against the 2-lane netlist mismatched from the first transform block on).
 if top in ("dec_top", "dec_host", "recon_top") and os.environ.get("ITX_LANES"):
     params["ITX_LANES"] = int(os.environ["ITX_LANES"])
-# FRAME_URAM=1 builds dec_top with the on-chip UltraRAM frame memory (core build only: no CDEF / LR / SR)
+# FRAME_URAM=1 builds dec_top with the on-chip UltraRAM frame memories (fb0 and fb2)
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_URAM"):
     params["FRAME_URAM"] = int(os.environ["FRAME_URAM"])
 # INTER=0 builds the intra-only decoder (no ref_fetch / mc_filt / warp_setup, inter frames never parsed): the K26 board
@@ -70,8 +66,6 @@ if top == "dec_host" and os.environ.get("FIFO_LW"):
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN"):
     params["FRAME_WIN"] = int(os.environ["FRAME_WIN"])
 # TE=N: N tile engines (the tile columns of a tile row decoded at once, rtl/tile_engines.sv)
-if top in ("dec_top", "dec_host") and os.environ.get("CHAIN"):
-    params["CHAIN"] = int(os.environ["CHAIN"])
 if top in ("dec_top", "dec_host") and os.environ.get("TE"):
     params["TE"] = int(os.environ["TE"])
 if top in ("lf_filt", "lf_stream") and os.environ.get("LF_CHROMA_ONLY") == "1":   # the chroma-only build of the deblock filter / stage
@@ -88,10 +82,9 @@ if top in ("dec_top", "dec_host") and os.environ.get("REF_RING"):
 # SB128=1: the window build takes 128x128 superblocks (128-line window rows, deeper mode-info rings)
 if top in ("dec_top", "dec_host") and os.environ.get("SB128"):
     params["SB128"] = int(os.environ["SB128"])
-# FRAME_WIN1 / FRAME_WIN2: fb1 (CDEF frame) and fb2 (LR frame) as UltraRAM rings of that many rows (docs/picture-memory.md)
-for k in ("FRAME_WIN1", "FRAME_WIN2"):
-    if top in ("dec_top", "dec_host") and os.environ.get(k):
-        params[k] = int(os.environ[k])
+# FRAME_WIN2=N (with FRAME_URAM=1): fb2 (the final picture) as an UltraRAM ring of N superblock rows (docs/picture-memory.md)
+if top in ("dec_top", "dec_host") and os.environ.get("FRAME_WIN2"):
+    params["FRAME_WIN2"] = int(os.environ["FRAME_WIN2"])
 # SIM_FAST=1: optimise for simulation speed (Verilator -O3, compiler -O2, N threads); default is Verilator's -Os,
 # which compiles fastest. SIM_THREADS overrides the thread count (default: all cores).
 build_args = ["-Wall", "-Wno-UNUSEDPARAM", "-Wno-UNUSEDSIGNAL", "-Wno-PINCONNECTEMPTY"] + (["--trace-fst"] if waves and waves_fmt == "fst" else []) \

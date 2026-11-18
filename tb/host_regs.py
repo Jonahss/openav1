@@ -865,7 +865,7 @@ class HostDecoder:
             and (fbx is None or hdr.UpscaledWidth <= (1 << fbx)) and (fby is None or hdr.FrameHeight <= (1 << fby))
 
     def frame_pipe_start(self, hdr, n_tile_cols):
-        """Pipelined frame (pipe_en): the in-loop filters trail the tile decoder by superblock rows under the decoder's
+        """A frame under the decoder's sequencer: the in-loop filters trail the tile decoder by superblock rows under the decoder's
         frame sequencer, which needs the filter headers and the tile-column count before the tiles."""
         self.write_wide(R_LH, pack(LF_FIELDS, lf_vals(hdr)), LH_WORDS)
         if cdef_on(hdr):

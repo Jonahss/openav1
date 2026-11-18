@@ -8,15 +8,15 @@
 //   0x004 CFG       R   {4'd0, TE[3:0], FBX[7:0], FBY[7:0], ITX_LANES[3:0], 1'd0, EOS_PER_ENGINE, SB128, FRAME_URAM}
 //                       (bit 2: a CTRL write with bit 8 ends the stream of the engine CTRL[27:24] selects, as soon as that
 //                       engine's bytes are in; images without it end every engine's stream with one write at the end)
-//   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 1 pipe_en, 2 lr_from_deblocked, 3 sr_buf,
-//                       [5:4] h_buf (the host port's frame buffer: 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
-//                       in the RING build; a row flush reads dec_top's final_buf instead), 8 eos (no more bytes for
-//                       this tile: in_eos once the FIFO drains; cleared by a tile start), [21:16] n_tile_cols
-//   0x00C START     W   one-cycle pulses: bit 0 tile_start (also empties the tile FIFO: push the bytes after it), 1 frame_start, 2 lf_start, 3 cdef_start, 4 sr_start,
-//                       5 lr_start (a start clears its stage's sticky done bit)
+//   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 5 the host port's frame buffer (0: fb0, the
+//                       reconstruction; 1: fb2, the final picture; a row flush reads fb2 whatever this says), 8 eos (no
+//                       more bytes for this tile: in_eos once the FIFO drains; cleared by a tile start), [21:16]
+//                       n_tile_cols. Bits 1-4 are stored and do nothing (until 2026-11 bit 1 chose the frame sequencer,
+//                       which every frame now runs under, and 2-4 belonged to the frame-wide filter stages)
+//   0x00C START     W   one-cycle pulses: bit 0 tile_start (also empties the tile FIFO: push the bytes after it),
+//                       1 frame_start (before the first tile of every frame), 6 state load, 7 CDF save; 2-5 do nothing
 //   0x010 STATUS    R   bit 0 tile_busy, 1 tile_done_lvl, 2 unsupported, 3 frame_busy, 4 frame_done_lvl,
-//                       5 lf_busy, 6 lf_done (sticky), 7 cdef_busy, 8 cdef_done (sticky), 9 sr_busy,
-//                       10 sr_done (sticky), 11 lr_busy, 12 lr_done (sticky), 13 in_ready, 14 fifo overflow or a
+//                       5-12 read 0, 13 in_ready, 14 fifo overflow or a
 //                       push with a partial write strobe (sticky until rst), 15 fifo empty (and no byte pending),
 //                       [31:16] free FIFO words
 //   0x014 PERF_SYN  R   perf_syn_stall       0x018 PERF_REC  R   perf_rec_idle
@@ -98,12 +98,10 @@ module dec_host
     parameter int ITX_LANES = 2,
     parameter int FRAME_URAM = 1,
     parameter int FRAME_WIN = 0,             // the frame memory as a window of this many superblock rows (0: whole picture)
-    parameter int FRAME_WIN1 = -1,           // fb1 / fb2 rings with FRAME_URAM (dec_top; -1: left out, the core build)
-    parameter int FRAME_WIN2 = -1,
+    parameter int FRAME_WIN2 = 0,            // fb2 (the final picture) as a ring of this many superblock rows (dec_top; 0: whole picture)
     parameter int FIFO_LW = 10,              // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
     parameter int INTER = 1,                 // 0: the intra-only decoder (dec_top INTER)
     parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks (dec_top SB128; CFG bit 1)
-    parameter int CHAIN = 0,                 // 1: the streaming filter chain inside the decoder (dec_top CHAIN)
     parameter int TE = 1,                     // tile engines (dec_top TE; CFG[27:24]): the tile columns of a tile row decoded at once
     parameter int REF_RING = 16              // ref_fetch line buffers (dec_top REF_RING)
 ) (
@@ -207,11 +205,10 @@ module dec_host
     logic [31:0]       mf_wd;
     logic [15:0]       sp_d1;
     logic [245:0]      def_data;
-    logic [7:0]        start;                                // tile, frame, lf, cdef, sr, lr, state load, cdf save
+    logic [7:0]        start;                                // tile, frame, (2-5 unused), state load, cdf save
     logic              tile_busy, tile_done_lvl, unsupported;
     logic [31:0]       perf_syn_stall, perf_rec_idle;
     logic              frame_busy, frame_done_lvl;
-    logic              lf_busy, lf_done, cdef_busy, cdef_done, sr_busy, sr_done, lr_busy, lr_done_o;
     logic [11:0]       h_rdata;
     logic [47:0]       h_rdata4;
     logic              h_ok;
@@ -219,7 +216,6 @@ module dec_host
     logic [FBX-1:0]    h_x_m;
     logic [FBY-1:0]    h_y_m;
     logic           row_final, flush_done;
-    logic [1:0]     final_buf;
     logic           flush_rd;                                // the host port belongs to a running flush (reads the final buffer)
     logic           dma_busy, dma_done, dma_err;
     logic           fl_run;                                  // the run in progress is a flush (else a software picture DMA)
@@ -267,7 +263,7 @@ module dec_host
     logic [55:0]    mf_dst_dist;
     logic [215:0]   cur_planes;                              // the current picture's flush layout for intra block copy
     logic           fmt16;                                  // DMA_CFG bit 0, declared ahead of the core instance that takes it (cur_fmt16)
-    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN1(FRAME_WIN1), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .CHAIN(CHAIN), .TE(TE), .REF_RING(REF_RING)) u_dec (
+    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE), .REF_RING(REF_RING)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_rb_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
@@ -280,33 +276,17 @@ module dec_host
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done(), .tile_done_lvl, .unsupported, .mem_err, .perf_syn_stall, .perf_rec_idle,
-        .pipe_en(ctrl[1]), .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done(), .frame_done_lvl,
+        .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done(), .frame_done_lvl,
         .row_final, .row_final_idx(), .flush_done,
         .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_line, .fs_rd_beat, .fs_rd_buf, .fs_rd_data,
-        .lf_start(start[2]), .lf_busy, .lf_done,
-        .cdef_start(start[3]), .cdef_busy, .cdef_done,
-        .sr_start(start[4]), .sr_buf(ctrl[3]), .sr_busy, .sr_done,
-        .lr_start(start[5]), .lr_from_deblocked(ctrl[2]), .lr_busy, .lr_done_o,
         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
-        .h_buf(flush_rd ? final_buf : ctrl[5:4]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4, .h_ok, .final_buf
+        .h_buf(flush_rd || ctrl[5]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4, .h_ok
     );
     logic [CDF_AW-1:0] def_addr_r;
     always_comb begin
         def_addr = def_addr_r;
         for (int i = 0; i < 7; i++) def_data[32*i +: 32] = def_w[i];
         def_data[245:224] = def_w[7][21:0];
-    end
-
-    // sticky stage-done bits (the stage outputs are one-cycle pulses)
-    logic lf_done_s, cdef_done_s, sr_done_s, lr_done_s;
-    always_ff @(posedge clk) begin
-        if (rst) begin lf_done_s <= 1'b0; cdef_done_s <= 1'b0; sr_done_s <= 1'b0; lr_done_s <= 1'b0; end
-        else begin
-            lf_done_s   <= start[2] ? 1'b0 : (lf_done_s   | lf_done);
-            cdef_done_s <= start[3] ? 1'b0 : (cdef_done_s | cdef_done);
-            sr_done_s   <= start[4] ? 1'b0 : (sr_done_s   | sr_done);
-            lr_done_s   <= start[5] ? 1'b0 : (lr_done_s   | lr_done_o);
-        end
     end
 
     // ---------------------------------------------------------------- tile-byte FIFOs (words of 1..4 bytes), one per engine
@@ -866,8 +846,8 @@ module dec_host
                     10'h00E: s_axi_rdata <= 32'(eng_mask_r);
                     10'h001: s_axi_rdata <= {4'd0, 4'(TE), 8'(FBX), 8'(FBY), 4'(ITX_LANES), 1'd0, 1'b1, 1'(SB128), 1'(FRAME_URAM)};   // bit 2: EOS per engine
                     10'h002: s_axi_rdata <= ctrl;
-                    10'h004: s_axi_rdata <= {16'(f_free), f_empty_sel, f_ovf || f_badw, in_ready_sel, lr_done_s, lr_busy, sr_done_s, sr_busy,
-                                             cdef_done_s, cdef_busy, lf_done_s, lf_busy, frame_done_lvl, frame_busy, unsupported, tile_done_lvl, tile_busy};
+                    10'h004: s_axi_rdata <= {16'(f_free), f_empty_sel, f_ovf || f_badw, in_ready_sel, 8'd0,
+                                             frame_done_lvl, frame_busy, unsupported, tile_done_lvl, tile_busy};
                     10'h005: s_axi_rdata <= perf_syn_stall;
                     10'h006: s_axi_rdata <= perf_rec_idle;
                     10'h009: s_axi_rdata <= haddr;

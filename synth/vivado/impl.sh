@@ -2,7 +2,7 @@
 # Place and route a synthesised checkpoint (from run.sh, out-of-context) on the Kria K26, for timing and
 # routability numbers. The design must have no black boxes: synthesise with -n for the parked stages and
 # -f pr for the frame-memory stand-in, e.g.
-#   synth/vivado/run.sh -n cdef_top,lr_top -f pr 10 9 core-pr && synth/vivado/impl.sh dec_top-core-pr
+#   synth/vivado/run.sh -n fc_top -f pr 10 9 nofilter-pr && synth/vivado/impl.sh dec_top-nofilter-pr
 # Reports land next to the checkpoint: impl_timing.rpt, impl_util.rpt, impl_route_status.rpt, post_route.dcp;
 # the log is impl.log. Needs Vivado on PATH.
 set -euo pipefail

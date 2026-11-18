@@ -29,7 +29,7 @@ echo "reference: dav1d's decoded picture, ${REF#$ROOT/}/$name.yuv"
 echo "mode:      the in-loop filters trail the tile decoder by superblock rows (pipelined)"
 echo
 t0=$(date +%s)
-TS_NOMODEL=1 TS_PIPE=1 TS_STAGE=lr SIM_FAST=1 TS_REF_DIR="$REF" TS_DUMP="$OUT" TS_IVF="$STREAM" TS_VIS="$OUT/$name.vis.txt" \
+TS_NOMODEL=1 TS_STAGE=lr SIM_FAST=1 TS_REF_DIR="$REF" TS_DUMP="$OUT" TS_IVF="$STREAM" TS_VIS="$OUT/$name.vis.txt" \
   python tb/runner.py dec_top > "$LOG" 2>&1 &
 pid=$!
 # progress: the testbench logs each tile and each frame; echo those lines as they appear

@@ -31,8 +31,19 @@ import test_tile_syntax as TT           # noqa: E402
 import xcheck_frame as xf               # noqa: E402
 from host_regs import LF_FIELDS, lf_vals, CDEF_FIELDS, cdef_vals   # noqa: E402
 from test_lf_stage import blk_of, load_mi   # noqa: E402
-from test_lr_top import lr_rec_vals     # noqa: E402
 from test_cdef_stream import yd_record  # noqa: E402
+
+
+def lr_rec_vals(plane, row, col, state):
+    """The lr_rec_t fields of one restoration unit as the model decoded it (LR_FIELDS order: syn_pkg::lr_rec_t)."""
+    key = (plane, row, col)
+    t = state.LrType.get(key, 0)
+    wien = state.LrWiener.get(key, [[0, 0, 0], [0, 0, 0]]) if t == 1 else [[0, 0, 0], [0, 0, 0]]
+    xqd = state.LrSgrXqd.get(key, [0, 0]) if t == 2 else [0, 0]
+    return dict(plane=plane, unit_row=row, unit_col=col, lr_type=t,
+                wiener=sum((wien[p][j] & 0x7F) << (7 * (3 * p + j)) for p in range(2) for j in range(3)),
+                sgr_set=state.LrSgrSet.get(key, 0) if t == 2 else 0,
+                xqd=(xqd[0] & 0xFF) | ((xqd[1] & 0xFF) << 8))
 
 
 def with_superres(hdr, state, rng):

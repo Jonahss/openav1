@@ -1,5 +1,10 @@
 # Picture memory for the full decoder (design, 2026-10-23)
 
+> **2026-11-18.** The frame-wide filter stages (`lf_top`, `cdef_top`, `sr_top`, `lr_top`) and the buffers that existed for
+> them (fb1, the fb0 mirror fb0m, super-resolution's fb0s; `FRAME_WIN1`) were removed when the streaming filter chain
+> became the only filter path (`docs/filter-chain.md`, last section). Today: fb0 = the reconstruction, fb2 = the final
+> picture, both UltraRAM rings. The text below is the design as written at its date.
+
 Why now: the inter decoder is verified (gate rounds 7-10) but has no frame memory it can run on hardware with
 (`FRAME_URAM = 0` is the simulation model, a black box in synthesis), the Alveo U200 arrives 2026-10-28, and
 Jonah set the finish line at **4K60, in silicon if not on the FPGA** (2026-10-23). The memory system is the part

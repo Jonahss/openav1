@@ -1,5 +1,5 @@
 // Wiener loop restoration (spec 7.17.4) as two line modules for the streaming filter chain (docs/filter-chain.md):
-// lr_top's arithmetic lifted out with the lane count as a parameter.
+// the lane count is a parameter.
 //   lr_wiener_h : one line, N output positions: 7 taps over N + 6 source samples (the caller has applied the plane
 //                 and stripe rules to them) -> N intermediate values (21 bits, signed), two clocks.
 //   lr_wiener_v : N positions: 7 intermediate lines -> N samples, two clocks.

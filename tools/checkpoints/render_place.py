@@ -14,7 +14,7 @@ dumpdir, title, out = sys.argv[1], sys.argv[2], sys.argv[3]
 GROUPS = [  # (label, hierarchical prefix test, colour)  — first match wins
     ("tile engines: entropy decoder, syntax, MV stack", lambda n: "/u_dec/u_ts" in n, "#2a78d6"),
     ("reconstruction: prediction, transforms",          lambda n: "/u_dec/u_rc" in n, "#eb6834"),
-    ("streaming filter chain: deblock, CDEF, restoration, row store", lambda n: "/u_dec/g_chain" in n, "#12a3b4"),
+    ("streaming filter chain: deblock, CDEF, restoration, row store", lambda n: any(k in n for k in ("/u_dec/u_fc", "/u_dec/u_fo", "/u_dec/u_rs", "/u_dec/g_mi")) or "/u_dec/g_chain" in n, "#12a3b4"),
     ("loop restoration",                                lambda n: "/u_dec/u_lr" in n, "#1baf7a"),
     ("CDEF",                                            lambda n: "/u_dec/u_cdef" in n, "#eda100"),
     ("deblocking, super-resolution, mode info",         lambda n: any(k in n for k in ("/u_dec/u_lf", "/u_dec/u_sr", "/u_dec/u_mi")), "#e87ba4"),

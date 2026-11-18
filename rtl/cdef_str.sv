@@ -1,4 +1,4 @@
-// CDEF block parameters (spec 7.15.1 / 7.15.2) for one plane of an 8x8 block, combinational: cdef_top's C_DIR step
+// CDEF block parameters (spec 7.15.1 / 7.15.2) for one plane of an 8x8 block, combinational: the step after the direction search
 // lifted out for the streaming CDEF stage (docs/filter-chain.md). From the frame's strengths, the block's cdef_idx
 // and the luma direction and variance (rtl/cdef_dir.sv) to what the line filter (rtl/cdef_row.sv) takes.
 //   luma : the plane is luma (variance-adjusted primary strength, the luma direction, the frame's damping);

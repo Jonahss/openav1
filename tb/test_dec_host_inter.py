@@ -3,7 +3,7 @@
 sequencer, its final picture (after CDEF / super-res / loop restoration) is flushed row by row into the AXI
 memory, and the references of later frames are read by ref_fetch from THOSE flushed pictures: the slot table
 points at the flush targets, exactly as the board software will do (docs/picture-memory.md, step A). With
-FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN1=3 FRAME_WIN2=3 this is the U200 inter build's memory system in simulation.
+FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 this is the U200 inter build's memory system in simulation.
 
 The frame sequence follows tb/seq_model.py (inherited CDFs through the DEF window, segmentation map and motion
 field through the band registers, slot table and ref_frame_idx through 0x400 / 0x600). Frames the window build
@@ -35,21 +35,6 @@ import host_regs as HR                                       # noqa: E402
 from host_regs import (R_START, HostDecoder, R_ID, R_CTRL, R_CFG, R_DMA_STATUS, CTRL_RST, DMA_FLUSH_BUSY, DMA_ERR, dma_regs, unpack_dma, plane_size)   # noqa: E402
 from axil import AxiLite                                     # noqa: E402
 from axi_mem import AxiMem                                   # noqa: E402
-
-class _PerfPrev:                                             # TS_PERF: the previous frame's cumulative counters
-    pass
-
-
-dut_perf_prev = _PerfPrev()
-
-
-def TD_enum_names(fname, tname):
-    import re
-    src = (Path(__file__).resolve().parent.parent / "rtl" / fname).read_text()
-    m = re.search(r"typedef enum[^{]*\{([^}]*)\}\s*" + tname + r"\s*;", src, re.S)
-    return [x.strip() for x in re.sub(r"//[^\n]*", "", m.group(1)).replace("\n", " ").split(",") if x.strip()]
-
-
 
 FLUSH_BASE = 0x80_0000_0000                                  # frame fi's picture at FLUSH_BASE + fi * FLUSH_STRIDE (40-bit space), or buffer k of TS_POOL
 FLUSH_STRIDE = TI.SLOT_STRIDE
@@ -462,16 +447,6 @@ async def dec_host_inter_vs_model(dut):
                                              blocks=[b for dd in decs for b in dd.blocks], visible=not th0.allow_intrabc)
                 fi_global += 1
                 stats["frames"] += 1
-                if os.environ.get("TS_PERF"):                # the CDEF stage's state histogram of this frame (cumulative counters: deltas)
-                    cd = dut.u_dec.u_cdef
-                    names = [n[2:] for n in TD_enum_names("cdef_top.sv", "st_t")]
-                    cur = {n: int(cd.perf_st[i].value) for i, n in enumerate(names)}
-                    cur["blocks filtered"], cur["blocks copied"] = int(cd.perf_filt.value), int(cd.perf_copy.value)
-                    prev = getattr(dut_perf_prev, "cdef", {})
-                    cd_d = {n: v - (prev.get(n, 0) if v >= prev.get(n, 0) else 0) for n, v in cur.items()}   # a decoder reset zeroes them
-                    dut_perf_prev.cdef = cur
-                    busy = sum(v for n, v in cd_d.items() if n != "IDLE" and not n.startswith("blocks"))
-                    dut._log.info(f"{tag}: cdef-FSM cycles (busy {busy}) " + ", ".join(f"{n} {v}" for n, v in sorted(cd_d.items(), key=lambda kv: -kv[1]) if v))
                 dut._log.info(f"{tag}: identical ({len(tile_idx)} tiles, {th0.UpscaledWidth}x{th0.FrameHeight} bd{th0.BitDepth}, "
                               f"{'inter' if not ph.FrameIsIntra else 'intra'}, {sum(1 for dd in decs for b in dd.blocks if b.get('inter'))} inter blocks)")
             else:

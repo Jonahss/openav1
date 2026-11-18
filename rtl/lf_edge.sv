@@ -1,6 +1,6 @@
 // Deblocking edge decision (spec 7.14.2 - 7.14.5) for one 4x4 position and one pass, combinational: whether the edge
 // is filtered, the filter size and the strength, from the mode info of the position and of its neighbour across the
-// edge. The logic is lf_top's (strength(), the edge tests, the level fallback to the neighbour), lifted out so that the
+// edge. The logic (strength(), the edge tests, the level fallback to the neighbour) is a module of its own so that the
 // streaming deblock stage (rtl/lf_stream.sv, docs/filter-chain.md) can take a block's two edges a clock.
 //   par = {apply, size[4:0], limit[7:0], blimit[7:0], thresh[7:0]}: apply = filtered at all (a transform edge that
 //         7.14.2 lets through, in_pic the frame, not the picture's left / top border, level > 0).

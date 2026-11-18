@@ -2,7 +2,7 @@
 8x8 blocks, a random block (so the picture's borders, where taps are absent, come up often), random direction,
 strengths, damping and bit depth; each of the block's eight lines goes through the module as N-sample pieces with
 its 5 x (N + 4) neighbourhood of deblocked samples and their presence, and must equal the model's line.
-The module's constrain() shifts and tap-weight bit are formed here as cdef_top forms them.
+The module's constrain() shifts and tap-weight bit are formed here as cdef_str forms them.
 Env: CR_ITERS (blocks, default 600), CR_SEED, CR_N (lanes of the build: 8 default, 4)."""
 import os
 import random

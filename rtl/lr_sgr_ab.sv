@@ -1,5 +1,5 @@
 // Self-guided loop restoration (spec 7.17.3) for the streaming filter chain: a2 and b2 of one box position from its
-// box sums, four clocks (lr_top's arithmetic lifted out).
+// box sums, four clocks.
 //   box_a = the sum of the squares, box_b = the sum of the 25 (r1 = 0: radius 2) or 9 (r1 = 1) samples;
 //   s = the pass's value from lr_pkg::sgr_s. They travel with the position.
 module lr_sgr_ab
