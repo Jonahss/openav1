@@ -9,11 +9,18 @@
 //   64-pixel band, columns within 8 units); then for dst = 1..7: mf[dst][PosY8][PosX8] = mv_projection(mv, refToDst, refOffset)
 // mv_projection(mv, num, den): round2signed(mv * clip3(-31, 31, num) * Div_Mult[min(31, den)], 14) clipped to +-16383.
 // Cells go in raster order per source, sources in the host's order, so a later write wins at a shared target, as the
-// model does. The field is cleared (every entry invalid) first.
+// model does.
 //
-// Throughput (2026-11-03): the clear writes all seven references of a position in one cycle (w8 x h8 cycles; it starts
-// with mf_start, which the loader group raises together with the segment-map / CDF loader, so the clear overlaps that
-// loader's reads: src_go says when the read channel is free); the reads run up to OUT bursts ahead into a beat FIFO
+// Band by band (docs/motion-field-band.md): block_position never moves a cell out of the 8-row band of its source row
+// (MAX_OFFSET_HEIGHT = 0), so band k of the field (rows 8k .. 8k+7) depends on rows 8k .. 8k+7 of the sources alone.
+// After mf_start the engine takes the bands in ascending order, each when band_go allows it (the band store keeps a
+// few bands; the decoder says when the slot of the next one is free): the band's rows are cleared (every entry
+// invalid), then its eight lines of every source are read and projected. bands_done counts the finished bands;
+// mf_done comes after the last. Each source keeps the address of its next line between bands.
+//
+// Throughput (2026-11-03): the clear writes all seven references of a position in one cycle (w8 cycles a row; the
+// first band's starts with mf_start, which the loader group raises together with the segment-map / CDF loader, so it
+// overlaps that loader's reads: src_go says when the read channel is free); the reads run up to OUT bursts ahead into a beat FIFO
 // whose room is reserved at issue (rready never drops); the cells flow through a pipeline at one cell a cycle: the
 // source's constants and posValid (S1), the per-destination multipliers K = clip(num) * Div_Mult[den] (S2), the
 // sixteen products mv * K (S3), round2signed and the clip (S4), block_position (S5), the seven-reference write (S6).
@@ -28,6 +35,8 @@ module mf_project
     input  hdr_t          hdr,
     input  logic          mf_start,
     input  logic          src_go,              // the read channel is free (the frame-state loader's reads are over)
+    input  logic          band_go,             // the next band may be projected (its slot in the band store is free)
+    output logic [MIW-5:0] bands_done,         // bands finished since mf_start (band k = rows 8k .. 8k+7)
     input  logic [2:0]    mf_nsrc,             // sources to project, 0..5, in order
     input  logic [199:0]  src_base,            // source s base at [40s +: 40]
     input  logic [79:0]   src_rowb,            // bytes per 8x8 line at [16s +: 16]
@@ -93,7 +102,7 @@ module mf_project
     localparam int OW = $clog2(OUT);
     localparam int BD = 32;                                  // beat FIFO depth
     localparam int BW = $clog2(BD);
-    typedef enum logic [3:0] {A_IDLE, A_CLEAR, A_WAIT, A_SRC, A_LINE, A_LEN, A_AR, A_DRAIN, A_DONE} astate_t;
+    typedef enum logic [3:0] {A_IDLE, A_BGO, A_CLEAR, A_WAIT, A_SRC, A_LINE, A_LEN, A_AR, A_DRAIN, A_DONE} astate_t;
     astate_t        as;
     logic [2:0]     s;                                       // the source being read
     logic [39:0]    addr;
@@ -103,6 +112,10 @@ module mf_project
     assign to4k = 10'((13'd4096 - 13'(addr[11:0])) >> 3);
     logic [MIW-2:0] line, bx8;                               // the line, the x8 of the next burst's first cell
     logic [MIW-2:0] c_y, c_x;                                // the clear pass
+    logic [MIW-2:0] b_y0;                                    // the first row of the band in work
+    logic [MIW-1:0] b_end;                                   // one past its last row
+    assign b_end = MIW'(b_y0) + MIW'(8);
+    logic [39:0]    src_addr [5];                            // each source: the address of its next line
     logic [OW:0]    inflight;                                // bursts issued whose last beat has not arrived
     logic [BW:0]    resv;                                    // beats reserved in the beat FIFO
     assign m_axi_arsize = 3'b011; assign m_axi_arburst = 2'b01; assign m_axi_arcache = 4'b0011; assign m_axi_arprot = 3'b000;
@@ -130,30 +143,39 @@ module mf_project
         mf_done <= 1'b0;
         if (rst) begin
             as <= A_IDLE; s <= '0; addr <= '0; beats <= '0; len <= '0; line <= '0; bx8 <= '0; c_y <= '0; c_x <= '0;
-            inflight <= '0; resv <= '0; dq_w <= '0;
+            inflight <= '0; resv <= '0; dq_w <= '0; b_y0 <= '0; bands_done <= '0;
         end else begin
             inflight <= inflight + (OW+1)'(issue) - (OW+1)'(retire);
             resv <= resv + (issue ? (BW+1)'(len) : '0) - (BW+1)'(pop_beat);
             if (issue) begin dq[dq_w[OW-1:0]] <= '{src: s, line: line, x8: bx8}; dq_w <= dq_w + 1'b1; end
             case (as)
-                A_IDLE: if (mf_start) begin c_y <= '0; c_x <= '0; inflight <= '0; resv <= '0; dq_w <= '0; as <= A_CLEAR; end
-                A_CLEAR: begin                               // every entry of the field invalid: one position (all references) a cycle
+                A_IDLE: if (mf_start) begin
+                    inflight <= '0; resv <= '0; dq_w <= '0; b_y0 <= '0; bands_done <= '0;
+                    for (int i = 0; i < 5; i++) src_addr[i] <= src_base[40 * i +: 40];
+                    as <= A_BGO;
+                end
+                A_BGO: begin                                 // the next band, when its slot is free; none left: done
+                    c_y <= b_y0; c_x <= '0;
+                    if (b_y0 >= h8) as <= A_DONE;
+                    else if (band_go) as <= A_CLEAR;
+                end
+                A_CLEAR: begin                               // every entry of the band invalid: one position (all references) a cycle
                     if (c_x + 1 < w8) c_x <= c_x + 1;
                     else begin
                         c_x <= '0;
-                        if (c_y + 1 < h8) c_y <= c_y + 1;
-                        else begin c_y <= '0; as <= A_WAIT; end
+                        if (c_y + 1 < h8 && MIW'(c_y) + MIW'(1) < b_end) c_y <= c_y + 1;
+                        else as <= A_WAIT;
                     end
                 end
                 A_WAIT: if (src_go) begin s <= '0; as <= A_SRC; end
                 A_SRC: begin
                     if (s >= mf_nsrc) as <= A_DRAIN;
-                    else begin addr <= src_base[40 * s +: 40]; line <= '0; as <= A_LINE; end
+                    else begin addr <= src_addr[s]; line <= b_y0; as <= A_LINE; end
                 end
                 A_LINE: begin
                     beats <= src_rowb[16 * s +: 16] >> 3; bx8 <= '0;
-                    if (line < h8 && src_rowb[16 * s +: 16] != 16'd0) as <= A_LEN;
-                    else begin s <= s + 3'd1; as <= A_SRC; end
+                    if (line < h8 && MIW'(line) < b_end && src_rowb[16 * s +: 16] != 16'd0) as <= A_LEN;
+                    else begin src_addr[s] <= addr; s <= s + 3'd1; as <= A_SRC; end   // (addr: the line after the band's last)
                 end
                 A_LEN: begin len <= burst_len; if (can_issue) as <= A_AR; end   // arlen settled a cycle before arvalid (the sideband DMA's lesson); a burst goes only with room reserved
                 A_AR: if (m_axi_arready) begin
@@ -161,7 +183,9 @@ module mf_project
                     if (beats == 16'(len)) begin line <= line + 1; as <= A_LINE; end
                     else as <= A_LEN;
                 end
-                A_DRAIN: if (inflight == '0 && bq_n == '0 && !pipe_v) as <= A_DONE;   // the last cells written
+                A_DRAIN: if (inflight == '0 && bq_n == '0 && !pipe_v) begin            // the band's last cells written
+                    bands_done <= bands_done + 1'b1; b_y0 <= b_y0 + (MIW-1)'(8); as <= A_BGO;
+                end
                 A_DONE: begin mf_done <= 1'b1; as <= A_IDLE; end
                 default: as <= A_IDLE;
             endcase

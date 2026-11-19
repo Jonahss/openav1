@@ -162,7 +162,7 @@ module dec_top
             .m_axi_araddr(ld_araddr), .m_axi_arlen(ld_arlen), .m_axi_arsize(ld_arsize), .m_axi_arburst(ld_arburst), .m_axi_arcache(ld_arcache), .m_axi_arprot(ld_arprot),
             .m_axi_arvalid(ld_arvalid), .m_axi_arready(ld_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(ld_rvalid), .m_axi_rready(ld_rready),
             .sp_we(ld_sp_we), .sp_wrow(ld_sp_wrow), .sp_wwc(ld_sp_wwc), .sp_wdata(ld_sp_wdata), .def_we(ld_def_we), .def_addr(ld_def_addr), .def_data(ld_def_data));
-        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(!fsl_busy), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
+        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(!fsl_busy), .band_go(1'b1), .bands_done(), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
             .src_tocur(mf_src_tocur), .src_off(mf_src_off), .dst_dist(mf_dst_dist), .mf_busy(pj_busy), .mf_done(pj_done), .mf_err(pj_err),
             .m_axi_araddr(pj_araddr), .m_axi_arlen(pj_arlen), .m_axi_arsize(pj_arsize), .m_axi_arburst(pj_arburst), .m_axi_arcache(pj_arcache), .m_axi_arprot(pj_arprot),
             .m_axi_arvalid(pj_arvalid), .m_axi_arready(pj_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(pj_rvalid), .m_axi_rready(pj_rready),
