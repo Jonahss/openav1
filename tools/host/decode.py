@@ -168,13 +168,10 @@ def main():
     ap.add_argument("--show", action="store_true", help="with --dma / --dma-base: also put each picture on the screen (8-bit 4:2:0, RGB565 fb0); with --xdma: every output picture on the host's /dev/fb0 (32 bpp, 1:1 from the top-left corner)")
     ap.add_argument("--flip", action="store_true", help="with --show: the picture turned by 180 degrees (panel mounted upside down)")
     ap.add_argument("--window", action="store_true", help="window build (FRAME_WIN > 0): rows flushed to DDR as they finish; implies --dma")
-    ap.add_argument("--inter", action="store_true", help="RING build with inter: every stage under the sequencer, the model decoding alongside for the "
-                    "frame sequence, references = the flushed pictures in a pool of --pool frame buffers in the DMA region; implies --window")
+    ap.add_argument("--inter", action="store_true", help="RING build with inter: every stage under the sequencer, references = the flushed pictures in a pool "
+                    "of --pool frame buffers in the DMA region, the frame-to-frame state kept and loaded by the card itself (docs/frame-state.md: "
+                    "segment map, CDF rows, motion-field projection); every frame must fit the image; implies --window")
     ap.add_argument("--pool", type=int, default=10, help="with --inter: frame buffers carved from the DMA region (at least 9: 8 reference slots + the frame being decoded; 8 stalled the 1080p clip at frame 8, 2026-10-30)")
-    ap.add_argument("--card-state", action="store_true", help="with --inter: no model on the host; the frame-to-frame state comes back from the card "
-                    "(the sideband areas + CDF read-back, docs/frame-state.md stage A); every frame must fit the image")
-    ap.add_argument("--card-load", action="store_true", help="with --inter: stage B of docs/frame-state.md (implies --card-state): the card loads the "
-                    "segment map and the CDF rows from its own areas, saves the CDF rows and projects the motion field; the host keeps the slot table")
     ap.add_argument("--dma-base", type=lambda x: int(x, 0), help="DMA target: a reserved physical region (with --dma-size) instead of the framebuffer's spare lines")
     ap.add_argument("--dma-size", type=lambda x: int(x, 0), default=256 << 20)
     ap.add_argument("--xdma", type=int, metavar="N", help="Alveo U200 host path: registers through /dev/xdmaN_user, pictures in the card's DDR4 "
@@ -272,40 +269,36 @@ def main():
 
     def frames():
         if args.inter:
-            for fi, hdr, planes, mp, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read, stage.write), name=Path(args.stream).name, card_state=args.card_state,
-                                                                   card_load=args.card_load, pool=args.pool, want_planes=bool(out or ref or y4m or screen)):
+            for fi, hdr, planes, t in host.decode_frames_inter(d, (stage.base, stage.stage_len, stage.read), name=Path(args.stream).name,
+                                                               pool=args.pool, want_planes=bool(out or ref or y4m or screen)):
                 t["lf"] = t.get("filters", 0.0)
-                t["tiles"] = t.get("tiles", 0.0) + t.get("model", 0.0) + t.get("setup", 0.0)
+                t["tiles"] = t.get("tiles", 0.0) + t.get("setup", 0.0)
                 t["read"] = t.get("read", 0.0)
-                if t.get("model_only"):
-                    t["model_planes"] = mp
                 yield fi, hdr, planes, t
         else:
             yield from host.decode_frames(d, name=Path(args.stream).name, packed=not args.single,
                                           dma=(stage.base, stage.read) if stage else None,
                                           want_planes=bool(out or ref or y4m or screen) or stage is None, window=args.window)
-    pending = {}                                 # coded frame -> (hdr, planes, from the model?) until its last display
+    pending = {}                                 # coded frame -> (hdr, planes) until its last display
     phase = {"tiles": 0.0, "finish": 0.0, "lf": 0.0, "read": 0.0, "n": 0}   # host phase totals over the board-decoded frames
     ev_next = 0                                  # the next output picture to emit
-    n_model_bad = 0
 
     def emit():
         """Output pictures in display order, as far as the decoded frames allow: the comparison with the reference
         and the -o / --y4m writes happen here, once per display (show_existing_frame repeats a picture)."""
-        nonlocal ev_next, n_bad_frames, n_model_bad, y4m_hdr
+        nonlocal ev_next, n_bad_frames, y4m_hdr
         while ev_next < len(shown) and shown[ev_next] in pending:
             k = shown[ev_next]
-            hdr_k, planes_k, from_model = pending[k]
-            line = f"  shown #{ev_next} = coded frame {k}" + (" (model picture)" if from_model else "")
+            hdr_k, planes_k = pending[k]
+            line = f"  shown #{ev_next} = coded frame {k}"
             if screen is not None:
                 screen.show(hdr_k, planes_k)
             if ref is not None and planes_k is not None:
                 lo, hi = ref_events[ev_next]
                 bad = compare(ref[lo:hi], hdr_k, planes_k)
                 if bad:
-                    if from_model: n_model_bad += 1
-                    else: n_bad_frames += 1
-                    line += f": {len(bad)} samples differ (plane, y, x, {'model' if from_model else 'board'}, reference): {bad[:args.max_bad]}"
+                    n_bad_frames += 1
+                    line += f": {len(bad)} samples differ (plane, y, x, board, reference): {bad[:args.max_bad]}"
                 else:
                     line += ": identical to the reference"
             if planes_k is not None and out is not None:
@@ -359,18 +352,9 @@ def main():
             fmt = "mono" if hdr.NumPlanes == 1 else ("444" if not hdr.subsampling_x else ("420" if hdr.subsampling_y else "422"))
             line = (f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}, {len(d.frames[fi])} tile(s): "
                     f"tiles {t['tiles']:.2f}s, lf {t['lf']:.2f}s, read-back {t['read']:.2f}s")
-            if not t.get("model_only"):
-                for k in ("tiles", "finish", "lf", "read"):
-                    phase[k] += t.get(k, 0.0)
-                phase["n"] += 1
-            if t.get("model_only"):
-                # the image could not take this frame: the model decoded it and the card got its picture as a reference
-                line = f"frame {fi}: {W}x{H} {fmt} bd{hdr.BitDepth}: model only ({t['model_only']})"
-                print(line, flush=True)
-                if owed[fi]:
-                    pending[fi] = (hdr, t["model_planes"], True)
-                    emit()
-                continue
+            for k in ("tiles", "finish", "lf", "read"):
+                phase[k] += t.get(k, 0.0)
+            phase["n"] += 1
             if owed[fi] == 0:
                 line += " (never shown)"
             if t.get("fsb"):
@@ -379,13 +363,9 @@ def main():
                          + (f", motion field projected from {f_['mf_srcs']} source(s)" if f_["mf_srcs"] is not None else "")
                          + (f"; CDF rows saved at 0x{f_['cdf_base']:x}" if f_["saved"] else "; frame-end CDF update disabled")
                          + f", MV words at 0x{f_['mv_base']:x}, segment ids at 0x{f_['seg_base']:x}")
-            elif t.get("fs"):
-                f_ = t["fs"]
-                line += (f"\n        state -> card DDR: MV words at 0x{f_['mv_base']:x} ({f_['mv_bytes']} bytes, {f_['refs']} cells with a saved reference), "
-                         f"segment ids at 0x{f_['seg_base']:x} ({f_['seg_bytes']} bytes); {f_['cdf_rows']} CDF rows read back")
             print(line, flush=True)
             if owed[fi]:
-                pending[fi] = (hdr, planes, False)
+                pending[fi] = (hdr, planes)
                 emit()
     except HostError as e:
         print(f"error: {e}")
@@ -400,8 +380,8 @@ def main():
     print(f"{s['frames']} frames, {s['tiles']} tiles, {s['bytes']} stream bytes, {s['pixels']} samples read back, "
           f"{s['writes']} register writes + {s['reads']} reads in {dt_all:.1f}s ({s['frames'] / dt_all:.1f} fps); "
           f"{ev_next} of {len(shown)} pictures output"
-          + (f"; card-side state: {s.get('ld_frames', 0)} loads, {s.get('sv_frames', 0)} CDF saves, {s.get('mf_srcs', 0)} projected sources; host waits: loads {s.get('ld_time', 0.0):.2f}s, CDF saves {s.get('sv_time', 0.0):.2f}s" if args.card_load else "")
-          + (f"; {n_bad_frames} board picture(s) and {n_model_bad} model picture(s) differ from the reference" if ref is not None else ""))
+          + (f"; card-side state: {s.get('ld_frames', 0)} loads, {s.get('sv_frames', 0)} CDF saves, {s.get('mf_srcs', 0)} projected sources; host waits: loads {s.get('ld_time', 0.0):.2f}s, CDF saves {s.get('sv_time', 0.0):.2f}s" if args.inter else "")
+          + (f"; {n_bad_frames} board picture(s) differ from the reference" if ref is not None else ""))
     if phase["n"]:
         n = phase["n"]; other = dt_all - phase["tiles"] - phase["lf"] - phase["read"]
         print(f"host phases per board frame ({n}): tiles {1000 * phase['tiles'] / n:.1f} ms, filter tail {1000 * phase['lf'] / n:.1f} ms "
@@ -417,7 +397,7 @@ def main():
         print(f"tiles ({n}): {1000 * tile / n:.1f} ms a tile on the host, the push ends after {1000 * push / n:.1f} ms; card counters a tile: "
               f"syntax waited for reconstruction {sum(r['syn_stall'] for r in pt) / n:,.0f} cycles, reconstruction idle "
               f"{sum(r['rec_idle'] for r in pt) / n:,.0f} cycles; {sum(r['bytes'] for r in pt) / n:,.0f} bytes a tile -> {args.perf_tiles}")
-    sys.exit(1 if (n_bad_frames or n_model_bad) else 0)
+    sys.exit(1 if n_bad_frames else 0)
 
 
 if __name__ == "__main__":

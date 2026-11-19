@@ -74,11 +74,12 @@ picture is the reference the next frames fetch (`R_SLOT` table).
 After each frame the host reads the picture back (`XdmaStage.read`, `unpack_dma` at 272) and `decode.py` writes it
 (`write_planes` for raw, or the `.y4m` at line ~314) and compares it with the reference if one was given.
 
-The honest part: in the inter path the Python model decodes every tile first (`decode_frames_inter`, comment at 741,
-loop at ~812), because the card needs, per frame, the CDF rows inherited from an earlier frame, the motion-field bands
-and the segmentation map, and that frame-to-frame state machine (`tb/seq_model.py`) lives on the host today. The card
-does every pixel; the host hands it each frame's context. Moving that state onto the card is the next block. The intra
-path (`--window`, `MODE=--window` in the demo script) runs without the model: 10 fps for 1080p intra on the U200.
+In the inter path the host carries no decoder state: the frame-to-frame state (the CDF rows a frame inherits, the
+segmentation map, the saved motion vectors the motion field is projected from) stays on the card, next to each
+picture in DDR, and the card loads it itself (`rtl/fs_load.sv`, `rtl/mf_project.sv`; `docs/frame-state.md`,
+`docs/motion-field-band.md`). The host keeps the slot table: which buffer holds which reference and where its state
+areas are (`CardSequenceState` in `tb/seq_model.py`). Until 2026-11-19 `decode_frames_inter` could also run the
+Python model beside the card and write that state through registers; that path is gone.
 
 ## 7. Where the trust comes from
 

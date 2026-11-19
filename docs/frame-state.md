@@ -145,3 +145,19 @@ What changed:
 Expected at 1080p with 48-cycle reads: clear 32k (hidden behind the segment map / CDF load), ~16k + 32k cycles a
 source (reads, then cells; the two overlap), segment map ~17k, CDF rows ~6k: a P-frame with one source ~60k
 cycles, 0.6 ms, from ~500k. `test_dec_host_inter` reports the loader group's wait as `ld_cycles` in its summary.
+
+## 7. Stage A retired (2026-11-19)
+
+The motion field became a 32-row band in window builds (`docs/motion-field-band.md`), which no host can fill through
+registers. With that the two older ways of handing a frame its state are gone, in the RTL and in the software:
+
+- `dec_host` registers 0x300 .. 0x310 (MF_ADDR / MF_DATA, SP_ADDR / SP_DATA0 / SP_DATA1) are removed. `dec_top` keeps
+  its `mf_we` / `sp_we` ports for the testbenches that drive it directly (builds without the loader: whole-frame field).
+- `decode_frames_inter` has one way left, the one section 5 describes (`decode.py --inter`; `--card-state` and
+  `--card-load` are gone, and with them the host model running beside the card, the model-only fallback for frames the
+  image cannot take, and `seq_model`'s numpy projection with its self-test).
+- The twin (`tb/test_dec_host_inter.py`) always runs as the card does; `TS_FSTATE_B` and `TS_FSTATE_MF` are gone.
+  Frames only the model decodes get their state uploaded into the area formats the card writes.
+
+What the card can no longer do as a result: decode a stream in which some frame is outside the image's limits by
+letting the host model stand in for that frame. The twin still can.

@@ -4,8 +4,7 @@
 # returns over PCIe is written as YUV4MPEG2 (tools/host/decode.py --y4m), then ffmpeg encodes that to H.264 so it
 # plays anywhere. The pictures in the file are the card's own output, not dav1d's: pass --ref <dav1d .yuv> to also
 # compare them frame by frame on the way (2026-10-30, for the AOM symposium demo).
-# MODE=--window (default --inter): the intra-only path, no Python model on the host, the card alone at full speed;
-# --inter streams still need the host model for the frame-to-frame state (CDF rows, motion field, segmentation).
+# MODE=--window (default --inter): the intra-only path.
 set -euo pipefail
 [ $# -ge 2 ] || { echo "usage: $0 <stream> <out.mp4> [decode.py options]" >&2; exit 2; }
 stream=$1; out=$2; shift 2

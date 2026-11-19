@@ -2,8 +2,8 @@
 # gate.sh (2026-11-18; before: pf_gate_chain.sh and seven per-branch copies of it): the gate rung of a change. The whole
 # decoder (dec_host: FBX/FBY 9, TE 1, REF_RING 8, FRAME_WIN 5, FRAME_WIN2 3) is synthesised out of context, its funcsim
 # netlist is built under Verilator (vgate), and five recorded shards of 450k cycles are replayed against it: every
-# output of every cycle must equal what the RTL gave. The shards run with the card-side load of the frame state
-# (TS_FSTATE_B=1: segment map, CDF rows and the motion-field projection read from the areas in DDR).
+# output of every cycle must equal what the RTL gave. The shards run as the card does: segment map, CDF rows and the
+# motion-field projection read from the areas in DDR.
 #   PFW=<detached worktree at the commit> PFTAG=<name> [PFM=<synth tag>] [CHG=CHG-n] nohup setsid bin/gate.sh &
 # Verdict and steps in ~/measure1080/pf_gate<PFTAG>.txt (last line PF_GATE_DONE or PF_GATE_ABORT); a ticket on the Builds
 # board, closed however the script ends. How:
@@ -56,7 +56,7 @@ if diff <(grep -o -- "--in [^ ]*" ~/gate/dec_host9m2/gen_replay.lists | head -1)
 else echo "IN LIST CHANGED vs dec_host9m2: abort, not a note" >> $L; echo PF_GATE_ABORT >> $L; exit 1; fi
 # C. the recordings, one after another (they share the build directory), against the card-like memory
 A=$W/streams/argon/profile0_core/streams
-P="TS_FSTATE_B=1 REF_RING=8 TE=1 SB128=0 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 WAVES=1 WAVE_FMT=vcd WAVE_DEPTH=1 TS_AXI_LAT=48 TS_AXI_OUT=16"
+P="REF_RING=8 TE=1 SB128=0 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 WAVES=1 WAVE_FMT=vcd WAVE_DEPTH=1 TS_AXI_LAT=48 TS_AXI_OUT=16"
 rm -rf $W/build/dec_host_fb9x9*
 shards=""
 for spec in "${SP}a::$W/streams/inter/mf_small_8bit.ivf" "${SP}b::$W/streams/inter/inter2a_8bit.ivf" "${SP}c::$W/streams/inter/inter_obmc_8bit.ivf" "${SP}d::$A/test47.obu" "${SP}e::$A/test7588_6663.obu"; do

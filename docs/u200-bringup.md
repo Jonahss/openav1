@@ -137,7 +137,7 @@ the final picture is flushed row by row to DDR and the references are read back 
 `ref_fetch`. The whole-picture-in-URAM and DDR-line-buffer routes that stood here are superseded: the rings are the
 throughput-grade memory (the line-buffer version is step C, for silicon). Synthesis at 1080p geometry
 (FBX = FBY = 11): 207.5k LUT, 255 URAM, 204 BRAM, 820 DSP for `dec_host` alone. The register map and host software
-gained the inter protocol (`tb/host_regs.py`: `seg_map_seq`, `motion_field_seq`, `ref_seq`,
+gained the inter protocol (`tb/host_regs.py`: `seg_map_seq`, `motion_field_seq` (both removed 2026-11-19: the card loads that state itself), `ref_seq`,
 `HostDecoder.decode_frames_inter`; `tools/host/decode.py --inter`), which `tb/test_dec_host_inter.py` verified
 against the model on the generated inter streams and the Argon streams test47 (multi-tile rows, super-res), test6641,
 test648 and test8854 (super-res + CDEF + LR).
@@ -178,7 +178,7 @@ Inter day one on the card, after the intra checklist above:
 frame buffer on UltraRAM rings (`docs/picture-memory.md`, step A: fb0 + its mirror fb0m, SR's fb0s, fb1, fb2),
 CDEF / super-res / LR under the frame sequencer, the final picture flushed row by row to DDR and the references
 read from those flushed pictures by `ref_fetch`. Host protocol per frame (tb/test_dec_host_inter.py, the
-software's reference): reset; for inter frames the bands (`seg_map_seq`, `motion_field_seq`) and the slot table
+software's reference; as it was then, the bands are loaded by the card since `docs/frame-state.md` stage B): reset; for inter frames the bands (`seg_map_seq`, `motion_field_seq`) and the slot table
 + REF_SLOT / REF_CFG (`ref_seq`, pointing at earlier frames' flush targets); DMA planes + AUTO at a fresh flush
 target, LH, CH (CDEF on), CTRL pipe + tile columns, START frame; the tiles with the inherited CDF rows; poll
 frame_done; poll DMA flush idle. A frame's flush target becomes its reference slots' address.

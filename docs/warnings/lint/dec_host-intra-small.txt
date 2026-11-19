@@ -75,78 +75,78 @@
 %Warning-PINCONNECTEMPTY: rtl/dec_top.sv:536:56: Instance pin connected by name with empty reference: 'cdr_val'
   536 |             .cdr_row64(SBW'(0)), .cdr_col64(SBW'(0)), .cdr_val(),
       |                                                        ^~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:278:114: Instance pin connected by name with empty reference: 'tile_done'
-  278 |         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done(), .tile_done_lvl, .unsupported, .mem_err, .perf_syn_stall, .perf_rec_idle,
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:270:114: Instance pin connected by name with empty reference: 'tile_done'
+  270 |         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done(), .tile_done_lvl, .unsupported, .mem_err, .perf_syn_stall, .perf_rec_idle,
       |                                                                                                                  ^~~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:279:74: Instance pin connected by name with empty reference: 'frame_done'
-  279 |         .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done(), .frame_done_lvl,
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:271:74: Instance pin connected by name with empty reference: 'frame_done'
+  271 |         .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done(), .frame_done_lvl,
       |                                                                          ^~~~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:280:22: Instance pin connected by name with empty reference: 'row_final_idx'
-  280 |         .row_final, .row_final_idx(), .flush_done,
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:272:22: Instance pin connected by name with empty reference: 'row_final_idx'
+  272 |         .row_final, .row_final_idx(), .flush_done,
       |                      ^~~~~~~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:282:10: Instance pin connected by name with empty reference: 'blk_done'
-  282 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:274:10: Instance pin connected by name with empty reference: 'blk_done'
+  274 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
       |          ^~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:282:23: Instance pin connected by name with empty reference: 'blk_rec'
-  282 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:274:23: Instance pin connected by name with empty reference: 'blk_rec'
+  274 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
       |                       ^~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:282:35: Instance pin connected by name with empty reference: 'tx_done'
-  282 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:274:35: Instance pin connected by name with empty reference: 'tx_done'
+  274 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
       |                                   ^~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:282:47: Instance pin connected by name with empty reference: 'tx_rec'
-  282 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:274:47: Instance pin connected by name with empty reference: 'tx_rec'
+  274 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
       |                                               ^~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:282:58: Instance pin connected by name with empty reference: 'lr_done'
-  282 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:274:58: Instance pin connected by name with empty reference: 'lr_done'
+  274 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
       |                                                          ^~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:282:70: Instance pin connected by name with empty reference: 'lr_rec'
-  282 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
+%Warning-PINCONNECTEMPTY: rtl/dec_host.sv:274:70: Instance pin connected by name with empty reference: 'lr_rec'
+  274 |         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
       |                                                                      ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:144:25: Bits of signal are not used: 'm_axi_bresp'[0]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:140:25: Bits of signal are not used: 'm_axi_bresp'[0]
                                              : ... note: In instance 'dec_host'
-  144 |     input  logic [1:0]  m_axi_bresp,
+  140 |     input  logic [1:0]  m_axi_bresp,
       |                         ^~~~~~~~~~~
                        ... For warning description see https://verilator.org/warn/UNUSEDSIGNAL?v=5.053
                        ... Use "/* verilator lint_off UNUSEDSIGNAL */" and lint_on around source to disable this message.
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:183:19: Bits of signal are not used: 'hdr_f'[511:245]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:179:19: Bits of signal are not used: 'hdr_f'[511:245]
                                              : ... note: In instance 'dec_host'
-  183 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+  179 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
       |                   ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:183:26: Bits of signal are not used: 'rh_f'[511:213]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:179:26: Bits of signal are not used: 'rh_f'[511:213]
                                              : ... note: In instance 'dec_host'
-  183 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+  179 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
       |                          ^~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:183:32: Bits of signal are not used: 'lh_f'[511:385]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:179:32: Bits of signal are not used: 'lh_f'[511:385]
                                              : ... note: In instance 'dec_host'
-  183 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+  179 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
       |                                ^~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:183:38: Bits of signal are not used: 'ch_f'[511:101]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:179:38: Bits of signal are not used: 'ch_f'[511:101]
                                              : ... note: In instance 'dec_host'
-  183 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
+  179 |     logic [511:0] hdr_f, rh_f, lh_f, ch_f;
       |                                      ^~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:184:20: Bits of signal are not used: 'ih_f'[2047:1175]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:180:20: Bits of signal are not used: 'ih_f'[2047:1175]
                                              : ... note: In instance 'dec_host'
-  184 |     logic [2047:0] ih_f;
+  180 |     logic [2047:0] ih_f;
       |                    ^~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:208:24: Bits of signal are not used: 'start'[5:2]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:200:24: Bits of signal are not used: 'start'[5:2]
                                              : ... note: In instance 'dec_host'
-  208 |     logic [7:0]        start;                                 
+  200 |     logic [7:0]        start;                                 
       |                        ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:420:27: Bits of signal are not used: 'd_g1'[47:44,35:32,23:20,11:8]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:412:27: Bits of signal are not used: 'd_g1'[47:44,35:32,23:20,11:8]
                                              : ... note: In instance 'dec_host'
-  420 |     logic [47:0]    d_g0, d_g1;                               
+  412 |     logic [47:0]    d_g0, d_g1;                               
       |                           ^~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:691:18: Bits of signal are not used: 'aw_a'[1:0]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:683:18: Bits of signal are not used: 'aw_a'[1:0]
                                              : ... note: In instance 'dec_host'
-  691 |     logic [11:0] aw_a, ar_a;
+  683 |     logic [11:0] aw_a, ar_a;
       |                  ^~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:691:24: Bits of signal are not used: 'ar_a'[1:0]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:683:24: Bits of signal are not used: 'ar_a'[1:0]
                                              : ... note: In instance 'dec_host'
-  691 |     logic [11:0] aw_a, ar_a;
+  683 |     logic [11:0] aw_a, ar_a;
       |                        ^~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:713:18: Bits of signal are not used: 'ctrl_nx'[31:25,23:0]
+%Warning-UNUSEDSIGNAL: rtl/dec_host.sv:705:18: Bits of signal are not used: 'ctrl_nx'[31:25,23:0]
                                              : ... note: In instance 'dec_host'
-  713 |     logic [31:0] ctrl_nx;                                    
+  705 |     logic [31:0] ctrl_nx;                                    
       |                  ^~~~~~~
 %Warning-UNUSEDSIGNAL: rtl/dec_top.sv:23:31: Signal is not used: 'clk2x'
                                            : ... note: In instance 'dec_host.u_dec'
@@ -1827,5 +1827,5 @@
    50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
       |                                                        ^~~
 - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
-- Verilator: Built from 62.869 MB sources in 74 modules, into 34.254 MB in 47 C++ files needing 0.000 MB
-- Verilator: Walltime 6.763 s (elab=0.777, cvt=5.157, bld=0.000); cpu 6.763 s on 1 threads; allocated 291.859 MB
+- Verilator: Built from 62.866 MB sources in 74 modules, into 33.879 MB in 48 C++ files needing 0.000 MB
+- Verilator: Walltime 6.704 s (elab=0.775, cvt=5.103, bld=0.000); cpu 6.703 s on 1 threads; allocated 289.797 MB

@@ -39,12 +39,8 @@
 //   0x080-0x0BC HDR[0..15]  RW  syn_pkg::hdr_t     0x0C0-0x0FC RH[0..15]  RW  rec_hdr_t
 //   0x100-0x13C LH[0..15]   RW  lf_hdr_t           0x140-0x17C CH[0..15]  RW  cdef_hdr_t
 //   0x200-0x2FC IH[0..63]   RW  syn_pkg::ihdr_t (the inter frame header; zero for intra frames)
-//   Inter frame bands (stage 1: written by the host before the frame; a projection engine takes over in stage 2):
-//   0x300 MF_ADDR   RW  motion field entry {valid[31], ref[26:24] (LAST_FRAME = 0), y8[23:12], x8[11:0]}
-//   0x304 MF_DATA   W   {row[31:16], col[15:0]} (1/8 samples, signed): the write stores the entry at MF_ADDR
-//   0x308 SP_ADDR   RW  previous segmentation map word {row[27:16], word column[11:0]} (16 ids of 3 bits per word)
-//   0x30C SP_DATA0  RW  ids 0 .. 9 and the low bits of id 10 (bits 31:0 of the 48-bit word)
-//   0x310 SP_DATA1  W   bits 47:32: the write stores the word at SP_ADDR
+//   (0x300 .. 0x310, the host-written motion field and segment map, are gone since 2026-11-19: the card loads the
+//   segment map and projects the motion field itself, registers 0x700 on; docs/frame-state.md, docs/motion-field-band.md)
 //   Reference slot table (stage 2a inter prediction; ref_fetch reads the slots through m_axi's read channels):
 //   0x400 + 0x40 s + 0x10 p   slot s (0..7), plane p (0..2): +0 BASE_LO, +4 BASE_HI (bits 39:32), +8 STRIDE (bytes);
 //   0x400 + 0x40 s + 0x30     slot s SIZE {frame height[31:16], upscaled width[15:0]} in luma samples
@@ -200,10 +196,6 @@ module dec_host
     logic [CDF_AW-1:0] def_addr;
     logic              rb_en, rb_l1;                 // cdf read-back: request pulse, row-in cycle
     logic [245:0]      rb_data;
-    logic [31:0]       mf_addr_r, sp_addr_r, sp_d0;    // inter frame band writes
-    logic              mf_we, sp_we;
-    logic [31:0]       mf_wd;
-    logic [15:0]       sp_d1;
     logic [245:0]      def_data;
     logic [7:0]        start;                                // tile, frame, (2-5 unused), state load, cdf save
     logic              tile_busy, tile_done_lvl, unsupported;
@@ -269,9 +261,9 @@ module dec_host
         .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_rb_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
         .ld_start(start[6]), .ld_cfg(ld_cfg_r[3:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy, .ld_done, .ld_err,
         .mf_nsrc(mf_nsrc_r[2:0]), .mf_src_base, .mf_src_rowb, .mf_src_sign, .mf_src_tocur, .mf_src_off, .mf_dst_dist,
-        .mf_we(mf_we ? 7'(7'd1 << mf_addr_r[26:24]) : 7'd0), .mf_wy8((MIW-1)'(mf_addr_r[23:12])), .mf_wx8((MIW-1)'(mf_addr_r[11:0])), .mf_wvalid(mf_addr_r[31]),
-        .mf_wrow({7{mf_wd[31:16]}}), .mf_wcol({7{mf_wd[15:0]}}),
-        .sp_we, .sp_wrow(MIW'(sp_addr_r[27:16])), .sp_wwc((MIW-4)'(sp_addr_r[11:0])), .sp_wdata({sp_d1, sp_d0}),
+        // the motion-field and segment-map write ports are the dec_top testbenches' (builds without the loader); here the card loads both
+        .mf_we(7'd0), .mf_wy8('0), .mf_wx8('0), .mf_wvalid(1'b0), .mf_wrow('0), .mf_wcol('0),
+        .sp_we(1'b0), .sp_wrow('0), .sp_wwc('0), .sp_wdata('0),
         .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]), .cur_planes, .cur_fmt16(fmt16),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
@@ -719,8 +711,7 @@ module dec_host
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
             for (int i = 0; i < 64; i++) ih_w[i] <= '0;
-            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0; mf_we <= 1'b0; sp_we <= 1'b0;
-            mf_addr_r <= '0; sp_addr_r <= '0; sp_d0 <= '0; sp_d1 <= '0; mf_wd <= '0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0;
             dma_cfg <= '0; dma_start <= 1'b0;
             fs_cfg <= '0; fs_mv_base <= '0; fs_seg_base <= '0; fs_mv_rowb <= '0; fs_seg_rowb <= '0;
             ld_cfg_r <= '0; ld_seg_base <= '0; ld_seg_rowb <= '0; ld_cdf_base <= '0; sv_cdf_base <= '0; sv_eng <= '0;
@@ -730,7 +721,7 @@ module dec_host
             ref_slot_r <= '0; ref_cfg_r <= '0;
         end else begin
             start <= '0; push <= 1'b0; def_we <= 1'b0; h_fetch <= 1'b0; dma_start <= 1'b0;
-            rb_en <= 1'b0; rb_l1 <= rb_en; mf_we <= 1'b0; sp_we <= 1'b0;
+            rb_en <= 1'b0; rb_l1 <= rb_en;
             if (rb_l1) begin for (int i = 0; i < 7; i++) def_w[i] <= rb_data[32*i +: 32]; def_w[7] <= 32'(rb_data[245:224]); end
             if (ctrl[0]) f_badw <= 1'b0;
             if (s_axi_awvalid && s_axi_awready) begin aw_a <= s_axi_awaddr; aw_v <= 1'b1; end
@@ -779,12 +770,6 @@ module dec_host
                     10'h1CA: mf_dst_dist[31:0] <= strb(mf_dst_dist[31:0], w_d, w_s);                          // 0x728
                     10'h1CB: mf_dst_dist[55:32] <= w_d[23:0];                                                 // 0x72C
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
-                    // 0x300 .. 0x310: the inter frame bands (motion field, previous segment ids); no-ops at INTER = 0
-                    10'h0C0: if (INTER != 0) mf_addr_r <= strb(mf_addr_r, w_d, w_s);                          // 0x300
-                    10'h0C1: if (INTER != 0) begin mf_wd <= w_d; mf_we <= 1'b1; end                           // 0x304
-                    10'h0C2: if (INTER != 0) sp_addr_r <= strb(sp_addr_r, w_d, w_s);                          // 0x308
-                    10'h0C3: if (INTER != 0) sp_d0 <= strb(sp_d0, w_d, w_s);                                  // 0x30C
-                    10'h0C4: if (INTER != 0) begin sp_d1 <= w_d[15:0]; sp_we <= 1'b1; end                     // 0x310
                     10'h180: if (INTER != 0) ref_slot_r <= 21'(strb({11'd0, ref_slot_r}, w_d, w_s));             // 0x600 (no select on a function call: Vivado Synth 8-12513)
                     10'h181: if (INTER != 0) ref_cfg_r <= strb(ref_cfg_r, w_d, w_s);                          // 0x604
                     default: begin
@@ -874,11 +859,8 @@ module dec_host
                     10'h1C9: s_axi_rdata <= mf_nsrc_r;
                     10'h1CA: s_axi_rdata <= mf_dst_dist[31:0];
                     10'h1CB: s_axi_rdata <= {8'd0, mf_dst_dist[55:32]};
-                    10'h0C0: s_axi_rdata <= mf_addr_r;
                     10'h180: s_axi_rdata <= {11'd0, ref_slot_r};
                     10'h181: s_axi_rdata <= ref_cfg_r;
-                    10'h0C2: s_axi_rdata <= sp_addr_r;
-                    10'h0C3: s_axi_rdata <= sp_d0;
                     10'h00A: s_axi_rdata <= {20'd0, hbuf[0]};
                     10'h00C: begin s_axi_rdata <= {4'd0, hbuf[1], 4'd0, hbuf[0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(2); h_fetch <= 1'b1; end
                     10'h00D: begin s_axi_rdata <= {hbuf[3][7:0], hbuf[2][7:0], hbuf[1][7:0], hbuf[0][7:0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(4); h_fetch <= 1'b1; end
