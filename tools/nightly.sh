@@ -115,6 +115,7 @@ run lf_filt_unit       python tb/runner.py lf_filt          # the deblocking sam
 run lf_filt_pipe       LFF_PIPE=1 python tb/runner.py lf_filt   # the same filter in its two-stage form (PIPE = 1): outputs from the stage registers alone
 run lf_stream_unit     TS_SEEDS=2,3,7,8,9,10,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the streaming deblock stage vs lf_model, band by band (seeds 7, 20, 47, 70: samples that depend on the last column's vertical edge)
 run edge_line_unit     python tb/runner.py edge_line        # the unfiltered last-line copy (intra edge reads; LF a row earlier) vs a model
+run axi_rd_share_unit  python tb/runner.py axi_rd_share   # two readers on one AXI read channel (reference fetch + the motion-field projection): 800 random bursts, answers in order
 run mc_filt_unit       python tb/runner.py mc_filt          # the motion-compensation filter vs the model: fuzz + back-to-back (overlapped) runs
 run tile_syntax_plain  TS_SCREEN=0 TS_SEEDS=12 python tb/runner.py tile_syntax
 run tile_syntax_screen TS_SCREEN=1 TS_SEEDS=24 python tb/runner.py tile_syntax
