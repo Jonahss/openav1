@@ -130,3 +130,8 @@ With the three switched-off kinds enabled: 312 UNUSEDSIGNAL, 196 UNUSEDPARAM, 8 
   are new and waived as benign: `dec_host` `start[5:2]` (the START bits of the removed stages: written by older host
   software, read by nothing) and unused fields of `dec_top`'s `cd_rd_info` (the chain takes only the skip flag from the
   second mode-info read).
+- **No signal is unused in every configuration any more** (`docs/warnings/lint/dead-in-all.txt` is empty). With the
+  chain in every build, eleven dead signals of its modules and their neighbours showed in all three lints: a register
+  written and never read in `blk_ctx` (`t_aw`) and in `cdef_stream` (`filt`), an input of `recon_top` nothing used
+  (`ev_blk`), and eight submodule outputs that are now explicitly open pins (`dec_top` `tx_inflight`, `fc_plane`
+  `n_seg_up_b` / `su_last`, `fc_top` `p_busy`, `lr_stream` `h_v` / `ab_v1`, `tile_syntax` `resp_rng` / `c_busy`).

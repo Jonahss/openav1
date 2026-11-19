@@ -16,7 +16,7 @@ ENV="FBX=11 FBY=11 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 
 echo "bisect $stream frame $frame: $* ($(date -u +%H:%MZ), env $ENV)" >> $V
 for sha in "$@"; do
   wt=~/bisect/wt-$sha
-  ~/bin/wt-setup.sh $wt $sha > ~/logs/bisect-setup-$sha.log 2>&1 || { echo "$sha: SETUP FAILED ($(tail -n 1 ~/logs/bisect-setup-$sha.log | cut -c1-80))" >> $V; continue; }
+  "$(dirname "$0")/../bin/wt_setup.sh" $wt $sha > ~/logs/bisect-setup-$sha.log 2>&1 || { echo "$sha: SETUP FAILED ($(tail -n 1 ~/logs/bisect-setup-$sha.log | cut -c1-80))" >> $V; continue; }
   ( cd $wt && source env.sh && t0=$(date +%s) && env $ENV TS_IVF=$A/$stream.obu python tb/runner.py dec_host test_dec_host_inter > ~/logs/bisect-$stream-$sha.log 2>&1;
     rc=$?; log=~/logs/bisect-$stream-$sha.log
     if grep -q "OK: {" $log; then v=PASS; elif grep -q "samples differ" $log; then v="FAIL $(grep -m1 -oE 'frame [0-9]+: flushed picture: [0-9]+ samples differ' $log)"; else v="ERROR $(grep -m1 -oE 'AssertionError.*|%Error.*|env: .*' $log | cut -c1-100)"; fi

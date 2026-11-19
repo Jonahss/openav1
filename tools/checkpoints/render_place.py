@@ -78,6 +78,7 @@ ax.set_title(title.replace(" | ", "\n"), loc="left", fontsize=14, fontweight="bo
 handles = []
 for i, (label, _, c) in enumerate(list(GROUPS) + [OTHER]):
     k = counts[i]
+    if not any(k.values()): continue                     # a block this build does not have (older or newer images)
     parts = [f"{k['LUT']:,} LUT"] + ([f"{int(k['DSP'])} DSP"] if k["DSP"] else []) + ([f"{int(k['URAM'])} URAM"] if k["URAM"] else []) + ([f"{k['BRAM']:g} BRAM"] if k["BRAM"] else [])
     handles.append(Patch(facecolor=c, edgecolor="none", label=f"{label}\n   {', '.join(parts)}"))
 leg = ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False, fontsize=10.5, labelspacing=1.1, handlelength=1.6, handleheight=1.6, borderaxespad=0)

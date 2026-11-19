@@ -224,14 +224,14 @@ module dec_top
                    .sp_we(sp_we_i), .sp_wrow(sp_wrow_i), .sp_wwc(sp_wwc_i), .sp_wdata(sp_wdata_i),
                    .tile_start, .tile_busy, .tile_done(ts_done), .unsupported(ts_unsup),
                    .ev_valid, .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .ev_par, .ev_taken, .nb_valid, .nb_blk, .nb_par, .nb_at_head, .nb_pop,
-                   .tx_rel, .tx_inflight, .rc_busy, .rc_col_start, .rc_col_end,
+                   .tx_rel, .tx_inflight(), .rc_busy, .rc_col_start, .rc_col_end,
                    .q_slot_r, .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx,
                    .lr_done, .lr_rec, .blk_done, .blk_rec, .tx_done, .tx_rec, .tx_ack);
     // event queue (inside tile_engines, one per engine): the syntax decoder runs ahead of reconstruction; a palette
     // block is released (blk_ack, per engine inside tile_engines) only once its engine's queue has drained and
     // reconstruction is idle, because its colour map lives in the syntax stage
     logic ev_valid_rc;                              // ev_valid as the reconstruction stage sees it (held by the window)
-    logic ev_valid, ev_pop, tx_rel; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
+    logic ev_valid, ev_pop, tx_rel; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx;
     logic ev_par, ev_taken, nb_valid, nb_par, nb_at_head, nb_pop; blk_rec_t nb_blk;   // early block take (rec_fifo)
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
     logic rc_busy;
@@ -252,7 +252,7 @@ module dec_top
     hdr_t hdr_rc;
     always_comb begin hdr_rc = hdr; hdr_rc.mi_col_start = rc_col_start; hdr_rc.mi_col_end = rc_col_end; end
     recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER), .FRAME_WIN(FRAME_WIN), .REF_RING(REF_RING)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
-                                            .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_blk, .ev_tx, .ev_pop, .tx_rel,
+                                            .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_tx, .ev_pop, .tx_rel,
                                             .ev_par, .ev_taken, .nb_valid, .nb_blk, .nb_par, .nb_at_head, .nb_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
@@ -619,6 +619,31 @@ module dec_top
         if (sb_pop) $display("[win] t=%0t sb_pop row %0d (prev %0d valid %0d)", $time, sb_pop_row, tile_row_prev, tile_row_valid);
         if (hold_rc && !rc_busy && ev_pop) $display("[win] t=%0t hold row %0d (fb0 free %0d, flushed %0d)", $time, sb_pop_row, fb0_free, flushed_cnt);
         if (hold_fc && !fc_pend && !fc_busy) $display("[win] t=%0t hold band %0d (fb2 free %0d)", $time, fc_next, fb2_free);
+    end
+    // the chain's pace inside the decoder (simulation only): the clocks of every band, and at frame_done how long the
+    // chain worked, waited for a decoded row or for a slot in fb2, and how long reconstruction stood held, by cause
+    int rate_band_t, rate_busy, rate_bands, rate_hold_rs, rate_hold_win, rate_hold_fc, rate_wait_row, rate_frame;
+    always_ff @(posedge clk) begin
+        if (rst || frame_start) begin
+            rate_busy <= 0; rate_bands <= 0; rate_hold_rs <= 0; rate_hold_win <= 0; rate_hold_fc <= 0; rate_wait_row <= 0; rate_frame <= 0; rate_band_t <= 0;
+        end else if (seq_active) begin
+            rate_frame <= rate_frame + 1;
+            rate_band_t <= fc_go ? 0 : rate_band_t + 1;
+            if (fc_pend) rate_busy <= rate_busy + 1;
+            if (hold_rs) rate_hold_rs <= rate_hold_rs + 1;
+            else if (hold_rc) rate_hold_win <= rate_hold_win + 1;
+            if (!fc_pend && !fc_busy && (fc_next < n_rows)) begin
+                if (!row_dec(fc_next)) rate_wait_row <= rate_wait_row + 1;
+                else if (hold_fc) rate_hold_fc <= rate_hold_fc + 1;
+            end
+            if (fc_pend && fc_done) begin
+                rate_bands <= rate_bands + 1;
+                $display("[rate] t=%0t band %0d: %0d clocks, %0d x %0d luma samples", $time, fc_next, rate_band_t + 1,
+                         32'(hdr.mi_cols) * 4, (32'(fc_row_last) - 32'(fc_row_first) + 1) * 4);
+            end
+        end
+        if (frame_done) $display("[rate] t=%0t frame: %0d clocks; chain busy %0d in %0d bands, waiting for a decoded row %0d, held by fb2 %0d; reconstruction held by the row store %0d, by the fb0 window %0d",
+                                 $time, rate_frame, rate_busy, rate_bands, rate_wait_row, rate_hold_fc, rate_hold_rs, rate_hold_win);
     end
     // heartbeat (simulation only): the sequencer's state every 2^18 cycles while a frame is active, so a stalled twin
     // shows which stage is waiting for what (and whether simulated time still advances at all)

@@ -57,7 +57,7 @@ module fc_top
     output logic [2:0][CW-1:0]    out_col,
     output logic signed [2:0][8:0] out_y
 );
-    logic [2:0]            p_busy, p_done, p_ovf, p_act, done_l;
+    logic [2:0]            p_done, p_ovf, p_act, done_l;
     logic [2:0][MIW-1:0]   yd_row, yd_col, dw_row, dw_col;
     logic [2:0][6:0]       yd, dw_info;
     logic [2:0]            dw_we, cd_hold;
@@ -80,7 +80,7 @@ module fc_top
     generate for (genvar p = 0; p < 3; p++) begin : g_p
         fc_plane #(.LUMA(p == 0 ? 1 : 0), .NBMAX(NBMAX), .CW(CW)) u_pl (.clk, .rst, .hdr_i(hdr), .lh_i(lh), .ch_i(ch), .plane(2'(p)), .lf_on_i(lf_on[p]), .cdef_on_i(cdef_on),
             .band_start_i(band_start && p_act[p]), .row0_i(row0), .n_blk_i(p == 0 ? n_blk : n_blk_c), .n_col_i(p == 0 ? n_col_y : n_col_c),
-            .first_band_i(first_band), .last_band_i(last_band), .busy(p_busy[p]), .band_done(p_done[p]), .err_ovf(p_ovf[p]),
+            .first_band_i(first_band), .last_band_i(last_band), .busy(), .band_done(p_done[p]), .err_ovf(p_ovf[p]),
             .bk_re(bk_re[p]), .bk_row(bk_row[p]), .bk_col(bk_col[p]), .bk_data(bk_data[p]),
             .rd_row(rd_row[p]), .rd_col(rd_col[p]), .rd_info(rd_info[p]), .txr_plane(txr_plane[p]), .txr_row(txr_row[p]), .txr_col(txr_col[p]),
             .txr_sz(txr_sz[p]), .rd2_row(rd2_row[p]), .rd2_col(rd2_col[p]), .rd2_skip(rd2_skip[p]),

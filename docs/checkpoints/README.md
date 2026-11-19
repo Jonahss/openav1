@@ -11,7 +11,9 @@ A checkpoint is a card image that decodes the reference clip faster than the one
 - **image / commit / clock_mhz**: the bitstream (`u200-<tag>-<commit>`), the RTL commit and the decoder clock.
 - **lut_pct .. dsp_pct**: share of the xcu200's LUTs, registers, block RAM, UltraRAM and DSP blocks used by the whole
   design (decoder + PCIe/DDR4 shell), from the routed build's utilization report. Empty where the build is gone.
-- **layout**: the placement picture of the routed build, coloured by decoder block (from C10 on).
+- **layout**: the placement picture of the routed build, coloured by decoder block. C01 to C09 were drawn on
+  2026-11-19 from the builds that were still on the build machine (C01 and C02 got their image, commit and usage
+  figures then too, from the journal's record of which image each measurement ran on).
 
 `fps.png` plots the unchecked speed from C10 on and the checked speed before it (the dagger on C10 marks the change of
 measurement). It is drawn from the table: `python3 tools/checkpoints/chart.py docs/checkpoints` (SVG, and a PNG when a

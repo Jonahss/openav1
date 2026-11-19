@@ -4,11 +4,17 @@
                           ... For warning description see https://verilator.org/warn/PINCONNECTEMPTY?v=5.053
                           ... Use "/* verilator lint_off PINCONNECTEMPTY */" and lint_on around source to disable this message.
 %Warning-PINCONNECTEMPTY: rtl/tile_syntax.sv:89:43: Instance pin connected by name with empty reference: 'resp_wb_valid'
-   89 |                  .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng, .resp_cdf, .resp_cnt);
+   89 |                  .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng(), .resp_cdf, .resp_cnt);
       |                                           ^~~~~~~~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/tile_syntax.sv:89:61: Instance pin connected by name with empty reference: 'resp_rng'
+   89 |                  .resp_valid, .resp_sym, .resp_wb_valid(), .resp_rng(), .resp_cdf, .resp_cnt);
+      |                                                             ^~~~~~~~
 %Warning-PINCONNECTEMPTY: rtl/tile_syntax.sv:105:98: Instance pin connected by name with empty reference: 'row_out'
-  105 |     sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(c_busy), .done(c_done), .sym(c_sym),
+  105 |     sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(), .done(c_done), .sym(c_sym),
       |                                                                                                  ^~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/tile_syntax.sv:105:110: Instance pin connected by name with empty reference: 'busy'
+  105 |     sym_seq u_sq_c (.clk, .rst, .go(c_go), .addr(c_addr), .n(c_n), .kind(c_kind), .f_in(16'd0), .row_out(), .busy(), .done(c_done), .sym(c_sym),
+      |                                                                                                              ^~~~
 %Warning-PINCONNECTEMPTY: rtl/tile_syntax.sv:168:54: Instance pin connected by name with empty reference: 'avail_u_chroma'
   168 |                    .avail_u, .avail_l, .has_chroma, .avail_u_chroma(), .avail_l_chroma(),
       |                                                      ^~~~~~~~~~~~~~
@@ -24,21 +30,27 @@
 %Warning-PINCONNECTEMPTY: rtl/itx2d.sv:258:32: Instance pin connected by name with empty reference: 'busy'
   258 |                               .busy(), .done(e_done), .out_vec(e_out));
       |                                ^~~~
-%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1150:10: Instance pin connected by name with empty reference: 'busy'
- 1150 |         .busy(), .done(ws_done), .valid(ws_valid), .p(ws_p),
+%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1149:10: Instance pin connected by name with empty reference: 'busy'
+ 1149 |         .busy(), .done(ws_done), .valid(ws_valid), .p(ws_p),
       |          ^~~~
-%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1467:30: Instance pin connected by name with empty reference: 'busy'
- 1467 |                             .busy(), .done(itx_done), .res_addr, .res_data(), .res_data4);
+%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1466:30: Instance pin connected by name with empty reference: 'busy'
+ 1466 |                             .busy(), .done(itx_done), .res_addr, .res_data(), .res_data4);
       |                              ^~~~
-%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1467:67: Instance pin connected by name with empty reference: 'res_data'
- 1467 |                             .busy(), .done(itx_done), .res_addr, .res_data(), .res_data4);
+%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1466:67: Instance pin connected by name with empty reference: 'res_data'
+ 1466 |                             .busy(), .done(itx_done), .res_addr, .res_data(), .res_data4);
       |                                                                   ^~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1476:50: Instance pin connected by name with empty reference: 'busy'
- 1476 |                            .above_px, .left_px, .busy(), .done(ip_done),
+%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1475:50: Instance pin connected by name with empty reference: 'busy'
+ 1475 |                            .above_px, .left_px, .busy(), .done(ip_done),
       |                                                  ^~~~
-%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1486:101: Instance pin connected by name with empty reference: 'busy'
- 1486 |                           .bit_depth(hdr.bit_depth), .luma_avail_w(l_av_w), .luma_avail_h(l_av_h), .busy(), .done(cl_done),
+%Warning-PINCONNECTEMPTY: rtl/recon_top.sv:1485:101: Instance pin connected by name with empty reference: 'busy'
+ 1485 |                           .bit_depth(hdr.bit_depth), .luma_avail_w(l_av_w), .luma_avail_h(l_av_h), .busy(), .done(cl_done),
       |                                                                                                     ^~~~
+%Warning-PINCONNECTEMPTY: rtl/lr_stream.sv:366:108: Instance pin connected by name with empty reference: 'v_out'
+  366 |     lr_wiener_h #(.N(8)) u_h (.clk, .rst, .v_in(p2.v && !p2.sgr), .bd(bit_depth), .coef(p2_hc), .px(px2), .v_out(), .out(h_out));
+      |                                                                                                            ^~~~~
+%Warning-PINCONNECTEMPTY: rtl/lr_stream.sv:431:23: Instance pin connected by name with empty reference: 'v_out'
+  431 |                      .v_out(), .a2(ab_a1), .b2(ab_b1));
+      |                       ^~~~~
 %Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:125:79: Instance pin connected by name with empty reference: 'band_done'
   125 |         .band_start, .n_blk, .n_col, .first_band, .last_band, .busy(s_busy), .band_done(),
       |                                                                               ^~~~~~~~~
@@ -51,6 +63,18 @@
 %Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:144:63: Instance pin connected by name with empty reference: 'out_col'
   144 |         .out_valid(co_valid), .out_line(co_line), .out_n4(), .out_col(), .out_y(co_y));
       |                                                               ^~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:177:92: Instance pin connected by name with empty reference: 'out_last'
+  177 |         .out_valid(su_valid), .out_ready(su_ready), .out_line(su_line), .out_tag(su_tag), .out_last());
+      |                                                                                            ^~~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/fc_plane.sv:182:41: Instance pin connected by name with empty reference: 'n_seg_out'
+  182 |         .band_start, .n_seg_in(n_seg), .n_seg_out(), .busy(sb_busy),
+      |                                         ^~~~~~~~~
+%Warning-PINCONNECTEMPTY: rtl/fc_top.sv:83:66: Instance pin connected by name with empty reference: 'busy'
+   83 |             .first_band_i(first_band), .last_band_i(last_band), .busy(), .band_done(p_done[p]), .err_ovf(p_ovf[p]),
+      |                                                                  ^~~~
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:227:30: Instance pin connected by name with empty reference: 'tx_inflight'
+  227 |                    .tx_rel, .tx_inflight(), .rc_busy, .rc_col_start, .rc_col_end,
+      |                              ^~~~~~~~~~~
 %Warning-PINCONNECTEMPTY: rtl/dec_top.sv:339:62: Instance pin connected by name with empty reference: 'rdata'
   339 |             .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
       |                                                              ^~~~~
@@ -148,10 +172,6 @@
                                              : ... note: In instance 'dec_host'
   705 |     logic [31:0] ctrl_nx;                                    
       |                  ^~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:234:138: Signal is not used: 'tx_inflight'
-                                             : ... note: In instance 'dec_host.u_dec'
-  234 |     logic ev_valid, ev_pop, tx_rel; logic [1:0] ev_kind; logic [MIW-1:0] ev_sb_r, ev_sb_c; blk_rec_t ev_blk; tx_rec_t ev_tx; logic [3:0] tx_inflight;
-      |                                                                                                                                          ^~~~~~~~~~~
 %Warning-UNUSEDSIGNAL: rtl/dec_top.sv:238:34: Bits of signal are not used: 'cd_rd_info'[40:36,34:0]
                                             : ... note: In instance 'dec_host.u_dec'
   238 |     logic [3:0] cdr_val; mi_lf_t cd_rd_info;
@@ -200,133 +220,129 @@
                                              : ... note: In instance 'dec_host.u_dec.u_rc'
    36 |     input  hdr_t        hdr,
       |                         ^~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:42:25: Signal is not used: 'ev_blk'
-                                             : ... note: In instance 'dec_host.u_dec.u_rc'
-   42 |     input  blk_rec_t    ev_blk,
-      |                         ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:168:18: Bits of signal are not used: 'b'[1418,1407:1373,1336:1041,1002,942:941]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:167:18: Bits of signal are not used: 'b'[1418,1407:1373,1336:1041,1002,942:941]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  168 |     blk_rec_t    b;                                           
+  167 |     blk_rec_t    b;                                           
       |                  ^
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:175:18: Bits of signal are not used: 'bt'[1422,1418,1385:1381,1372:1337,1038:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:174:18: Bits of signal are not used: 'bt'[1422,1418,1385:1381,1372:1337,1038:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  175 |     blk_rec_t    bt;
+  174 |     blk_rec_t    bt;
       |                  ^~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:236:77: Bits of function variable are not used: 'row'[12:7]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:235:77: Bits of function variable are not used: 'row'[12:7]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  236 |     function automatic logic [ML2R+ML2C-5:0] mm_index(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
+  235 |     function automatic logic [ML2R+ML2C-5:0] mm_index(input logic [MIW-1:0] row, input logic [MIW-1:0] col);
       |                                                                             ^~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:260:18: Bits of signal are not used: 'ib_fx'[2:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:259:18: Bits of signal are not used: 'ib_fx'[2:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  260 |     logic [3:0]  ib_fx, ib_fy;
+  259 |     logic [3:0]  ib_fx, ib_fy;
       |                  ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:260:25: Bits of signal are not used: 'ib_fy'[2:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:259:25: Bits of signal are not used: 'ib_fy'[2:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  260 |     logic [3:0]  ib_fx, ib_fy;
+  259 |     logic [3:0]  ib_fx, ib_fy;
       |                         ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:21: Bits of signal are not used: 'ib_rx0'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:272:21: Bits of signal are not used: 'ib_rx0'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+  272 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
       |                     ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:29: Bits of signal are not used: 'ib_rx1'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:272:29: Bits of signal are not used: 'ib_rx1'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+  272 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
       |                             ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:37: Bits of signal are not used: 'ib_ry0'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:272:37: Bits of signal are not used: 'ib_ry0'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+  272 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
       |                                     ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:273:45: Bits of signal are not used: 'ib_ry1'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:272:45: Bits of signal are not used: 'ib_ry1'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  273 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
+  272 |     logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;           
       |                                             ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:610:21: Bits of function variable are not used: 'i'[31:2]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:609:21: Bits of function variable are not used: 'i'[31:2]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  610 |         int d0, d1, i, c0, c1;
+  609 |         int d0, d1, i, c0, c1;
       |                     ^
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:440:37: Bits of signal are not used: 'ob_b_x'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:439:37: Bits of signal are not used: 'ob_b_x'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  440 |     logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
+  439 |     logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
       |                                     ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:440:45: Bits of signal are not used: 'ob_b_y'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:439:45: Bits of signal are not used: 'ob_b_y'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  440 |     logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
+  439 |     logic [PXW-1:0] ob_a_x, ob_a_y, ob_b_x, ob_b_y;
       |                                             ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:492:37: Bits of signal are not used: 'mb_b_x'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:491:37: Bits of signal are not used: 'mb_b_x'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  492 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_b_x, mb_b_y;
+  491 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_b_x, mb_b_y;
       |                                     ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:492:45: Bits of signal are not used: 'mb_b_y'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:491:45: Bits of signal are not used: 'mb_b_y'[14:11]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  492 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_b_x, mb_b_y;
+  491 |     logic [PXW-1:0] mb_a_x, mb_a_y, mb_b_x, mb_b_y;
       |                                             ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:590:50: Bits of function variable are not used: 'ih'[1174:1154,1148:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:589:50: Bits of function variable are not used: 'ih'[1174:1154,1148:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  590 |     function automatic int rel_dist(input ihdr_t ih, input logic [7:0] oa, input logic [7:0] ob);
+  589 |     function automatic int rel_dist(input ihdr_t ih, input logic [7:0] oa, input logic [7:0] ob);
       |                                                  ^~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:627:60: Bits of function variable are not used: 'ih'[1174:1071,1056:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:626:60: Bits of function variable are not used: 'ih'[1174:1071,1056:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  627 |     function automatic logic [1:0] gm_type_of(input ihdr_t ih, input logic [3:0] r);
+  626 |     function automatic logic [1:0] gm_type_of(input ihdr_t ih, input logic [3:0] r);
       |                                                            ^~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:648:18: Bits of signal are not used: 'nb_ay'[7:4]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:647:18: Bits of signal are not used: 'nb_ay'[7:4]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  648 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+  647 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
       |                  ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:648:25: Bits of signal are not used: 'nb_ly'[7:4]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:647:25: Bits of signal are not used: 'nb_ly'[7:4]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  648 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+  647 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
       |                         ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:648:32: Bits of signal are not used: 'nb_auv'[3:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:647:32: Bits of signal are not used: 'nb_auv'[3:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  648 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+  647 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
       |                                ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:648:40: Bits of signal are not used: 'nb_luv'[3:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:647:40: Bits of signal are not used: 'nb_luv'[3:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  648 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
+  647 |     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
       |                                        ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:943:38: Bits of signal are not used: 'cw'[9:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:942:38: Bits of signal are not used: 'cw'[9:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  943 |                         logic [18:0] cw, ch;
+  942 |                         logic [18:0] cw, ch;
       |                                      ^~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:943:42: Bits of signal are not used: 'ch'[9:0]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:942:42: Bits of signal are not used: 'ch'[9:0]
                                               : ... note: In instance 'dec_host.u_dec.u_rc'
-  943 |                         logic [18:0] cw, ch;
+  942 |                         logic [18:0] cw, ch;
       |                                          ^~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1543:18: Bits of signal are not used: 'px2_i'[6:5]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1542:18: Bits of signal are not used: 'px2_i'[6:5]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1543 |     logic [6:0]  px2_i, px2_j;
+ 1542 |     logic [6:0]  px2_i, px2_j;
       |                  ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1543:25: Bits of signal are not used: 'px2_j'[6:5]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1542:25: Bits of signal are not used: 'px2_j'[6:5]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1543 |     logic [6:0]  px2_i, px2_j;
+ 1542 |     logic [6:0]  px2_i, px2_j;
       |                         ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1546:40: Bits of signal are not used: 'p2ci'[6]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1545:40: Bits of signal are not used: 'p2ci'[6]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1546 |     logic        p2_valid; logic [6:0] p2ci, p2cj;          
+ 1545 |     logic        p2_valid; logic [6:0] p2ci, p2cj;          
       |                                        ^~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1546:46: Bits of signal are not used: 'p2cj'[6]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1545:46: Bits of signal are not used: 'p2cj'[6]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1546 |     logic        p2_valid; logic [6:0] p2ci, p2cj;          
+ 1545 |     logic        p2_valid; logic [6:0] p2ci, p2cj;          
       |                                              ^~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1551:18: Bits of signal are not used: 'sd_k'[10]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1550:18: Bits of signal are not used: 'sd_k'[10]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1551 |     logic [10:0] sd_k;
+ 1550 |     logic [10:0] sd_k;
       |                  ^~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1583:21: Bits of signal are not used: 'e_rx'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1582:21: Bits of signal are not used: 'e_rx'[14:11]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1583 |     logic [PXW-1:0] e_rx, e_ry;
+ 1582 |     logic [PXW-1:0] e_rx, e_ry;
       |                     ^~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1583:27: Bits of signal are not used: 'e_ry'[14:11]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1582:27: Bits of signal are not used: 'e_ry'[14:11]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1583 |     logic [PXW-1:0] e_rx, e_ry;
+ 1582 |     logic [PXW-1:0] e_rx, e_ry;
       |                           ^~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1618:18: Bits of signal are not used: 'dq_ci3'[6:5]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1617:18: Bits of signal are not used: 'dq_ci3'[6:5]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1618 |     logic [6:0]  dq_ci3, dq_cj3;
+ 1617 |     logic [6:0]  dq_ci3, dq_cj3;
       |                  ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1618:26: Bits of signal are not used: 'dq_cj3'[6:5]
+%Warning-UNUSEDSIGNAL: rtl/recon_top.sv:1617:26: Bits of signal are not used: 'dq_cj3'[6:5]
                                                : ... note: In instance 'dec_host.u_dec.u_rc'
- 1618 |     logic [6:0]  dq_ci3, dq_cj3;
+ 1617 |     logic [6:0]  dq_ci3, dq_cj3;
       |                          ^~~~~~
 %Warning-UNUSEDSIGNAL: rtl/mi_store.sv:51:28: Bits of signal are not used: 'lrr_row'[8:4]
                                             : ... note: In instance 'dec_host.u_dec.g_mi[2].u_mi'
@@ -408,10 +424,6 @@
                                              : ... note: In instance 'dec_host.u_dec.u_rs'
    68 |             logic [71:0] q;
       |                          ^
-%Warning-UNUSEDSIGNAL: rtl/fc_top.sv:60:28: Signal is not used: 'p_busy'
-                                          : ... note: In instance 'dec_host.u_dec.u_fc'
-   60 |     logic [2:0]            p_busy, p_done, p_ovf, p_act, done_l;
-      |                            ^~~~~~
 %Warning-UNUSEDSIGNAL: rtl/fc_top.sv:61:28: Bits of signal are not used: 'yd_row'[12:0]
                                           : ... note: In instance 'dec_host.u_dec.u_fc'
    61 |     logic [2:0][MIW-1:0]   yd_row, yd_col, dw_row, dw_col;
@@ -546,14 +558,6 @@
                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
    80 |                            P_VERT_A = 4'd6, P_VERT_B = 4'd7, P_HORZ_4 = 4'd8, P_VERT_4 = 4'd9;
       |                                                                               ^~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:85:40: Signal is not used: 'resp_rng'
-                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
-   85 |     logic [3:0] resp_sym; logic [15:0] resp_rng; logic [239:0] resp_cdf; logic [5:0] resp_cnt;
-      |                                        ^~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/tile_syntax.sv:96:25: Signal is not used: 'c_busy'
-                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
-   96 |     logic c_go, c_done, c_busy, k_go, k_done, k_busy; logic [CDF_AW-1:0] c_addr, k_addr; logic [3:0] c_n, k_n, c_sym, k_sym; logic [1:0] c_kind, k_kind;
-      |                         ^~~~~~
 %Warning-UNUSEDSIGNAL: rtl/fb_fetch.sv:53:18: Bits of signal are not used: 'cx_lo'[1:0]
                                             : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_ff'
    53 |     logic [15:0] cx_lo, cx_hi;                             
@@ -578,14 +582,6 @@
                                            : ... note: In instance 'dec_host.u_dec.u_fc.g_p[0].u_pl'
    21 |     parameter int OUT_SLACK = 16              
       |                   ^~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/fc_plane.sv:159:38: Signal is not used: 'n_seg_up_b'
-                                             : ... note: In instance 'dec_host.u_dec.u_fc.g_p[0].u_pl'
-  159 |     logic [CW:0]    n_seg, n_seg_up, n_seg_up_b, n_col_lr;
-      |                                      ^~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/fc_plane.sv:161:41: Signal is not used: 'su_last'
-                                             : ... note: In instance 'dec_host.u_dec.u_fc.g_p[0].u_pl'
-  161 |     logic           su_valid, su_ready, su_last, sa_busy, sb_busy;
-      |                                         ^~~~~~~
 %Warning-UNUSEDSIGNAL: rtl/coef_rd.sv:127:30: Bits of signal are not used: 'sidx_q'[10]
                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_coef'
   127 |     logic [10:0] c_nx, sidx, sidx_q;
@@ -594,10 +590,6 @@
                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
   256 |     logic [MIW-1:0] wcol4;
       |                     ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:358:19: Signal is not used: 't_aw'
-                                            : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
-  358 |     logic [127:0] t_aw, t_lw;
-      |                   ^~~~
 %Warning-UNUSEDSIGNAL: rtl/blk_ctx.sv:440:21: Bits of signal are not used: 'rc0'[12:10]
                                             : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_ctx'
   440 |     logic [MIW-1:0] rc0, rr0;              
@@ -710,10 +702,6 @@
                                               : ... note: In instance 'dec_host.u_dec.u_fc.g_p[0].u_pl.u_lf'
   204 |     logic [CW+2:0] b_pend_col;
       |                    ^~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/cdef_stream.sv:178:26: Signal is not used: 'filt'
-                                                : ... note: In instance 'dec_host.u_dec.u_fc.g_p[2].u_pl.u_cdef'
-  178 |     logic        sk_all, filt;                
-      |                          ^~~~
 %Warning-UNUSEDSIGNAL: rtl/sr_stream.sv:60:26: Bits of signal are not used: 'dv_quo'[31]
                                              : ... note: In instance 'dec_host.u_dec.u_fc.g_p[2].u_pl.u_srb'
    60 |     logic [31:0] dv_num, dv_quo, dv_num2, dv_q2, step_x;
@@ -746,21 +734,13 @@
                                               : ... note: In instance 'dec_host.u_dec.u_fc.g_p[2].u_pl.u_lr'
   139 |     logic [8:0]    a_addr;
       |                    ^~~~~~
-%Warning-UNUSEDSIGNAL: rtl/lr_stream.sv:365:22: Signal is not used: 'h_v'
+%Warning-UNUSEDSIGNAL: rtl/lr_stream.sv:381:20: Bits of signal are not used: 'sg_sp'[13:7,4:0]
                                               : ... note: In instance 'dec_host.u_dec.u_fc.g_p[2].u_pl.u_lr'
-  365 |     logic            h_v;
-      |                      ^~~
-%Warning-UNUSEDSIGNAL: rtl/lr_stream.sv:382:20: Bits of signal are not used: 'sg_sp'[13:7,4:0]
-                                              : ... note: In instance 'dec_host.u_dec.u_fc.g_p[2].u_pl.u_lr'
-  382 |     logic [15:0]   sg_sp;
+  381 |     logic [15:0]   sg_sp;
       |                    ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/lr_stream.sv:383:26: Signal is not used: 'ab_v1'
+%Warning-UNUSEDSIGNAL: rtl/lr_stream.sv:438:25: Bits of signal are not used: 'ev'[42,35:13]
                                               : ... note: In instance 'dec_host.u_dec.u_fc.g_p[2].u_pl.u_lr'
-  383 |     logic          ab_v, ab_v1;
-      |                          ^~~~~
-%Warning-UNUSEDSIGNAL: rtl/lr_stream.sv:439:25: Bits of signal are not used: 'ev'[42,35:13]
-                                              : ... note: In instance 'dec_host.u_dec.u_fc.g_p[2].u_pl.u_lr'
-  439 |     tag_t               ev;                   
+  438 |     tag_t               ev;                   
       |                         ^~
 %Warning-UNUSEDSIGNAL: rtl/pal_syntax.sv:24:25: Bits of signal are not used: 'hdr'[244:167,164:163,158:0]
                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts.u_blk.u_pal'
@@ -1595,5 +1575,5 @@
    50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
       |                                                        ^~~
 - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
-- Verilator: Built from 62.866 MB sources in 74 modules, into 47.056 MB in 55 C++ files needing 0.000 MB
-- Verilator: Walltime 8.022 s (elab=0.763, cvt=6.239, bld=0.000); cpu 8.022 s on 1 threads; allocated 352.793 MB
+- Verilator: Built from 62.864 MB sources in 74 modules, into 47.063 MB in 55 C++ files needing 0.000 MB
+- Verilator: Walltime 11.751 s (elab=1.031, cvt=9.515, bld=0.000); cpu 11.745 s on 1 threads; allocated 352.906 MB
