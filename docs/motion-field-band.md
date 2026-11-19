@@ -73,3 +73,30 @@ The projection also leaves the front of the frame: today a 4K frame would spend 
 3. The inter twins and the nightly; out-of-context synthesis read (the table gone from the top of the list).
 4. After it: `fc_rstore` into UltraRAM (384 RAMB36 today, about 48 UltraRAM), then `seg_band` the same way as the
    motion field if the count still asks for it.
+
+## What it costs (found reading the code, 2026-11-18 evening)
+
+Two things the band needs that the whole-frame field does not:
+
+1. **The DDR read channel during the decode.** `dec_top` gives the one AXI read master to the loader group
+   (`fs_load`, then `mf_project`) before the tiles and to `ref_fetch` after (`rf_arready = !ld_busy && ...`). Band by
+   band, the projection reads while reference fetch is reading. Needed: a read arbiter at burst granularity with an
+   owner queue (responses come back in order on one ID), about the size of the descriptor queue `mf_project` already
+   has. The projection reads little: 8 lines of each source a band (1080p: 7.7 kB a source).
+2. **The host-written field has to go.** Stage A of `docs/frame-state.md` still exists: the host (or the test) writes
+   every entry of the field before the tiles, through `R_MF_ADDR` / `R_MF_DATA` in `dec_host` and the `mf_we` ports in
+   the `dec_top` tests. A 32-row band cannot take a whole field. Using it today: `test_dec_inter` (all `dec_inter*`
+   suites), `test_dec_host_inter` without `TS_FSTATE_B` (`dec_host_inter`, `dec_host_inter_argon`, gate shards b, c,
+   d), `decode.py --inter` without `--card-load`. Using stage B (the card loads and projects): `dec_host_cardload`,
+   `dec_host_census15`, gate shards a and e, and the card itself (`dec.sh`, the scoreboard).
+   So: the twins and `test_dec_inter` move to stage B (the saved MV words of the model go into the AXI memory, the
+   RTL projects), the known limit of the stage-B twin is lifted (a frame inheriting CDFs after a frame that disabled
+   the frame-end update), and the host-written path is deleted.
+
+The smaller alternative, for the record: one whole-frame copy shared by the engines, in UltraRAM. 1080p: 64 UltraRAM
+instead of 840 block RAMs, no protocol change. It grows with the frame (4K: 136 to 256 UltraRAM, which leaves the
+card at about 940 of 960 with the row store moved too) and needs a second copy from the third engine on. It would be
+replaced by the band later.
+
+Order, revised: (1) every test on stage B and the host-written field deleted: needed for the band, and a retirement
+that stands on its own; (2) the read arbiter; (3) band projection, the holds, `MFL2R = 5`.
