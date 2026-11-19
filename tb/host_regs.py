@@ -398,6 +398,38 @@ def fs_unpack_mv(hdr, data, rowb):
     return refs, mvs
 
 
+def fs_pack_mv(hdr, ref_frames, mvs, rowb):
+    """The inverse of fs_unpack_mv from a saved frame of the model (7.19 MfRefFrames / MfMvs per 4x4 unit): the MV area
+    bytes, one word per 8x8 unit taken at its [2 y8 + 1][2 x8 + 1] unit as frame_state_w does; ref 0 = none."""
+    w8, h8 = hdr.MiCols >> 1, hdr.MiRows >> 1
+    out = bytearray(rowb * h8)
+    if ref_frames is None:                                   # nothing saved: every unit without a reference
+        return bytes(out)
+    for y8 in range(h8):
+        for x8 in range(w8):
+            ref = ref_frames[2 * y8 + 1][2 * x8 + 1]
+            w = 0
+            if ref > 0:
+                row, col = mvs[2 * y8 + 1][2 * x8 + 1]
+                w = (ref & 7) | ((col & 0x1FFF) << 3) | ((row & 0x1FFF) << 16)
+            out[y8 * rowb + 4 * x8: y8 * rowb + 4 * x8 + 4] = w.to_bytes(4, "little")
+    return bytes(out)
+
+
+def fs_pack_seg(hdr, segment_ids, rowb):
+    """The inverse of fs_unpack_seg: SegmentIds[row][col] per 4x4 unit (None: a map of zeros) as the segment-id area."""
+    out = bytearray(rowb * hdr.MiRows)
+    if segment_ids is not None:
+        for r in range(hdr.MiRows):
+            out[r * rowb: r * rowb + hdr.MiCols] = bytes(segment_ids[r][:hdr.MiCols])
+    return bytes(out)
+
+
+def fs_pack_cdf(rows):
+    """CDF rows (cdf_map.rows_of: one integer of ROW_BITS a row) as the CDF area: 32 bytes a row, little-endian."""
+    return b"".join((int(v) & ((1 << M.ROW_BITS) - 1)).to_bytes(32, "little") for v in rows)
+
+
 def fs_unpack_seg(hdr, data, rowb):
     """The segment-id area bytes -> SegmentIds[row][col] per 4x4 unit."""
     return [list(data[r * rowb: r * rowb + hdr.MiCols]) for r in range(hdr.MiRows)]

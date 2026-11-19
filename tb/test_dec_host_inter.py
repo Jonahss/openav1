@@ -38,6 +38,8 @@ from axi_mem import AxiMem                                   # noqa: E402
 
 FLUSH_BASE = 0x80_0000_0000                                  # frame fi's picture at FLUSH_BASE + fi * FLUSH_STRIDE (40-bit space), or buffer k of TS_POOL
 FLUSH_STRIDE = TI.SLOT_STRIDE
+MODEL_FS_BASE = 0xC0_0000_0000                               # the state areas of frames only the model decoded: frame fi's at
+MODEL_FS_STRIDE = 0x0400_0000                                # MODEL_FS_BASE + fi * MODEL_FS_STRIDE (outside the picture pool)
 
 
 async def write_seq(ax, seq):
@@ -480,6 +482,14 @@ async def dec_host_inter_vs_model(dut):
                               if c_seg[r][c] != saved.segment_ids[r][c]]
                     assert not badseg, f"{tag}: {len(badseg)} segment-id sideband cells differ (row, col, card, model): {badseg[:6]}"
                 stats["fs_frames"] = stats.get("fs_frames", 0) + 1
+                if fsb and saved.cdfs is not None and not getattr(ph, "disable_frame_end_update_cdf", 0):
+                    c_cdf = mem.read(cdf_area, HR.CDF_AREA_BYTES)
+                    m_cdf = HR.fs_pack_cdf(M.rows_of(saved.cdfs))
+                    badrows = [i for i in range(M.ROWS) if c_cdf[32 * i: 32 * i + 32] != m_cdf[32 * i: 32 * i + 32]]
+                    stats["cdf_area_frames"] = stats.get("cdf_area_frames", 0) + 1
+                    i = badrows[0] if badrows else 0
+                    assert not badrows, (f"{tag}: saved CDF area: {len(badrows)} of {M.ROWS} rows differ from the model's saved rows; first row {i}: "
+                                         f"card {int.from_bytes(c_cdf[32 * i: 32 * i + 32], 'little'):062x} model {int.from_bytes(m_cdf[32 * i: 32 * i + 32], 'little'):062x}")
             planes_ref = TI.ref_planes_of(th0, planes)
             entry = store_entry(th0, ph, planes_ref, None if os.environ.get("TS_REFS_FROM_MODEL") == "1" else layout, fi)
             if fsb and not model_only:
@@ -489,10 +499,23 @@ async def dec_host_inter_vs_model(dut):
                 seg_a = (primA["seg"] if primA else None) if (getattr(ph, "segmentation_enabled", 0) and not getattr(ph, "segmentation_update_map", 1)) else (fsL["seg_base"], fsL["seg_rowb"])
                 cdf_a = ((primA["cdf"] if primA else ("defaults", th0.base_q_idx)) if getattr(ph, "disable_frame_end_update_cdf", 0) else cdf_area)
                 areas = dict(seg=seg_a, cdf=cdf_a, mv=(fsL["mv_base"], fsL["mv_rowb"]))
+            if fsb and model_only and ph.refresh_frame_flags:
+                # the frame never ran on the RTL: what the card would have left in its areas comes from the model
+                saved = seq.slots[next(i for i in range(8) if (ph.refresh_frame_flags >> i) & 1)]
+                mL = HR.fs_layout(th0, MODEL_FS_BASE + fi * MODEL_FS_STRIDE)
+                assert mL["total"] <= MODEL_FS_STRIDE, f"{tag}: the state areas ({mL['total']} bytes) do not fit the model region's stride"
+                mem.load(mL["mv_base"], HR.fs_pack_mv(th0, saved.ref_frames, saved.mvs, mL["mv_rowb"]))
+                mem.load(mL["seg_base"], HR.fs_pack_seg(th0, saved.segment_ids, mL["seg_rowb"]))
+                cdf_m = None
+                if saved.cdfs is not None:
+                    mem.load(mL["cdf_base"], HR.fs_pack_cdf(M.rows_of(saved.cdfs)))
+                    cdf_m = mL["cdf_base"]
+                areas = dict(seg=(mL["seg_base"], mL["seg_rowb"]), cdf=cdf_m, mv=(mL["mv_base"], mL["mv_rowb"]))
+                stats["model_state_frames"] = stats.get("model_state_frames", 0) + 1
             for i in range(8):
                 if (ph.refresh_frame_flags >> i) & 1:
                     store[i] = entry
-                    if fsb and not model_only:
+                    if fsb and (not model_only or ph.refresh_frame_flags):
                         slot_areas[i] = areas
             if debug:
                 dut._log.info(f"{tag}: picture {len(planes_ref[0][0])}x{len(planes_ref[0])} -> slots {[i for i in range(8) if (ph.refresh_frame_flags >> i) & 1]}"
