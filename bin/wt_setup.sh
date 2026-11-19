@@ -11,7 +11,6 @@ cd "$d" && git checkout -q --detach "origin/$ref" 2>/dev/null || git checkout -q
 for x in venv prefix-trace toolchain traces; do [ -e $x ] || ln -s ~/openav1/$x $x; done
 [ -e refout ] && [ ! -L refout ] && mv refout refout.local; [ -L refout ] && [ "$(readlink refout)" != "/home/jonahss/refout-fb14" ] && rm refout; [ -e refout ] || ln -s ~/refout-fb14 refout
 [ -e streams/argon ] || ln -s ~/openav1/streams/argon streams/argon
-for f in ~/openav1-wt-pffm2c/streams/inter/mf_small_8bit.ivf; do [ -e streams/inter/$(basename $f) ] || cp $f streams/inter/; done   # untracked inter streams the gate rung records
 cp -n ~/openav1/streams/synth/natural_lf_only_*.ivf streams/synth/ 2>/dev/null || true
 mkdir -p logs
 echo "$d at $(git rev-parse --short HEAD): refout $(ls refout | wc -l) files, argon $(ls streams/argon/profile0_core/streams 2>/dev/null | wc -l) streams"

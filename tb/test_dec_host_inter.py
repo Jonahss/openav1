@@ -526,4 +526,7 @@ async def dec_host_inter_vs_model(dut):
                               f"{' at ' + hex(layout[0][0]) if layout else ' (model only)'}")
             del decs
     assert not mem.errors, f"AXI errors: {mem.errors[:4]}"
+    # a run in which no frame reached the RTL is not a pass (2026-11-19: a two-tile-column clip on a TE=1 build
+    # reported OK with frames 0, model_only 9)
+    assert stats["frames"] > 0, f"no frame was decoded by the RTL ({stats['model_only']} model only): the build does not take these streams"
     dut._log.info(f"OK: {stats}")
