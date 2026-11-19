@@ -134,7 +134,7 @@ run dec_host_recon     FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=1,9 TS_W=12
 run dec_host_ring      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
 run dec_host_ring_tall FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_SEEDS=28,32 TS_W=128 TS_H=320 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
 # inter streams through dec_host (registers, sequencer, flush; references = the flushed pictures, as on the board): tb/test_dec_host_inter.py
-run dec_host_inter     FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+run dec_host_inter     FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_FSTATE_B=1 TS_POOL=10 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
 # the corpus, model-free: the RTL alone decodes every stream and its final picture (fb2) is compared with dav1d's
 runsh corpus_full_rtl  TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
@@ -154,7 +154,7 @@ if [ -d "$ARGON" ]; then
   # CDEF, super-resolution, loop restoration): the corpus runs stop at recon, which hid two gaps in the deblocking filter until 2026-10-20
   run dec_inter_lr       FBX=12 FBY=12 TS_STAGE=lr TS_IVF="$ARGON/test47.obu,$ARGON/test6491.obu,$ARGON/test11.obu" python tb/runner.py dec_top test_dec_inter
   # Argon inter streams through dec_host's RING build: test47 multi-tile rows + super-res, test6641 / test8854 super-res + CDEF + LR (test11 is sb128: model only there)
-  run dec_host_inter_argon FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_IVF="$ARGON/test47.obu,$ARGON/test6641.obu,$ARGON/test8854.obu" python tb/runner.py dec_host test_dec_host_inter
+  run dec_host_inter_argon FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_FSTATE_B=1 TS_POOL=10 TS_IVF="$ARGON/test47.obu,$ARGON/test6641.obu,$ARGON/test8854.obu" python tb/runner.py dec_host test_dec_host_inter
   # stage B (docs/frame-state.md: the card loads / saves the frame state itself) with the host's 10-buffer pool and recycling rule
   # (TS_POOL): test5439 is the stream whose state areas aliased on the card (2026-11-01), test47 the multi-tile-row one
   run dec_host_cardload  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_FSTATE_B=1 TS_POOL=10 TS_IVF="$ARGON/test5439.obu,$ARGON/test47.obu" python tb/runner.py dec_host test_dec_host_inter
