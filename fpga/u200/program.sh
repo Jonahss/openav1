@@ -22,6 +22,11 @@ current_hw_device \$dev
 set_property PROGRAM.FILE {$bit} \$dev
 program_hw_devices \$dev
 puts "PROGRAMMED [get_property PROGRAM.FILE \$dev]"
+# end the session before exit. Vivado's cs_server normally leaves by itself 20 s after its client; on 2026-11-18 one
+# stayed and spun a core for 16 hours after a programming run (cause not established)
+close_hw_target
+disconnect_hw_server
+close_hw_manager
 exit
 TCL
 vivado -mode batch -nojournal -nolog -source "$tcl" | grep -E "PROGRAMMED|ERROR|no xcu200" || true
