@@ -10,6 +10,7 @@ directory on the PATH; the login profile of the machine adds the main checkout's
 | `nightly_run.sh <worktree> <tag> [VAR=value ...]` | one run of `tools/nightly.sh` with its ticket (every nightly goes through this) |
 | `nightly_main.sh` | the cron nightly on `origin/main` |
 | `gate.sh` | the gate rung: the whole decoder's netlist under Verilator against five recorded shards |
+| `gate_record.sh <worktree> <gate dir> <build tag> <shard> <in> <out> [VAR=value ...]` | one recorded shard of the gate rung (gate.sh runs the five side by side through `ramq`) |
 | `blk_gate.sh <block> <test env...>` | netlist replay of one block |
 | `ooc_synth.sh <top> <tag> <worktree>` | out-of-context synthesis of one module for the U200 part |
 | `image.sh <worktree> <tag> [--size 1080p\|4k] [--te N] [--mhz N] [--ring N] [--strategy NAME]` | one U200 image, through `ramq`, with its ticket and its line in `~/logs/u200-builds.log` |
