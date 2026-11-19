@@ -162,7 +162,19 @@ if [ -d "$ARGON" ]; then
   # (2026-11-10): the run-record reuse under the blend pipelines (rung B) passed every suite above and the gate rung and
   # showed only on the card, in 30 Argon streams; test5530 fails on 86c2847 only with TE=2, test6687 with one engine as well
   run dec_host_census15  FBX=11 FBY=11 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 REF_RING=8 TS_IVF="$ARGON/test5530.obu,$ARGON/test6687.obu" python tb/runner.py dec_host test_dec_host_inter
+  # the five streams the gate replays, with the gate's own settings (bin/gate.sh: one engine, FBX/FBY 9, the card-like
+  # memory with 16 reads in flight). Until 2026-11-19 they ran only as the gate's recordings: test7588_6663 (the picture
+  # changes height between frames) hung on the band's engine hold there and in no suite (BUG-11).
+  runsh dec_host_gatecfg  REF_RING=8 TE=1 SB128=0 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_AXI_LAT=48 TS_AXI_OUT=16 TS_IVF="$PWD/streams/inter/mf_small_8bit.ivf,$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf,$ARGON/test47.obu,$ARGON/test7588_6663.obu" python tb/runner.py dec_host test_dec_host_inter
 fi
+# The motion field as a band (docs/motion-field-band.md): clips taller than the four bands the store keeps (crowd_run,
+# 704 and 768 lines), so bands are overwritten and an engine waits past the third. dec_host_band: two tile columns on
+# two engines, 64- and 128-pixel superblocks. The engine hold itself is only tested when the projection falls behind
+# the engines, which TS_MF_SLOW does (extra cycles on the reads of the state areas): a decoder without the hold passes
+# every other suite and fails these two at frame 4 (mutant runs of 2026-11-19, 300 and 1000 cycles; 300 is enough).
+run dec_host_band      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$PWD/streams/inter/mf_tall_8bit.ivf,$PWD/streams/inter/mf_tall128_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+run dec_host_band_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_MF_SLOW=300 TS_IVF="$PWD/streams/inter/mf_tall_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+run dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_MF_SLOW=300 TS_IVF="$PWD/streams/inter/mf_tall1c_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
 GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
 runsh dec_inter          TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
