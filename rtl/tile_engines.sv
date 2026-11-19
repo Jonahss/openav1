@@ -37,6 +37,7 @@ module tile_engines
     // the motion field as a band (docs/motion-field-band.md): the bands projected so far, and whether the next may go
     input  logic              mf_band_en,     // this frame's field is projected band by band (else nothing waits)
     input  logic [MIW-5:0]    mf_bands_done,
+    input  logic              mf_bands_all,   // the projection has done its last band (it alone knows how many the frame has)
     output logic              mf_band_go,
     input  logic [TE*MIW-1:0] col_start,      // MiColStart per engine
     input  logic [TE*MIW-1:0] col_end,        // MiColEnd per engine
@@ -133,15 +134,17 @@ module tile_engines
     // of that row (128-pixel superblocks: the two bands) is projected. The store keeps four bands, band k in the slot
     // of band k - 4: the next band may be projected while it is less than four above the lowest band a busy engine of
     // the tile row is in. (An engine waits for a band at most one above its own, so never for one that waits for it.)
-    logic [MIW-4:0] mf_nbands, mf_low, mf_low_c;
+    // The hold ends for good when the projection says it has done its last band: the number of bands is the
+    // projection's alone (it was computed here a second time from the header of the tile, and a header that differed
+    // from the one the load ran with left the last tile row waiting for ever: BUG-11, 2026-11-19).
+    logic [MIW-4:0] mf_low, mf_low_c;
     logic           mf_any;
-    assign mf_nbands = (MIW-3)'((hdr.mi_rows + MIW'(15)) >> 4);
     always_comb begin
         mf_low_c = '1; mf_any = 1'b0;
         for (int e = 0; e < TE; e++) begin
             logic [MIW-4:0] b;
             b = (MIW-3)'(e_sb_r[e] >> 4);
-            e_sb_hold[e] = mf_band_en && ((MIW-3)'(mf_bands_done) < b + (hdr.sb128 ? (MIW-3)'(2) : (MIW-3)'(1))) && ((MIW-3)'(mf_bands_done) < mf_nbands);
+            e_sb_hold[e] = mf_band_en && ((MIW-3)'(mf_bands_done) < b + (hdr.sb128 ? (MIW-3)'(2) : (MIW-3)'(1))) && !mf_bands_all;
             if (e_busy[e] && mask[e]) begin mf_any = 1'b1; if (b < mf_low_c) mf_low_c = b; end
         end
     end

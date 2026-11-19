@@ -344,6 +344,18 @@ def mf_table(h, slots, mv_area_of, rel):
     return dict(src=srcs, dst=[rel(h.order_hint, h.OrderHints[d]) for d in range(1, 8)])
 
 
+def load_seq(th, seg=None, cdf_base=None, zero_seg=False, mf=None):
+    """Everything the host writes to start a frame's load, in order: the frame's header (the loader and the projection
+    engine take mi_rows / mi_cols from it: with the previous frame's header the projection covers the previous
+    frame's height), the loader's registers, START_LOAD. One function for the host (frame_state_load) and the
+    simulation twin, which wrote the loader's registers without the header until 2026-11-19 (BUG-11)."""
+    seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th, None, 0)), HDR_WORDS))]
+    seq += [(R_IH + 4 * i, w) for i, w in enumerate(words(pack(IHDR_FIELDS, ihdr_vals(th)), IH_WORDS))]
+    seq += ld_regs(seg=seg, cdf_base=cdf_base, zero_seg=zero_seg, mf=mf)
+    seq.append((R_START, START_LOAD))
+    return seq
+
+
 def sv_regs(cdf_base, engine):
     """Stage B: where engine `engine`'s CDF rows go on START_SAVE (CDF_AREA_BYTES at cdf_base)."""
     return [(R_SV_CDF_LO, cdf_base & 0xFFFFFFFF), (R_SV_CDF_HI, cdf_base >> 32), (R_SV_ENG, engine)]
@@ -523,11 +535,7 @@ class HostDecoder:
         """Stage B (docs/frame-state.md): the card loads the frame's segment map and / or CDF rows from a reference slot's
         areas and projects the motion field (rtl/fs_load.sv, rtl/mf_project.sv), before the frame's first tile. The frame
         header goes first: the loader and the projection engine take mi_rows / mi_cols from it."""
-        seq = [(R_HDR + 4 * i, w) for i, w in enumerate(words(pack(HDR_FIELDS, hdr_vals(th, None, 0)), HDR_WORDS))]
-        seq += [(R_IH + 4 * i, w) for i, w in enumerate(words(pack(IHDR_FIELDS, ihdr_vals(th)), IH_WORDS))]
-        seq += ld_regs(seg=seg, cdf_base=cdf_base, zero_seg=zero_seg, mf=mf)
-        seq.append((R_START, START_LOAD))
-        self.write_seq(seq)
+        self.write_seq(load_seq(th, seg=seg, cdf_base=cdf_base, zero_seg=zero_seg, mf=mf))
         t_ld = time.monotonic()
         st = self.poll(R_FS_STATUS, FS_LD_DONE, FS_LD_DONE, f"{tag}: frame-state load")
         self.stats["ld_time"] = self.stats.get("ld_time", 0.0) + time.monotonic() - t_ld   # the host's wait on the loader group

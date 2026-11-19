@@ -270,7 +270,7 @@
       |                                                          ^~~~~~~~
 %Warning-UNUSEDSIGNAL: rtl/dec_top.sv:157:33: Signal is not used: 'mf_band_go'
                                             : ... note: In instance 'dec_host.u_dec'
-  157 |     logic           mf_band_en, mf_band_go; logic [MIW-5:0] mf_bands_done;    
+  157 |     logic           mf_band_en, mf_band_go, mf_bands_all; logic [MIW-5:0] mf_bands_done;    
       |                                 ^~~~~~~~~~
 %Warning-UNUSEDSIGNAL: rtl/dec_top.sv:159:33: Signal is not used: 'pj_arready'
                                             : ... note: In instance 'dec_host.u_dec'
@@ -1811,5 +1811,5 @@
    50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
       |                                                        ^~~
 - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
-- Verilator: Built from 62.864 MB sources in 74 modules, into 33.886 MB in 48 C++ files needing 0.000 MB
-- Verilator: Walltime 7.865 s (elab=0.890, cvt=6.018, bld=0.000); cpu 7.864 s on 1 threads; allocated 289.891 MB
+- Verilator: Built from 62.867 MB sources in 74 modules, into 33.886 MB in 48 C++ files needing 0.000 MB
+- Verilator: Walltime 8.723 s (elab=1.096, cvt=6.670, bld=0.000); cpu 8.722 s on 1 threads; allocated 289.762 MB

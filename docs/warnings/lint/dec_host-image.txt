@@ -208,13 +208,13 @@
                                               : ... note: In instance 'dec_host.u_dec.g_fsl.u_pj'
    35 |     input  hdr_t          hdr,
       |                           ^~~
-%Warning-UNUSEDSIGNAL: rtl/mf_project.sv:54:27: Bits of signal are not used: 'm_axi_rresp'[0]
+%Warning-UNUSEDSIGNAL: rtl/mf_project.sv:55:27: Bits of signal are not used: 'm_axi_rresp'[0]
                                               : ... note: In instance 'dec_host.u_dec.g_fsl.u_pj'
-   54 |     input  logic [1:0]    m_axi_rresp,
+   55 |     input  logic [1:0]    m_axi_rresp,
       |                           ^~~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/mf_project.sv:211:21: Bits of signal are not used: 'c0_w'[31:29]
+%Warning-UNUSEDSIGNAL: rtl/mf_project.sv:212:21: Bits of signal are not used: 'c0_w'[31:29]
                                                : ... note: In instance 'dec_host.u_dec.g_fsl.u_pj'
-  211 |     logic [31:0]    c0_w; logic [2:0] c0_src; logic [MIW-2:0] c0_y, c0_x;
+  212 |     logic [31:0]    c0_w; logic [2:0] c0_src; logic [MIW-2:0] c0_y, c0_x;
       |                     ^~~~
 %Warning-UNUSEDSIGNAL: rtl/recon_top.sv:36:25: Bits of signal are not used: 'hdr'[164,157:74,65:56,54:0]
                                              : ... note: In instance 'dec_host.u_dec.u_rc'
@@ -1575,5 +1575,5 @@
    50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
       |                                                        ^~~
 - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
-- Verilator: Built from 62.864 MB sources in 74 modules, into 47.063 MB in 55 C++ files needing 0.000 MB
-- Verilator: Walltime 11.751 s (elab=1.031, cvt=9.515, bld=0.000); cpu 11.745 s on 1 threads; allocated 352.906 MB
+- Verilator: Built from 62.867 MB sources in 74 modules, into 47.062 MB in 55 C++ files needing 0.000 MB
+- Verilator: Walltime 10.443 s (elab=1.063, cvt=8.203, bld=0.000); cpu 10.443 s on 1 threads; allocated 352.855 MB

@@ -362,9 +362,11 @@ async def dec_host_inter_vs_model(dut):
                     cdf_ld = None
                 assert (ctx.prev_segment_ids is None) == (seg_ld is None), f"{tag}: the model has a previous segment map but no slot area holds one"
                 assert ctx.cdfs is None or cdf_ld is not None or (prim and isinstance(prim.get("cdf"), tuple)), f"{tag}: the model inherits CDFs but no slot area holds them"
-                await write_seq(ax, HR.ld_regs(seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra), mf=mf_tab))
+                # the frame's header, the loader's registers and START_LOAD, as the host writes them (HR.load_seq)
+                seq_ld = HR.load_seq(th0, seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra), mf=mf_tab)
+                await write_seq(ax, seq_ld[:-1])
                 t_ld = get_sim_time("ns")
-                await ax.write(R_START, HR.START_LOAD)
+                await ax.write(*seq_ld[-1])
                 for _ in range(400000):          # a 1080p frame: zero map + CDF rows + motion-field projection ran past 460k cycles (2026-11-02)
                     stv = await ax.read(HR.R_FS_STATUS)
                     if stv & HR.FS_LD_DONE:

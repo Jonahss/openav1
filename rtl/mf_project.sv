@@ -37,6 +37,7 @@ module mf_project
     input  logic          src_go,              // the read channel is free (the frame-state loader's reads are over)
     input  logic          band_go,             // the next band may be projected (its slot in the band store is free)
     output logic [MIW-5:0] bands_done,         // bands finished since mf_start (band k = rows 8k .. 8k+7)
+    output logic          bands_all,           // every band of the frame is projected (since mf_start; the engines' hold ends on it)
     input  logic [2:0]    mf_nsrc,             // sources to project, 0..5, in order
     input  logic [199:0]  src_base,            // source s base at [40s +: 40]
     input  logic [79:0]   src_rowb,            // bytes per 8x8 line at [16s +: 16]
@@ -134,14 +135,14 @@ module mf_project
     always_ff @(posedge clk) begin
         if (rst) begin
             as <= A_IDLE; s <= '0; addr <= '0; beats <= '0; len <= '0; line <= '0; bx8 <= '0; c_y <= '0; c_x <= '0;
-            inflight <= '0; resv <= '0; dq_w <= '0; b_y0 <= '0; bands_done <= '0;
+            inflight <= '0; resv <= '0; dq_w <= '0; b_y0 <= '0; bands_done <= '0; bands_all <= 1'b0;
         end else begin
             inflight <= inflight + (OW+1)'(issue) - (OW+1)'(retire);
             resv <= resv + (issue ? (BW+1)'(len) : '0) - (BW+1)'(pop_beat);
             if (issue) begin dq[dq_w[OW-1:0]] <= '{src: s, line: line, x8: bx8}; dq_w <= dq_w + 1'b1; end
             case (as)
                 A_IDLE: if (mf_start) begin
-                    inflight <= '0; resv <= '0; dq_w <= '0; b_y0 <= '0; bands_done <= '0;
+                    inflight <= '0; resv <= '0; dq_w <= '0; b_y0 <= '0; bands_done <= '0; bands_all <= 1'b0;
                     for (int i = 0; i < 5; i++) src_addr[i] <= src_base[40 * i +: 40];
                     as <= A_BGO;
                 end
@@ -177,7 +178,7 @@ module mf_project
                 A_DRAIN: if (inflight == '0 && bq_n == '0 && !pipe_v) begin            // the band's last cells written
                     bands_done <= bands_done + 1'b1; b_y0 <= b_y0 + (MIW-1)'(8); as <= A_BGO;
                 end
-                A_DONE: as <= A_IDLE;
+                A_DONE: begin bands_all <= 1'b1; as <= A_IDLE; end
                 default: as <= A_IDLE;
             endcase
         end
