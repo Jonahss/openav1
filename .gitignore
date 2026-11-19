@@ -22,3 +22,11 @@ streams/fuzz/
 streams/fuzz_fail/
 streams/gen/
 tools/host/libhostregs.so
+# what bin/wt_setup.sh links into a worktree (never committed)
+/venv
+/toolchain
+/refout
+/prefix-trace
+/traces
+/streams/argon
+/streams/inter/mf_small_8bit.ivf

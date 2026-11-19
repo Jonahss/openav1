@@ -1627,5 +1627,5 @@
    50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
       |                                                        ^~~
 - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
-- Verilator: Built from 61.582 MB sources in 73 modules, into 39.631 MB in 49 C++ files needing 0.000 MB
-- Verilator: Walltime 7.414 s (elab=0.766, cvt=5.730, bld=0.000); cpu 7.414 s on 1 threads; allocated 320.121 MB
+- Verilator: Built from 61.586 MB sources in 73 modules, into 39.638 MB in 49 C++ files needing 0.000 MB
+- Verilator: Walltime 7.169 s (elab=0.733, cvt=5.554, bld=0.000); cpu 7.168 s on 1 threads; allocated 320.145 MB

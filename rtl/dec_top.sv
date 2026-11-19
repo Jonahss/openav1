@@ -604,6 +604,31 @@ module dec_top
         if (hold_rc && !rc_busy && ev_pop) $display("[win] t=%0t hold row %0d (fb0 free %0d, flushed %0d)", $time, sb_pop_row, fb0_free, flushed_cnt);
         if (hold_fc && !fc_pend && !fc_busy) $display("[win] t=%0t hold band %0d (fb2 free %0d)", $time, fc_next, fb2_free);
     end
+    // the chain's pace inside the decoder (simulation only): the clocks of every band, and at frame_done how long the
+    // chain worked, waited for a decoded row or for a slot in fb2, and how long reconstruction stood held, by cause
+    int rate_band_t, rate_busy, rate_bands, rate_hold_rs, rate_hold_win, rate_hold_fc, rate_wait_row, rate_frame;
+    always_ff @(posedge clk) begin
+        if (rst || frame_start) begin
+            rate_busy <= 0; rate_bands <= 0; rate_hold_rs <= 0; rate_hold_win <= 0; rate_hold_fc <= 0; rate_wait_row <= 0; rate_frame <= 0; rate_band_t <= 0;
+        end else if (seq_active) begin
+            rate_frame <= rate_frame + 1;
+            rate_band_t <= fc_go ? 0 : rate_band_t + 1;
+            if (fc_pend) rate_busy <= rate_busy + 1;
+            if (hold_rs) rate_hold_rs <= rate_hold_rs + 1;
+            else if (hold_rc) rate_hold_win <= rate_hold_win + 1;
+            if (!fc_pend && !fc_busy && (fc_next < n_rows)) begin
+                if (!row_dec(fc_next)) rate_wait_row <= rate_wait_row + 1;
+                else if (hold_fc) rate_hold_fc <= rate_hold_fc + 1;
+            end
+            if (fc_pend && fc_done) begin
+                rate_bands <= rate_bands + 1;
+                $display("[rate] t=%0t band %0d: %0d clocks, %0d x %0d luma samples", $time, fc_next, rate_band_t + 1,
+                         32'(hdr.mi_cols) * 4, (32'(fc_row_last) - 32'(fc_row_first) + 1) * 4);
+            end
+        end
+        if (frame_done) $display("[rate] t=%0t frame: %0d clocks; chain busy %0d in %0d bands, waiting for a decoded row %0d, held by fb2 %0d; reconstruction held by the row store %0d, by the fb0 window %0d",
+                                 $time, rate_frame, rate_busy, rate_bands, rate_wait_row, rate_hold_fc, rate_hold_rs, rate_hold_win);
+    end
     // heartbeat (simulation only): the sequencer's state every 2^18 cycles while a frame is active, so a stalled twin
     // shows which stage is waiting for what (and whether simulated time still advances at all)
     int trace_hb;
