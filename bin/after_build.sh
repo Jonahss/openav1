@@ -21,7 +21,9 @@ for t in "$@"; do
   BLD=$(cat ~/openav1-synth/u200-$t-$sha/.bld 2>/dev/null)
   if [ -n "$BLD" ]; then
     $(dirname "$0")/vk comment "$BLD" "card: $(grep -E "^frames:|UNCHECKED|PF_CARD" ~/measure1080/pf_card_$t.txt | tr "\n" ";" | cut -c1-400)"
-    if grep -q PF_CARD_DONE ~/measure1080/pf_card_$t.txt && ! grep -E "^frames:" ~/measure1080/pf_card_$t.txt | grep -qv "differ: 0"; then $(dirname "$0")/vk label "$BLD" card:bit-exact; else $(dirname "$0")/vk label "$BLD" card:differs-or-aborted; fi
+    # bit-exact: both clips ran, no picture differs, and pictures were in fact compared (a run that died early has
+    # "identical: 0; differ: 0"; until 2026-11-19 the differ count matched a text decode.py never prints and was always 0)
+    if grep -q PF_CARD_DONE ~/measure1080/pf_card_$t.txt && [ "$(grep -cE "^frames:" ~/measure1080/pf_card_$t.txt)" = 2 ] && ! grep -E "^frames:" ~/measure1080/pf_card_$t.txt | grep -qvE "identical: [1-9][0-9]*; differ: 0$"; then $(dirname "$0")/vk label "$BLD" card:bit-exact; else $(dirname "$0")/vk label "$BLD" card:differs-or-aborted; fi
   fi
 done
 echo "AFTER_BUILD_DONE $(date -Is)" >> $S
