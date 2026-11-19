@@ -100,3 +100,18 @@ replaced by the band later.
 
 Order, revised: (1) every test on stage B and the host-written field deleted: needed for the band, and a retirement
 that stands on its own; (2) the read arbiter; (3) band projection, the holds, `MFL2R = 5`.
+
+## Notes from the first night (2026-11-18)
+
+- Census: `dec_host_inter` and `dec_host_inter_argon` pass unchanged with the card-side load; they and gate shards
+  b, c, d now run that way. What still needed the host-written state was frames only the model decodes (a single
+  frame picked with `TS_FRAMES`, frames outside the window limits): their state now goes into the AXI memory in the
+  area formats the card writes (`host_regs.fs_pack_mv` / `fs_pack_seg` / `fs_pack_cdf`), so a later frame on the RTL
+  loads it like any other.
+- The tests that drive `dec_top` directly have no loader in their build (it exists in window builds with INTER); they
+  keep the whole-frame field and write it through the `mf_we` ports. The band is the window build: `MFL2R = 5` there.
+- `mf_project` works band by band since 440790e, with every band let go at once for now: the card-load twin (9 frames
+  with a field, 14 projected sources) gives identical pictures.
+- The hold point of a tile engine is the superblock start state of `tile_syntax` (`T_SB`); the band sequencing
+  (which band may be projected, which engine waits) belongs in `tile_engines`, which sees every engine row.
+
