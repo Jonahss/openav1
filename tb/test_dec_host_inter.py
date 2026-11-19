@@ -38,6 +38,8 @@ from axi_mem import AxiMem                                   # noqa: E402
 
 FLUSH_BASE = 0x80_0000_0000                                  # frame fi's picture at FLUSH_BASE + fi * FLUSH_STRIDE (40-bit space), or buffer k of TS_POOL
 FLUSH_STRIDE = TI.SLOT_STRIDE
+MF_SLOW = int(os.environ.get("TS_MF_SLOW", "0"))             # extra cycles on every read burst of a state area (MV words, segment
+                                                             # map, CDF rows): the band projection then falls behind the tile engines
 MODEL_FS_BASE = 0xC0_0000_0000                               # the state areas of frames only the model decoded: frame fi's at
 MODEL_FS_STRIDE = 0x0400_0000                                # MODEL_FS_BASE + fi * MODEL_FS_STRIDE (outside the picture pool)
 
@@ -285,6 +287,8 @@ async def dec_host_inter_vs_model(dut):
         cocotb.start_soon(phase_gen())
     ax = AxiLite(dut, dut.clk)
     mem = AxiMem(dut, dut.clk, seed=1, stall=0.2)
+    if MF_SLOW:
+        mem.slow = lambda adr: MF_SLOW if (adr >= MODEL_FS_BASE or (adr >= FLUSH_BASE and (adr - FLUSH_BASE) % FLUSH_STRIDE >= 0x1800_0000)) else 0
     cocotb.start_soon(mem.run())
     cocotb.start_soon(mem.run_read())
     dut.aresetn.value = 0

@@ -34,6 +34,10 @@ module tile_engines
     input  ihdr_t             ihdr,
     // per-engine tile geometry and byte feed
     input  logic [TE-1:0]     eng_mask,       // engines taking part in this tile row (0: engine 0 with hdr's own columns)
+    // the motion field as a band (docs/motion-field-band.md): the bands projected so far, and whether the next may go
+    input  logic              mf_band_en,     // this frame's field is projected band by band (else nothing waits)
+    input  logic [MIW-5:0]    mf_bands_done,
+    output logic              mf_band_go,
     input  logic [TE*MIW-1:0] col_start,      // MiColStart per engine
     input  logic [TE*MIW-1:0] col_end,        // MiColEnd per engine
     input  logic [TE*8-1:0]   in_data,
@@ -103,6 +107,7 @@ module tile_engines
     logic [TE-1:0] e_busy, e_done, e_unsup, e_in_ready, e_blk_done, e_tx_done, e_tx_ack, e_pal_hold, e_blk_ack, e_lr_done;
     logic [TE-1:0] e_sb_start, e_blk_info;
     logic [MIW-1:0] e_sb_r [TE], e_sb_c [TE];
+    logic [TE-1:0] e_sb_hold;
     blk_rec_t    e_blk_rec [TE];
     tx_rec_t     e_tx_rec [TE];
     lr_rec_t     e_lr_rec [TE];
@@ -124,6 +129,27 @@ module tile_engines
     blk_rec_t    h_nb_blk [TE];
     logic [TE-1:0] mask;                                      // the engines of this tile row (eng_mask, or engine 0)
     assign mask = (TE == 1 || eng_mask == '0) ? TE'(1) : eng_mask;
+    // Motion-field bands: band k = MI rows 16k .. 16k+15 (64 pixels). An engine starts a superblock row when the band
+    // of that row (128-pixel superblocks: the two bands) is projected. The store keeps four bands, band k in the slot
+    // of band k - 4: the next band may be projected while it is less than four above the lowest band a busy engine of
+    // the tile row is in. (An engine waits for a band at most one above its own, so never for one that waits for it.)
+    logic [MIW-4:0] mf_nbands, mf_low, mf_low_c;
+    logic           mf_any;
+    assign mf_nbands = (MIW-3)'((hdr.mi_rows + MIW'(15)) >> 4);
+    always_comb begin
+        mf_low_c = '1; mf_any = 1'b0;
+        for (int e = 0; e < TE; e++) begin
+            logic [MIW-4:0] b;
+            b = (MIW-3)'(e_sb_r[e] >> 4);
+            e_sb_hold[e] = mf_band_en && ((MIW-3)'(mf_bands_done) < b + (hdr.sb128 ? (MIW-3)'(2) : (MIW-3)'(1))) && ((MIW-3)'(mf_bands_done) < mf_nbands);
+            if (e_busy[e] && mask[e]) begin mf_any = 1'b1; if (b < mf_low_c) mf_low_c = b; end
+        end
+    end
+    always_ff @(posedge clk) begin
+        if (rst) mf_low <= '0;
+        else if (mf_any) mf_low <= mf_low_c;
+    end
+    assign mf_band_go = mf_band_en && ((MIW-3)'(mf_bands_done) < mf_low + (MIW-3)'(4));
     for (genvar e = 0; e < TE; e++) begin : g_e
         always_comb begin
             hdr_e[e] = hdr;
@@ -139,7 +165,7 @@ module tile_engines
             .def_we, .def_addr, .def_data, .rb_en(rb_en && (EW'(e) == rb_sel)), .rb_addr, .rb_data(e_rb_data[e]),
             .mf_we, .mf_wy8, .mf_wx8, .mf_wvalid, .mf_wrow, .mf_wcol, .sp_we, .sp_wrow, .sp_wwc, .sp_wdata,
             .tile_start(e_start[e]), .tile_busy(e_busy[e]), .tile_done(e_done[e]), .unsupported(e_unsup[e]),
-            .sb_start_o(e_sb_start[e]), .sb_r_o(e_sb_r[e]), .sb_c_o(e_sb_c[e]), .blk_info(e_blk_info[e]), .blk_done(e_blk_done[e]), .blk_rec(e_blk_rec[e]),
+            .sb_hold(e_sb_hold[e]), .sb_start_o(e_sb_start[e]), .sb_r_o(e_sb_r[e]), .sb_c_o(e_sb_c[e]), .blk_info(e_blk_info[e]), .blk_done(e_blk_done[e]), .blk_rec(e_blk_rec[e]),
             .tx_done(e_tx_done[e]), .tx_rec(e_tx_rec[e]), .tx_ack(e_tx_ack[e]), .lr_done(e_lr_done[e]), .lr_rec(e_lr_rec[e]),
             .q_slot_w(e_slot_w[e]), .q_slot_r, .q_addr, .q_data(e_q_data[e]),
             .pal_hold(e_pal_hold[e]), .blk_ack(e_blk_ack[e]), .pm_plane, .pm_x, .pm_y, .pm_idx(e_pm_idx[e]));

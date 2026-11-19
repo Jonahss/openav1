@@ -153,7 +153,8 @@ module dec_top
     logic           ld_sp_we, ld_def_we; logic [MIW-1:0] ld_sp_wrow; logic [MIW-5:0] ld_sp_wwc; logic [47:0] ld_sp_wdata; logic [CDF_AW-1:0] ld_def_addr; logic [245:0] ld_def_data;
     // the loader group: fs_load (segment map, CDF rows) and, with ld_cfg[3], mf_project, started together: the engine clears the
     // band while fs_load reads, then takes the read channel once fs_load is idle (src_go); one busy / done to the host
-    logic           fsl_busy, fsl_done, fsl_err, pj_busy, pj_done, pj_err, pj_start;
+    logic           fsl_busy, fsl_done, fsl_err, pj_err, pj_start;
+    logic           mf_band_en, mf_band_go; logic [MIW-5:0] mf_bands_done;   // the field band by band (docs/motion-field-band.md)
     logic [39:0]    pj_araddr; logic [7:0] pj_arlen;
     logic           pj_arvalid, pj_arready, pj_rvalid, pj_rready;
     logic [6:0]     pj_we; logic [MIW-2:0] pj_wy8, pj_wx8; logic pj_wvalid; logic [111:0] pj_wrow, pj_wcol;
@@ -162,18 +163,25 @@ module dec_top
             .m_axi_araddr(ld_araddr), .m_axi_arlen(ld_arlen), .m_axi_arsize(ld_arsize), .m_axi_arburst(ld_arburst), .m_axi_arcache(ld_arcache), .m_axi_arprot(ld_arprot),
             .m_axi_arvalid(ld_arvalid), .m_axi_arready(ld_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(ld_rvalid), .m_axi_rready(ld_rready),
             .sp_we(ld_sp_we), .sp_wrow(ld_sp_wrow), .sp_wwc(ld_sp_wwc), .sp_wdata(ld_sp_wdata), .def_we(ld_def_we), .def_addr(ld_def_addr), .def_data(ld_def_data));
-        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(!fsl_busy), .band_go(1'b1), .bands_done(), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
-            .src_tocur(mf_src_tocur), .src_off(mf_src_off), .dst_dist(mf_dst_dist), .mf_busy(pj_busy), .mf_done(pj_done), .mf_err(pj_err),
-            .m_axi_araddr(pj_araddr), .m_axi_arlen(pj_arlen), .m_axi_arsize(), .m_axi_arburst(), .m_axi_arcache(), .m_axi_arprot(),   // (the attributes every reader uses: ref_fetch drives them)
+        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(!fsl_busy), .band_go(mf_band_go), .bands_done(mf_bands_done), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
+            .src_tocur(mf_src_tocur), .src_off(mf_src_off), .dst_dist(mf_dst_dist), .mf_err(pj_err),
+            .m_axi_araddr(pj_araddr), .m_axi_arlen(pj_arlen),   // (the burst attributes are ref_fetch's: every reader uses the same)
             .m_axi_arvalid(pj_arvalid), .m_axi_arready(pj_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(pj_rvalid), .m_axi_rready(pj_rready),
             .mf_we(pj_we), .mf_wy8(pj_wy8), .mf_wx8(pj_wx8), .mf_wvalid(pj_wvalid), .mf_wrow(pj_wrow), .mf_wcol(pj_wcol));
         assign pj_start = ld_start && ld_cfg[3];
-        assign ld_busy = fsl_busy || pj_busy;
-        assign ld_done = pj_done || (fsl_done && !pj_busy);   // the engine's reads wait for fs_load, so its done is the later one (its done pulse lands the cycle its busy drops)
-        assign ld_err  = fsl_err || pj_err;
+        // the host waits for fs_load alone: the projection goes on behind, band by band ahead of the tile engines, which
+        // wait at a superblock row for its band (tile_engines). A read error of the projection flags the frame.
+        assign ld_busy = fsl_busy;
+        assign ld_done = fsl_done;
+        assign ld_err  = fsl_err;
+        always_ff @(posedge clk) begin
+            if (rst) mf_band_en <= 1'b0;                     // (the host resets the decoder before a frame's load)
+            else if (pj_start) mf_band_en <= 1'b1;
+        end
     end else begin : g_nofsl
         assign ld_busy = 1'b0; assign ld_done = 1'b0; assign ld_err = 1'b0; assign fsl_busy = 1'b0; assign fsl_done = 1'b0; assign fsl_err = 1'b0;
-        assign pj_busy = 1'b0; assign pj_done = 1'b0; assign pj_err = 1'b0; assign pj_start = 1'b0;
+        assign pj_err = 1'b0; assign pj_start = 1'b0;
+        assign mf_band_en = 1'b0; assign mf_bands_done = '0;
         assign ld_araddr = '0; assign ld_arlen = '0; assign ld_arsize = '0; assign ld_arburst = '0; assign ld_arcache = '0; assign ld_arprot = '0;
         assign ld_arvalid = 1'b0; assign ld_rready = 1'b0;
         assign pj_araddr = '0; assign pj_arlen = '0;
@@ -207,9 +215,9 @@ module dec_top
     assign sp_wrow_i  = ld_sp_we ? ld_sp_wrow : sp_wrow;
     assign sp_wwc_i   = ld_sp_we ? ld_sp_wwc : sp_wwc;
     assign sp_wdata_i = ld_sp_we ? ld_sp_wdata : sp_wdata;
-    tile_engines #(.TE(TE), .INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R((FRAME_WIN > 0 && INTER == 0) ? 4 + SB128 : FBY - 3), .MFL2C(FBX - 3),
+    tile_engines #(.TE(TE), .INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? (INTER == 0 ? 4 + SB128 : 5) : FBY - 3), .MFL2C(FBX - 3),
                    .SPL2R((FRAME_WIN > 0 && INTER == 0) ? 5 + SB128 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
-                   .clk, .rst, .hdr, .ihdr, .eng_mask, .col_start, .col_end,
+                   .clk, .rst, .hdr, .ihdr, .eng_mask, .mf_band_en, .mf_bands_done, .mf_band_go, .col_start, .col_end,
                    .in_data, .in_valid, .in_ready, .in_eos, .def_we(def_we_i), .def_addr(def_addr_i), .def_data(def_data_i), .rb_en, .rb_addr, .rb_sel, .rb_data,
                    .mf_we(mf_we | pj_we), .mf_wy8(pj_we != 7'd0 ? pj_wy8 : mf_wy8), .mf_wx8(pj_we != 7'd0 ? pj_wx8 : mf_wx8),
                    .mf_wvalid(pj_we != 7'd0 ? pj_wvalid : mf_wvalid), .mf_wrow(pj_we != 7'd0 ? pj_wrow : mf_wrow), .mf_wcol(pj_we != 7'd0 ? pj_wcol : mf_wcol),
@@ -434,7 +442,7 @@ module dec_top
     if (FRAME_URAM != 0 && FRAME_WIN > 0 && FRAME_WIN < 3) begin : g_win_depth
         $error("dec_top: FRAME_WIN must be 0 (the whole picture) or at least 3 superblock rows");
     end
-    assign unsupported = ts_unsup || win_unsup || mc_unsup || mem_err;   // mc_unsup: an inter feature beyond stage 2a; mem_err: a failed reference read
+    assign unsupported = ts_unsup || win_unsup || mc_unsup || mem_err || pj_err;   // mc_unsup: an inter feature beyond stage 2a; mem_err: a failed reference read
     always_ff @(posedge clk) begin
         row_final <= 1'b0;
         if (rst || frame_start) begin

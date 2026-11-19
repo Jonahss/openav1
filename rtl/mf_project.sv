@@ -15,8 +15,8 @@
 // (MAX_OFFSET_HEIGHT = 0), so band k of the field (rows 8k .. 8k+7) depends on rows 8k .. 8k+7 of the sources alone.
 // After mf_start the engine takes the bands in ascending order, each when band_go allows it (the band store keeps a
 // few bands; the decoder says when the slot of the next one is free): the band's rows are cleared (every entry
-// invalid), then its eight lines of every source are read and projected. bands_done counts the finished bands;
-// mf_done comes after the last. Each source keeps the address of its next line between bands.
+// invalid), then its eight lines of every source are read and projected. bands_done counts the finished bands (the engine
+// is idle again after the last). Each source keeps the address of its next line between bands.
 //
 // Throughput (2026-11-03): the clear writes all seven references of a position in one cycle (w8 cycles a row; the
 // first band's starts with mf_start, which the loader group raises together with the segment-map / CDF loader, so it
@@ -44,16 +44,10 @@ module mf_project
     input  logic [39:0]   src_tocur,           // refToCur, signed 8 at [8s +: 8]
     input  logic [279:0]  src_off,             // refOffset of saved reference r (1..7) of source s: signed 8 at [8 (7s + r - 1) +: 8]
     input  logic [55:0]   dst_dist,            // refToDst for destination d (1..7): signed 8 at [8 (d - 1) +: 8]
-    output logic          mf_busy,
-    output logic          mf_done,
     output logic          mf_err,
     // AXI4 read master
     output logic [39:0]   m_axi_araddr,
     output logic [7:0]    m_axi_arlen,
-    output logic [2:0]    m_axi_arsize,
-    output logic [1:0]    m_axi_arburst,
-    output logic [3:0]    m_axi_arcache,
-    output logic [2:0]    m_axi_arprot,
     output logic          m_axi_arvalid,
     input  logic          m_axi_arready,
     input  logic [63:0]   m_axi_rdata,
@@ -118,10 +112,8 @@ module mf_project
     logic [39:0]    src_addr [5];                            // each source: the address of its next line
     logic [OW:0]    inflight;                                // bursts issued whose last beat has not arrived
     logic [BW:0]    resv;                                    // beats reserved in the beat FIFO
-    assign m_axi_arsize = 3'b011; assign m_axi_arburst = 2'b01; assign m_axi_arcache = 4'b0011; assign m_axi_arprot = 3'b000;
     assign m_axi_araddr = addr; assign m_axi_arlen = 8'(len - 5'd1); assign m_axi_arvalid = (as == A_AR);
     assign m_axi_rready = 1'b1;                              // room is reserved at issue
-    assign mf_busy = (as != A_IDLE);
     logic [4:0] burst_len;
     always_comb begin
         burst_len = 5'd16;
@@ -140,7 +132,6 @@ module mf_project
     logic           pipe_v;
     logic [BW:0]    bq_n;
     always_ff @(posedge clk) begin
-        mf_done <= 1'b0;
         if (rst) begin
             as <= A_IDLE; s <= '0; addr <= '0; beats <= '0; len <= '0; line <= '0; bx8 <= '0; c_y <= '0; c_x <= '0;
             inflight <= '0; resv <= '0; dq_w <= '0; b_y0 <= '0; bands_done <= '0;
@@ -186,7 +177,7 @@ module mf_project
                 A_DRAIN: if (inflight == '0 && bq_n == '0 && !pipe_v) begin            // the band's last cells written
                     bands_done <= bands_done + 1'b1; b_y0 <= b_y0 + (MIW-1)'(8); as <= A_BGO;
                 end
-                A_DONE: begin mf_done <= 1'b1; as <= A_IDLE; end
+                A_DONE: as <= A_IDLE;
                 default: as <= A_IDLE;
             endcase
         end

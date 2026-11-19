@@ -145,7 +145,8 @@ class AxiMem:
                 await RisingEdge(self.clk)
             a, length, t0 = q.popleft()
             self.in_flight = 1
-            while self.cycle < t0 + lat:
+            slow = getattr(self, "slow", None)               # slow(address) -> extra cycles for that burst (a test's choice)
+            while self.cycle < t0 + lat + (slow(a) if slow else 0):
                 await RisingEdge(self.clk)
             for i in range(length):
                 while self.rng.random() < self.stall:

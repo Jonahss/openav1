@@ -53,6 +53,7 @@ module tile_syntax
     output logic              tile_done,
     output logic              unsupported,
     // records
+    input  logic              sb_hold,         // the superblock at sb_r_o may not start yet (its motion-field band is not projected)
     output logic              sb_start_o,      // superblock start (for the reconstruction stage's BlockDecoded flags)
     output logic [MIW-1:0]       sb_r_o, sb_c_o,
     output logic              blk_info,        // blk_rec valid, before the block's transform blocks
@@ -377,7 +378,7 @@ module tile_syntax
                 st <= T_INIT;
             end
             T_INIT: if (!cdf_busy && !cdf_init) st <= T_SB;
-            T_SB: begin
+            T_SB: if (!sb_hold) begin
                 // superblock start: ReadDeltas, cdef flags (blk_syntax), read_lr, then decode_partition
                 sb_start <= 1'b1;
                 if (sb_c == hdr.mi_col_start) mvm_clr <= 1'b1;          // new superblock row: its motion-info rows are unwritten

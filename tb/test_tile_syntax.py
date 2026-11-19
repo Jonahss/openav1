@@ -276,7 +276,7 @@ async def tile_vs_model(dut):
         dut.phase.value = 0
         cocotb.start_soon(phase_gen())
     for s in ("in_valid", "in_eos", "def_we", "rb_en", "rb_addr", "tile_start", "tx_ack", "q_addr", "q_slot_w", "q_slot_r", "hdr", "ihdr", "blk_ack", "pm_plane", "pm_x", "pm_y",
-              "mf_we", "mf_wy8", "mf_wx8", "mf_wvalid", "mf_wrow", "mf_wcol", "sp_we", "sp_wrow", "sp_wwc", "sp_wdata"):
+              "mf_we", "mf_wy8", "mf_wx8", "mf_wvalid", "mf_wrow", "mf_wcol", "sp_we", "sp_wrow", "sp_wwc", "sp_wdata", "sb_hold"):
         if hasattr(dut, s):
             getattr(dut, s).value = 0
     dut.rst.value = 1
