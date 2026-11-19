@@ -154,7 +154,7 @@ module dec_top
     // the loader group: fs_load (segment map, CDF rows) and, with ld_cfg[3], mf_project, started together: the engine clears the
     // band while fs_load reads, then takes the read channel once fs_load is idle (src_go); one busy / done to the host
     logic           fsl_busy, fsl_done, fsl_err, pj_busy, pj_done, pj_err, pj_start;
-    logic [39:0]    pj_araddr; logic [7:0] pj_arlen; logic [2:0] pj_arsize; logic [1:0] pj_arburst; logic [3:0] pj_arcache; logic [2:0] pj_arprot;
+    logic [39:0]    pj_araddr; logic [7:0] pj_arlen;
     logic           pj_arvalid, pj_arready, pj_rvalid, pj_rready;
     logic [6:0]     pj_we; logic [MIW-2:0] pj_wy8, pj_wx8; logic pj_wvalid; logic [111:0] pj_wrow, pj_wcol;
     if (INTER != 0 && FRAME_WIN > 0) begin : g_fsl
@@ -164,7 +164,7 @@ module dec_top
             .sp_we(ld_sp_we), .sp_wrow(ld_sp_wrow), .sp_wwc(ld_sp_wwc), .sp_wdata(ld_sp_wdata), .def_we(ld_def_we), .def_addr(ld_def_addr), .def_data(ld_def_data));
         mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(!fsl_busy), .band_go(1'b1), .bands_done(), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
             .src_tocur(mf_src_tocur), .src_off(mf_src_off), .dst_dist(mf_dst_dist), .mf_busy(pj_busy), .mf_done(pj_done), .mf_err(pj_err),
-            .m_axi_araddr(pj_araddr), .m_axi_arlen(pj_arlen), .m_axi_arsize(pj_arsize), .m_axi_arburst(pj_arburst), .m_axi_arcache(pj_arcache), .m_axi_arprot(pj_arprot),
+            .m_axi_araddr(pj_araddr), .m_axi_arlen(pj_arlen), .m_axi_arsize(), .m_axi_arburst(), .m_axi_arcache(), .m_axi_arprot(),   // (the attributes every reader uses: ref_fetch drives them)
             .m_axi_arvalid(pj_arvalid), .m_axi_arready(pj_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(pj_rvalid), .m_axi_rready(pj_rready),
             .mf_we(pj_we), .mf_wy8(pj_wy8), .mf_wx8(pj_wx8), .mf_wvalid(pj_wvalid), .mf_wrow(pj_wrow), .mf_wcol(pj_wcol));
         assign pj_start = ld_start && ld_cfg[3];
@@ -176,22 +176,30 @@ module dec_top
         assign pj_busy = 1'b0; assign pj_done = 1'b0; assign pj_err = 1'b0; assign pj_start = 1'b0;
         assign ld_araddr = '0; assign ld_arlen = '0; assign ld_arsize = '0; assign ld_arburst = '0; assign ld_arcache = '0; assign ld_arprot = '0;
         assign ld_arvalid = 1'b0; assign ld_rready = 1'b0;
-        assign pj_araddr = '0; assign pj_arlen = '0; assign pj_arsize = '0; assign pj_arburst = '0; assign pj_arcache = '0; assign pj_arprot = '0;
+        assign pj_araddr = '0; assign pj_arlen = '0;
         assign pj_arvalid = 1'b0; assign pj_rready = 1'b0;
         assign ld_sp_we = 1'b0; assign ld_sp_wrow = '0; assign ld_sp_wwc = '0; assign ld_sp_wdata = '0; assign ld_def_we = 1'b0; assign ld_def_addr = '0; assign ld_def_data = '0;
         assign pj_we = '0; assign pj_wy8 = '0; assign pj_wx8 = '0; assign pj_wvalid = 1'b0; assign pj_wrow = '0; assign pj_wcol = '0;
     end
-    // the read channel: fs_load while it runs, then the projection engine, else ref_fetch (neither loader overlaps a tile)
-    assign m_axi_araddr  = fsl_busy ? ld_araddr  : pj_busy ? pj_araddr  : rf_araddr;
-    assign m_axi_arlen   = fsl_busy ? ld_arlen   : pj_busy ? pj_arlen   : rf_arlen;
-    assign m_axi_arsize  = fsl_busy ? ld_arsize  : pj_busy ? pj_arsize  : rf_arsize;
-    assign m_axi_arburst = fsl_busy ? ld_arburst : pj_busy ? pj_arburst : rf_arburst;
-    assign m_axi_arcache = fsl_busy ? ld_arcache : pj_busy ? pj_arcache : rf_arcache;
-    assign m_axi_arprot  = fsl_busy ? ld_arprot  : pj_busy ? pj_arprot  : rf_arprot;
-    assign m_axi_arvalid = fsl_busy ? ld_arvalid : pj_busy ? pj_arvalid : rf_arvalid;
-    assign m_axi_rready  = fsl_busy ? ld_rready  : pj_busy ? pj_rready  : rf_rready;
-    assign ld_arready = fsl_busy && m_axi_arready;  assign pj_arready = !fsl_busy && pj_busy && m_axi_arready;  assign rf_arready = !ld_busy && m_axi_arready;
-    assign ld_rvalid  = fsl_busy && m_axi_rvalid;   assign pj_rvalid  = !fsl_busy && pj_busy && m_axi_rvalid;   assign rf_rvalid  = !ld_busy && m_axi_rvalid;
+    // the read channel: fs_load has it while it runs (before the tiles: nothing else is in flight then); after that
+    // reference fetch and the projection engine share it burst by burst (rtl/axi_rd_share.sv: the projection reads its
+    // sources band by band during the decode, docs/motion-field-band.md). Every reader uses the same burst attributes.
+    logic [39:0]    sh_araddr; logic [7:0] sh_arlen; logic sh_arvalid, sh_rready;
+    axi_rd_share #(.QL2(5)) u_rsh (.clk, .rst,
+        .s_araddr({pj_araddr, rf_araddr}), .s_arlen({pj_arlen, rf_arlen}), .s_arvalid({pj_arvalid, rf_arvalid}),
+        .s_arready({pj_arready, rf_arready}), .s_rvalid({pj_rvalid, rf_rvalid}), .s_rready({pj_rready, rf_rready}),
+        .m_araddr(sh_araddr), .m_arlen(sh_arlen), .m_arvalid(sh_arvalid), .m_arready(!fsl_busy && m_axi_arready),
+        .m_rvalid(!fsl_busy && m_axi_rvalid), .m_rlast(m_axi_rlast), .m_rready(sh_rready));
+    assign m_axi_araddr  = fsl_busy ? ld_araddr  : sh_araddr;
+    assign m_axi_arlen   = fsl_busy ? ld_arlen   : sh_arlen;
+    assign m_axi_arsize  = fsl_busy ? ld_arsize  : rf_arsize;
+    assign m_axi_arburst = fsl_busy ? ld_arburst : rf_arburst;
+    assign m_axi_arcache = fsl_busy ? ld_arcache : rf_arcache;
+    assign m_axi_arprot  = fsl_busy ? ld_arprot  : rf_arprot;
+    assign m_axi_arvalid = fsl_busy ? ld_arvalid : sh_arvalid;
+    assign m_axi_rready  = fsl_busy ? ld_rready  : sh_rready;
+    assign ld_arready = fsl_busy && m_axi_arready;
+    assign ld_rvalid  = fsl_busy && m_axi_rvalid;
     assign def_we_i   = def_we | ld_def_we;
     assign def_addr_i = ld_def_we ? ld_def_addr : def_addr;
     assign def_data_i = ld_def_we ? ld_def_data : def_data;
