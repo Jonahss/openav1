@@ -1,8 +1,8 @@
-# Gate-level replay: simulation models and the driver script
+# Gate-level replay: simulation models
 
-`gate_block.sh` is the atium-side driver (`~/gate/gate_block.sh`): it writes a funcsim netlist from a Vivado
-checkpoint, compiles it with the replay harness (`tb/gate/replay_<block>.sv`) and replays recorded vectors
-(`tools/vcd2vec.py`) against it; optionally the RTL as a control. Copied here so the flow is versioned.
+`tools/gate_block.sh` is the driver: it writes a funcsim netlist from a Vivado checkpoint, compiles it with the
+replay harness (`replay_<block>.sv`, generated per run by `tools/gen_replay.py` into `~/gate/<block>/`) and replays
+recorded vectors (`tools/vcd2vec.py`) against it; optionally the RTL as a control.
 
 The whole-decoder netlist is flat and black-boxes the frame memory (`synth/vivado/frame_mem_bb.sv`), so the
 funcsim contains empty stub modules, one per parameterisation, under Vivado's names with no parameter overrides:
