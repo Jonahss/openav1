@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # after_build.sh <name> <sha> <tag> [<tag> ...]  (2026-11-17; the general form of fo_/ha_/ig_after_build.sh, which were
 # copies with the tags and the commit written in). Waits for the images u200-<tag>-<sha> (their rc line in
-# ~/logs/u200-builds.log), then runs the two-clip card test on each that built (card_measure: checked + unchecked,
-# restores the previous image). Summary: ~/measure1080/<name>_after_build.txt, last line AFTER_BUILD_DONE.
+# ~/logs/u200-builds.log), then runs the two-clip card test on each that built (card_measure: checked + unchecked;
+# a good image stays on the card, a bad one is replaced by the previous). Summary: ~/measure1080/<name>_after_build.txt, last line AFTER_BUILD_DONE.
 set -u
 name=$1; sha=$2; shift 2
 S=~/measure1080/${name}_after_build.txt; : > $S
@@ -17,7 +17,7 @@ for t in "$@"; do
   B=~/openav1-synth/u200-$t-$sha/proj/u200.runs/impl_1/sys_wrapper.bit
   grep -q "u200-$t-$sha rc=0" ~/logs/u200-builds.log && [ -f $B ] || { echo "$t: no image to test" >> $S; continue; }
   $(dirname "$0")/card_measure.sh $B $t
-  echo "---- $t" >> $S; grep -E "identical|UNCHECKED|PF_CARD|restored" ~/measure1080/pf_card_$t.txt | cut -c1-200 >> $S
+  echo "---- $t" >> $S; grep -E "identical|UNCHECKED|PF_CARD|restored|kept|NOT GOOD|mismatch" ~/measure1080/pf_card_$t.txt | cut -c1-200 >> $S
   BLD=$(cat ~/openav1-synth/u200-$t-$sha/.bld 2>/dev/null)
   if [ -n "$BLD" ]; then
     $(dirname "$0")/vk comment "$BLD" "card: $(grep -E "^frames:|UNCHECKED|PF_CARD" ~/measure1080/pf_card_$t.txt | tr "\n" ";" | cut -c1-400)"
