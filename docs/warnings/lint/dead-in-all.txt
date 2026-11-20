@@ -1,0 +1,2 @@
+rtl/frame_mem_uram.sv:121: Signal is not used: 'rq_sel'
+rtl/ref_fetch.sv:77: Signal is not used: 'm_axi_rlast'

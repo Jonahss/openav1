@@ -14,7 +14,6 @@ module dec_top
     parameter int FRAME_WIN = 0,             // >0 with FRAME_URAM: fb0 holds this many superblock rows (window, docs/frame-memory.md)
     parameter int FRAME_WIN2 = 0,            // with FRAME_URAM: fb2 (the final picture) as a ring of this many superblock rows, each flushed
                                              //    to DDR before its slot is reused (docs/picture-memory.md); 0: the whole picture
-    parameter int INTER = 1,                 // 0: the intra-only build (no ref_fetch / mc_filt / warp_setup, no inter syntax): the K26 board
     parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks too (128-line window rows, deeper mode-info rings)
     parameter int TE = 1,                     // tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
     parameter int REF_RING = 16              // ref_fetch line buffers (recon_top REF_RING; the U200 build's U200_REF_RING)
@@ -94,7 +93,7 @@ module dec_top
     output logic              row_final,           // 1-cycle pulse: superblock row row_final_idx is final
     output logic [SBW-1:0]    row_final_idx,
     input  logic              flush_done,          // 1-cycle pulse: the oldest released row is in DDR
-    // frame-state sideband (rtl/frame_state_w.sv, INTER builds): finished rows for dec_host's sideband DMA + its read port
+    // frame-state sideband (rtl/frame_state_w.sv): finished rows for dec_host's sideband DMA + its read port
     // frame-state loader (rtl/fs_load.sv, stage B): the segment map and the CDF rows from the reference slot's areas
     input  logic              ld_start,
     input  logic [3:0]        ld_cfg,             // bit 3: the motion-field projection (rtl/mf_project.sv) after the loads
@@ -142,7 +141,7 @@ module dec_top
     // superblock row up), the filters' info and reconstruction's mode map 64 rows (the four superblock rows live
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
     // the motion-field and segmentation-map bands hold the PREVIOUS frame's whole picture (the host writes them before the
-    // frame), so they are full-height whenever inter is built; the window build trims them only at INTER = 0 (unused there)
+    // frame), so they are full-height
     // ---- the frame-state loader (rtl/fs_load.sv): the read channel belongs to it while it runs (before the first tile),
     // to ref_fetch otherwise; its band and CDF writes merge with the host's register writes
     logic           def_we_i, sp_we_i;
@@ -158,7 +157,7 @@ module dec_top
     logic [39:0]    pj_araddr; logic [7:0] pj_arlen;
     logic           pj_arvalid, pj_arready, pj_rvalid, pj_rready;
     logic [6:0]     pj_we; logic [MIW-2:0] pj_wy8, pj_wx8; logic pj_wvalid; logic [111:0] pj_wrow, pj_wcol;
-    if (INTER != 0 && FRAME_WIN > 0) begin : g_fsl
+    if (FRAME_WIN > 0) begin : g_fsl
         fs_load u_fsl (.clk, .rst, .hdr, .ld_start, .ld_cfg(ld_cfg[2:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy(fsl_busy), .ld_done(fsl_done), .ld_err(fsl_err),
             .m_axi_araddr(ld_araddr), .m_axi_arlen(ld_arlen), .m_axi_arsize(ld_arsize), .m_axi_arburst(ld_arburst), .m_axi_arcache(ld_arcache), .m_axi_arprot(ld_arprot),
             .m_axi_arvalid(ld_arvalid), .m_axi_arready(ld_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(ld_rvalid), .m_axi_rready(ld_rready),
@@ -215,8 +214,8 @@ module dec_top
     assign sp_wrow_i  = ld_sp_we ? ld_sp_wrow : sp_wrow;
     assign sp_wwc_i   = ld_sp_we ? ld_sp_wwc : sp_wwc;
     assign sp_wdata_i = ld_sp_we ? ld_sp_wdata : sp_wdata;
-    tile_engines #(.TE(TE), .INTER(INTER), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? (INTER == 0 ? 4 + SB128 : 5) : FBY - 3), .MFL2C(FBX - 3),
-                   .SPL2R((FRAME_WIN > 0 && INTER == 0) ? 5 + SB128 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
+    tile_engines #(.TE(TE), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? 5 : FBY - 3), .MFL2C(FBX - 3),
+                   .SPL2R(FBY - 2), .SPL2W(FBX - 6)) u_ts (
                    .clk, .rst, .hdr, .ihdr, .eng_mask, .mf_band_en, .mf_bands_done, .mf_bands_all, .mf_band_go, .col_start, .col_end,
                    .in_data, .in_valid, .in_ready, .in_eos, .def_we(def_we_i), .def_addr(def_addr_i), .def_data(def_data_i), .rb_en, .rb_addr, .rb_sel, .rb_data,
                    .mf_we(mf_we | pj_we), .mf_wy8(pj_we != 7'd0 ? pj_wy8 : mf_wy8), .mf_wx8(pj_we != 7'd0 ? pj_wx8 : mf_wx8),
@@ -251,7 +250,7 @@ module dec_top
     logic [MIW-1:0] rc_col_start, rc_col_end;
     hdr_t hdr_rc;
     always_comb begin hdr_rc = hdr; hdr_rc.mi_col_start = rc_col_start; hdr_rc.mi_col_end = rc_col_end; end
-    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .INTER(INTER), .FRAME_WIN(FRAME_WIN), .REF_RING(REF_RING)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
+    recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .FRAME_WIN(FRAME_WIN), .REF_RING(REF_RING)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
                                             .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_tx, .ev_pop, .tx_rel,
                                             .ev_par, .ev_taken, .nb_valid, .nb_blk, .nb_par, .nb_at_head, .nb_pop,
                                             .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
@@ -419,7 +418,7 @@ module dec_top
     logic fs_hold;
     assign ev_valid_rc = ev_valid && !hold_rc && !fs_hold;
     // the frame-state sideband writer taps the popped block events (docs/frame-state.md)
-    if (INTER != 0 && FRAME_WIN > 0) begin : g_fsw
+    if (FRAME_WIN > 0) begin : g_fsw
         frame_state_w #(.FBX(FBX), .SB128(SB128)) u_fsw (.clk, .rst, .hdr, .ihdr, .frame_start, .tile_done,
             .ev_pop(ev_valid_rc && ev_pop), .ev_kind, .ev_blk, .fs_hold,
             .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_line, .fs_rd_beat, .fs_rd_buf, .fs_rd_data);

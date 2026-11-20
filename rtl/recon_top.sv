@@ -21,8 +21,6 @@ module recon_top
 #(
     parameter int FBX = 9,                   // frame buffer x address bits
     parameter int ITX_LANES = 4,             // 1-D transform engines (rows, then columns, at once): 4 for throughput, 2 fits the K26
-    parameter int INTER = 1,                 // 0: no inter prediction (ref_fetch / mc_filt / warp_setup left out, inter blocks never
-                                             //    dispatched): the intra-only board build (the K26 does not hold inter)
     parameter int FBY = 9,
     parameter int ML2R = 8,                  // mode map capacity: log2(MI rows), log2(MI cols)
     parameter int ML2C = 8,
@@ -242,38 +240,10 @@ module recon_top
     endfunction
 
     typedef enum logic [4:0] {B_IDLE, B_FT0, B_FT1, B_FT2, B_FT3, B_FT4, B_WR, B_WR_W,
-                              B_IBC_INIT, B_IBC_PL, B_IBC_R0, B_IBC_R1, B_IBC_R2, B_IBC_R3, B_IBC_R4, B_IBC_R5, B_IBC_WR,
                               B_MC_INIT, B_MC_WSET, B_MC_WSET_W, B_MC_PL, B_MC_UNIT, B_MC_STRIP, B_MC_STRIPM, B_MC_STRIP2, B_MC_FETCH, B_MC_NEXT, B_MC_DRAIN, B_MC_PLEND, B_MC_OB, B_MC_MASK, B_MC_II} bst_t;
     bst_t bst;
     // event queue consumption: a superblock start is applied when both FSMs are idle, a block record is taken by
     // the block FSM when idle, a transform block is taken by the transform FSM (and popped when acknowledged)
-    // ---- intra block copy (7.11.3 with refIdx = -1): the block is predicted whole from the pre-filter current
-    // frame before its transform blocks add residuals. someUseIntra is always 1 for an intrabc block (its own
-    // RefFrames[0] is INTRA_FRAME), so each plane is one prediction of the plane residual size with this
-    // block's vector. Luma vectors are whole samples; chroma may be half-sample -> bilinear (Subpel_Filters
-    // BILINEAR: taps 64/64) through the spec's rounding chain (InterRound0 / InterRound1).
-    logic [1:0]  ib_pl;
-    logic        ibc_sx, ibc_sy;
-    logic [7:0]  ib_w, ib_h, ib_i, ib_j;
-    logic [PXW-1:0] ib_bx, ib_by, ib_lastx, ib_lasty;
-    logic [3:0]  ib_fx, ib_fy;
-    logic signed [PXS-1:0] ib_x0, ib_y0;
-    logic [11:0] ib_s0, ib_s1, ib_s2, ib_s3;
-    logic [4:0]  ib_r0, ib_r1;
-    assign ibc_sx = (ib_pl != 2'd0) && hdr.ssx;
-    assign ibc_sy = (ib_pl != 2'd0) && hdr.ssy;
-    assign ib_r0 = (hdr.bit_depth == 4'd12) ? 5'd5 : 5'd3;
-    assign ib_r1 = (hdr.bit_depth == 4'd12) ? 5'd9 : 5'd11;
-    function automatic logic [PXW-1:0] ib_clip(input logic signed [PXS-1:0] v, input logic [PXW-1:0] last);
-        if (v < 0) ib_clip = PXW'(0);
-        else if (v > PXS'(signed'({2'b0, last}))) ib_clip = last;
-        else ib_clip = PXW'(v);
-    endfunction
-    logic [PXW-1:0] ib_rx0, ib_rx1, ib_ry0, ib_ry1;          // clamped source coordinates of the 2x2 neighbourhood
-    assign ib_rx0 = ib_clip(ib_x0 + PXS'(signed'({7'b0, ib_j})), ib_lastx);
-    assign ib_rx1 = ib_clip(ib_x0 + PXS'(signed'({7'b0, ib_j})) + PXS'(1), ib_lastx);
-    assign ib_ry0 = ib_clip(ib_y0 + PXS'(signed'({7'b0, ib_i})), ib_lasty);
-    assign ib_ry1 = ib_clip(ib_y0 + PXS'(signed'({7'b0, ib_i})) + PXS'(1), ib_lasty);
     // ---- inter prediction (7.11.3, stage 2a: translational, unscaled; single / AVERAGE / DISTANCE): the block is
     // predicted whole, plane by plane, unit by unit (one unit per plane, or the per-luma-4x4 chroma units of a sub-8x8
     // block from b.cmv), in strips of at most 64 x 64, list by list: ref_fetch brings the clamped reference region into
@@ -336,8 +306,8 @@ module recon_top
     // ref_fetch request / mc_filt run
     logic        rf_req_valid, rf_req_ready, rf_done, rf_err, rf_lst;
     always_ff @(posedge clk) if (rst) mem_err <= 1'b0; else if (rf_err) mem_err <= 1'b1;   // 2026-10-30 audit: a failed reference read was collected as pixels and never reported
-    logic        blk_inter;                                  // b.is_inter, constant 0 in the INTER = 0 build
-    assign blk_inter = (INTER != 0) && b.is_inter;
+    logic        blk_inter;
+    assign blk_inter = b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_done_tag, mc_v_active, mc_out_valid;
     logic        mc_h_ready;                                 // mc_filt can take the next run (its horizontal side is free)
@@ -547,7 +517,7 @@ module recon_top
     logic        pw_we, pw_buf, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4; logic [47:0] pw_d4;
     logic        pw_we2, rf_pw_we2; logic [47:0] pw_d4b, rf_pw_d4b;   // ref_fetch writes word pairs (two words a cycle, 2026-11-09); the ring loader single words
 
-    generate if (INTER != 0) begin : g_inter
+    generate if (1) begin : g_inter
     logic rf_pw_we, ff_pw_we, rf_pw_list, ff_pw_list; logic [6:0] rf_pw_row, ff_pw_row; logic [4:0] rf_pw_w4, ff_pw_w4; logic [47:0] rf_pw_d4, ff_pw_d4;
     logic rf_pw_buf; logic [1:0] mc_buf_busy;
     assign pw_we = rf_pw_we || ff_pw_we;
@@ -630,20 +600,6 @@ module recon_top
     logic [MIW-1:0] sb_r, sb_c;
     logic [5:0] sb_size4;
     logic [11:0] pix_max;
-    logic [11:0] ib_out;
-    always_comb begin
-        logic [19:0] a0, a1;
-        logic [16:0] h0, h1;
-        logic [24:0] v;
-        logic [13:0] o;
-        a0 = ib_fx[3] ? 20'd64 * 20'(ib_s0) + 20'd64 * 20'(ib_s1) : 20'd128 * 20'(ib_s0);
-        a1 = ib_fx[3] ? 20'd64 * 20'(ib_s2) + 20'd64 * 20'(ib_s3) : 20'd128 * 20'(ib_s2);
-        h0 = 17'((a0 + (20'd1 << (ib_r0 - 5'd1))) >> ib_r0);
-        h1 = 17'((a1 + (20'd1 << (ib_r0 - 5'd1))) >> ib_r0);
-        v = ib_fy[3] ? 25'd64 * 25'(h0) + 25'd64 * 25'(h1) : 25'd128 * 25'(h0);
-        o = 14'((v + (25'd1 << (ib_r1 - 5'd1))) >> ib_r1);
-        ib_out = (o > 14'(pix_max)) ? pix_max : 12'(o);
-    end
     logic [7:0]  nb_ay, nb_ly, nb_auv, nb_luv;
     logic [5:0]  wr_i;                                     // row counter for the map write
     logic        wr_j;                                     // word half
@@ -707,8 +663,8 @@ module recon_top
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             acc_cnt <= 3'd0; done_cnt <= 3'd0; pq_h <= 2'd0; pq_t <= 2'd0; ibc_acc <= 1'b0; ibc_has_rf <= 1'b0; pq_last <= '{default: 1'b0};
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
-        end else if (INTER != 0 && int'(bst) >= int'(B_MC_INIT)) begin
-            // motion compensation states (inter blocks): compiled out at INTER = 0
+        end else if (int'(bst) >= int'(B_MC_INIT)) begin
+            // motion compensation states (inter blocks)
             case (bst)
                 // ---- inter prediction (stage 2a): see the declarations above
                 B_MC_INIT: if (!b.intrabc || (rs == R_IDLE && pred_done[!cur_par] && !tx_pending_other)) begin   // a block copy reads the current frame
@@ -1090,45 +1046,11 @@ module recon_top
                     wr_j <= 1'b1; bst <= B_WR;
                 end else if (wr_i + 6'd1 < bh4) begin
                     wr_j <= 1'b0; wr_i <= wr_i + 6'd1; bst <= B_WR;
-                end else if (b.intrabc) begin
-                    bst <= (INTER != 0) ? B_MC_INIT : B_IBC_INIT;        // with inter built: through the MC path (patch loaders)
-                end else if (blk_inter) begin
-                    bst <= B_MC_INIT;
+                end else if (b.intrabc || blk_inter) begin
+                    bst <= B_MC_INIT;                                    // intra block copy goes through the MC path too (patch loaders)
                 end else if (pred_done[!cur_par]) begin         // intra: its edge reads need the previous block landed
                     blk_ready_set <= 1'b1; bst <= B_IDLE;
                 end
-            end
-            // ---- intra block copy prediction, one plane at a time, one output sample per 4-5 cycles
-            B_IBC_INIT: if (rs == R_IDLE) begin ib_pl <= 2'd0; bst <= B_IBC_PL; end
-            B_IBC_PL: begin
-                logic [4:0] psz;
-                logic signed [19:0] mvx2, mvy2;
-                psz = subsampled_size(b.bsize, ibc_sx, ibc_sy);
-                ib_w <= 8'(num4x4w(psz)) << 2; ib_h <= 8'(num4x4h(psz)) << 2;
-                ib_bx <= PXW'((PXW'(b.c) >> ibc_sx) << 2); ib_by <= PXW'((PXW'(b.r) >> ibc_sy) << 2);
-                mvx2 = (20'(b.mv_col) * 20'sd2) >>> ibc_sx;                   // (2 * mv[1]) >> subX
-                mvy2 = (20'(b.mv_row) * 20'sd2) >>> ibc_sy;
-                ib_fx <= mvx2[3:0]; ib_fy <= mvy2[3:0];                       // (p >> 6) & SUBPEL_MASK
-                ib_x0 <= PXS'(signed'({2'b0, PXW'((PXW'(b.c) >> ibc_sx) << 2)})) + PXS'(mvx2 >>> 4);
-                ib_y0 <= PXS'(signed'({2'b0, PXW'((PXW'(b.r) >> ibc_sy) << 2)})) + PXS'(mvy2 >>> 4);
-                ib_lastx <= PXW'((((PXW'(hdr.mi_cols) << 2) + PXW'(ibc_sx)) >> ibc_sx) - PXW'(1));   // RefUpscaledWidth[-1] = MiCols * MI_SIZE
-                ib_lasty <= PXW'((((PXW'(hdr.mi_rows) << 2) + PXW'(ibc_sy)) >> ibc_sy) - PXW'(1));
-                ib_i <= 8'd0; ib_j <= 8'd0;
-                bst <= B_IBC_R0;
-            end
-            B_IBC_R0: bst <= B_IBC_R1;
-            B_IBC_R1: bst <= B_IBC_R2;                                      // sample reads land two cycles after they are issued
-            B_IBC_R2: begin ib_s0 <= fb_rdata; bst <= B_IBC_R3; end
-            B_IBC_R3: begin ib_s1 <= fb_rdata; bst <= B_IBC_R4; end
-            B_IBC_R4: begin ib_s2 <= fb_rdata; bst <= B_IBC_R5; end
-            B_IBC_R5: begin ib_s3 <= fb_rdata; bst <= B_IBC_WR; end     // the fourth sample lands here, the filter and the
-                                                                       // write run from registers (the UltraRAM read into the
-                                                                       // bilinear filter and the write capture was 22 levels)
-            B_IBC_WR: begin
-                if (ib_j + 8'd1 < ib_w) begin ib_j <= ib_j + 8'd1; bst <= B_IBC_R0; end
-                else if (ib_i + 8'd1 < ib_h) begin ib_j <= 8'd0; ib_i <= ib_i + 8'd1; bst <= B_IBC_R0; end
-                else if (ib_pl < (b.has_chroma ? 2'd2 : 2'd0)) begin ib_pl <= ib_pl + 2'd1; bst <= B_IBC_PL; end
-                else if (pred_done[!cur_par]) begin blk_ready_set <= 1'b1; bst <= B_IDLE; end
             end
             default: bst <= B_IDLE;
         endcase
@@ -1140,7 +1062,7 @@ module recon_top
     assign ws_midx = 16'({b.c, 2'b00}) + 16'({bw4, 1'b0}) - 16'd1;
     assign ws_midy = 16'({b.r, 2'b00}) + 16'({bh4, 1'b0}) - 16'd1;
     assign ws_gm = ihdr.gm_params[144 * (int'(ws_ref) - 1) +: 144];
-    generate if (INTER != 0) begin : g_ws
+    generate if (1) begin : g_ws
     warp_setup u_ws (
         .clk, .rst, .start(ws_start), .mode(ws_mode),
         .ls_a00(b.ls[0 +: 32]), .ls_a01(b.ls[32 +: 32]), .ls_a11(b.ls[64 +: 32]), .ls_bx0(b.ls[96 +: 32]),
@@ -1760,17 +1682,8 @@ module recon_top
             end
             default: ;
         endcase
-        // intra block copy: the block FSM owns the frame-buffer ports while the transform FSM is idle (the ring loader's
-        // reads on the MC path, the sample reads of the intra-only build's own path)
-        if (INTER != 0 && ff_fb_re) begin fb_edge = 1'b0; fb_re = 1'b1; fb_plane = ff_fb_plane; fb_x = ff_fb_x; fb_y = ff_fb_y; end
-        case (bst)
-            B_IBC_R0: begin fb_edge = 1'b0; fb_re = 1'b1; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry0); end
-            B_IBC_R1: begin fb_edge = 1'b0; fb_re = ib_fx[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry0); end
-            B_IBC_R2: begin fb_edge = 1'b0; fb_re = ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx0); fb_y = FBY'(ib_ry1); end
-            B_IBC_R3: begin fb_edge = 1'b0; fb_re = ib_fx[3] && ib_fy[3]; fb_plane = ib_pl; fb_x = FBX'(ib_rx1); fb_y = FBY'(ib_ry1); end
-            B_IBC_WR: begin fb2_we = 1'b1; fb2_plane = ib_pl; fb2_x = FBX'(ib_bx + PXW'(ib_j)); fb2_y = FBY'(ib_by + PXW'(ib_i)); fb2_wdata = ib_out; end
-            default: ;
-        endcase
+        // intra block copy: the ring loader's reads on the MC path own the read port while the transform FSM is idle
+        if (ff_fb_re) begin fb_edge = 1'b0; fb_re = 1'b1; fb_plane = ff_fb_plane; fb_x = ff_fb_x; fb_y = ff_fb_y; end
         // motion compensation output: 4 samples at (strip origin + out_x, + out_y); a 2-wide unit at an x offset of 2
         // within its 4-group is lane-shifted (the frame memory's 4-wide port is aligned)
         mc_ox = r_px + PXW'(mc_out_x);
@@ -1792,22 +1705,21 @@ module recon_top
     // silently dropped. 2026-11-07: since the block-ahead fetch (fc34a84) the next plane's inter-intra intra write (R_IP_W)
     // could meet the previous plane's blend write (ob_wr_v) on fb4; Argon test7588_6663 frame 8 lost chroma (0,79) that
     // way (fixed in B_MC_PL). Fatal, so a twin or the nightly fails on the first collision whatever the pixels do.
-    logic [4:0] pc_fb4; logic [2:0] pc_fb2; logic [9:0] pc_fb;
+    logic [4:0] pc_fb4; logic [1:0] pc_fb2; logic [5:0] pc_fb;
     always_comb begin
         pc_fb4 = {(rs == R_IP_W) && ip_ov,
                   (rs == R_ADD || rs == R_ADD_LAST || rs == R_ADD_LAST2 || rs == R_ADD_LAST3 || rs == R_ADD_LAST4) && a_valid,
                   mc_out_valid && !r_ob_active && !r_ii_active && !(r_mb_active && r_l),
                   ob_wr_v, mb_b_v};
-        pc_fb2 = {(rs == R_PAL || rs == R_PAL_LAST) && px_valid, (rs == R_CFL_W) && cl_ov, bst == B_IBC_WR};
+        pc_fb2 = {(rs == R_PAL || rs == R_PAL_LAST) && px_valid, (rs == R_CFL_W) && cl_ov};
         pc_fb  = {(rs == R_EDGE) && ((ek < n_above) ? (have_a_r || have_l_r) : (ek <= n_edges && !e_const)),
                   (rs == R_CFL_L) && (ci < 7'(th_px << sub_y)), (rs == R_CFL_D) && (ci < 7'(th_px)), rs == R_ADD,
-                  (INTER != 0) && ff_fb_re, bst == B_IBC_R0, (bst == B_IBC_R1) && ib_fx[3], (bst == B_IBC_R2) && ib_fy[3],
-                  (bst == B_IBC_R3) && ib_fx[3] && ib_fy[3], ob_rd_v};
+                  ff_fb_re, ob_rd_v};
     end
     always_ff @(posedge clk) if (!rst) begin
         if ($countones(pc_fb4) > 1) $fatal(1, "[rc] t=%0t fb4 write port claimed twice: ip %0d add %0d mc %0d ob %0d mb %0d (rs %0d bst %0d)", $time, pc_fb4[4], pc_fb4[3], pc_fb4[2], pc_fb4[1], pc_fb4[0], rs, bst);
-        if ($countones(pc_fb2) > 1) $fatal(1, "[rc] t=%0t fb2 write port claimed twice: pal %0d cfl %0d ibc %0d (rs %0d bst %0d)", $time, pc_fb2[2], pc_fb2[1], pc_fb2[0], rs, bst);
-        if ($countones(pc_fb) > 1)  $fatal(1, "[rc] t=%0t fb read port claimed twice: claims %b (edge cfl_l cfl_d add ff ibc0..3 ob_rd; rs %0d bst %0d)", $time, pc_fb, rs, bst);
+        if ($countones(pc_fb2) > 1) $fatal(1, "[rc] t=%0t fb2 write port claimed twice: pal %0d cfl %0d (rs %0d bst %0d)", $time, pc_fb2[1], pc_fb2[0], rs, bst);
+        if ($countones(pc_fb) > 1)  $fatal(1, "[rc] t=%0t fb read port claimed twice: claims %b (edge cfl_l cfl_d add ff ob_rd; rs %0d bst %0d)", $time, pc_fb, rs, bst);
     end
     // heartbeat (simulation only): where reconstruction stands every 2^18 cycles while busy, for a twin that stalls silently
     int rc_hb;
@@ -1823,7 +1735,7 @@ module recon_top
     // the MC fetch wait, for a heartbeat stuck in B_MC_FETCH (2026-10-31: test4592, the nightly's whole-picture intrabc
     // hang): which loader is waited for, its state and the patch rows each was asked for. The loaders only exist in the
     // inter build (g_inter), so the display lives in a generate: the intra-only build (K26) has no g_inter to name.
-    generate if (INTER != 0) begin : g_hb_mc
+    generate if (1) begin : g_hb_mc
         always_ff @(posedge clk)
             if (busy && rc_hb[17:0] == 18'd0 && bst == B_MC_FETCH)
                 $display("[rc]   mc_fetch: ibc %0d | rf req_valid %0d ready %0d wait %0d done %0d st %0d rows [%0d,%0d) x0 %0d y0 %0d w %0d h %0d | ff req_valid %0d ready %0d pend %0d wait %0d done %0d st %0d rows [%0d,%0d)",

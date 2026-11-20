@@ -154,7 +154,7 @@ module mc_filt
     logic [3:0]  p_r0, p_r1, p_post;
     logic [3:0]  p_mask;
     logic [2:0]  p_fidx, p_fidy;                         // filter rows of the two passes
-    logic [9:0]  p_xf0, p_yf0;
+    logic [9:0]  p_yf0;
     logic [11:0] p_xs, p_ys;
     logic signed [8:0] tx [0:7];                         // taps of the two passes, unscaled (one phase per run)
     logic signed [8:0] ty [0:7];
@@ -162,7 +162,6 @@ module mc_filt
     // last strip word has landed the run is handed over (q_*: one pending run) and the vertical side copies it into v_*
     // when it is free. At most one run in each side, so the filter holds two runs in flight.
     logic        p_tag, q_tag, v_tag;
-    logic        q_two, v_two;                           // unscaled or warp: the vertical pass takes a strip pair a cycle
     logic        q_sb;                                   // strip buffer of the pending run
     logic        q_scaled, v_scaled, q_warp, v_warp;
     logic signed [15:0] q_wg, q_wd, v_wg, v_wd;
@@ -348,8 +347,8 @@ module mc_filt
     // v2: 32 products registered      v3: sums rounded (p); parked word delayed      v4: blend / clip / output, or park
     // Pair reads (V_RUN2, the *_two tags): srd_q1 / srdo_q1 are groups g (even) and g + 1 of the strip row, pdr_q1 /
     // pdro_q1 their parked words; group g + 1 (v*_b: it exists) has its own window and products (vwinb, vsampb, vpb, vsb)
-    logic        v0_v, v0_c, v0_two, v0_b;  logic [6:0] v0_k, v0_i;  logic [4:0] v0_g;  logic [3:0] v0_ph;
-    logic        v1_v, v1_c, v1_two, v1_b;  logic [6:0] v1_k, v1_i;  logic [4:0] v1_g;  logic [3:0] v1_ph;
+    logic        v0_v, v0_c, v0_two, v0_b;  logic [6:0] v0_i;  logic [4:0] v0_g;  logic [3:0] v0_ph;
+    logic        v1_v, v1_c, v1_two, v1_b;  logic [6:0] v1_i;  logic [4:0] v1_g;  logic [3:0] v1_ph;
     logic [63:0] vwin [0:6];                             // the 7 strip words before srd_q1 (vwin[0] = oldest)
     logic [63:0] vwinb [0:6];
     logic        v2_v, v2_two, v2_b;  logic [6:0] v2_i;  logic [4:0] v2_g;  logic [67:0] v2_pred, v2_predb;
@@ -422,7 +421,7 @@ module mc_filt
                                     - ((mode != 3'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11);
                     p_mask <= (w == 7'd2 && !warp) ? 4'b0011 : 4'b1111;
                     p_fidx <= filt_id(interp_x, w <= 7'd4); p_fidy <= filt_id(interp_y, h <= 7'd4);
-                    p_xf0 <= x_frac0; p_yf0 <= y_frac0; p_xs <= x_step; p_ys <= y_step;
+                    p_yf0 <= y_frac0; p_xs <= x_step; p_ys <= y_step;
                     for (int t = 0; t < 8; t++) begin
                         tx[t] <= subpel_tap(filt_id(interp_x, w <= 7'd4), x_frac0[9:6], 3'(t));
                         ty[t] <= subpel_tap(filt_id(interp_y, h <= 7'd4), y_frac0[9:6], 3'(t));
@@ -469,7 +468,7 @@ module mc_filt
                     end
                 end
                 H_DRAIN: if (hdrain == 3'd0) begin                  // the last strip words have landed (h1 .. h4 + the write)
-                    pend <= 1'b1; hb <= !hb; q_sb <= hb; q_tag <= p_tag; q_two <= p_two;
+                    pend <= 1'b1; hb <= !hb; q_sb <= hb; q_tag <= p_tag;
                     q_scaled <= p_scaled; q_warp <= p_warp; q_wg <= p_wg; q_wd <= p_wd; q_wsy <= p_wsy;
                     q_ngrp <= p_ngrp; q_h <= p_h; q_nrow <= p_nrow; q_bd <= p_bd; q_mode <= p_mode; q_wt0 <= p_wt0; q_wt1 <= p_wt1;
                     q_r1 <= p_r1; q_post <= p_post; q_mask <= p_mask; q_fidy <= p_fidy; q_yf0 <= p_yf0; q_ys <= p_ys;
@@ -481,7 +480,7 @@ module mc_filt
             // ---------------- vertical side: strip words in, prediction out
             case (vst)
                 V_IDLE: if (pend && !v_hold) begin                  // take the pending run (not while the transform FSM owns the write port)
-                    pend <= 1'b0; vb <= q_sb; v_tag <= q_tag; v_two <= q_two;
+                    pend <= 1'b0; vb <= q_sb; v_tag <= q_tag;
                     v_scaled <= q_scaled; v_warp <= q_warp; v_wg <= q_wg; v_wd <= q_wd; v_wsy <= q_wsy;
                     v_ngrp <= q_ngrp; v_h <= q_h; v_nrow <= q_nrow; v_bd <= q_bd; v_mode <= q_mode; v_wt0 <= q_wt0; v_wt1 <= q_wt1;
                     v_r1 <= q_r1; v_post <= q_post; v_mask <= q_mask; v_fidy <= q_fidy; v_yf0 <= q_yf0; v_ys <= q_ys;
@@ -493,7 +492,7 @@ module mc_filt
                     // the strip is complete before any read of it that matters: the last horizontal write lands 4
                     // cycles after its issue, and the vertical pass reads rows 0 .. 6 first (written long before)
                     v0_v <= 1'b1; v0_two <= 1'b1; v0_b <= (6'(vg) + 6'd1 < 6'(v_ngrp));
-                    v0_k <= vk; v0_g <= vg; v0_c <= (vk >= 7'd7); v0_i <= vk - 7'd7; v0_ph <= v_yf0[9:6];
+                    v0_g <= vg; v0_c <= (vk >= 7'd7); v0_i <= vk - 7'd7; v0_ph <= v_yf0[9:6];
                     if (vk == v_nrow - 7'd1) begin
                         vk <= 7'd0;
                         if (6'(vg) + 6'd2 >= 6'(v_ngrp)) begin drain <= 4'd8; vst <= V_DRAIN; end
@@ -501,7 +500,7 @@ module mc_filt
                     end else vk <= vk + 7'd1;
                 end
                 V_RUNS: if (!f_stall) begin                // scaled: 8 tap rows per output row, compute on the eighth
-                    v0_v <= 1'b1; v0_k <= srd_row; v0_g <= vg; v0_c <= (vt == 3'd7); v0_i <= vi; v0_ph <= vpos[9:6];
+                    v0_v <= 1'b1; v0_g <= vg; v0_c <= (vt == 3'd7); v0_i <= vi; v0_ph <= vpos[9:6];
                     if (vt == 3'd7) begin
                         vt <= 3'd0;
                         if (vi == v_h - 7'd1) begin
@@ -568,7 +567,7 @@ module mc_filt
             end
 
             // ---------------- vertical pipeline
-            v1_v <= v0_v; v1_c <= v0_c; v1_k <= v0_k; v1_i <= v0_i; v1_g <= v0_g; v1_ph <= v0_ph; v1_two <= v0_two; v1_b <= v0_b;
+            v1_v <= v0_v; v1_c <= v0_c; v1_i <= v0_i; v1_g <= v0_g; v1_ph <= v0_ph; v1_two <= v0_two; v1_b <= v0_b;
             if (v1_v) begin
                 for (int j = 0; j < 6; j++) begin vwin[j] <= vwin[j + 1]; vwinb[j] <= vwinb[j + 1]; end
                 vwin[6] <= srd_q1; vwinb[6] <= srdo_q1;

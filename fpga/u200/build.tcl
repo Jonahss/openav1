@@ -157,12 +157,12 @@ if {$twin} {
     puts "tiny tapeout twin: tt_twin_v and its GPIO on clk_out1 ($mhz MHz), BAR0 offset 0"
 } else {
     set host [create_bd_cell -type module -reference dec_host_v host]
-    # the one configuration: 1080p, fb0 a window of 5 superblock rows, fb2 a ring of 3, inter, both superblock sizes
-    set fbx 11; set fby 11; set win 5; set win2 3; set inter 1; set sb128 1
+    # the one configuration: 1080p, fb0 a window of 5 superblock rows, fb2 a ring of 3, both superblock sizes
+    set fbx 11; set fby 11; set win 5; set win2 3; set sb128 1
     set te $::env(U200_TE); set ring $::env(U200_REF_RING)
     set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win \
-                             CONFIG.FRAME_WIN2 $win2 CONFIG.INTER $inter CONFIG.SB128 $sb128 CONFIG.TE $te CONFIG.REF_RING $ring] $host
-    puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win fb2 $win2 INTER $inter SB128 $sb128 TE $te REF_RING $ring"
+                             CONFIG.FRAME_WIN2 $win2 CONFIG.SB128 $sb128 CONFIG.TE $te CONFIG.REF_RING $ring] $host
+    puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win fb2 $win2 SB128 $sb128 TE $te REF_RING $ring"
     set pg [create_bd_cell -type module -reference phase_gen_v pg]
     connect_bd_net [get_bd_pins clkgen/clk_out1] [get_bd_pins host/clk] [get_bd_pins pg/clk]
     connect_bd_net [get_bd_pins clkgen/clk_out2] [get_bd_pins host/clk2x] [get_bd_pins pg/clk2x]

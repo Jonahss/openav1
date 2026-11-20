@@ -12,7 +12,6 @@ module tile_syntax
   import blk_tables_pkg::*;
   import syn_pkg::*;
 #(
-    parameter int INTER = 1,                 // passed to blk_syntax (0: the intra-only build)
     parameter int ML2R = 9,                  // log2 of the motion-info memory rows / columns (4x4 units)
     parameter int ML2C = 10,
     parameter int MFL2R = 8,                 // log2 rows / columns of the motion field band (8x8 units; dec_top sizes the board's)
@@ -186,9 +185,8 @@ module tile_syntax
                                               .rd_row(mvr_row), .rd_col(mvr_col), .rd_ent(mvr_ent), .rd_written(mvr_written));
     logic mf_re; logic [2:0] mf_ref; logic [MIW-2:0] mf_y8, mf_x8; logic mf_valid; logic signed [15:0] mf_row, mf_col;
     logic [MIW-1:0] sp_row; logic [MIW-5:0] sp_wc; logic [47:0] sp_data;
-    // the motion field (temporal MV candidates) and the previous segment ids serve inter frames only: the
-    // intra-only build (INTER = 0) leaves both bands out
-    generate if (INTER != 0) begin : g_bands
+    // the motion field (temporal MV candidates) and the previous segment ids (inter frames)
+    generate if (1) begin : g_bands
         mf_band #(.MFL2R(MFL2R), .MFL2C(MFL2C)) u_mf (.clk, .we(mf_we), .w_y8(mf_wy8), .w_x8(mf_wx8), .w_valid(mf_wvalid),
                                                       .w_row(mf_wrow), .w_col(mf_wcol), .rd_en(mf_re), .rd_ref(mf_ref), .rd_y8(mf_y8), .rd_x8(mf_x8),
                                                       .rd_valid(mf_valid), .rd_row(mf_row), .rd_col(mf_col));
@@ -199,7 +197,7 @@ module tile_syntax
     logic a_is_inter, l_is_inter, w_is_inter, w_vartx; logic [16*24*2-1:0] a_recs, l_recs; logic [159:0] w_txsz_col, w_txsz_row;
     tx_rec_t b_tx;
     always_comb begin tx_rec = b_tx; tx_rec.slot = q_slot_w; end
-    blk_syntax #(.INTER(INTER)) u_blk (.clk, .rst, .hdr, .ihdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(),
+    blk_syntax u_blk (.clk, .rst, .hdr, .ihdr, .sb_start, .tile_start, .start(b_start), .r(b_r), .c(b_c), .bsize(b_bs), .busy(),
                       .blk_info, .blk_done, .blk_rec, .unsupported(b_unsup), .tx_done, .tx_rec(b_tx), .tx_ack, .blk_ack, .pal_hold,
                       .a_pal_y, .l_pal_y, .a_pal_uv, .l_pal_uv, .a_col_y, .l_col_y, .a_col_u, .l_col_u, .w_pal_y, .w_pal_uv, .w_col_y, .w_col_u,
                       .pm_plane, .pm_x, .pm_y, .pm_idx,

@@ -96,7 +96,7 @@ module ref_fetch #(
     logic [39:0] q_base;
     logic [31:0] q_stride;
     logic [15:0] q_lastx, q_lasty;
-    logic signed [16:0] q_x0, q_y0;
+    logic signed [16:0] q_x0;
     logic [4:0]  q_nw;                                    // patch words per row = ngrp + 2
     logic [6:0]  q_nrow;                                  // last row + 1
     logic [15:0] cx_lo, cx_hi;                            // clamped column range of the region
@@ -242,7 +242,7 @@ module ref_fetch #(
                 nrow = (req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi;
                 yy = 18'(req_y0) - 18'sd3 + 18'(signed'({11'd0, req_r_lo}));
                 q_lst <= req_lst; q_fmt16 <= req_fmt16; q_buf <= req_buf; q_base <= req_base; q_stride <= req_stride;
-                q_lastx <= req_lastx; q_lasty <= req_lasty; q_x0 <= req_x0; q_y0 <= req_y0;
+                q_lastx <= req_lastx; q_lasty <= req_lasty; q_x0 <= req_x0;
                 q_nw <= nw; q_nrow <= nrow;
                 cx_lo <= clip_col(18'(req_x0) - 18'sd3, req_lastx);
                 cx_hi <= clip_col(18'(req_x0) - 18'sd3 + 18'(signed'({13'd0, nw})) * 18'sd4 - 18'sd1, req_lastx);

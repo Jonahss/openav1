@@ -10,9 +10,7 @@ module blk_syntax
   import blk_tables_pkg::*;
   import tx_tables_pkg::*;
   import syn_pkg::*;
-#(
-    parameter int INTER = 1                  // 0: inter frames are never parsed (the intra-only build)
-) (
+(
     input  logic        clk,
     input  logic        rst,
     input  hdr_t        hdr,
@@ -406,7 +404,7 @@ module blk_syntax
     // stack outputs of inter blocks (stage 1: the inter chain reads them; intra block copy uses pred_*)
     logic [3:0] mvs_n; logic signed [17:0] mvs_st0_row [4], mvs_st0_col [4], mvs_st1_row [4], mvs_st1_col [4], mvs_gmv_row [2], mvs_gmv_col [2];
     logic [2:0] mvs_new_ctx, mvs_ref_ctx; logic mvs_zero_ctx; logic [1:0] mvs_drl [3];
-    mv_stack #(.INTER(INTER)) u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs, .ref0(rf0), .ref1(rf1), .is_comp,
+    mv_stack u_mvs (.clk, .rst, .hdr, .ihdr, .start(mvs_start), .r(br), .c(bc), .bs, .ref0(rf0), .ref1(rf1), .is_comp,
                     .busy(mvs_busy), .done(mvs_done), .pred_row, .pred_col, .n_found(mvs_n),
                     .st0_row(mvs_st0_row), .st0_col(mvs_st0_col), .st1_row(mvs_st1_row), .st1_col(mvs_st1_col), .gmv_row(mvs_gmv_row), .gmv_col(mvs_gmv_col),
                     .new_mv_ctx(mvs_new_ctx), .ref_mv_ctx(mvs_ref_ctx), .zero_mv_ctx(mvs_zero_ctx), .drl_ctx(mvs_drl),
@@ -424,7 +422,7 @@ module blk_syntax
         if (n4 > 6'd16) return 5'd16;
         return 5'(n4);
     endfunction
-    assign nb_rd = (INTER != 0) && ((st == S_NBA) || (st == S_NBA_W) || (st == S_NBA_W2) || (st == S_NBL) || (st == S_NBL_W) || (st == S_NBL_W2)
+    assign nb_rd = ((st == S_NBA) || (st == S_NBA_W) || (st == S_NBA_W2) || (st == S_NBL) || (st == S_NBL_W) || (st == S_NBL_W2)
                  || (st == S_OV_W) || (st == S_OV_W2) || (st == S_OV_P) || (st == S_WS_W) || (st == S_WS_W2) || (st == S_WS_R) || (st == S_WS_P) || (st == S_CMV_W) || (st == S_CMV_W2) || (st == S_CMV_P)
                  || (st == S_OB_A_W) || (st == S_OB_A_W2) || (st == S_OB_A_P) || (st == S_OB_L_W) || (st == S_OB_L_W2) || (st == S_OB_L_P));
     always_comb begin
@@ -433,7 +431,7 @@ module blk_syntax
         else if (nb_rd) begin mvr_row = nb_row; mvr_col = nb_col; end
         else begin mvr_row = mvs_rd_row; mvr_col = mvs_rd_col; end
     end
-    assign inter_frm = (INTER != 0) && ihdr.is_inter;
+    assign inter_frm = ihdr.is_inter;
     assign inter_any = use_ibc | is_inter_b;
     assign mv_int = use_ibc | ihdr.force_integer_mv;              // intra frames read whole-sample MVs (fr = 3, hp = 1)
     assign mv_hp_en = !use_ibc && ihdr.allow_hp_mv;
@@ -694,8 +692,8 @@ module blk_syntax
     // ---------------------------------------------------------------- symbol requests (combinational)
     always_comb begin
         sq_go = 1'b0; sq_addr = '0; sq_n = 4'd1; sq_kind = 2'd0;
-        if (INTER != 0 && int'(st) >= int'(S_NBA)) begin
-            // inter-frame states (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33): compiled out at INTER = 0
+        if (int'(st) >= int'(S_NBA)) begin
+            // inter-frame states (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33)
             case (st)
                 // inter frames
                 S_SEGP_GO: begin sq_go = 1'b1; sq_addr = CDF_AW'(CDF_SEGMENT_ID_PREDICTED + int'(ctx_segp)); sq_n = 4'd1; end
@@ -819,8 +817,8 @@ module blk_syntax
                 read_deltas <= hdr.delta_q_present;
                 cdef_flags <= '0;
             end
-            if (INTER != 0 && int'(st) >= int'(S_NBA)) begin
-                // inter-frame states (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33): compiled out at INTER = 0
+            if (int'(st) >= int'(S_NBA)) begin
+                // inter-frame states (5.11.7 inter_frame_mode_info and 5.11.23 .. 5.11.33)
                 case (st)
                     // ---- inter frame: the two neighbours' motion info (contexts), then inter_frame_mode_info
                     // (mv_mem answers two cycles after the address: the *_W states cover the latency)

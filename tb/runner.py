@@ -56,9 +56,6 @@ if top in ("dec_top", "dec_host", "recon_top") and os.environ.get("ITX_LANES"):
 # FRAME_URAM=1 builds dec_top with the on-chip UltraRAM frame memories (fb0 and fb2)
 if top in ("dec_top", "dec_host") and os.environ.get("FRAME_URAM"):
     params["FRAME_URAM"] = int(os.environ["FRAME_URAM"])
-# INTER=0 builds the intra-only decoder (no ref_fetch / mc_filt / warp_setup, inter frames never parsed): the K26 board
-if top in ("dec_top", "dec_host", "recon_top", "tile_syntax") and os.environ.get("INTER"):
-    params["INTER"] = int(os.environ["INTER"])
 # FIFO_LW=N: dec_host's tile-byte FIFO depth (log2 words); 16 holds a whole tile, to tell starvation effects from decoder bugs
 if top == "dec_host" and os.environ.get("FIFO_LW"):
     params["FIFO_LW"] = int(os.environ["FIFO_LW"])
@@ -100,7 +97,7 @@ build_dir = ROOT / "build" / (top + (f"_fb{params['FBX']}x{params['FBY']}" if "F
                               + (f"_q{params['FIFO_LW']}" if "FIFO_LW" in params else "")
                               + ("_uram" if params.get("FRAME_URAM") else ""))
 # TS_BUILD_TAG: a build directory of its own (build/<the usual name>_<tag>), so suites that run at the same time never
-# share one: the usual name leaves out INTER, TE, REF_RING, SB128 ..., and two builds in one directory collide
+# share one: the usual name leaves out TE, REF_RING, SB128 ..., and two builds in one directory collide
 # (tools/nightly.sh with NIGHTLY_PAR sets it to the suite's name)
 if os.environ.get("TS_BUILD_TAG"):
     build_dir = build_dir.parent / (build_dir.name + "_" + os.environ["TS_BUILD_TAG"])

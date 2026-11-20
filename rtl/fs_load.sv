@@ -1,7 +1,7 @@
 // Frame-state loader (docs/frame-state.md, stage B): at a frame start, before its first tile, the card reads the frame's
 // context back from the reference slot's areas in DDR and writes the bands the host used to write register by register:
 //   segment map: the primary slot's segment-id area (one byte per 4x4 unit, lines of ld_seg_rowb bytes, the layout
-//     rtl/frame_state_w.sv writes) -> seg_band words (16 ids of 3 bits), the whole frame (INTER builds keep the full map);
+//     rtl/frame_state_w.sv writes) -> seg_band words (16 ids of 3 bits), the whole frame;
 //   CDF rows: the primary slot's CDF area (CDF_ROWS rows of 32 bytes: 246 bits + padding) -> def_we rows into every
 //     engine, the adaptation counter at [245:240] zeroed (load_cdfs).
 // One AXI read master, bursts of up to 16 beats inside 4 KB, up to OUT bursts in flight (2026-11-03; one at a time

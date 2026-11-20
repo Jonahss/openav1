@@ -8,7 +8,6 @@ package syn_pkg;
     localparam int SBW = 9;          // 64x64 superblock rows / cols: up to 256 = 16384 px
     localparam int PXW = 15;         // pixel row/col: frame_height / upscaled_width up to 16384
     localparam int MIS = MIW + 2;    // signed MI position with headroom for neighbour offsets (-32 .. +)
-    localparam int PXS = PXW + 2;    // signed pixel position with headroom (filter taps / MV offsets below 0)
 
     // Frame/tile-level parameters the syntax needs (software parses the headers and fills this in).
     typedef struct packed {

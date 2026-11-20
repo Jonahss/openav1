@@ -58,7 +58,7 @@
 //                       next frame start or software DMA start: an auto flush does not clear it),
 //                       3 flush busy (rows queued or being written), [23:16] rows flushed since the last frame start
 //   0x18C DMA_BEATS  R  64-bit beats written by the last run
-//   Frame-state sideband (rtl/frame_state_w.sv, docs/frame-state.md; INTER window builds): per finished superblock row
+//   Frame-state sideband (rtl/frame_state_w.sv, docs/frame-state.md; window builds): per finished superblock row
 //   the card writes its MV words (8x8 units, 2 per beat) and segment ids (4x4 units, one byte each) to DDR:
 //   0x1C0 FS_CFG     RW  bit 0 enable (rows are dropped when clear)
 //   0x1C4 FS_MV_LO / 0x1C8 FS_MV_HI    RW  MV area base (40-bit); 0x1CC FS_MV_ROWB  RW  bytes per 8x8 line (multiple of 8)
@@ -96,7 +96,6 @@ module dec_host
     parameter int FRAME_WIN = 0,             // the frame memory as a window of this many superblock rows (0: whole picture)
     parameter int FRAME_WIN2 = 0,            // fb2 (the final picture) as a ring of this many superblock rows (dec_top; 0: whole picture)
     parameter int FIFO_LW = 10,              // tile-byte FIFO: 2^FIFO_LW words of up to 4 bytes (one BRAM36 at 10)
-    parameter int INTER = 1,                 // 0: the intra-only decoder (dec_top INTER)
     parameter int SB128 = 0,                 // 1: the window build takes 128x128 superblocks (dec_top SB128; CFG bit 1)
     parameter int TE = 1,                     // tile engines (dec_top TE; CFG[27:24]): the tile columns of a tile row decoded at once
     parameter int REF_RING = 16              // ref_fetch line buffers (dec_top REF_RING)
@@ -255,7 +254,7 @@ module dec_host
     logic [55:0]    mf_dst_dist;
     logic [215:0]   cur_planes;                              // the current picture's flush layout for intra block copy
     logic           fmt16;                                  // DMA_CFG bit 0, declared ahead of the core instance that takes it (cur_fmt16)
-    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN2(FRAME_WIN2), .INTER(INTER), .SB128(SB128), .TE(TE), .REF_RING(REF_RING)) u_dec (
+    dec_top #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN2(FRAME_WIN2), .SB128(SB128), .TE(TE), .REF_RING(REF_RING)) u_dec (
         .clk, .clk2x, .phase, .rst, .hdr, .ihdr, .rh, .lh, .ch,
         .in_data, .in_valid, .in_ready, .in_eos,
         .def_we, .def_addr, .def_data, .rb_en(rb_en | sv_rb_en), .rb_addr(sv_busy ? sv_rb_row : def_addr), .rb_sel(sv_busy ? sv_eng : eng_sel), .rb_data,
@@ -770,16 +769,16 @@ module dec_host
                     10'h1CA: mf_dst_dist[31:0] <= strb(mf_dst_dist[31:0], w_d, w_s);                          // 0x728
                     10'h1CB: mf_dst_dist[55:32] <= w_d[23:0];                                                 // 0x72C
                     10'h061: dma_start <= !dma_busy;                                                           // 0x184
-                    10'h180: if (INTER != 0) ref_slot_r <= 21'(strb({11'd0, ref_slot_r}, w_d, w_s));             // 0x600 (no select on a function call: Vivado Synth 8-12513)
-                    10'h181: if (INTER != 0) ref_cfg_r <= strb(ref_cfg_r, w_d, w_s);                          // 0x604
+                    10'h180: ref_slot_r <= 21'(strb({11'd0, ref_slot_r}, w_d, w_s));             // 0x600 (no select on a function call: Vivado Synth 8-12513)
+                    10'h181: ref_cfg_r <= strb(ref_cfg_r, w_d, w_s);                          // 0x604
                     default: begin
                         if (wi[9:3] == 7'h02)        def_w[wi[2:0]] <= strb(def_w[wi[2:0]], w_d, w_s);       // 0x040
                         else if (wi[9:4] == 6'h02)   hdr_w[wi[3:0]] <= strb(hdr_w[wi[3:0]], w_d, w_s);       // 0x080
                         else if (wi[9:4] == 6'h03)   rh_w[wi[3:0]]  <= strb(rh_w[wi[3:0]], w_d, w_s);        // 0x0C0
                         else if (wi[9:4] == 6'h04)   lh_w[wi[3:0]]  <= strb(lh_w[wi[3:0]], w_d, w_s);        // 0x100
                         else if (wi[9:4] == 6'h05)   ch_w[wi[3:0]]  <= strb(ch_w[wi[3:0]], w_d, w_s);        // 0x140
-                        else if (wi[9:6] == 4'h2) begin if (INTER != 0) ih_w[wi[5:0]] <= strb(ih_w[wi[5:0]], w_d, w_s); end   // 0x200: inter header window (no-op at INTER = 0)
-                        else if (INTER != 0 && wi[9:7] == 3'b010) begin                                         // 0x400..0x5FC: the reference slot table
+                        else if (wi[9:6] == 4'h2) ih_w[wi[5:0]] <= strb(ih_w[wi[5:0]], w_d, w_s);   // 0x200: inter header window
+                        else if (wi[9:7] == 3'b010) begin                                         // 0x400..0x5FC: the reference slot table
                             if (wi[3:2] != 2'd3) begin
                                 case (wi[1:0])
                                     2'd0: rs_base[wi[6:4]][wi[3:2]][31:0]  <= strb(rs_base[wi[6:4]][wi[3:2]][31:0], w_d, w_s);

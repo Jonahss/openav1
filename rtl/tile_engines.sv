@@ -20,7 +20,6 @@ module tile_engines
   import cdf_map_pkg::*;
 #(
     parameter int TE = 1,                     // tile engines
-    parameter int INTER = 1,
     parameter int ML2R = 9,
     parameter int ML2C = 9,
     parameter int MFL2R = 8,
@@ -162,7 +161,7 @@ module tile_engines
             end
         end
         assign e_start[e] = tile_start && mask[e];
-        tile_syntax #(.INTER(INTER), .ML2R(ML2R), .ML2C(ML2C), .MFL2R(MFL2R), .MFL2C(MFL2C), .SPL2R(SPL2R), .SPL2W(SPL2W)) u_ts (
+        tile_syntax #(.ML2R(ML2R), .ML2C(ML2C), .MFL2R(MFL2R), .MFL2C(MFL2C), .SPL2R(SPL2R), .SPL2W(SPL2W)) u_ts (
             .clk, .rst, .hdr(hdr_e[e]), .ihdr,
             .in_data(in_data[e * 8 +: 8]), .in_valid(in_valid[e]), .in_ready(e_in_ready[e]), .in_eos(in_eos[e]),
             .def_we, .def_addr, .def_data, .rb_en(rb_en && (EW'(e) == rb_sel)), .rb_addr, .rb_data(e_rb_data[e]),

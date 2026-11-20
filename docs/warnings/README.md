@@ -130,7 +130,15 @@ With the three switched-off kinds enabled: 312 UNUSEDSIGNAL, 196 UNUSEDPARAM, 8 
   are new and waived as benign: `dec_host` `start[5:2]` (the START bits of the removed stages: written by older host
   software, read by nothing) and unused fields of `dec_top`'s `cd_rd_info` (the chain takes only the skip flag from the
   second mode-info read).
-- **No signal is unused in every configuration any more** (`docs/warnings/lint/dead-in-all.txt` is empty). With the
+- **2026-11-20, the intra-only build removed (`INTER`):** the lint runs in two configurations, the image and the
+  defaults. The third (intra-only, small) had hidden six signals of modules it did not build from the "unused in
+  every configuration" list. Four were registers written and never read and are removed with their feeders (`mc_filt`
+  `p_xf0`, `v_two` / `q_two`, `v1_k` / `v0_k`; `ref_fetch` `q_y0`). Two stay in `dead-in-all.txt`, waived as benign:
+  `frame_mem_uram` `rq_sel` (the select between UltraRAM columns: constant in both linted geometries, live in any
+  memory more than one column deep) and `ref_fetch` `m_axi_rlast` (an AXI read-channel input kept for the interface;
+  the module counts its beats). `recon_top` lost the block FSM's `B_IBC_*` states, the intra-only build's own
+  intra-block-copy path, unreachable once inter is always built.
+- **2026-11-18: no signal unused in every configuration** (`docs/warnings/lint/dead-in-all.txt` is empty). With the
   chain in every build, eleven dead signals of its modules and their neighbours showed in all three lints: a register
   written and never read in `blk_ctx` (`t_aw`) and in `cdef_stream` (`filt`), an input of `recon_top` nothing used
   (`ev_blk`), and eight submodule outputs that are now explicitly open pins (`dec_top` `tx_inflight`, `fc_plane`
