@@ -202,3 +202,37 @@ splits into 5.0 for luma and 1.25 for each 4:2:0 chroma plane.
 - Syntax throughput in symbols a cycle, and what a 4K60 bitrate (the samples run 10 to 28 Mbit/s) asks of it.
 - Whether a 4K scoreboard clip decodes at all on today's RTL in simulation (FBX 12): no 4K run has been made.
 - Tile layouts outside YouTube (other services, local encodes).
+
+## Count 1: one tile engine at 4K size (measured 2026-11-20, K60-40)
+
+Out-of-context synthesis of `dec_host` for the U200 part at FBX 12, FBY 12, four tile engines, both superblock sizes
+(`~/openav1-synth/dec_host-k4count-band12te4/` on atium, commit df28c6a, 2026-11-19; nothing in the tile engines'
+memories has changed since). Read with `tools/ram_by_table.py ram.rpt "u_dec/u_ts/g_e[0].u_ts/"` and from
+`util_hier.rpt`. The four engines are identical (219 block RAMs and 32 UltraRAMs each).
+
+| memory of one engine | array | RAMB36 | UltraRAM |
+|---|---|---|---|
+| segment map of the previous frame (`g_bands.u_sp`) | 65536 x 48 | 86 | |
+| motion-field band, seven references (`g_bands.u_mf`) | 7 x 16384 x 33 | 105 | |
+| CDF working store and defaults (`u_cdf`) | 2048 x 246, 1501 x 246 | 28 | |
+| motion-vector memory (`u_mvm`) | 65536 x 89 | | 32 |
+| **one engine** | | **219** | **32** |
+
+Logic of the four together: 215,853 LUTs (50,192 of them as LUT RAM), 66,371 registers, 120 DSPs: a quarter each is
+54 k LUTs, 16.6 k registers, 30 DSPs (arithmetic).
+
+The whole decoder in that synthesis: 2,177.5 block RAM tiles of the card's 2,160 (100.8 %), 773 of 960 UltraRAMs
+(80.5 %), 768,412 of 1,182,240 LUTs (65 %), 1,657 DSPs (24 %). The PCIe / DDR4 shell comes on top (about 104 block
+RAMs by my 2026-11-19 figure, not read again here). The block RAM by module: tile engines 876, the chain's row store
+`u_rs` 768, the filter chain `u_fc` 321, mode-info stores 120, reconstruction 60.5, the frame-state writer 32.
+
+**Do four engines fit? Not today, by block RAM alone.** What changes that (arithmetic on the table):
+
+| step | block RAM tiles, decoder | with the shell | UltraRAM |
+|---|---|---|---|
+| today | 2,177.5 | about 2,282 (106 %) | 773 (80.5 %) |
+| segment map as a 64-row band, 86 -> 6 an engine (K60-60, in work; the 6 is the design note's figure) | 1,857.5 | about 1,962 (91 %) | 773 |
+| and the motion-field bands in UltraRAM: 105 block RAMs an engine -> 14 UltraRAMs (two 33-bit words a 72-bit word) | 1,437.5 | about 1,542 (71 %) | 829 (86 %) |
+
+So four engines fit after the segment-map band, tightly, and comfortably if the motion-field bands also move. Logic
+and DSPs are not the limit.
