@@ -53,7 +53,23 @@ def compare(ref, hdr, planes):
     return bad
 
 
+def keep_big_buffers():
+    """glibc gives every allocation above its mmap threshold (128 kB at start) fresh zeroed pages and returns them
+    on free: for the 3 MB picture buffers of a read-back that is 3 ms a 1080p frame in page faults (measured
+    2026-11-20: read-back 4.7 ms a frame against 1.6). The threshold rises by itself only after a large block has
+    been freed, which happened or not depending on whether Python compiled the modules or loaded cached bytecode,
+    so the checked frame rate read 23.9 or 26.0 fps for the same software. Set it once: 32 MB, never trim."""
+    import ctypes
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.mallopt(-3, 32 << 20)               # M_MMAP_THRESHOLD
+        libc.mallopt(-1, 256 << 20)              # M_TRIM_THRESHOLD
+    except (OSError, AttributeError):
+        pass                                     # another C library: slower read-back, nothing else
+
+
 def main():
+    keep_big_buffers()
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("stream", help=".ivf, .obu (Annex B) or raw OBU stream")
     ap.add_argument("-o", "--out", help="raw planar output (every shown frame, output order)")
