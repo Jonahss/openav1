@@ -4,63 +4,71 @@
 <text x="70" y="66" font-size="15" fill="#52514e">Frames per second on the same 548-frame clip, card and host end to end</text>
 <line x1="70" x2="950" y1="605.0" y2="605.0" stroke="#e4e3df" stroke-width="1"/>
 <text x="60" y="610.0" font-size="13" fill="#52514e" text-anchor="end">0</text>
-<line x1="70" x2="950" y1="520.2" y2="520.2" stroke="#e4e3df" stroke-width="1"/>
-<text x="60" y="525.2" font-size="13" fill="#52514e" text-anchor="end">5</text>
-<line x1="70" x2="950" y1="435.3" y2="435.3" stroke="#e4e3df" stroke-width="1"/>
-<text x="60" y="440.3" font-size="13" fill="#52514e" text-anchor="end">10</text>
-<line x1="70" x2="950" y1="350.5" y2="350.5" stroke="#e4e3df" stroke-width="1"/>
-<text x="60" y="355.5" font-size="13" fill="#52514e" text-anchor="end">15</text>
-<line x1="70" x2="950" y1="265.7" y2="265.7" stroke="#e4e3df" stroke-width="1"/>
-<text x="60" y="270.7" font-size="13" fill="#52514e" text-anchor="end">20</text>
-<line x1="70" x2="950" y1="180.8" y2="180.8" stroke="#e4e3df" stroke-width="1"/>
-<text x="60" y="185.8" font-size="13" fill="#52514e" text-anchor="end">25</text>
+<line x1="70" x2="950" y1="532.3" y2="532.3" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="537.3" font-size="13" fill="#52514e" text-anchor="end">5</text>
+<line x1="70" x2="950" y1="459.6" y2="459.6" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="464.6" font-size="13" fill="#52514e" text-anchor="end">10</text>
+<line x1="70" x2="950" y1="386.9" y2="386.9" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="391.9" font-size="13" fill="#52514e" text-anchor="end">15</text>
+<line x1="70" x2="950" y1="314.1" y2="314.1" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="319.1" font-size="13" fill="#52514e" text-anchor="end">20</text>
+<line x1="70" x2="950" y1="241.4" y2="241.4" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="246.4" font-size="13" fill="#52514e" text-anchor="end">25</text>
+<line x1="70" x2="950" y1="168.7" y2="168.7" stroke="#e4e3df" stroke-width="1"/>
+<text x="60" y="173.7" font-size="13" fill="#52514e" text-anchor="end">30</text>
 <line x1="70" x2="950" y1="96.0" y2="96.0" stroke="#e4e3df" stroke-width="1"/>
-<text x="60" y="101.0" font-size="13" fill="#52514e" text-anchor="end">30</text>
+<text x="60" y="101.0" font-size="13" fill="#52514e" text-anchor="end">35</text>
 <text x="60" y="82" font-size="13" fill="#52514e" text-anchor="end">fps</text>
 <line x1="70.0" x2="70.0" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
 <text x="70.0" y="627" font-size="13" fill="#52514e" text-anchor="middle">Oct 30</text>
-<line x1="387.9" x2="387.9" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
-<text x="387.9" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 6</text>
-<line x1="705.8" x2="705.8" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
-<text x="705.8" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 13</text>
-<path d="M111.5,584.6 L120.0,584.6 L120.0,554.1 L222.9,554.1 L222.9,545.6 L282.3,545.6 L282.3,487.9 L289.1,487.9 L289.1,448.9 L289.8,448.9 L289.8,435.3 L318.5,435.3 L318.5,404.8 L531.9,404.8 L531.9,387.8 L579.7,387.8 L579.7,353.9 L609.0,353.9 L609.0,301.3 L644.5,301.3 L644.5,274.1 L664.8,274.1 L664.8,262.3 L689.4,262.3 L689.4,245.3 L699.0,245.3 L699.0,243.6 L736.2,243.6 L736.2,177.4 L921.6,177.4 L921.6,141.8" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="111.5" cy="584.6" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C01 2026-10-30 21:57: 1.2 fps checked. first full 548-frame decode; the host loads every frame's state through registers</title></circle>
-<circle cx="120.0" cy="554.1" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C02 2026-10-31 02:24: 3.0 fps checked. the card loads and saves its own frame state (stage B)</title></circle>
-<circle cx="222.9" cy="545.6" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C03 2026-11-02 08:48: 3.5 fps checked. raw-row read-back on the host</title></circle>
-<circle cx="282.3" cy="487.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C04 2026-11-03 16:11: 6.9 fps checked. reference prefetch</title></circle>
-<circle cx="289.1" cy="448.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C05 2026-11-03 19:49: 9.2 fps checked. block-ahead prefetch and a second tile engine</title></circle>
-<circle cx="289.8" cy="435.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C06 2026-11-03 20:09: 10.0 fps checked. faster motion-field loader and burst CDF save</title></circle>
-<circle cx="318.5" cy="404.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C07 2026-11-04 11:20: 11.8 fps checked. reference ring of 8</title></circle>
-<circle cx="531.9" cy="387.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C08 2026-11-09 04:06: 12.8 fps checked. filter passes pipelined (one tile engine image)</title></circle>
-<circle cx="579.7" cy="353.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C09 2026-11-10 05:23: 14.8 fps checked. two patch words and two vertical groups a cycle (rungs A and B); kept on the card as u200-fm2rf8te2e90p-d3ba9fd after the run-record fix</title></circle>
-<circle cx="609.0" cy="301.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C10 2026-11-10 20:52: 17.9 fps unchecked (16.3 checked). four registers on old paths; 100 MHz closes with 0 failing endpoints</title></circle>
-<circle cx="644.5" cy="274.1" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C11 2026-11-11 15:38: 19.5 fps unchecked (17.4 checked). CDEF copied unfiltered blocks at three cycles a group (86 % of its cycles); now one a cycle; two timing registers (segmentation band and warp setup)</title></circle>
-<circle cx="664.8" cy="262.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C12 2026-11-12 02:21: 20.2 fps unchecked (18.0 checked). the reference-fetch ring goes from 8 to 16 line buffers; it needed two timing fixes to close at 100 MHz (a local copy of the 2x-clock phase in the frame memories and a capture register in the motion-vector stack)</title></circle>
-<circle cx="689.4" cy="245.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C13 2026-11-12 15:22: 21.2 fps unchecked (18.8 checked). the coefficient reader took ten cycles a coefficient on the big coded frames; the scan position is now read one ahead and a zero coefficient takes one cycle in the sign pass (step 1 of 2)</title></circle>
-<circle cx="699.0" cy="243.6" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C14 2026-11-12 20:25: 21.3 fps unchecked (18.9 checked). step 2 of the coefficient reader: a level of 0 to 2 is stored in the cycle its symbol arrives (three cycles a coefficient in the level pass)</title></circle>
-<circle cx="736.2" cy="177.4" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C15 2026-11-13 16:04: 25.2 fps unchecked (21.8 checked). the picture flush to memory streams a sample group a cycle and does not wait for each burst's response; deblocking of a superblock row starts when the row is decoded instead of a row later (intra prediction reads an unfiltered copy of the row's last line): the filter tail falls from 7.7 to 4.0 ms a frame and the tile phase from 39.1 to 35.7 ms</title></circle>
-<circle cx="921.6" cy="141.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C16 2026-11-17 18:05: 27.3 fps unchecked (23.3 checked). the streaming filter chain replaces the three stage filters on the card (deblocking, CDEF and restoration run behind reconstruction at its rate: the wait for the frame after the last tile falls from 3.1 to 0.1 ms), with the output registers of the chain and four registers from a census of the near-critical paths (row store and motion-field write ports, the scaled-reference position multiply, a third dequant stage) that let it meet 100 MHz (WNS 0.017 ns, 0 failing endpoints)</title></circle>
-<text x="135.5" y="589.6" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">1.2</text>
-<text x="176.0" y="589.6" font-size="12.5" fill="#52514e">first full clip on the card</text>
-<text x="116.0" y="502.1" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">3.0</text>
-<text x="116.0" y="519.1" font-size="12.5" fill="#52514e" text-anchor="start">frame state kept on the card</text>
-<text x="275.8" y="385.3" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">10.0</text>
-<text x="275.8" y="402.3" font-size="12.5" fill="#52514e" text-anchor="end">reference prefetch, second tile</text>
-<text x="275.8" y="419.3" font-size="12.5" fill="#52514e" text-anchor="end">engine, faster state loading</text>
-<text x="328.5" y="374.8" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">11.8</text>
-<text x="328.5" y="391.8" font-size="12.5" fill="#52514e" text-anchor="start">shorter reference queue</text>
-<text x="567.7" y="305.9" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">14.8</text>
-<text x="567.7" y="322.9" font-size="12.5" fill="#52514e" text-anchor="end">filter: two patch words and two</text>
-<text x="567.7" y="339.9" font-size="12.5" fill="#52514e" text-anchor="end">vertical groups a cycle (90 MHz)</text>
-<text x="625.0" y="329.3" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">17.9†</text>
-<text x="625.0" y="346.3" font-size="12.5" fill="#52514e" text-anchor="start">timing fixes: back to 100 MHz</text>
-<text x="660.5" y="294.1" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">19.5</text>
-<text x="660.5" y="311.1" font-size="12.5" fill="#52514e" text-anchor="start">CDEF copies a group a cycle</text>
-<text x="752.2" y="203.4" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">25.2</text>
-<text x="752.2" y="220.4" font-size="12.5" fill="#52514e" text-anchor="start">shorter filter tail</text>
-<text x="905.6" y="127.8" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">27.3</text>
-<text x="905.6" y="144.8" font-size="12.5" fill="#52514e" text-anchor="end">filter chain</text>
-<text x="905.6" y="161.8" font-size="12.5" fill="#52514e" text-anchor="end">on the card</text>
+<line x1="355.7" x2="355.7" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="355.7" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 6</text>
+<line x1="641.4" x2="641.4" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="641.4" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 13</text>
+<line x1="927.1" x2="927.1" y1="605" y2="610" stroke="#52514e" stroke-width="1"/>
+<text x="927.1" y="627" font-size="13" fill="#52514e" text-anchor="middle">Nov 20</text>
+<path d="M107.3,587.5 L114.9,587.5 L114.9,561.4 L207.4,561.4 L207.4,554.1 L260.8,554.1 L260.8,504.7 L267.0,504.7 L267.0,471.2 L267.5,471.2 L267.5,459.6 L293.3,459.6 L293.3,433.4 L485.1,433.4 L485.1,418.9 L528.1,418.9 L528.1,389.8 L554.4,389.8 L554.4,344.7 L586.4,344.7 L586.4,321.4 L604.6,321.4 L604.6,311.2 L626.7,311.2 L626.7,296.7 L635.3,296.7 L635.3,295.2 L668.7,295.2 L668.7,238.5 L835.4,238.5 L835.4,208.0 L924.5,208.0 L924.5,197.8" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="107.3" cy="587.5" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C01 2026-10-30 21:57: 1.2 fps checked. first full 548-frame decode; the host loads every frame's state through registers</title></circle>
+<circle cx="114.9" cy="561.4" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C02 2026-10-31 02:24: 3.0 fps checked. the card loads and saves its own frame state (stage B)</title></circle>
+<circle cx="207.4" cy="554.1" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C03 2026-11-02 08:48: 3.5 fps checked. raw-row read-back on the host</title></circle>
+<circle cx="260.8" cy="504.7" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C04 2026-11-03 16:11: 6.9 fps checked. reference prefetch</title></circle>
+<circle cx="267.0" cy="471.2" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C05 2026-11-03 19:49: 9.2 fps checked. block-ahead prefetch and a second tile engine</title></circle>
+<circle cx="267.5" cy="459.6" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C06 2026-11-03 20:09: 10.0 fps checked. faster motion-field loader and burst CDF save</title></circle>
+<circle cx="293.3" cy="433.4" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C07 2026-11-04 11:20: 11.8 fps checked. reference ring of 8</title></circle>
+<circle cx="485.1" cy="418.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C08 2026-11-09 04:06: 12.8 fps checked. filter passes pipelined (one tile engine image)</title></circle>
+<circle cx="528.1" cy="389.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C09 2026-11-10 05:23: 14.8 fps checked. two patch words and two vertical groups a cycle (rungs A and B); kept on the card as u200-fm2rf8te2e90p-d3ba9fd after the run-record fix</title></circle>
+<circle cx="554.4" cy="344.7" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C10 2026-11-10 20:52: 17.9 fps unchecked (16.3 checked). four registers on old paths; 100 MHz closes with 0 failing endpoints</title></circle>
+<circle cx="586.4" cy="321.4" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C11 2026-11-11 15:38: 19.5 fps unchecked (17.4 checked). CDEF copied unfiltered blocks at three cycles a group (86 % of its cycles); now one a cycle; two timing registers (segmentation band and warp setup)</title></circle>
+<circle cx="604.6" cy="311.2" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C12 2026-11-12 02:21: 20.2 fps unchecked (18.0 checked). the reference-fetch ring goes from 8 to 16 line buffers; it needed two timing fixes to close at 100 MHz (a local copy of the 2x-clock phase in the frame memories and a capture register in the motion-vector stack)</title></circle>
+<circle cx="626.7" cy="296.7" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C13 2026-11-12 15:22: 21.2 fps unchecked (18.8 checked). the coefficient reader took ten cycles a coefficient on the big coded frames; the scan position is now read one ahead and a zero coefficient takes one cycle in the sign pass (step 1 of 2)</title></circle>
+<circle cx="635.3" cy="295.2" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C14 2026-11-12 20:25: 21.3 fps unchecked (18.9 checked). step 2 of the coefficient reader: a level of 0 to 2 is stored in the cycle its symbol arrives (three cycles a coefficient in the level pass)</title></circle>
+<circle cx="668.7" cy="238.5" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C15 2026-11-13 16:04: 25.2 fps unchecked (21.8 checked). the picture flush to memory streams a sample group a cycle and does not wait for each burst's response; deblocking of a superblock row starts when the row is decoded instead of a row later (intra prediction reads an unfiltered copy of the row's last line): the filter tail falls from 7.7 to 4.0 ms a frame and the tile phase from 39.1 to 35.7 ms</title></circle>
+<circle cx="835.4" cy="208.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C16 2026-11-17 18:05: 27.3 fps unchecked (23.3 checked). the streaming filter chain replaces the three stage filters on the card (deblocking, CDEF and restoration run behind reconstruction at its rate: the wait for the frame after the last tile falls from 3.1 to 0.1 ms), with the output registers of the chain and four registers from a census of the near-critical paths (row store and motion-field write ports, the scaled-reference position multiply, a third dequant stage) that let it meet 100 MHz (WNS 0.017 ns, 0 failing endpoints)</title></circle>
+<circle cx="924.5" cy="197.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>C17 2026-11-19 22:28: 28.0 fps unchecked (23.9 checked). the motion field in the tile engines is a 32-row band projected just ahead of the decode instead of a whole-frame table filled before the first tile (block RAM 1,881 to 1,146 tiles); the host no longer waits for the projection; the old stage filters and the host-written frame state are gone</title></circle>
+<text x="131.3" y="592.5" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">1.2</text>
+<text x="171.8" y="592.5" font-size="12.5" fill="#52514e">first full clip on the card</text>
+<text x="110.9" y="509.4" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">3.0</text>
+<text x="110.9" y="526.4" font-size="12.5" fill="#52514e" text-anchor="start">frame state kept on the card</text>
+<text x="253.5" y="409.6" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">10.0</text>
+<text x="253.5" y="426.6" font-size="12.5" fill="#52514e" text-anchor="end">reference prefetch, second tile</text>
+<text x="253.5" y="443.6" font-size="12.5" fill="#52514e" text-anchor="end">engine, faster state loading</text>
+<text x="303.3" y="403.4" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">11.8</text>
+<text x="303.3" y="420.4" font-size="12.5" fill="#52514e" text-anchor="start">shorter reference queue</text>
+<text x="516.1" y="341.8" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">14.8</text>
+<text x="516.1" y="358.8" font-size="12.5" fill="#52514e" text-anchor="end">filter: two patch words and two</text>
+<text x="516.1" y="375.8" font-size="12.5" fill="#52514e" text-anchor="end">vertical groups a cycle (90 MHz)</text>
+<text x="570.4" y="372.7" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">17.9†</text>
+<text x="570.4" y="389.7" font-size="12.5" fill="#52514e" text-anchor="start">timing fixes: back to 100 MHz</text>
+<text x="602.4" y="341.4" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">19.5</text>
+<text x="602.4" y="358.4" font-size="12.5" fill="#52514e" text-anchor="start">CDEF copies a group a cycle</text>
+<text x="684.7" y="264.5" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">25.2</text>
+<text x="684.7" y="281.5" font-size="12.5" fill="#52514e" text-anchor="start">shorter filter tail</text>
+<text x="819.4" y="194.0" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="end">27.3</text>
+<text x="819.4" y="211.0" font-size="12.5" fill="#52514e" text-anchor="end">filter chain</text>
+<text x="819.4" y="228.0" font-size="12.5" fill="#52514e" text-anchor="end">on the card</text>
+<text x="940.5" y="227.8" font-size="15" font-weight="700" fill="#0b0b0b" text-anchor="start">28.0</text>
+<text x="940.5" y="244.8" font-size="12.5" fill="#52514e" text-anchor="start">motion field as a band:</text>
+<text x="940.5" y="261.8" font-size="12.5" fill="#52514e" text-anchor="start">block RAM 87 % to 53 %</text>
 <text x="70" y="645" font-size="12" fill="#52514e">Each dot is a card image; the line holds a speed until the next one. † From here the speed is measured without the picture-by-picture check</text>
 <text x="70" y="661" font-size="12" fill="#52514e">(that image: 16.3 with it); every image is still verified against the reference decoder. Table: docs/checkpoints/checkpoints.csv</text>
 </svg>
