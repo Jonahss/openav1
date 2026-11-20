@@ -1,40 +1,45 @@
 #!/usr/bin/env bash
 # Build the Alveo U200 bitstream of the decoder behind the AXI-Lite host interface, with the host side over PCIe
-# (XDMA) instead of the Kria's PS: same dec_host, same register map, same host protocol (tb/host_regs.py).
-#   fpga/u200/build.sh [tag]
-# Environment (the defaults are an intra 1080p window build at 100 MHz; the card images set theirs):
-#   U200_MHZ=100          decoder clock (the frame memory runs at 2x); the MMCM dividers are computed from the
-#                         DDR4 controller's 100 MHz user clock, so 50 / 80 / 100 / 125 / 160 / 200 work directly
-#   U200_FBX=11 U200_FBY=11 U200_WIN=3   frame memory geometry (window of 3 superblock rows at full 1080p width;
-#                         U200_WIN=0 with FBX=FBY=9 is the 512 x 512 whole-picture memory)
-#   U200_SB128=0          1: the window takes 128x128 superblocks too (128-line window rows: twice the frame-memory
-#                         UltraRAM; libaom's default superblock size from 720p up)
-#   U200_TE=1             tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
-#   U200_REF_RING=16     ref_fetch line buffers (reference rows in flight; 16 = single-engine speed, 8 closes TE=2 at 100 MHz)
-#   U200_INTER=0          1: the inter decoder (ref_fetch / mc_filt / warp_setup); needs a frame memory that is not
-#                         the window (docs/frame-memory.md), so 0 until that exists
-#   U200_WIN2=3           fb2 (the final picture) as an UltraRAM ring of this many superblock rows (docs/picture-memory.md)
-#   U200_DDR=1            which of the card's four DDR4 banks holds the pictures (1 = the bank in the PCIe SLR)
-#   U200_BOARD_REPO=~/vivado-dl/boards   directory holding au200/<ver>/ (AMD's au200_board_files zip, unpacked)
-#   U200_STRATEGY=        an implementation strategy for a timing-tight build (Performance_ExtraTimingOpt closed the
-#                         decoder at 100 MHz on 2026-10-23; 80 MHz closes under the default strategy)
-#   U200_THREADS=8        general.maxThreads (16 helps synthesis; place/route stay at 8)
-#   U200_INCR=<routed.dcp> incremental implementation from an earlier build of the same configuration
-#   U200_PBLOCK=0         1: keep XDMA in the PCIe clock regions (fpga/u200/pcie_pblock.xdc), for the 100 MHz builds
-#                         whose only misses were the PCIe core's 500 MHz paths into the hard block
-# Output in ${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/u200-<tag>/: the Vivado project (proj/), impl_*.rpt, and
-# sys_wrapper.bit for JTAG programming (fpga/u200/program.sh) or sys_wrapper.mcs for the configuration flash.
+# (XDMA): dec_host, its register map and host protocol (tb/host_regs.py).
+#   fpga/u200/build.sh <tag> [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR]
+#   fpga/u200/build.sh --print [options]        the configuration line and nothing else
+# There is one decoder configuration: 1080p (FBX 11, FBY 11), the frame memory a window of 5 superblock rows, the
+# final picture a ring of 3, the inter decoder, 64x64 and 128x128 superblocks, XDMA kept in the PCIe clock regions
+# (pcie_pblock.xdc), pictures in DDR4 bank 1. Those are written in build.tcl. What a build may choose is here, and
+# only on the command line (nothing is read from the caller's environment: on 2026-11-17 two images were built with
+# a setting left in a shell):
+#   --te 2          tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
+#   --mhz 100       decoder clock (the frame memory runs at 2x); the MMCM dividers are computed from the DDR4
+#                   controller's 100 MHz user clock, so 50 / 80 / 100 / 125 / 160 / 200 work directly
+#   --ring 16       ref_fetch line buffers (reference rows in flight)
+#   --strategy Performance_ExtraTimingOpt   implementation strategy ("default" = Vivado's own)
+#   --threads 8     general.maxThreads (16 helps synthesis; place/route stay at 8)
+#   --board-repo ~/vivado-dl/boards         directory holding au200/<ver>/ (AMD's au200_board_files zip, unpacked)
+# Output in ~/openav1-synth/u200-<tag>/: the Vivado project (proj/), impl_*.rpt, and sys_wrapper.bit for JTAG
+# programming (fpga/u200/program.sh).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-tag=${1:-$(git -C "$root" rev-parse --short HEAD)}
-out=${OPENAV1_SYNTH_OUT:-$HOME/openav1-synth}/u200-$tag
-export U200_ROOT=$root U200_OUT=$out U200_MHZ=${U200_MHZ:-100}
-export U200_FBX=${U200_FBX:-11} U200_FBY=${U200_FBY:-11} U200_WIN=${U200_WIN:-3} U200_INTER=${U200_INTER:-0}
-export U200_WIN2=${U200_WIN2:-3} U200_DDR=${U200_DDR:-1} U200_BOARD_REPO=${U200_BOARD_REPO:-$HOME/vivado-dl/boards} U200_SB128=${U200_SB128:-0} U200_TE=${U200_TE:-1} U200_REF_RING=${U200_REF_RING:-16}
+te=2; mhz=100; ring=16; strategy=Performance_ExtraTimingOpt; threads=8; board_repo=$HOME/vivado-dl/boards; tag=; print=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --te) te=$2; shift 2;; --mhz) mhz=$2; shift 2;; --ring) ring=$2; shift 2;; --strategy) strategy=$2; shift 2;;
+    --threads) threads=$2; shift 2;; --board-repo) board_repo=$2; shift 2;; --print) print=1; shift;;
+    -*) echo "build.sh: unknown option $1" >&2; exit 2;;
+    *) [ -z "$tag" ] || { echo "build.sh: one tag, got '$tag' and '$1'" >&2; exit 2; }; tag=$1; shift;;
+  esac
+done
+config="TE=$te RING=$ring $mhz MHz $strategy"
+if [ $print = 1 ]; then echo "$config"; exit 0; fi
+[ -n "$tag" ] || { echo "usage: build.sh <tag> [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR] | --print [options]" >&2; exit 2; }
+out=$HOME/openav1-synth/u200-$tag
+# build.tcl's inputs, every one set here
+unset U200_TWIN
+export U200_ROOT=$root U200_OUT=$out U200_MHZ=$mhz U200_TE=$te U200_REF_RING=$ring U200_THREADS=$threads U200_BOARD_REPO=$board_repo
+[ "$strategy" = default ] && export U200_STRATEGY= || export U200_STRATEGY=$strategy
 [ -d "$U200_BOARD_REPO/au200" ] || { echo "no board files at $U200_BOARD_REPO/au200 (unpack au200_board_files_*.zip there)" >&2; exit 1; }
 mkdir -p "$out/work"
-# the rtl list = synth/vivado/run.sh's plus dec_host and phase_gen 
+# the rtl list = synth/vivado/run.sh's plus dec_host and phase_gen
 files="cdf_map_pkg tx_tables_pkg blk_tables_pkg q_tables_pkg syn_pkg scan_rom cdf_store msac sym_seq sym_path coef_rd blk_ctx
        pal_syntax mv_mem mf_band seg_band mv_stack blk_syntax lr_syntax tile_syntax itx_pair itx_lvl itx_row itx2d ipred cfl qm_rom
        mc_tables_pkg mc_filt fb_fetch ref_fetch warp_setup frame_mem_w edge_line frame_mem_uram recon_top cdef_pkg lr_pkg mi_store frame_state_w fs_load mf_project rec_fifo tile_engines axi_rd_share lf_cbuf lf_filt lf_edge lf_feed lf_stream cdef_row cdef_dir cdef_str cdef_stream lr_wiener_pkg lr_wiener_h lr_wiener_v lr_sgr_ab lr_sgr_f lr_stream lr_bconv lr_bstore sr_stream fc_lfifo fc_plane fc_top fc_rstore fc_out dec_top
@@ -47,7 +52,7 @@ export U200_SOURCES=$sources
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): the runs execute in
 # proj/u200.runs/<run>/, so proj/rtl must be the rtl directory
 mkdir -p "$out/proj"; ln -sfn "$root/rtl" "$out/proj/rtl"
-echo "u200 build $tag at $U200_MHZ MHz (FBX $U200_FBX FBY $U200_FBY WIN $U200_WIN fb2 $U200_WIN2 INTER $U200_INTER SB128 $U200_SB128 TE $U200_TE REF_RING $U200_REF_RING DDR bank $U200_DDR${U200_STRATEGY:+ strategy $U200_STRATEGY}${U200_PBLOCK:+ pblock $U200_PBLOCK}) -> $out"
+echo "u200 build $tag: $config"
 cd "$out/work"
 vivado -mode batch -nojournal -log "$out/vivado.log" -source "$here/build.tcl"
 grep -q BUILD_DONE "$out/vivado.log" || { echo "build failed, see $out/vivado.log" >&2; exit 1; }

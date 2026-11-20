@@ -12,7 +12,7 @@ directory on the PATH; the login profile of the machine adds the main checkout's
 | `gate.sh` | the gate rung: the whole decoder's netlist under Verilator against five recorded shards |
 | `blk_gate.sh <block> <test env...>` | netlist replay of one block |
 | `ooc_synth.sh <top> <tag> <worktree>` | out-of-context synthesis of one module for the U200 part |
-| `image.sh <worktree> <tag> <TE> <MHz> <strategy>` | one U200 image, through `ramq`, with its ticket and its line in `~/logs/u200-builds.log` |
+| `image.sh <worktree> <tag> [--te N] [--mhz N] [--ring N] [--strategy NAME]` | one U200 image, through `ramq`, with its ticket and its line in `~/logs/u200-builds.log` |
 | `after_build.sh <name> <sha> <tag>...` | waits for images, then measures each on the card |
 | `card_measure.sh <bitstream> <tag>` | programs an image, decodes the two 1080p clips checked and unchecked with the host software of the image's own commit; a bit-exact, timing-clean image stays on the card, otherwise the previous one is put back |
 | `idle_measure.sh <bitfile> <tag>` | the same on an idle host (other jobs paused meanwhile); refuses while the card is in use; `--list` shows what it would pause |

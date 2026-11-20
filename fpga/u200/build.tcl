@@ -3,8 +3,9 @@
 # AXI-Lite register file around the decoder) reached from the host through XDMA's AXI-Lite master (BAR0) and from
 # the Vivado hardware manager through a JTAG-to-AXI master. The decoder's AXI write/read master (picture flush,
 # reference fetch) and XDMA's AXI memory-mapped master (the host reading pictures, loading streams) share the
-# DDR4 bank. Driven by build.sh, which sets U200_ROOT (repo), U200_OUT (work dir), U200_MHZ, U200_FBX/FBY/WIN/
-# INTER, U200_DDR (bank), U200_BOARD_REPO (AMD's au200 board files) and U200_SOURCES (the rtl list).
+# DDR4 bank. Driven by build.sh, which sets U200_ROOT (repo), U200_OUT (work dir), U200_SOURCES (the rtl list),
+# U200_BOARD_REPO (AMD's au200 board files) and what a build may choose: U200_MHZ, U200_TE, U200_REF_RING,
+# U200_STRATEGY (empty: Vivado's default), U200_THREADS. The decoder's geometry is written below (one configuration).
 #
 # Address maps (docs/u200-bringup.md):
 #   host (BAR0, /dev/xdma0_user) and JTAG master:  0x0000_0000 .. 0x0000_0FFF  dec_host registers (as on the KV260)
@@ -16,7 +17,7 @@ set mhz  $::env(U200_MHZ)
 # U200_TWIN=1: the Tiny Tapeout twin (tt_twin_v behind an AXI GPIO) in place of the decoder; tt-msac fpga/u200/build.sh
 set twin [expr {[info exists ::env(U200_TWIN)] && $::env(U200_TWIN) eq "1"}]
 set part xcu200-fsgd2104-2-e
-set_param general.maxThreads [expr {[info exists ::env(U200_THREADS)] ? $::env(U200_THREADS) : 8}]   ;# U200_THREADS: Vivado caps most phases at 8; 16 helps synthesis
+set_param general.maxThreads [expr {[info exists ::env(U200_THREADS)] ? $::env(U200_THREADS) : 8}]   ;# Vivado caps most phases at 8; 16 helps synthesis
 set_param board.repoPaths [list $::env(U200_BOARD_REPO)]
 create_project -force u200 $out/proj -part $part
 set bp [lindex [lsort -dictionary [get_board_parts xilinx.com:au200:part0:*]] end]
@@ -31,11 +32,10 @@ add_files -fileset constrs_1 -norecurse $root/fpga/u200/sys.xdc
 # sys.xdc names the MMCM's clocks, which exist only once the block design is linked: read at synthesis it failed
 # evaluation (Vivado 12-1008, Project 1-498) and was read again afterwards. Implementation only (2026-11-16).
 set_property USED_IN {implementation} [get_files $root/fpga/u200/sys.xdc]
-if {[info exists ::env(U200_PBLOCK)] && $::env(U200_PBLOCK) eq "1"} {
-    add_files -fileset constrs_1 -norecurse $root/fpga/u200/pcie_pblock.xdc
-    set_property USED_IN {implementation} [get_files $root/fpga/u200/pcie_pblock.xdc]
-    puts "placement: XDMA kept in the PCIe clock regions (pcie_pblock.xdc)"
-}
+# XDMA kept in the PCIe clock regions: the 100 MHz builds' only misses without it were the PCIe core's 500 MHz paths
+add_files -fileset constrs_1 -norecurse $root/fpga/u200/pcie_pblock.xdc
+set_property USED_IN {implementation} [get_files $root/fpga/u200/pcie_pblock.xdc]
+puts "placement: XDMA kept in the PCIe clock regions (pcie_pblock.xdc)"
 update_compile_order -fileset sources_1
 
 # ---------------------------------------------------------------- the block design
@@ -69,10 +69,10 @@ set irq0 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 irq0]
 set_property -dict [list CONFIG.CONST_VAL {0} CONFIG.CONST_WIDTH {1}] $irq0
 connect_bd_net [get_bd_pins irq0/dout] [get_bd_pins xdma/usr_irq_req]
 
-# DDR4: bank U200_DDR (1 = the bank whose pins and 300 MHz clock sit in the PCIe SLR), the board preset
+# DDR4: bank 1 (the bank whose pins and 300 MHz clock sit in the PCIe SLR), the board preset
 # (MTA18ASF2G72PZ-2G3 RDIMM, 72-bit with ECC, DDR4-2400, 512-bit AXI at 300 MHz), plus a 100 MHz user clock
 # (addn_ui_clkout1) that feeds the decoder's MMCM exactly as pl_clk0 does on the Kria.
-set bank $::env(U200_DDR)
+set bank 1                        ;# the DDR4 bank in the PCIe SLR
 set ddr [create_bd_cell -type ip -vlnv xilinx.com:ip:ddr4:2.2 ddr]
 set_property -dict [list CONFIG.C0_DDR4_BOARD_INTERFACE ddr4_sdram_c$bank CONFIG.C0_CLOCK_BOARD_INTERFACE default_300mhz_clk$bank] $ddr
 set_property -dict [list CONFIG.ADDN_UI_CLKOUT1_FREQ_HZ {100} CONFIG.C0.DDR4_AxiSelection {true} CONFIG.C0.DDR4_AxiDataWidth {512} CONFIG.C0.DDR4_AxiAddressWidth {34}] $ddr
@@ -157,11 +157,9 @@ if {$twin} {
     puts "tiny tapeout twin: tt_twin_v and its GPIO on clk_out1 ($mhz MHz), BAR0 offset 0"
 } else {
     set host [create_bd_cell -type module -reference dec_host_v host]
-    set fbx $::env(U200_FBX); set fby $::env(U200_FBY); set win $::env(U200_WIN); set inter $::env(U200_INTER)
-    set win2 $::env(U200_WIN2)
-    set sb128 [expr {[info exists ::env(U200_SB128)] ? $::env(U200_SB128) : 0}]
-    set te [expr {[info exists ::env(U200_TE)] ? $::env(U200_TE) : 1}]
-    set ring [expr {[info exists ::env(U200_REF_RING)] ? $::env(U200_REF_RING) : 16}]
+    # the one configuration: 1080p, fb0 a window of 5 superblock rows, fb2 a ring of 3, inter, both superblock sizes
+    set fbx 11; set fby 11; set win 5; set win2 3; set inter 1; set sb128 1
+    set te $::env(U200_TE); set ring $::env(U200_REF_RING)
     set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win \
                              CONFIG.FRAME_WIN2 $win2 CONFIG.INTER $inter CONFIG.SB128 $sb128 CONFIG.TE $te CONFIG.REF_RING $ring] $host
     puts "decoder: FBX $fbx FBY $fby FRAME_WIN $win fb2 $win2 INTER $inter SB128 $sb128 TE $te REF_RING $ring"
@@ -232,12 +230,6 @@ update_compile_order -fileset sources_1
 
 # ---------------------------------------------------------------- runs
 set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
-if {[info exists ::env(U200_INCR)] && $::env(U200_INCR) ne ""} {
-    # incremental implementation from an earlier routed checkpoint of the same configuration: unchanged cells keep their
-    # placement and routing (2026-10-30, to cut the 3-hour turnaround of a small RTL change)
-    set_property incremental_checkpoint $::env(U200_INCR) [get_runs impl_1]
-    puts "incremental from: $::env(U200_INCR)"
-}
 if {[info exists ::env(U200_STRATEGY)] && $::env(U200_STRATEGY) ne ""} {
     set_property strategy $::env(U200_STRATEGY) [get_runs impl_1]
     puts "impl strategy: $::env(U200_STRATEGY)"
