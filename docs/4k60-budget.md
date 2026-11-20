@@ -236,3 +236,27 @@ RAMs by my 2026-11-19 figure, not read again here). The block RAM by module: til
 
 So four engines fit after the segment-map band, tightly, and comfortably if the motion-field bands also move. Logic
 and DSPs are not the limit.
+
+## Count 2: what a 3840-wide frame window costs (measured 2026-11-20, K60-50)
+
+Same synthesis (FBX 12, FBY 12, four engines) and its 1080p and two-engine siblings (`dec_host-k4count-band11`,
+`-band12`), `util_hier.rpt` and `tools/ram_by_table.py`.
+
+| memory | 1080p (FBX 11) | 4K (FBX 12) |
+|---|---|---|
+| fb0, window of 5 superblock rows of 128 lines | 120 UltraRAM | 240 UltraRAM (48 a row) |
+| fb2, ring of 3 rows | 72 UltraRAM | 144 UltraRAM (48 a row) |
+| **both frame windows** | **192** | **384 = 40 % of the card's 960** |
+| mode-info stores (`lf_info`, four of 262144 x 41) | 64 in `u_mi` | 259 in the three stores |
+| the chain's row store `u_rs` (block RAM) | 384 | 768: four luma memories of 128, eight chroma of 32 |
+
+- **The windows fit.** With four engines the 4K decoder uses 773 of 960 UltraRAMs (80.5 %): the windows 384, the
+  mode-info stores 259, the engines' motion-vector memories 128, two patch memories.
+- The shortest window the design allows is 3 rows for fb0: 144 + 144 = 288, 96 fewer (arithmetic; the hold logic at
+  3 rows has not been run at 4K).
+- An sb64-only image would halve the window lines, but three of the nine YouTube 4K samples are sb128: not an option.
+- **The binding resource is block RAM, not the windows**, and its largest single user is the chain's row store
+  (768 of 2,160). In bits it would be 96 UltraRAMs (arithmetic; whether its three readers can share UltraRAM ports
+  is not checked). With Count 1's two steps the UltraRAMs would then stand at 925 of 960 (96 %): too tight to take
+  both that and the motion-field move; one of them, or the 3-row window with both (829 of 960).
+- A split with part of the windows in DDR was not evaluated: nothing here forces it on this card.
