@@ -153,7 +153,7 @@ registers. With that the two older ways of handing a frame its state are gone, i
 
 - `dec_host` registers 0x300 .. 0x310 (MF_ADDR / MF_DATA, SP_ADDR / SP_DATA0 / SP_DATA1) are removed. `dec_top` keeps
   its `mf_we` / `sp_we` ports for the testbenches that drive it directly (builds without the loader: whole-frame field).
-- `decode_frames_inter` has one way left, the one section 5 describes (`decode.py --inter`; `--card-state` and
+- `decode_frames_inter` has one way left, the one section 5 describes (`decode.py`; `--card-state` and
   `--card-load` are gone, and with them the host model running beside the card, the model-only fallback for frames the
   image cannot take, and `seq_model`'s numpy projection with its self-test).
 - The twin (`tb/test_dec_host_inter.py`) always runs as the card does; `TS_FSTATE_B` and `TS_FSTATE_MF` are gone.

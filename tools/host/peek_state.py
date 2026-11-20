@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""peek_state.py <mv_base_hex> <mi_cols> <mi_rows> [--xdma N] — read a frame's saved motion field (the MV sideband the
+"""peek_state.py <mv_base_hex> <mi_cols> <mi_rows> [--card N] — read a frame's saved motion field (the MV sideband the
 card wrote, docs/frame-state.md) back out of the U200's DDR4 and draw it: one character per 8x8 unit, the reference the
 unit's motion vector points at (. = none, 1 LAST .. 7 ALTREF), then a few of the vectors. The addresses are the ones
-decode.py --card-state prints after each frame."""
+decode.py prints after each frame ("MV words at")."""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tb"))
 from xdma import XdmaStage                                   # noqa: E402
 
 base = int(sys.argv[1], 0); mi_cols = int(sys.argv[2]); mi_rows = int(sys.argv[3])
-card = int(sys.argv[sys.argv.index("--xdma") + 1]) if "--xdma" in sys.argv else 0
+card = int(sys.argv[sys.argv.index("--card") + 1]) if "--card" in sys.argv else 0
 w8, h8 = mi_cols >> 1, mi_rows >> 1
 rowb = (w8 * 4 + 7) & ~7
 st = XdmaStage(card, 0x1000_0000, 256 << 20)

@@ -8,12 +8,11 @@ HERE = Path(__file__).resolve().parent
 
 
 class HostLib:
-    def __init__(self, base, path=None, dev=None):
-        """base: physical address of the register file (/dev/mem, the KV260); dev: a device node to map instead
-        (the XDMA user BAR /dev/xdma0_user on the U200, base then = the offset of the register file in it)."""
-        self.lib = ctypes.CDLL(str(path or HERE / "libhostregs.so"))
+    def __init__(self, dev, base=0):
+        """dev: the device node to map (the XDMA user BAR, /dev/xdma0_user); base: the offset of the register file
+        in it (0 in fpga/u200/build.tcl)."""
+        self.lib = ctypes.CDLL(str(HERE / "libhostregs.so"))
         lib = self.lib
-        lib.hl_open.argtypes = [ctypes.c_uint64]
         lib.hl_open_dev.argtypes = [ctypes.c_char_p, ctypes.c_uint64]
         lib.hl_wr.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
         lib.hl_rd.argtypes = [ctypes.c_uint32]
@@ -24,10 +23,9 @@ class HostLib:
         lib.hl_poll.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_double]
         lib.hl_poll.restype = ctypes.c_uint32
         lib.hl_read_plane.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_uint16)]
-        lib.hl_yuv420_rgb565.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p] + [ctypes.c_int] * 4
-        rc = lib.hl_open_dev(str(dev).encode(), base) if dev else lib.hl_open(base)
+        rc = lib.hl_open_dev(str(dev).encode(), base)
         if rc:
-            raise OSError(f"hostlib: cannot map 0x{base:08x} of {dev or '/dev/mem'} (rc {rc}; needs root for /dev/mem)")
+            raise OSError(f"hostlib: cannot map 0x{base:08x} of {dev} (rc {rc})")
 
     def wr(self, a, v):
         self.lib.hl_wr(a, v & 0xFFFFFFFF)
@@ -62,6 +60,3 @@ class HostLib:
             raise OSError("hostlib: HADDR never read back")
         flat = memoryview(buf).cast("B").cast("H").tolist()      # list(buf) on a ctypes array is 25x slower
         return [flat[y * W:(y + 1) * W] for y in range(H)]
-
-    def yuv420_rgb565(self, y_ptr, u_ptr, v_ptr, W, H, ystride, cstride, dst_ptr, dst_stride, x0, y0, flip=False):
-        self.lib.hl_yuv420_rgb565(y_ptr, u_ptr, v_ptr, W, H, ystride, cstride, dst_ptr, dst_stride, x0, y0, 1 if flip else 0)

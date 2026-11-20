@@ -9,7 +9,7 @@
 # by hand. Simulators are found by where their binary lives (a sim_build or obj_dir directory), not by name.
 # `idle_measure.sh --list` prints what would be stopped and stops nothing.
 set -u
-busy=$(pgrep -u $USER -af "bin/card_measure.s[h]|tools/host/decode.p[y]|tools/kv260/decode.p[y]|fpga/u200/program.s[h]|program.tc[l]" | grep -v "idle_measure" | cut -c1-160)
+busy=$(pgrep -u $USER -af "bin/card_measure.s[h]|tools/host/decode.p[y]|fpga/u200/program.s[h]|program.tc[l]" | grep -v "idle_measure" | cut -c1-160)
 [ -z "$busy" ] || { echo "idle_measure: the card is in use, not starting:" >&2; echo "$busy" >&2; exit 1; }
 pids=""
 for d in /proc/[0-9]*; do

@@ -87,7 +87,7 @@ Two things the band needs that the whole-frame field does not:
    every entry of the field before the tiles, through `R_MF_ADDR` / `R_MF_DATA` in `dec_host` and the `mf_we` ports in
    the `dec_top` tests. A 32-row band cannot take a whole field. Using it today: `test_dec_inter` (all `dec_inter*`
    suites), `test_dec_host_inter` without `TS_FSTATE_B` (`dec_host_inter`, `dec_host_inter_argon`, gate shards b, c,
-   d), `decode.py --inter` without `--card-load`. Using stage B (the card loads and projects): `dec_host_cardload`,
+   d), the host path of that day, since removed. Using stage B (the card loads and projects): `dec_host_cardload`,
    `dec_host_census15`, gate shards a and e, and the card itself (`dec.sh`, the scoreboard).
    So: the twins and `test_dec_inter` move to stage B (the saved MV words of the model go into the AXI memory, the
    RTL projects), the known limit of the stage-B twin is lifted (a frame inheriting CDFs after a frame that disabled

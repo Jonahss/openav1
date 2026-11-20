@@ -1,9 +1,9 @@
 """The Alveo U200 host side (fpga/u200): the decoder's register file through the XDMA driver's user BAR and the
-card's DDR4 through its DMA channels, with the interfaces decode.py's Regs / MemStage have, so HostDecoder runs
-unchanged. Device nodes (AMD dma_ip_drivers, `modprobe xdma`): /dev/xdma<N>_user is BAR0 (AXI-Lite: the
+card's DDR4 through its DMA channels, with the interfaces HostDecoder takes (rd / wr; base, stage_len, read).
+Device nodes (AMD dma_ip_drivers, `modprobe xdma`): /dev/xdma<N>_user is BAR0 (AXI-Lite: the
 register file at 0x0, the DDR4 controller's ECC registers at 0x1_0000), /dev/xdma<N>_h2c_0 / _c2h_0 move bytes
 to / from the card's DDR4 (a pread / pwrite at offset A is a DMA to card address A). Every register access is one
-32-bit PCIe transaction (ctypes c_uint32 on the mapping: the same one-store rule as /dev/mem on the KV260)."""
+32-bit PCIe transaction (ctypes c_uint32 on the mapping: struct.pack_into and slice stores split a word into 2-3 transfers)."""
 import ctypes
 import mmap
 import os
@@ -33,7 +33,7 @@ class XdmaRegs:
 class XdmaStage:
     """A region of the card's DDR4 as the picture DMA target: the decoder writes it through its AXI master (the
     flush / DMA engine, addresses programmed by HostDecoder from .base), the host reads it back over the C2H
-    channel. .read(off, n) is relative to .base, as MemStage's. write() loads bytes (reference pictures, test
+    channel. .read(off, n) is relative to .base. write() loads bytes (reference pictures, test
     patterns) over H2C."""
     def __init__(self, card=0, base=0x1000_0000, size=256 << 20):
         self.c2h = os.open(f"/dev/xdma{card}_c2h_0", os.O_RDONLY)
@@ -59,6 +59,3 @@ class XdmaStage:
             if k <= 0:
                 raise OSError(f"xdma: short write at 0x{pos:x}")
             view, pos = view[k:], pos + k
-
-    def show(self, lib, hdr, planes_layout, flip=False):
-        return False                               # no screen on the host path; pictures go to files

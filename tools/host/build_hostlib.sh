@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Build tools/host/libhostregs.so for the board (aarch64). The Kria image has no compiler; build on any aarch64 Linux
-# (a Raspberry Pi does) and copy the .so next to decode.py: it uses only open / mmap / clock_gettime, so glibc
-# version differences do not matter.
+# Build tools/host/libhostregs.so (the host driver's register traffic in C, tools/host/hostlib.c) for this machine.
 set -euo pipefail
 cd "$(dirname "$0")"
 gcc -O2 -Wall -shared -fPIC -o libhostregs.so hostlib.c

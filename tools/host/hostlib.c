@@ -1,8 +1,8 @@
-// Bulk register traffic for the KV260 host driver (tools/host/decode.py): the per-access cost from Python
-// through /dev/mem is ~7 us, from here ~0.1 us, and a frame is tens of thousands of accesses (1269 CDF default
+// Bulk register traffic for the host driver (tools/host/decode.py): the per-access cost from Python
+// through a device mapping is ~7 us, from here ~0.1 us, and a frame is tens of thousands of accesses (1269 CDF default
 // rows x 9 words, the tile bytes, the picture). Built as a shared object (tools/host/build_hostlib.sh) and
 // called through ctypes; the Python HostDecoder keeps the protocol, this only moves words. Every access is one
-// aligned 32-bit volatile load or store on a device mapping (uncached, ordered on arm64).
+// aligned 32-bit volatile load or store on a device mapping.
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/mman.h>
@@ -23,17 +23,7 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
 static inline void wr(uint32_t a, uint32_t v) { regs[a >> 2] = v; }
 static inline uint32_t rd(uint32_t a) { return regs[a >> 2]; }
 
-int hl_open(uint64_t base) {
-    int fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (fd < 0) return -1;
-    void *m = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)base);
-    close(fd);
-    if (m == MAP_FAILED) return -2;
-    regs = (volatile uint32_t *)m;
-    return 0;
-}
-
-// the register file through another device node: the XDMA driver's user BAR (/dev/xdma0_user) on the Alveo U200,
+// the register file through a device node: the XDMA driver's user BAR (/dev/xdma0_user) on the Alveo U200,
 // mapped at offset off (the AXI-Lite address of the register file in the BAR; 0 in fpga/u200/build.tcl)
 int hl_open_dev(const char *path, uint64_t off) {
     int fd = open(path, O_RDWR | O_SYNC);
@@ -117,37 +107,4 @@ int hl_read_plane(int plane, int W, int H, int bd8, uint16_t *out) {
         }
     }
     return 0;
-}
-
-// 8-bit 4:2:0 planes (the DMA image: y with ystride, u / v with cstride) to RGB565 at (x0, y0) of a 16-bit
-// framebuffer with dst_stride pixels per line (BT.601 limited range, the usual for these clips). Both the
-// staging area and the framebuffer are uncached device memory: a byte-wise walk costs ~0.3 us per access, so
-// each row is first copied out with wide loads (memcpy) and the output row is assembled in a local buffer and
-// copied in with wide stores.
-#include <string.h>
-// flip: the picture turned by 180 degrees within its rectangle (a panel mounted upside down).
-void hl_yuv420_rgb565(const uint8_t *y, const uint8_t *u, const uint8_t *v, int W, int H, int ystride, int cstride,
-                      uint16_t *dst, int dst_stride, int x0, int y0, int flip) {
-    static uint8_t yr[4096], ur[2048], vr[2048];
-    static uint16_t out[4096];
-    if (W > 4096) return;
-    for (int j = 0; j < H; j++) {
-        memcpy(yr, y + (long)j * ystride, (size_t)W);
-        if ((j & 1) == 0) {
-            memcpy(ur, u + (long)(j >> 1) * cstride, (size_t)((W + 1) >> 1));
-            memcpy(vr, v + (long)(j >> 1) * cstride, (size_t)((W + 1) >> 1));
-        }
-        for (int i = 0; i < W; i++) {
-            int c = 298 * (yr[i] - 16), dd = ur[i >> 1] - 128, e = vr[i >> 1] - 128;
-            int r = (c + 409 * e + 128) >> 8, g = (c - 100 * dd - 208 * e + 128) >> 8, b = (c + 516 * dd + 128) >> 8;
-            r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
-            out[i] = (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3));
-        }
-        if (flip) {
-            for (int i = 0; i < W / 2; i++) { uint16_t t = out[i]; out[i] = out[W - 1 - i]; out[W - 1 - i] = t; }
-            memcpy(dst + (long)(y0 + H - 1 - j) * dst_stride + x0, out, (size_t)W * 2);
-        } else {
-            memcpy(dst + (long)(y0 + j) * dst_stride + x0, out, (size_t)W * 2);
-        }
-    }
 }
