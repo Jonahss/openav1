@@ -4,7 +4,7 @@
 # the Vivado hardware manager through a JTAG-to-AXI master. The decoder's AXI write/read master (picture flush,
 # reference fetch) and XDMA's AXI memory-mapped master (the host reading pictures, loading streams) share the
 # DDR4 bank. Driven by build.sh, which sets U200_ROOT (repo), U200_OUT (work dir), U200_SOURCES (the rtl list),
-# U200_BOARD_REPO (AMD's au200 board files) and what a build may choose: U200_MHZ, U200_TE, U200_REF_RING,
+# U200_BOARD_REPO (AMD's au200 board files) and what a build may choose: U200_FB, U200_MHZ, U200_TE, U200_REF_RING,
 # U200_STRATEGY (empty: Vivado's default), U200_THREADS. The decoder's geometry is written below (one configuration).
 #
 # Address maps (docs/u200-bringup.md):
@@ -157,8 +157,9 @@ if {$twin} {
     puts "tiny tapeout twin: tt_twin_v and its GPIO on clk_out1 ($mhz MHz), BAR0 offset 0"
 } else {
     set host [create_bd_cell -type module -reference dec_host_v host]
-    # the one configuration: 1080p, fb0 a window of 5 superblock rows, fb2 a ring of 3, both superblock sizes
-    set fbx 11; set fby 11; set win 5; set win2 3; set sb128 1
+    # the one configuration: fb0 a window of 5 superblock rows, fb2 a ring of 3, both superblock sizes; the picture size
+    # (U200_FB: 11 = 1080p, 12 = 4K) is build.sh's --size
+    set fbx $::env(U200_FB); set fby $fbx; set win 5; set win2 3; set sb128 1
     set te $::env(U200_TE); set ring $::env(U200_REF_RING)
     set_property -dict [list CONFIG.FBX $fbx CONFIG.FBY $fby CONFIG.ITX_LANES {2} CONFIG.FRAME_URAM {1} CONFIG.FRAME_WIN $win \
                              CONFIG.FRAME_WIN2 $win2 CONFIG.SB128 $sb128 CONFIG.TE $te CONFIG.REF_RING $ring] $host

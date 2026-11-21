@@ -35,7 +35,7 @@ class XdmaStage:
     flush / DMA engine, addresses programmed by HostDecoder from .base), the host reads it back over the C2H
     channel. .read(off, n) is relative to .base. write() loads bytes (reference pictures, test
     patterns) over H2C."""
-    def __init__(self, card=0, base=0x1000_0000, size=256 << 20):
+    def __init__(self, card=0, base=0x1000_0000, size=2 << 30):   # 2 GB of the bank's 16: twelve 10-bit 4K frame buffers with their state areas (256 MB held 8-bit 4K only)
         self.c2h = os.open(f"/dev/xdma{card}_c2h_0", os.O_RDONLY)
         self.h2c = os.open(f"/dev/xdma{card}_h2c_0", os.O_WRONLY)
         self.base, self.stage_off, self.stage_len = base, 0, size

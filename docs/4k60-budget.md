@@ -234,6 +234,7 @@ RAMs by my 2026-11-19 figure, not read again here). The block RAM by module: til
 | segment map as a 64-row band, 86 -> 6 an engine (K60-60, in work; the 6 is the design note's figure) | 1,857.5 | about 1,962 (91 %) | 773 |
 | the same, **measured** 2026-11-20 (`docs/segment-map-band.md`: the band landed in one UltraRAM; the chain's memories shifted towards block RAM) | 1,916 | about 2,020 (93.5 %) | 777 |
 | and the motion-field bands in UltraRAM: 105 block RAMs an engine -> 14 UltraRAMs (two 33-bit words a 72-bit word) | 1,437.5 | about 1,542 (71 %) | 829 (86 %) |
+| the same, **measured** 2026-11-20 (branch mf-uram, `dec_host-k4count-mfu12te4`): 16 UltraRAMs an engine, instantiated | 1,685 | about 1,789 (83 %) | 832 (86.7 %) |
 
 So four engines fit after the segment-map band, tightly, and comfortably if the motion-field bands also move. Logic
 and DSPs are not the limit.
@@ -261,3 +262,22 @@ Same synthesis (FBX 12, FBY 12, four engines) and its 1080p and two-engine sibli
   is not checked). With Count 1's two steps the UltraRAMs would then stand at 925 of 960 (96 %): too tight to take
   both that and the motion-field move; one of them, or the 3-row window with both (829 of 960).
 - A split with part of the windows in DDR was not evaluated: nothing here forces it on this card.
+
+### The motion-field bands in UltraRAM, measured (2026-11-20, K60-71)
+
+`mf_band` on instantiated URAM288 (Vivado infers UltraRAM only for whole-word writes; with byte enables it built one
+memory a byte, 112 UltraRAMs for one band). Synthesis of `dec_host`, `util.rpt` and `util_hier.rpt`:
+
+| | 4K size, four engines | before (segment band only) | 1080p size, two engines | before |
+|---|---|---|---|---|
+| block RAM tiles | **1,685 (78.0 %)** | 1,916 (88.7 %) | 899.5 (41.6 %) | 1,004.5 |
+| UltraRAM | 832 (86.7 %) | 777 | 372 | 356 |
+| LUTs | 670,589 (56.7 %) | 737,912 | 538,369 | |
+| the tile engines: block RAM tiles / UltraRAM | 202 / 192 | 532 / 132 | 96 / 48 | |
+
+- The engines gave up 330 block RAM tiles, the whole decoder 231 and 67 k LUTs: with block RAM freer, Vivado moved
+  LUT-RAM memories of the engines, the chain (423.5 tiles, was 397.5) and reconstruction (99.5, was 60.5) into it.
+  The arithmetic row above assumed nothing else would move; it is the measured row that counts.
+- With the shell's 104 or so, four engines at the 4K size stand near 1,789 of 2,160 block RAM tiles (83 %), 832 of
+  960 UltraRAMs, 57 % of the LUTs.
+- The same six `Synth 8-4767` notes as before; none new.

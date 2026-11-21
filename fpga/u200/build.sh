@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Build the Alveo U200 bitstream of the decoder behind the AXI-Lite host interface, with the host side over PCIe
 # (XDMA): dec_host, its register map and host protocol (tb/host_regs.py).
-#   fpga/u200/build.sh <tag> [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR]
+#   fpga/u200/build.sh <tag> [--size 1080p|4k] [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR]
 #   fpga/u200/build.sh --print [options]        the configuration line and nothing else
-# There is one decoder configuration: 1080p (FBX 11, FBY 11), the frame memory a window of 5 superblock rows, the
+# There is one decoder configuration but for its picture size: the frame memory a window of 5 superblock rows, the
 # final picture a ring of 3, the inter decoder, 64x64 and 128x128 superblocks, XDMA kept in the PCIe clock regions
 # (pcie_pblock.xdc), pictures in DDR4 bank 1. Those are written in build.tcl. What a build may choose is here, and
 # only on the command line (nothing is read from the caller's environment: on 2026-11-17 two images were built with
 # a setting left in a shell):
+#   --size 1080p    the largest picture: 1080p (frame buffers 2048 x 2048: FBX = FBY = 11) or 4k (4096 x 4096: 12)
 #   --te 2          tile engines: the tile columns of a tile row decoded at once (rtl/tile_engines.sv)
 #   --mhz 100       decoder clock (the frame memory runs at 2x); the MMCM dividers are computed from the DDR4
 #                   controller's 100 MHz user clock, so 50 / 80 / 100 / 125 / 160 / 200 work directly
@@ -20,22 +21,23 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-te=2; mhz=100; ring=16; strategy=Performance_ExtraTimingOpt; threads=8; board_repo=$HOME/vivado-dl/boards; tag=; print=0
+size=1080p; te=2; mhz=100; ring=16; strategy=Performance_ExtraTimingOpt; threads=8; board_repo=$HOME/vivado-dl/boards; tag=; print=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --te) te=$2; shift 2;; --mhz) mhz=$2; shift 2;; --ring) ring=$2; shift 2;; --strategy) strategy=$2; shift 2;;
+    --size) size=$2; shift 2;; --te) te=$2; shift 2;; --mhz) mhz=$2; shift 2;; --ring) ring=$2; shift 2;; --strategy) strategy=$2; shift 2;;
     --threads) threads=$2; shift 2;; --board-repo) board_repo=$2; shift 2;; --print) print=1; shift;;
     -*) echo "build.sh: unknown option $1" >&2; exit 2;;
     *) [ -z "$tag" ] || { echo "build.sh: one tag, got '$tag' and '$1'" >&2; exit 2; }; tag=$1; shift;;
   esac
 done
-config="TE=$te RING=$ring $mhz MHz $strategy"
+case "$size" in 1080p) fb=11;; 4k) fb=12;; *) echo "build.sh: --size is 1080p or 4k, not $size" >&2; exit 2;; esac
+config="$size TE=$te RING=$ring $mhz MHz $strategy"
 if [ $print = 1 ]; then echo "$config"; exit 0; fi
-[ -n "$tag" ] || { echo "usage: build.sh <tag> [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR] | --print [options]" >&2; exit 2; }
+[ -n "$tag" ] || { echo "usage: build.sh <tag> [--size 1080p|4k] [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR] | --print [options]" >&2; exit 2; }
 out=$HOME/openav1-synth/u200-$tag
 # build.tcl's inputs, every one set here
 unset U200_TWIN
-export U200_ROOT=$root U200_OUT=$out U200_MHZ=$mhz U200_TE=$te U200_REF_RING=$ring U200_THREADS=$threads U200_BOARD_REPO=$board_repo
+export U200_ROOT=$root U200_OUT=$out U200_MHZ=$mhz U200_FB=$fb U200_TE=$te U200_REF_RING=$ring U200_THREADS=$threads U200_BOARD_REPO=$board_repo
 [ "$strategy" = default ] && export U200_STRATEGY= || export U200_STRATEGY=$strategy
 [ -d "$U200_BOARD_REPO/au200" ] || { echo "no board files at $U200_BOARD_REPO/au200 (unpack au200_board_files_*.zip there)" >&2; exit 1; }
 mkdir -p "$out/work"

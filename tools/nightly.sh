@@ -184,6 +184,9 @@ run dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_
 # the engines and the same broken decoder passed again; 4000 puts a band at 64k cycles).
 run dec_host_segband      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$PWD/streams/inter/seg_tall_8bit.ivf,$PWD/streams/inter/seg_tall128_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 run dec_host_segband_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_SEG_SLOW=4000 TS_IVF="$PWD/streams/inter/seg_tall_nomf_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+# Four tile engines (2026-11-20; nothing above runs more than two): the 256 x 768 picture in four tile columns of one
+# 64-pixel superblock (aomenc --tile-columns=2 --aq-mode=3: a motion field and a segment map, both as bands).
+run dec_host_te4          FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=4 REF_RING=8 TS_IVF="$PWD/streams/inter/te4_tall_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
 GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
 runsh dec_inter          TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
