@@ -9,10 +9,11 @@ The frame sequence follows tb/seq_model.py (inherited CDFs through the DEF windo
 field through the band registers, slot table and ref_frame_idx through 0x400 / 0x600). Frames the window build
 cannot take (sb128, 4:4:4 / 4:2:2, several tile columns, intra block copy) and frames outside TS_FRAMES are
 decoded by the model only; a reference the RTL did not produce is loaded into the AXI memory at a slot address.
-Env: TS_IVF=a.obu[,b.obu] (required), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_WIN / TS_DMA are 1.
+Env: TS_IVF=a.obu[,b.obu] and / or TS_SEEDS=n[,n] with TS_W, TS_H (generated one-frame streams), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_WIN / TS_DMA are 1.
 """
 import json
 import os
+import random
 import time
 from pathlib import Path
 import cocotb
@@ -309,17 +310,30 @@ async def dec_host_inter_vs_model(dut):
     dut._log.info(f"dec_host ID 0x{ident:08x} CFG 0x{cfg:08x}: FBX {cfg >> 16 & 0xFF} FBY {cfg >> 8 & 0xFF} lanes {cfg >> 4 & 0xF} uram {cfg & 1}")
     stats = dict(frames=0, inter_frames=0, model_only=0, tiles=0, bytes=0, pixels=0, ref_loads=0, stage="lr")
     ivfs = [p for p in os.environ.get("TS_IVF", "").split(",") if p]
-    assert ivfs, "TS_IVF=<stream.obu>[,...] is required"
+    # generated one-frame streams (tools/gen_stream.py through test_tile_syntax.gen, the format drawn from the seed as
+    # test_dec_host did): TS_SEEDS=7,8 with TS_W / TS_H. They came through the whole-picture host test until 2026-11-21.
+    gen_raw = {}
+    for seed in [int(x) for x in os.environ.get("TS_SEEDS", "").split(",") if x]:
+        gw, gh = int(os.environ.get("TS_W", "128")), int(os.environ.get("TS_H", "96"))
+        fmt = os.environ.get("TS_FMT") or random.Random(seed * 7).choice(["420", "444", "mono", "422"])
+        gd, gargs = TT.gen(seed, gw, gh, fmt)
+        gname = f"seed{seed}_{fmt}_bd{gargs['bd']}_{gw}x{gh}.gen"
+        gen_raw[gname] = gd
+        ivfs.append(gname)
+    assert ivfs, "TS_IVF=<stream.obu>[,...] or TS_SEEDS=<n>[,...] is required"
     frames_sel = {int(x) for x in os.environ.get("TS_FRAMES", "").split(",") if x}
     fi_global = 0                                            # flush regions are per decoded frame across streams
     for path in ivfs:
-        d = op.Decoder()
-        with open(path, "rb") as fh:
-            raw = fh.read()
-        if path.endswith(".obu"):
-            d.feed_annexb(raw)
+        if path in gen_raw:
+            d = gen_raw[path]                                # parsed by the generator's wrapper
         else:
-            d.feed_ivf(raw)
+            d = op.Decoder()
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            if path.endswith(".obu"):
+                d.feed_annexb(raw)
+            else:
+                d.feed_ivf(raw)
         name = Path(path).name
         seq = sm.SequenceState()
         store = {}                                           # slot -> store_entry

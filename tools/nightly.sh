@@ -132,6 +132,10 @@ run dec_host_recon     FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=1,9 TS_W=12
 # (fb0 needs 3 + CDEF + LR = 5 rows: recon, LF, CDEF, LR in flight plus the hold slot; a shallower ring flags the frame unsupported)
 run dec_host_ring      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
 run dec_host_ring_tall FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_SEEDS=28,32 TS_W=128 TS_H=320 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
+# the same generated streams on the card's host path (sequencer, row flush; test_dec_host_inter): the ring suites above
+# go once these are shown to decode the same frames (K60-70)
+run dec_host_gen       FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 python tb/runner.py dec_host test_dec_host_inter
+run dec_host_gen_tall  FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_SEEDS=28,32 TS_W=128 TS_H=320 python tb/runner.py dec_host test_dec_host_inter
 # inter streams through dec_host (registers, sequencer, flush; references = the flushed pictures, as on the board): tb/test_dec_host_inter.py
 run dec_host_inter     FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
