@@ -85,7 +85,11 @@ def main():
     ap.add_argument("--poll-timeout", type=float, default=30.0)
     ap.add_argument("--perf-tiles", metavar="FILE", help="per tile (row): bytes, host seconds to the last byte pushed and to tile done, and the card's "
                     "PERF_SYN / PERF_REC cycle counters, as CSV; a summary line on stdout (is the byte push on the critical path?)")
+    ap.add_argument("--perf-recon", metavar="FILE", help="with --perf-tiles: also reconstruction's clocks per state after every tile row "
+                    "(cumulative within a frame: the decoder is reset before each), as CSV; the totals on stdout")
     args = ap.parse_args()
+    if args.perf_recon and not args.perf_tiles:
+        sys.exit("--perf-recon needs --perf-tiles")
     if not (Path(__file__).resolve().parent / "libhostregs.so").exists():
         sys.exit("tools/host/libhostregs.so is missing: run tools/host/build_hostlib.sh")
 
@@ -128,6 +132,7 @@ def main():
     host = HostDecoder(regs, poll_timeout=args.poll_timeout, fast=fast)
     if args.perf_tiles:
         host.perf_tiles = []
+        host.perf_recon = bool(args.perf_recon)
     host.raw_planes = True                       # pictures as bytes / array rows: compare() and write_planes() take them as they are
     host.overlap_read = bool(args.overlap)
     stage = XdmaStage(args.card)
@@ -268,6 +273,22 @@ def main():
         print(f"tiles ({n}): {1000 * tile / n:.1f} ms a tile on the host, the push ends after {1000 * push / n:.1f} ms; card counters a tile: "
               f"syntax waited for reconstruction {sum(r['syn_stall'] for r in pt) / n:,.0f} cycles, reconstruction idle "
               f"{sum(r['rec_idle'] for r in pt) / n:,.0f} cycles; {sum(r['bytes'] for r in pt) / n:,.0f} bytes a tile -> {args.perf_tiles}")
+    if args.perf_recon and host.perf_tiles:
+        # a frame's histogram is its last tile row's reading (the counters run from the frame's reset)
+        last = {}
+        for r in host.perf_tiles:
+            last[r["tag"].rsplit(" tile row", 1)[0]] = r["recon"]
+        names = list(next(iter(last.values())))
+        with open(args.perf_recon, "w") as f:
+            f.write("frame," + ",".join(names) + "\n")
+            for k, h in last.items():
+                f.write(k.replace(",", " ") + "," + ",".join(str(h[n]) for n in names) + "\n")
+        tot = {n: sum(h[n] for h in last.values()) for n in names}
+        for fsm, pre in (("block FSM", "B_"), ("transform FSM", "R_")):
+            t = {n: v for n, v in tot.items() if n.startswith(pre)}
+            all_ = sum(t.values()) or 1
+            top = sorted(t.items(), key=lambda kv: -kv[1])[:8]
+            print(f"reconstruction {fsm}, {len(last)} frames, {all_:,} clocks: " + ", ".join(f"{n} {100 * v / all_:.1f} %" for n, v in top) + f" -> {args.perf_recon}")
     sys.exit(1 if n_bad_frames else 0)
 
 

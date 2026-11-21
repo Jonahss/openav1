@@ -80,6 +80,7 @@ runsh_one() {
 # identifiers used before their declaration: Verilator accepts them, Vivado makes implicit 1-bit nets (2026-11-09: mc_filt's
 # v_hold was tied to 0 in three netlists while every suite and gate rung passed)
 run decl_order         bash -c 'python3 tools/check_decl_order.py rtl/*.sv && echo "OK: {decl_order: clean}" || { echo "%Error: identifiers used before their declaration"; exit 1; }'
+run perf_names         bash -c 'python3 tools/check_perf_names.py && echo "OK: {perf_names: match}" || { echo "%Error: host_regs state names differ from recon_top enums"; exit 1; }'
 run lf_edge_unit       TS_SEEDS=2,3,7,8,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_edge   # the deblocking edge decision (apply, size, strength) vs lf_model, every position of every plane
 run lf_edge_inter      TS_LF_VEC="$PWD/tb/vectors/lf_edge_inter" python tb/runner.py lf_edge   # six inter frames of Argon test47 / test6491 / test11 dumped by dec_inter_lr (TS_LF_VEC_OUT): reference and mode deltas, the skip-and-inter rule
 run lf_filt_chroma     LFF_PIPE=1 LF_CHROMA_ONLY=1 python tb/runner.py lf_filt   # the chroma-only build (LUMA = 0)

@@ -181,6 +181,12 @@ def lf_vals(th):
 
 # ---------------------------------------------------------------- register map (rtl/dec_host.sv)
 R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_PERF_SYN, R_PERF_REC = 0x000, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x018
+R_PERF_SEL, R_PERF_VAL = 0x1E0, 0x1E4                        # reconstruction's per-state cycle counters, one at a time
+# the states, in the order of rtl/recon_top.sv's enums (tools/check_perf_names.py holds the two together)
+RECON_RS = ("R_IDLE R_SETUP R_PAL R_PAL_LAST R_EDGE R_IP_START R_IP_W R_CFL_L R_CFL_D R_CFL_D2 R_CFL_START R_CFL_W R_RESID R_DQ "
+            "R_DQ_LAST R_DQ_LAST2 R_ITX_START R_ITX_W R_ADD R_ADD_LAST R_ADD_LAST2 R_ADD_LAST3 R_ADD_LAST4 R_FIN R_MIW").split()
+RECON_BST = ("B_IDLE B_FT0 B_FT1 B_FT2 B_FT3 B_FT4 B_WR B_WR_W B_MC_INIT B_MC_WSET B_MC_WSET_W B_MC_PL B_MC_UNIT B_MC_STRIP "
+             "B_MC_STRIPM B_MC_STRIP2 B_MC_FETCH B_MC_NEXT B_MC_DRAIN B_MC_PLEND B_MC_OB B_MC_MASK B_MC_II").split()
 R_TILE_ENG, R_TILE_COL, R_TILE_FIFO = 0x038, 0x060, 0x070      # tile engines: mask, columns per engine (+4e), FIFO status per engine (+4e)
 CTRL_ENG_SHIFT, CTRL_ENG_MASK = 24, 3 << 24                     # CTRL[25:24]: the engine DATA1 / DATA4 push to
 R_DATA1, R_DATA4, R_DEF_ADDR = 0x01C, 0x020, 0x02C
@@ -674,8 +680,24 @@ class HostDecoder:
         if self.perf_tiles is None:
             return
         t_done = time.monotonic()
-        self.perf_tiles.append({"tag": tag, "bytes": nbytes, "push_s": t_pushed - t_start, "tile_s": t_done - t_start,
-                                "syn_stall": self.rd(R_PERF_SYN), "rec_idle": self.rd(R_PERF_REC)})
+        rec = {"tag": tag, "bytes": nbytes, "push_s": t_pushed - t_start, "tile_s": t_done - t_start,
+               "syn_stall": self.rd(R_PERF_SYN), "rec_idle": self.rd(R_PERF_REC)}
+        if self.perf_recon:                              # reconstruction's state histogram since the frame's reset
+            rec["recon"] = self.read_recon_hist()
+        self.perf_tiles.append(rec)
+
+    perf_recon = False
+
+    def read_recon_hist(self):
+        """{state name: clocks since the decoder's last reset} for both of reconstruction's FSMs (PERF_SEL / PERF_VAL).
+        An image without the registers reads zeros."""
+        out = {}
+        for base, names in ((0, RECON_RS), (32, RECON_BST)):
+            for i, n in enumerate(names):
+                self.wr(R_PERF_SEL, base + i)
+                self.rd(R_PERF_VAL)                      # the registered read-out settles behind the select
+                out[n] = self.rd(R_PERF_VAL)
+        return out
 
     def run_tile_row(self, tiles, tag, dec=None, rows=None, chunk=1024):
         """The tiles of one tile row ([(th, data), ...] in column order) through TE engines at once (rtl/tile_engines.sv):

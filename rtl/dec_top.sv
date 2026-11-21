@@ -82,6 +82,8 @@ module dec_top
     output logic              mem_err,             // a reference read failed on the AXI bus (recon_top): the frame is not trustworthy
     output logic [31:0]       perf_syn_stall,      // tile cycles the syntax decoder held a transform block waiting for reconstruction
     output logic [31:0]       perf_rec_idle,       // tile cycles reconstruction had nothing to do (syntax-bound)
+    input  logic [5:0]        perf_sel,            // reconstruction's state counters, one at a time (recon_top)
+    output logic [31:0]       perf_val,
     // frame sequencer: the filter chain trails the tile decoder by superblock rows; software pulses frame_start
     // after the headers, feeds the tiles as usual and waits for frame_done
     input  logic              frame_start,
@@ -285,7 +287,7 @@ module dec_top
     recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .FRAME_WIN(FRAME_WIN), .REF_RING(REF_RING)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
                                             .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_tx, .ev_pop, .tx_rel,
                                             .ev_par, .ev_taken, .nb_valid, .nb_blk, .nb_par, .nb_at_head, .nb_pop,
-                                            .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy),
+                                            .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy), .perf_sel, .perf_val,
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
                                             .mi_tx_we, .mi_tx_plane, .mi_tx_row, .mi_tx_col, .mi_tx_w4, .mi_tx_h4, .mi_tx_sz, .mi_tx_busy,
                                             .mi_cd_clr, .mi_cd_we, .mi_cd_row64, .mi_cd_col64, .mi_cd_mask, .mi_cd_idx,

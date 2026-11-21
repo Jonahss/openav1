@@ -112,6 +112,8 @@ module recon_top
     input  logic        cur_fmt16,            //    (intra block copy sources the window has already flushed)
     output logic        mc_unsup,             // sticky: an inter block used a feature beyond stage 2a (masks, OBMC, warp, scaled references)
     output logic          mem_err,              // sticky: a reference read answered with an AXI error (ref_fetch err); the picture is not trustworthy
+    input  logic [5:0]    perf_sel,             // the cycle counter to read: [5] = 1 a block-FSM state, 0 a transform-FSM state; [4:0] the state
+    output logic [31:0]   perf_val,             // its count since the last reset (registered; valid two clocks after perf_sel settles)
     output logic [39:0] m_axi_araddr,
     output logic [7:0]  m_axi_arlen,
     output logic [2:0]  m_axi_arsize,
@@ -1412,18 +1414,26 @@ module recon_top
 
     // ================================================================ per-transform-block FSM
     logic tx_ack;                                          // registered: the transform block was fully written (R_MIW)
-    // cycle counters per transform-FSM state and per block-FSM state (simulation profiling; read through the
-    // hierarchy by the testbench, never reset except by rst)
+    // cycle counters per transform-FSM state and per block-FSM state: where reconstruction's clocks go. Never reset
+    // except by rst (the host resets the decoder before every frame, so a read after the frame is the frame's
+    // histogram). The testbench reads them through the hierarchy; the host reads one at a time through perf_sel /
+    // perf_val (dec_host PERF_SEL / PERF_VAL, 2026-11-20: at the 4K size four engines wait on reconstruction for 91 %
+    // of a frame, and which state that is could only be seen in simulation). The states are counted a clock late, from
+    // registers, so the counters hang off nothing that is timing-critical.
     logic [31:0] perf_rs [0:31];
     logic [31:0] perf_bst [0:31];
+    logic [4:0]  perf_rs_q, perf_bst_q;
+    logic        perf_run;
     always_ff @(posedge clk) begin
+        perf_rs_q <= 5'(rs); perf_bst_q <= 5'(bst); perf_run <= !rst;
         if (rst) begin
             for (int i = 0; i < 32; i++) perf_rs[i] <= 32'd0;
             for (int i = 0; i < 32; i++) perf_bst[i] <= 32'd0;
-        end else begin
-            perf_rs[rs] <= perf_rs[rs] + 32'd1;
-            perf_bst[bst] <= perf_bst[bst] + 32'd1;
+        end else if (perf_run) begin
+            perf_rs[perf_rs_q] <= perf_rs[perf_rs_q] + 32'd1;
+            perf_bst[perf_bst_q] <= perf_bst[perf_bst_q] + 32'd1;
         end
+        perf_val <= perf_sel[5] ? perf_bst[perf_sel[4:0]] : perf_rs[perf_sel[4:0]];
     end
     logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
