@@ -183,10 +183,9 @@ def lf_vals(th):
 R_ID, R_CFG, R_CTRL, R_START, R_STATUS, R_PERF_SYN, R_PERF_REC = 0x000, 0x004, 0x008, 0x00C, 0x010, 0x014, 0x018
 R_TILE_ENG, R_TILE_COL, R_TILE_FIFO = 0x038, 0x060, 0x070      # tile engines: mask, columns per engine (+4e), FIFO status per engine (+4e)
 CTRL_ENG_SHIFT, CTRL_ENG_MASK = 24, 3 << 24                     # CTRL[25:24]: the engine DATA1 / DATA4 push to
-R_DATA1, R_DATA4, R_HADDR, R_HDATA, R_DEF_ADDR = 0x01C, 0x020, 0x024, 0x028, 0x02C
-R_HDATA2, R_HDATA4 = 0x030, 0x034
-R_DMA_CFG, R_DMA_START, R_DMA_STATUS, R_DMA_BEATS, R_DMA_PLANE = 0x180, 0x184, 0x188, 0x18C, 0x190   # + 0x10 per plane
-DMA_BUSY, DMA_DONE, DMA_ERR, DMA_FLUSH_BUSY = 1, 2, 4, 8
+R_DATA1, R_DATA4, R_DEF_ADDR = 0x01C, 0x020, 0x02C
+R_DMA_CFG, R_DMA_STATUS, R_DMA_BEATS, R_DMA_PLANE = 0x180, 0x188, 0x18C, 0x190   # + 0x10 per plane
+DMA_BUSY, DMA_ERR, DMA_FLUSH_BUSY = 1, 4, 8
 DMA_CFG_AUTO = 1 << 8                      # window builds: released superblock rows flushed to the plane bases as they finish
 R_DEF, R_HDR, R_RH, R_LH, R_CH = 0x040, 0x080, 0x0C0, 0x100, 0x140
 R_IH = 0x200                                 # ihdr_t, 64 words
@@ -204,7 +203,6 @@ ST_TILE_BUSY, ST_TILE_DONE, ST_UNSUP, ST_FIFO_BAD, ST_FIFO_EMPTY = 1 << 0, 1 << 
 START_TILE, START_FRAME = 1, 2
 ST_FRAME_DONE = 1 << 4
 CTRL_RST, CTRL_PIPE, CTRL_EOS = 1, 1 << 1, 1 << 8   # CTRL_PIPE: images built before 2026-11-18 run a frame under the sequencer only with it; later ones ignore it
-CTRL_FB2 = 2 << 4                                    # the host port reads fb2, the final picture (0: fb0, the reconstruction)
 HDR_WORDS, RH_WORDS, LH_WORDS = 8, 7, 13     # words of each header window actually written
 IH_WORDS = (sum(w for _, w in IHDR_FIELDS) + 31) // 32
 
@@ -766,80 +764,7 @@ class HostDecoder:
         self.stats["tiles"] += len(tiles)
         self.stats["bytes"] += sum(len(d) for _, d in tiles)
 
-    def read_sample(self, plane, x, y):
-        a = (plane << 28) | (y << 14) | x
-        self.wr(R_HADDR, a)
-        # the AXI write and the following read travel on independent channels and the read can overtake the
-        # posted write (first board run: every pixel came back as its predecessor): wait for the address to
-        # read back before the data read is issued
-        for _ in range(1000):
-            if self.rd(R_HADDR) == a:
-                break
-        else:
-            raise HostError(f"HADDR never read back 0x{a:08x}")
-        return self.rd(R_HDATA)
-
-    def set_haddr(self, plane, x, y):
-        a = (plane << 28) | (y << 14) | x
-        self.wr(R_HADDR, a)
-        for _ in range(1000):
-            if self.rd(R_HADDR) == a:
-                return
-        raise HostError(f"HADDR never read back 0x{a:08x}")
-
-    def read_row(self, hdr, plane, y, W, packed=True):
-        """One row of W samples: HDATA4 (four 8-bit samples a word) or HDATA2 (two 16-bit lanes) with the
-        address advancing by itself, the odd tail sample by sample; packed=False reads every sample singly."""
-        if not packed:
-            return [self.read_sample(plane, x, y) for x in range(W)]
-        n = 4 if hdr.BitDepth == 8 else 2
-        reg = R_HDATA4 if n == 4 else R_HDATA2
-        row = []
-        self.set_haddr(plane, 0, y)
-        for _ in range(W // n):
-            v = self.rd(reg)
-            if n == 4:
-                row += [v & 0xFF, v >> 8 & 0xFF, v >> 16 & 0xFF, v >> 24]
-            else:
-                row += [v & 0xFFF, v >> 16 & 0xFFF]
-        for x in range(len(row), W):
-            row.append(self.read_sample(plane, x, y))
-        return row
-
-    def read_plane(self, hdr, plane, visible=True, packed=True):
-        W, H = plane_size(hdr, plane, visible)
-        if self.fast is not None and packed:
-            rows = self.fast.read_plane(plane, W, H, hdr.BitDepth == 8)
-            self.stats["reads"] += H * (W // (4 if hdr.BitDepth == 8 else 2) + 2)
-            self.stats["pixels"] += W * H
-            return rows
-        rows = [self.read_row(hdr, plane, y, W, packed) for y in range(H)]
-        self.stats["pixels"] += W * H
-        return rows
-
-    def dma_picture(self, hdr, base, tag, visible=True):
-        """The decoded picture into memory at base through the DMA engine; returns the plane layout."""
-        seq, planes, total = dma_regs(hdr, base, visible)
-        self.write_seq(seq)
-        self.wr(R_DMA_START, 1)
-        st = self.poll(R_DMA_STATUS, DMA_DONE | DMA_BUSY, DMA_DONE, f"{tag}: picture DMA")
-        if st & DMA_ERR:
-            raise HostError(f"{tag}: the picture DMA got an AXI error response")
-        return planes, total
-
     # -- a whole stream
-    def check_window(self, hdr, tag, n_tile_cols=1):
-        """What a window build (FRAME_WIN > 0) cannot take, said before the frame instead of by a sticky flag after it."""
-        if hdr.use_128x128_superblock and not getattr(self, "geom", {}).get("sb128"):
-            raise HostError(f"{tag}: this image takes 64-pixel superblocks (encode with --sb-size=64)")
-        if hdr.NumPlanes > 1 and not (hdr.subsampling_x and hdr.subsampling_y):
-            raise HostError(f"{tag}: the window build takes 4:2:0 or monochrome")
-        if n_tile_cols != 1:
-            raise HostError(f"{tag}: {n_tile_cols} tile columns: this path feeds one tile at a time, and a window releases a row "
-                            "only when every column of it is decoded (--inter feeds tile rows to several engines)")
-        if hdr.allow_intrabc:
-            raise HostError(f"{tag}: intra block copy is not in the window build")
-
     @staticmethod
     def window_ok(hdr, n_tile_cols=1, fbx=None, fby=None, sb128=False, te=1):
         """Whether a window build takes the frame: sb64, 4:2:0 or mono, at most TE tile columns, and (when
@@ -868,55 +793,6 @@ class HostDecoder:
         st = self.rd(R_DMA_STATUS)
         if st & DMA_ERR:
             raise HostError(f"{tag}: a row flush reported a write error (DMA_STATUS 0x{st:08x})")
-
-    def decode_frames(self, dec, visible=True, name="stream", packed=True, dma=None, want_planes=True, window=False):
-        """dec: an obu_parser.Decoder that has been fed the stream. Yields (frame index, header, planes, timings)
-        per coded frame, planes as lists of rows of samples: the final picture. Every frame runs under the frame
-        sequencer, the filter chain behind the tiles. dma: (base address, read(offset, n) -> bytes) to take the
-        picture through the DMA engine instead of the registers. want_planes=False with dma leaves the picture in
-        memory and yields planes=None (the unpack into Python lists costs ~8 ms a CIF frame). window: a window
-        build (FRAME_WIN > 0): the planes are programmed before the frame and auto-flushed row by row; needs dma."""
-        for fi, tile_idx in enumerate(dec.frames):
-            tag = f"{name} frame {fi}"
-            hdr0 = dec.tiles[tile_idx[0]][0]
-            n_cols = len({dec.tiles[ti][0].MiColStart for ti in tile_idx})
-            if window:
-                self.check_window(hdr0, tag, n_cols)
-            t = {}
-            t0 = time.monotonic()
-            self.reset()
-            if window:
-                assert dma is not None, "a window build decodes into DDR"
-                seq, layout, total = dma_regs(hdr0, dma[0], visible)
-                seq = [(a, (v | DMA_CFG_AUTO) if a == R_DMA_CFG else v) for a, v in seq]
-                self.write_seq(seq)
-            self.frame_pipe_start(hdr0, n_cols)
-            for ti in tile_idx:
-                th, data = dec.tiles[ti]
-                self.run_tile(th, data, f"{tag} tile ({th.MiColStart},{th.MiRowStart})")
-            t["tiles"] = time.monotonic() - t0
-            t0 = time.monotonic()
-            self.frame_pipe_finish(tag)
-            t["lf"] = time.monotonic() - t0
-            t0 = time.monotonic()
-            if not window:
-                self.wr(R_CTRL, CTRL_FB2)                    # the host port and the DMA read take the final picture
-            if dma is not None and window:
-                base, read = dma
-                self.flush_wait(tag)
-                layout, total = dma_layout(hdr0, base, visible)
-                planes = unpack_dma(hdr0, read(0, total), layout, raw=self.raw_planes) if want_planes else None
-                self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
-            elif dma is not None:
-                base, read = dma
-                layout, total = self.dma_picture(hdr0, base, tag, visible)
-                planes = unpack_dma(hdr0, read(0, total), layout, raw=self.raw_planes) if want_planes else None
-                self.stats["pixels"] += sum(W * H for _, _, W, H in layout)
-            else:
-                planes = [self.read_plane(hdr0, p, visible, packed) for p in range(hdr0.NumPlanes)]
-            t["read"] = time.monotonic() - t0
-            self.stats["frames"] += 1
-            yield fi, hdr0, planes, t
 
     def decode_frames_inter(self, dec, dma, name="stream", pool=8, want_planes=True):
         """Inter streams on a RING build (docs/picture-memory.md step A; tb/test_dec_host_inter.py is the simulation

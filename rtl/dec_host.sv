@@ -8,11 +8,12 @@
 //   0x004 CFG       R   {4'd0, TE[3:0], FBX[7:0], FBY[7:0], ITX_LANES[3:0], 1'd0, EOS_PER_ENGINE, SB128, FRAME_URAM}
 //                       (bit 2: a CTRL write with bit 8 ends the stream of the engine CTRL[27:24] selects, as soon as that
 //                       engine's bytes are in; images without it end every engine's stream with one write at the end)
-//   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 5 the host port's frame buffer (0: fb0, the
-//                       reconstruction; 1: fb2, the final picture; a row flush reads fb2 whatever this says), 8 eos (no
-//                       more bytes for this tile: in_eos once the FIFO drains; cleared by a tile start), [21:16]
-//                       n_tile_cols. Bits 1-4 are stored and do nothing (until 2026-11 bit 1 chose the frame sequencer,
-//                       which every frame now runs under, and 2-4 belonged to the frame-wide filter stages)
+//   0x008 CTRL      RW  bit 0 rst (decoder + FIFO reset while set), 8 eos (no more bytes for this tile: in_eos once
+//                       the FIFO drains; cleared by a tile start), [21:16] n_tile_cols. Bits 1-5 are stored and do
+//                       nothing (until 2026-11 bit 1 chose the frame sequencer, which every frame now runs under, 2-4
+//                       belonged to the frame-wide filter stages, and 5 chose the buffer of the register read-back,
+//                       HADDR / HDATA at 0x024 - 0x034, which went with the software-started picture DMA at 0x184:
+//                       the picture leaves the card by the row flush alone)
 //   0x00C START     W   one-cycle pulses: bit 0 tile_start (also empties the tile FIFO: push the bytes after it),
 //                       1 frame_start (before the first tile of every frame), 6 state load, 7 CDF save; 2-5 do nothing
 //   0x010 STATUS    R   bit 0 tile_busy, 1 tile_done_lvl, 2 unsupported, 3 frame_busy, 4 frame_done_lvl,
@@ -27,11 +28,6 @@
 //   0x070 + 4e      R   engine e FIFO: free words [31:16], in_ready [1], empty [0]
 //                       (a push into a full FIFO, or one whose write strobe is not the whole word, is dropped
 //                       and sets STATUS bit 14: poll the free count; make each push one 32-bit bus transfer)
-//   0x024 HADDR     RW  host read address {2'd0, plane[1:0], y[13:0], x[13:0]}: a write fetches the four samples at
-//                       x .. x+3 of that row into a buffer (16 cycles); a data read before they are in waits
-//   0x028 HDATA     R   sample x [11:0] (the address stays)
-//   0x030 HDATA2    R   {4'd0, sample x+1, 4'd0, sample x}: then x += 2 and the next four are fetched
-//   0x034 HDATA4    R   {x+3, x+2, x+1, x}[7:0] (8-bit pictures): then x += 4 and the next four are fetched
 //   0x02C DEF_ADDR  W   CDF default row address; the write strobes def_we with DEF_DATA. Bit 31 set: read back
 //                       that row of the tile's working store into DEF_DATA[0..7] instead (the adapted CDFs after a tile;
 //                       only between tiles: a decoding tile owns the store). Reads wait until the row is in.
@@ -52,12 +48,10 @@
 //                       [5:4] number of planes - 1, bit 8 auto-flush (window builds, FRAME_WIN > 0: every superblock
 //                       row the decoder releases is written to the plane bases / strides as it becomes final; program
 //                       the planes before START.frame and wait for DMA_STATUS bit 3 to clear after frame_done)
-//   0x184 DMA_START W   any write starts a run (the decoder must be idle: the engine owns the frame memory's host
-//                       port while it runs, and data reads through HDATA* wait)
-//   0x188 DMA_STATUS R  bit 0 busy, 1 done (sticky, cleared by a start), 2 error (a BRESP other than OKAY, sticky until the
-//                       next frame start or software DMA start: an auto flush does not clear it),
+//   0x188 DMA_STATUS R  bit 0 busy (a row is being written), 2 error (a BRESP other than OKAY, sticky until the
+//                       next frame start),
 //                       3 flush busy (rows queued or being written), [23:16] rows flushed since the last frame start
-//   0x18C DMA_BEATS  R  64-bit beats written by the last run
+//   0x18C DMA_BEATS  R  64-bit beats written since the last frame start
 //   Frame-state sideband (rtl/frame_state_w.sv, docs/frame-state.md; window builds): per finished superblock row
 //   the card writes its MV words (8x8 units, 2 per beat) and segment ids (4x4 units, one byte each) to DDR:
 //   0x1C0 FS_CFG     RW  bit 0 enable (rows are dropped when clear)
@@ -157,12 +151,10 @@ module dec_host
     initial begin
         if (HDR_W > 512 || RH_W > 512 || LH_W > 512 || CH_W > 512) $error("dec_host: a header struct exceeds its 16-word window");
         if (IH_W > 2048) $error("dec_host: ihdr_t exceeds its 64-word window");
-        if (FBX > 14 || FBY > 14) $error("dec_host: HADDR holds 14-bit coordinates");
     end
 
     // ---------------------------------------------------------------- registers
     logic [31:0] ctrl;
-    logic [31:0] haddr;
     logic [31:0] def_w [8];
     logic [31:0] hdr_w [16], rh_w [16], lh_w [16], ch_w [16];
     logic [31:0] ih_w [64];
@@ -200,16 +192,13 @@ module dec_host
     logic              tile_busy, tile_done_lvl, unsupported;
     logic [31:0]       perf_syn_stall, perf_rec_idle;
     logic              frame_busy, frame_done_lvl;
-    logic [11:0]       h_rdata;
     logic [47:0]       h_rdata4;
     logic              h_ok;
-    logic [1:0]        h_plane_m;                            // the host port: the DMA engine's while it runs, else the register prefetch's
+    logic [1:0]        h_plane_m;                            // the frame memory's host port: the row flush reads the final picture through it
     logic [FBX-1:0]    h_x_m;
     logic [FBY-1:0]    h_y_m;
     logic           row_final, flush_done;
-    logic           flush_rd;                                // the host port belongs to a running flush (reads the final buffer)
-    logic           dma_busy, dma_done, dma_err;
-    logic           fl_run;                                  // the run in progress is a flush (else a software picture DMA)
+    logic           dma_busy, dma_err;
     logic [39:0]    rs_base [8][3];                          // reference slot table (declared ahead of the dec_top instance below:
     logic [31:0]    rs_stride [8][3];                        // Vivado makes an implicit 1-bit wire of a name used before its declaration)
     logic [15:0]    rs_w [8], rs_h [8];
@@ -271,7 +260,7 @@ module dec_host
         .row_final, .row_final_idx(), .flush_done,
         .fs_row_ready, .fs_row_idx, .fs_done, .fs_rd_sel, .fs_rd_line, .fs_rd_beat, .fs_rd_buf, .fs_rd_data,
         .blk_done(), .blk_rec(), .tx_done(), .tx_rec(), .lr_done(), .lr_rec(),
-        .h_buf(flush_rd || ctrl[5]), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata, .h_rdata4, .h_ok
+        .h_buf(1'b1), .h_plane(h_plane_m), .h_x(h_x_m), .h_y(h_y_m), .h_rdata(), .h_rdata4, .h_ok
     );
     logic [CDF_AW-1:0] def_addr_r;
     always_comb begin
@@ -337,36 +326,8 @@ module dec_host
     assign f_empty_sel = f_empty_e[eng_sel];
     assign in_ready_sel = in_ready[eng_sel];
 
-    // ---------------------------------------------------------------- picture read-back prefetch
-    // After an HADDR write, and after a packed read advanced the address, the four samples at x .. x+3 of the
-    // addressed row are read into hbuf one after another, each address held for HL cycles (both frame memories
-    // answer the cycle after the address; the hold covers that with margin, 16 cycles per fetch against a
-    // microsecond per AXI transaction from the PS). A data read while the fetch is in progress waits on the
-    // AXI read channel (arready stays low), so software never sees stale samples.
-    localparam int HL = 4;                                   // two-cycle frame-memory read since 2026-10-31 (was 3)
-    logic [FBX-1:0] hx_q;                                    // the address presented to the decoder's host port
-    logic [11:0]    hbuf [4];
-    logic           hbuf_ok, h_busy, h_fetch;                // h_fetch: (re)start at haddr (pulse from the AXI side)
-    logic [1:0]     h_idx; logic [2:0] h_cnt;                 // h_cnt counts to HL (4 since the two-cycle read)
-    always_ff @(posedge clk) begin
-        if (!aresetn) begin hbuf_ok <= 1'b0; h_busy <= 1'b0; h_idx <= 2'd0; h_cnt <= 3'd0; hx_q <= '0; end
-        else if (h_fetch) begin
-            hbuf_ok <= 1'b0; h_busy <= 1'b1; h_idx <= 2'd0; h_cnt <= 3'd0; hx_q <= haddr[FBX-1:0];
-        end else if (h_busy) begin
-            if (h_cnt == 3'(HL)) begin
-                hbuf[h_idx] <= h_rdata;
-                h_cnt <= 3'd0;
-                hx_q  <= hx_q + 1'b1;
-                h_idx <= h_idx + 1'b1;
-                if (h_idx == 2'd3) begin h_busy <= 1'b0; hbuf_ok <= 1'b1; end
-            end else h_cnt <= h_cnt + 1'b1;
-        end
-    end
-    logic h_data_read;                                       // a read of HDATA / HDATA2 / HDATA4
-
     // ---------------------------------------------------------------- picture DMA engine (AXI4 write master)
     logic [31:0]    dma_cfg;
-    logic           dma_start;                               // pulse from the AXI-Lite side
     // auto-flush (window builds): released rows are counted here (fq_w / fq_r, up to 8 outstanding; rows flush in order,
     // so the row number is not kept); a run then covers that row's lines of every plane, from per-plane row cursors
     // that advance as rows are flushed (no multiply)
@@ -379,7 +340,6 @@ module dec_host
     logic [7:0]     fl_rows;                                 // rows flushed since the last frame start
     logic           fl_auto;
     assign fl_auto = dma_cfg[8];
-    assign flush_rd = dma_busy && fl_run;
     logic [1727:0]  ref_planes;
     logic [255:0]   ref_dims, ref_scales;
     always_comb begin
@@ -441,9 +401,9 @@ module dec_host
     end
     logic [7:0]     beat_strb;
     always_comb beat_strb = (rem_bytes >= 16'd8) ? 8'hFF : 8'((9'd1 << rem_bytes[3:0]) - 9'd1);
-    assign h_plane_m = dma_busy ? d_plane : haddr[29:28];
-    assign h_y_m     = dma_busy ? d_y : haddr[14 +: FBY];
-    assign h_x_m     = dma_busy ? r_x : hx_q;
+    assign h_plane_m = d_plane;
+    assign h_y_m     = d_y;
+    assign h_x_m     = r_x;
     assign line_beats = (row_bytes + 16'd7) >> 3;
     // a request goes out while the FIFO has room for everything in flight (two requests, a held half and this one)
     assign r_goback = r_v2 && !h_ok;                         // the memory did not serve that group: ask again from it
@@ -470,35 +430,32 @@ module dec_host
     always_ff @(posedge clk) begin
         flush_done <= 1'b0;
         if (!aresetn) begin
-            ds <= D_IDLE; dma_busy <= 1'b0; dma_done <= 1'b0; dma_err <= 1'b0; dma_beats <= '0;
+            ds <= D_IDLE; dma_busy <= 1'b0; dma_err <= 1'b0; dma_beats <= '0;
             d_plane <= '0; d_y <= '0; d_x <= '0; d_row_addr <= '0; d_addr <= '0; d_row_beats <= '0; d_len <= '0; d_cnt <= '0;
             d_g0 <= '0; d_g1 <= '0; d_y1 <= '0; o_v <= 1'b0;
             r_x <= '0; r_lx <= '0; r_issue_left <= '0; r_land_left <= '0; r_v1 <= 1'b0; r_v2 <= 1'b0; r_half <= 1'b0; r_hold <= '0;
             bf_w <= '0; bf_r <= '0; b_out <= '0;
-            fq_w <= '0; fq_r <= '0; fl_rows <= '0; fl_run <= 1'b0;
+            fq_w <= '0; fq_r <= '0; fl_rows <= '0;
             for (int p = 0; p < 3; p++) begin fl_addr[p] <= '0; fl_y[p] <= '0; end
         end else begin
             // released rows into the queue; a frame start rewinds the cursors to the plane bases
             if (row_final && !fq_full) begin fq_w <= fq_w + 1'b1; end
             if (start[1]) begin
                 for (int p = 0; p < 3; p++) begin fl_addr[p] <= dma_base[p]; fl_y[p] <= '0; end
-                fl_rows <= '0; dma_err <= 1'b0;              // the error bit covers the whole frame's flushes (2026-10-30 audit)
+                fl_rows <= '0; dma_err <= 1'b0; dma_beats <= '0;   // the error bit covers the whole frame's flushes (2026-10-30 audit)
             end
             case (ds)
                 D_IDLE: if (fs_active || fs_go) ;              // the sideband engine owns the write channel
-                else if (dma_start) begin
-                    dma_busy <= 1'b1; dma_done <= 1'b0; dma_err <= 1'b0; dma_beats <= '0; d_plane <= 2'd0; fl_run <= 1'b0; ds <= D_PLANE;
-                end else if (fl_auto && !fq_empty) begin     // a released superblock row: its lines of every plane
-                    dma_busy <= 1'b1; d_plane <= 2'd0; fl_run <= 1'b1; fq_r <= fq_r + 1'b1; ds <= D_PLANE;   // dma_err stays: sticky over the frame's flushes
+                else if (fl_auto && !fq_empty) begin         // a released superblock row: its lines of every plane
+                    dma_busy <= 1'b1; d_plane <= 2'd0; fq_r <= fq_r + 1'b1; ds <= D_PLANE;   // dma_err stays: sticky over the frame's flushes
                 end
                 D_PLANE: begin                               // first line of plane d_plane in this run
-                    d_row_addr <= fl_run ? fl_addr[d_plane] : dma_base[d_plane];
-                    d_y <= fl_run ? FBY'(fl_y[d_plane]) : '0;
+                    d_row_addr <= fl_addr[d_plane];
+                    d_y <= FBY'(fl_y[d_plane]);
                     // a released superblock row is 64 luma / 32 chroma lines, 128 / 64 for an sb128 stream (SB128 builds; the
                     // 64-line flush of a 128-line row left half of every row unflushed and the sequencer waiting: 2026-10-27)
-                    d_y1 <= fl_run ? ((fl_y[d_plane] + row_lines < dma_h[d_plane]) ? fl_y[d_plane] + row_lines : dma_h[d_plane])
-                                   : dma_h[d_plane];
-                    ds <= (fl_run && fl_y[d_plane] >= dma_h[d_plane]) ? D_NEXT : D_ROW;   // nothing left in this plane
+                    d_y1 <= (fl_y[d_plane] + row_lines < dma_h[d_plane]) ? fl_y[d_plane] + row_lines : dma_h[d_plane];
+                    ds <= (fl_y[d_plane] >= dma_h[d_plane]) ? D_NEXT : D_ROW;   // nothing left in this plane
                 end
                 D_ROW: begin                                 // a row: its beats and first address
                     d_addr <= d_row_addr; d_x <= '0; d_row_beats <= line_beats; ds <= D_BURST;
@@ -522,15 +479,12 @@ module dec_host
                 end
                 D_DRAIN: if (b_out == 5'd0) begin            // every burst of the run answered: the data is in DDR
                     dma_busy <= 1'b0; ds <= D_IDLE;
-                    if (fl_run) begin flush_done <= 1'b1; fl_rows <= fl_rows + 8'd1; end
-                    else dma_done <= 1'b1;
+                    flush_done <= 1'b1; fl_rows <= fl_rows + 8'd1;
                 end
                 D_NEXT: begin                                // line done
-                    if (16'(d_y) + 16'd1 >= d_y1 || (fl_run && fl_y[d_plane] >= dma_h[d_plane])) begin
-                        if (fl_run) begin                    // the plane's cursor past this row
-                            fl_addr[d_plane] <= d_row_addr + 40'(dma_stride[d_plane]);
-                            fl_y[d_plane] <= d_y1;
-                        end
+                    if (16'(d_y) + 16'd1 >= d_y1 || fl_y[d_plane] >= dma_h[d_plane]) begin
+                        fl_addr[d_plane] <= d_row_addr + 40'(dma_stride[d_plane]);   // the plane's cursor past this row
+                        fl_y[d_plane] <= d_y1;
                         if (d_plane == n_planes) ds <= D_DRAIN;
                         else begin d_plane <= d_plane + 1'b1; ds <= D_PLANE; end
                     end else begin
@@ -692,8 +646,7 @@ module dec_host
     logic [9:0] wi, ri;                                      // word index
     logic [2:0] mfs;                                         // the projection source a 0x740 + 0x20 s write addresses
     assign mfs = wi[5:3] - 3'd2;
-    assign h_data_read = (ri == 10'h00A) || (ri == 10'h00C) || (ri == 10'h00D);
-    assign do_read  = ar_v && !(h_data_read && !(hbuf_ok && !dma_busy)) && !(rb_en || rb_l1);
+    assign do_read  = ar_v && !(rb_en || rb_l1);
     assign wi = aw_a[11:2];
     assign ri = ar_a[11:2];
     function automatic logic [31:0] strb(input logic [31:0] old, input logic [31:0] nw, input logic [3:0] s);
@@ -706,12 +659,12 @@ module dec_host
     always_ff @(posedge clk) begin
         if (!aresetn) begin
             aw_v <= 1'b0; w_v <= 1'b0; ar_v <= 1'b0; s_axi_bvalid <= 1'b0; s_axi_rvalid <= 1'b0;
-            ctrl <= 32'd0; eos_e <= '0; haddr <= 32'd0; def_addr_r <= '0; eng_mask_r <= '0; col_start_r <= '0; col_end_r <= '0;
+            ctrl <= 32'd0; eos_e <= '0; def_addr_r <= '0; eng_mask_r <= '0; col_start_r <= '0; col_end_r <= '0;
             for (int i = 0; i < 8; i++) def_w[i] <= '0;
             for (int i = 0; i < 16; i++) begin hdr_w[i] <= '0; rh_w[i] <= '0; lh_w[i] <= '0; ch_w[i] <= '0; end
             for (int i = 0; i < 64; i++) ih_w[i] <= '0;
-            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; h_fetch <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0;
-            dma_cfg <= '0; dma_start <= 1'b0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0;
+            dma_cfg <= '0;
             fs_cfg <= '0; fs_mv_base <= '0; fs_seg_base <= '0; fs_mv_rowb <= '0; fs_seg_rowb <= '0;
             ld_cfg_r <= '0; ld_seg_base <= '0; ld_seg_rowb <= '0; ld_cdf_base <= '0; sv_cdf_base <= '0; sv_eng <= '0;
             mf_nsrc_r <= '0; mf_src_base <= '0; mf_src_rowb <= '0; mf_src_sign <= '0; mf_src_tocur <= '0; mf_src_off <= '0; mf_dst_dist <= '0;
@@ -719,7 +672,7 @@ module dec_host
             for (int sl = 0; sl < 8; sl++) begin rs_w[sl] <= '0; rs_h[sl] <= '0; rs_xs[sl] <= 16'd16384; rs_ys[sl] <= 16'd16384; for (int pl = 0; pl < 3; pl++) begin rs_base[sl][pl] <= '0; rs_stride[sl][pl] <= '0; end end
             ref_slot_r <= '0; ref_cfg_r <= '0;
         end else begin
-            start <= '0; push <= 1'b0; def_we <= 1'b0; h_fetch <= 1'b0; dma_start <= 1'b0;
+            start <= '0; push <= 1'b0; def_we <= 1'b0;
             rb_en <= 1'b0; rb_l1 <= rb_en;
             if (rb_l1) begin for (int i = 0; i < 7; i++) def_w[i] <= rb_data[32*i +: 32]; def_w[7] <= 32'(rb_data[245:224]); end
             if (ctrl[0]) f_badw <= 1'b0;
@@ -738,7 +691,6 @@ module dec_host
                     // first board run) is dropped and flagged like an overflow
                     10'h007: begin if (w_s[0]) begin push <= 1'b1; push_d <= {2'd0, 24'd0, w_d[7:0]}; end else f_badw <= 1'b1; end
                     10'h008: begin if (w_s == 4'hF) begin push <= 1'b1; push_d <= {2'd3, w_d}; end else f_badw <= 1'b1; end
-                    10'h009: begin haddr <= strb(haddr, w_d, w_s); h_fetch <= 1'b1; end
                     10'h00B: begin def_addr_r <= w_d[CDF_AW-1:0]; if (w_d[31]) rb_en <= 1'b1; else def_we <= 1'b1; end
                     10'h00E: eng_mask_r <= w_d[TE-1:0];
                     default: ;
@@ -768,7 +720,6 @@ module dec_host
                     10'h1C9: mf_nsrc_r <= strb(mf_nsrc_r, w_d, w_s);                                          // 0x724
                     10'h1CA: mf_dst_dist[31:0] <= strb(mf_dst_dist[31:0], w_d, w_s);                          // 0x728
                     10'h1CB: mf_dst_dist[55:32] <= w_d[23:0];                                                 // 0x72C
-                    10'h061: dma_start <= !dma_busy;                                                           // 0x184
                     10'h180: ref_slot_r <= 21'(strb({11'd0, ref_slot_r}, w_d, w_s));             // 0x600 (no select on a function call: Vivado Synth 8-12513)
                     10'h181: ref_cfg_r <= strb(ref_cfg_r, w_d, w_s);                          // 0x604
                     default: begin
@@ -834,9 +785,8 @@ module dec_host
                                              frame_done_lvl, frame_busy, unsupported, tile_done_lvl, tile_busy};
                     10'h005: s_axi_rdata <= perf_syn_stall;
                     10'h006: s_axi_rdata <= perf_rec_idle;
-                    10'h009: s_axi_rdata <= haddr;
                     10'h060: s_axi_rdata <= dma_cfg;
-                    10'h062: s_axi_rdata <= {8'd0, fl_rows, 12'd0, (dma_busy && fl_run) || !fq_empty, dma_err, dma_done, dma_busy};
+                    10'h062: s_axi_rdata <= {8'd0, fl_rows, 12'd0, dma_busy || !fq_empty, dma_err, 1'b0, dma_busy};
                     10'h063: s_axi_rdata <= dma_beats;
                     10'h070: s_axi_rdata <= fs_cfg;
                     10'h071: s_axi_rdata <= fs_mv_base[31:0];
@@ -860,9 +810,6 @@ module dec_host
                     10'h1CB: s_axi_rdata <= {8'd0, mf_dst_dist[55:32]};
                     10'h180: s_axi_rdata <= {11'd0, ref_slot_r};
                     10'h181: s_axi_rdata <= ref_cfg_r;
-                    10'h00A: s_axi_rdata <= {20'd0, hbuf[0]};
-                    10'h00C: begin s_axi_rdata <= {4'd0, hbuf[1], 4'd0, hbuf[0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(2); h_fetch <= 1'b1; end
-                    10'h00D: begin s_axi_rdata <= {hbuf[3][7:0], hbuf[2][7:0], hbuf[1][7:0], hbuf[0][7:0]}; haddr[FBX-1:0] <= haddr[FBX-1:0] + FBX'(4); h_fetch <= 1'b1; end
                     default: begin
                         if (ri[9:3] == 7'h02)      s_axi_rdata <= def_w[ri[2:0]];
                         else if (ri[9:4] == 6'h02) s_axi_rdata <= hdr_w[ri[3:0]];

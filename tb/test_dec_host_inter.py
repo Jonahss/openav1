@@ -141,14 +141,6 @@ async def flush_compare(ax, mem, hdr, base, planes, tag, stats, pre=None, debloc
             ax.dut._log.info(f"{tag}: model pre-filter {[pre[p_][y_][x_] if y_ < len(pre[p_]) and x_ < len(pre[p_][0]) else None for p_, y_, x_, _, _ in bad[:6]]}, "
                              f"deblocked {[deblocked[p_][y_][x_] if y_ < len(deblocked[p_]) and x_ < len(deblocked[p_][0]) else None for p_, y_, x_, _, _ in bad[:6]]}, "
                              f"final {[e for _, _, _, _, e in bad[:6]]}")
-        for buf in range(4):                                 # 0 fb0, 1 CdefFrame, 2 LrFrame, 3 SR's upscaled rows
-            await ax.write(R_CTRL, buf << 4)
-            got_b = []
-            for plane, y, x, _, _ in bad[:6]:
-                await ax.write(HR.R_HADDR, (plane << 28) | (y << 14) | x)
-                got_b.append(await ax.read(HR.R_HDATA, record=False))
-            ax.dut._log.info(f"{tag}: fb{buf} holds {got_b} at {[(p_, y_, x_) for p_, y_, x_, _, _ in bad[:6]]}")
-        await ax.write(R_CTRL, 0)
     assert not bad, f"{tag}: flushed picture: {len(bad)} samples differ, first (plane, y, x, rtl, model): {bad[:8]}"
     return layout
 
