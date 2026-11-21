@@ -40,6 +40,8 @@ FLUSH_BASE = 0x80_0000_0000                                  # frame fi's pictur
 FLUSH_STRIDE = TI.SLOT_STRIDE
 MF_SLOW = int(os.environ.get("TS_MF_SLOW", "0"))             # extra cycles on every read burst of a state area (MV words, segment
                                                              # map, CDF rows): the band projection then falls behind the tile engines
+SEG_SLOW = int(os.environ.get("TS_SEG_SLOW", "0"))           # extra cycles on every read burst of a segment-id area alone: the map's
+                                                             # bands then fall behind the engines without the CDF load paying for it
 MODEL_FS_BASE = 0xC0_0000_0000                               # the state areas of frames only the model decoded: frame fi's at
 MODEL_FS_STRIDE = 0x0400_0000                                # MODEL_FS_BASE + fi * MODEL_FS_STRIDE (outside the picture pool)
 
@@ -287,8 +289,14 @@ async def dec_host_inter_vs_model(dut):
         cocotb.start_soon(phase_gen())
     ax = AxiLite(dut, dut.clk)
     mem = AxiMem(dut, dut.clk, seed=1, stall=0.2)
-    if MF_SLOW:
-        mem.slow = lambda adr: MF_SLOW if (adr >= MODEL_FS_BASE or (adr >= FLUSH_BASE and (adr - FLUSH_BASE) % FLUSH_STRIDE >= 0x1800_0000)) else 0
+    seg_ranges = []                                          # the segment-id areas the loads read, as [first, past the last) addresses
+    if MF_SLOW or SEG_SLOW:
+        def slow(adr):
+            n = MF_SLOW if (adr >= MODEL_FS_BASE or (adr >= FLUSH_BASE and (adr - FLUSH_BASE) % FLUSH_STRIDE >= 0x1800_0000)) else 0
+            if SEG_SLOW and any(lo <= adr < hi for lo, hi in seg_ranges):
+                n = max(n, SEG_SLOW)
+            return n
+        mem.slow = slow
     cocotb.start_soon(mem.run())
     cocotb.start_soon(mem.run_read())
     dut.aresetn.value = 0
@@ -364,6 +372,11 @@ async def dec_host_inter_vs_model(dut):
                 assert ctx.cdfs is None or cdf_ld is not None or (prim and isinstance(prim.get("cdf"), tuple)), f"{tag}: the model inherits CDFs but no slot area holds them"
                 # the frame's header, the loader's registers and START_LOAD, as the host writes them (HR.load_seq)
                 seq_ld = HR.load_seq(th0, seg=seg_ld, cdf_base=cdf_ld, zero_seg=(seg_ld is None and not ph.FrameIsIntra), mf=mf_tab)
+                if seg_ld is not None and (seg_ld[0], seg_ld[0] + seg_ld[1] * th0.MiRows) not in seg_ranges:
+                    seg_ranges.append((seg_ld[0], seg_ld[0] + seg_ld[1] * th0.MiRows))
+                # which way the frame's segment map came: from a slot's area in DDR, as zeros, or not at all
+                k_seg = "seg_ld_frames" if seg_ld is not None else ("seg_zero_frames" if not ph.FrameIsIntra else "seg_none_frames")
+                stats[k_seg] = stats.get(k_seg, 0) + 1
                 await write_seq(ax, seq_ld[:-1])
                 t_ld = get_sim_time("ns")
                 await ax.write(*seq_ld[-1])

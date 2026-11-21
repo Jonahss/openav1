@@ -1,9 +1,13 @@
 // Frame-state loader (docs/frame-state.md, stage B): at a frame start, before its first tile, the card reads the frame's
 // context back from the reference slot's areas in DDR and writes the bands the host used to write register by register:
 //   segment map: the primary slot's segment-id area (one byte per 4x4 unit, lines of ld_seg_rowb bytes, the layout
-//     rtl/frame_state_w.sv writes) -> seg_band words (16 ids of 3 bits), the whole frame;
+//     rtl/frame_state_w.sv writes) -> seg_band words (16 ids of 3 bits);
 //   CDF rows: the primary slot's CDF area (CDF_ROWS rows of 32 bytes: 246 bits + padding) -> def_we rows into every
 //     engine, the adaptation counter at [245:240] zeroed (load_cdfs).
+// Order (docs/segment-map-band.md): the CDF rows first, then the segment map (or the zero map) band by band: band k
+// = lines 16k .. 16k+15, each when band_go allows it; bands_done counts the finished bands and bands_all says the
+// last one is in (set at once when the frame has no map to load). Each band's beats have all arrived and been
+// written before it is counted.
 // One AXI read master, bursts of up to 16 beats inside 4 KB, up to OUT bursts in flight (2026-11-03; one at a time
 // before: 1080p's segment map is 16k beats, a thousand round trips): an address side issues the bursts and queues
 // {job, line, first beat} per burst, the data side takes the in-order beats straight into the bands (never stalls,
@@ -24,15 +28,18 @@ module fs_load
     input  logic [15:0]   ld_seg_rowb,         // bytes per 4x4 line (multiple of 8)
     input  logic [39:0]   ld_cdf_base,
     output logic          ld_busy,
-    output logic          ld_done,             // one-cycle pulse
+    output logic          ld_done,             // one-cycle pulse: the CDF rows are in (the host waits for this); the map follows band by band
     output logic          ld_err,              // a read answered with an error (sticky until the next start)
-    // AXI4 read master
+    input  logic          band_go,             // the next band of the segment map may be loaded (its rows in seg_band are free)
+    output logic          band_en,             // this frame's map goes band by band (set with ld_start; else nothing waits for it)
+    output logic          rd_req,              // the loader wants the read channel (the CDF rows, or a band it may load)
+    input  logic          rd_grant,            // it has it (dec_top's owner register; held while rd_req or rd_busy)
+    output logic          rd_busy,             // reads issued or in flight
+    output logic [MIW-5:0] bands_done,         // bands of the map loaded since ld_start
+    output logic          bands_all,           // every band of the frame's map is in (or the frame loads none)
+    // AXI4 read master: 8-byte beats, INCR bursts (the attributes are driven with ref_fetch's in dec_top)
     output logic [39:0]   m_axi_araddr,
     output logic [7:0]    m_axi_arlen,
-    output logic [2:0]    m_axi_arsize,
-    output logic [1:0]    m_axi_arburst,
-    output logic [3:0]    m_axi_arcache,
-    output logic [2:0]    m_axi_arprot,
     output logic          m_axi_arvalid,
     input  logic          m_axi_arready,
     input  logic [63:0]   m_axi_rdata,
@@ -51,7 +58,7 @@ module fs_load
 );
     localparam int OW = $clog2(OUT);
     // ---------------------------------------------------------------- the address side
-    typedef enum logic [3:0] {L_IDLE, L_SEG_LINE, L_CDF_START, L_LEN, L_AR, L_DRAIN, L_DONE, L_ZERO} lstate_t;
+    typedef enum logic [3:0] {L_IDLE, L_CDF_START, L_LEN, L_AR, L_DRAIN, L_BGO, L_SEG_LINE, L_ZERO, L_BDRAIN, L_DONE} lstate_t;
     lstate_t        st;
     logic           job;                                     // 0 segment map, 1 CDF rows
     logic [39:0]    addr;                                    // the next burst's address
@@ -61,17 +68,20 @@ module fs_load
     logic [9:0]     to4k;
     assign to4k = 10'((13'd4096 - 13'(addr[11:0])) >> 3);
     logic [MIW-1:0] line;                                    // segment map: the 4x4 line being issued
+    logic [MIW:0]   b_end;                                   // the line after the band being loaded
+    logic [39:0]    saddr;                                   // segment map: the address of the next line (kept across the CDF job and between bands)
+    logic           map_on;                                  // the frame has a map to load (from DDR) or to zero
+    assign map_on = (ld_cfg[0] && ld_seg_rowb != 16'd0) || (!ld_cfg[0] && ld_cfg[2]);
     logic [15:0]    zbeat;                                   // the zero pass: the word within the line
     logic [OW:0]    inflight;
-    assign m_axi_arsize  = 3'b011;
-    assign m_axi_arburst = 2'b01;
-    assign m_axi_arcache = 4'b0011;
-    assign m_axi_arprot  = 3'b000;
     assign m_axi_araddr  = addr;
     assign m_axi_arlen   = 8'(len - 5'd1);
     assign m_axi_arvalid = (st == L_AR);
     assign m_axi_rready  = 1'b1;                             // the data side never stalls
     assign ld_busy = (st != L_IDLE);
+    logic           done_sent;
+    assign rd_req  = (st == L_CDF_START) || ((st == L_BGO) && map_on && ld_cfg[0] && (line < hdr.mi_rows) && band_go);
+    assign rd_busy = (st == L_LEN) || (st == L_AR) || (st == L_DRAIN) || (st == L_SEG_LINE) || (st == L_BDRAIN);
     logic [4:0] burst_len;
     always_comb begin
         burst_len = 5'd16;
@@ -91,24 +101,17 @@ module fs_load
         ld_done <= 1'b0; sp_we <= 1'b0;
         if (rst) begin
             st <= L_IDLE; job <= 1'b0; addr <= '0; beats <= '0; beat_a <= '0; len <= '0; line <= '0; zbeat <= '0; inflight <= '0; dq_w <= '0;
-            sp_wrow <= '0; sp_wwc <= '0;
+            sp_wrow <= '0; sp_wwc <= '0; b_end <= '0; saddr <= '0; bands_done <= '0; bands_all <= 1'b0; band_en <= 1'b0; done_sent <= 1'b0;
         end else begin
             inflight <= inflight + (OW+1)'(issue) - (OW+1)'(retire);
             if (issue) begin dq[dq_w[OW-1:0]] <= '{job: job, line: line, beat0: beat_a}; dq_w <= dq_w + 1'b1; end
             case (st)
                 L_IDLE: if (ld_start) begin
-                    line <= '0; inflight <= '0; dq_w <= '0;
-                    if (ld_cfg[0]) begin job <= 1'b0; addr <= ld_seg_base; st <= L_SEG_LINE; end
-                    else if (ld_cfg[2]) begin job <= 1'b0; zbeat <= '0; st <= L_ZERO; end
-                    else if (ld_cfg[1]) begin job <= 1'b1; st <= L_CDF_START; end
-                    else st <= L_DONE;
+                    line <= '0; inflight <= '0; dq_w <= '0; saddr <= ld_seg_base; bands_done <= '0; bands_all <= 1'b0; band_en <= map_on; done_sent <= 1'b0;
+                    if (ld_cfg[1]) begin job <= 1'b1; st <= L_CDF_START; end
+                    else begin job <= 1'b0; st <= L_BGO; end
                 end
-                L_SEG_LINE: begin                            // one 4x4 line: ld_seg_rowb / 8 beats from the running address
-                    beats <= ld_seg_rowb >> 3; beat_a <= '0;
-                    if (line < hdr.mi_rows && ld_seg_rowb != 16'd0) st <= L_LEN;
-                    else begin st <= ld_cfg[1] ? L_CDF_START : L_DRAIN; if (ld_cfg[1]) job <= 1'b1; end
-                end
-                L_CDF_START: begin addr <= ld_cdf_base; beats <= 16'(CDF_ROWS) * 16'd4; beat_a <= '0; st <= L_LEN; end
+                L_CDF_START: if (rd_grant) begin addr <= ld_cdf_base; beats <= 16'(CDF_ROWS) * 16'd4; beat_a <= '0; st <= L_LEN; end
                 L_LEN: begin len <= burst_len; if (inflight < (OW+1)'(OUT)) st <= L_AR; end   // arlen settled a cycle before arvalid (the sideband DMA's lesson)
                 L_AR: if (m_axi_arready) begin
                     addr <= addr + 40'({len, 3'b000}); beats <= beats - 16'(len); beat_a <= beat_a + 16'(len);
@@ -117,17 +120,29 @@ module fs_load
                         else st <= L_DRAIN;
                     end else st <= L_LEN;
                 end
+                L_DRAIN: if (inflight == '0) begin job <= 1'b0; st <= L_BGO; end   // the CDF rows are in
+                L_BGO: begin                                 // the next band of the map, or the end
+                    if (!done_sent) begin ld_done <= 1'b1; done_sent <= 1'b1; end   // the CDF rows are in (or the frame loads none)
+                    b_end <= (MIW+1)'(line) + (MIW+1)'(16);
+                    if (!map_on || line >= hdr.mi_rows) begin bands_all <= 1'b1; st <= L_DONE; end
+                    else if (ld_cfg[0]) begin if (rd_grant && band_go) begin addr <= saddr; st <= L_SEG_LINE; end end   // (the grant outlives a band by a cycle: band_go again)
+                    else if (band_go) begin zbeat <= '0; st <= L_ZERO; end
+                end
+                L_SEG_LINE: begin                            // one 4x4 line: ld_seg_rowb / 8 beats from the running address
+                    beats <= ld_seg_rowb >> 3; beat_a <= '0;
+                    if (line < hdr.mi_rows && (MIW+1)'(line) < b_end) st <= L_LEN;
+                    else begin saddr <= addr; st <= L_BDRAIN; end
+                end
                 L_ZERO: begin                                // PrevSegmentIds = zeros: one zero word per 16 units per line
                     sp_we <= 1'b1; sp_wrow <= line; sp_wwc <= (MIW-4)'(zbeat);
                     if (MIW'({zbeat[MIW-5:0], 4'd0}) + MIW'(16) < hdr.mi_cols) zbeat <= zbeat + 16'd1;
                     else begin
-                        zbeat <= '0;
-                        if (line + MIW'(1) < hdr.mi_rows) line <= line + MIW'(1);
-                        else begin st <= ld_cfg[1] ? L_CDF_START : L_DONE; if (ld_cfg[1]) job <= 1'b1; end
+                        zbeat <= '0; line <= line + MIW'(1);
+                        if (!(line + MIW'(1) < hdr.mi_rows && (MIW+1)'(line) + (MIW+1)'(1) < b_end)) st <= L_BDRAIN;
                     end
                 end
-                L_DRAIN: if (inflight == '0) st <= L_DONE;   // every issued beat has arrived (and was written the same cycle)
-                L_DONE: begin ld_done <= 1'b1; st <= L_IDLE; end
+                L_BDRAIN: if (inflight == '0) begin bands_done <= bands_done + 1'b1; st <= L_BGO; end   // the band's beats have arrived and were written
+                L_DONE: st <= L_IDLE;
                 default: st <= L_IDLE;
             endcase
             // the data side's segment-map writes share sp_we / sp_wrow / sp_wwc with the zero pass (never both at once)

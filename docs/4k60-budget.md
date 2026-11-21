@@ -232,6 +232,7 @@ RAMs by my 2026-11-19 figure, not read again here). The block RAM by module: til
 |---|---|---|---|
 | today | 2,177.5 | about 2,282 (106 %) | 773 (80.5 %) |
 | segment map as a 64-row band, 86 -> 6 an engine (K60-60, in work; the 6 is the design note's figure) | 1,857.5 | about 1,962 (91 %) | 773 |
+| the same, **measured** 2026-11-20 (`docs/segment-map-band.md`: the band landed in one UltraRAM; the chain's memories shifted towards block RAM) | 1,916 | about 2,020 (93.5 %) | 777 |
 | and the motion-field bands in UltraRAM: 105 block RAMs an engine -> 14 UltraRAMs (two 33-bit words a 72-bit word) | 1,437.5 | about 1,542 (71 %) | 829 (86 %) |
 
 So four engines fit after the segment-map band, tightly, and comfortably if the motion-field bands also move. Logic

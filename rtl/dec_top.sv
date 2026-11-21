@@ -140,36 +140,47 @@ module dec_top
     // Window builds narrow the per-4x4 stores to the rows in play: motion info 32 rows (the MV stack looks one
     // superblock row up), the filters' info and reconstruction's mode map 64 rows (the four superblock rows live
     // between reconstruction and the flush); their row index is simply truncated, i.e. a ring.
-    // the motion-field and segmentation-map bands hold the PREVIOUS frame's whole picture (the host writes them before the
-    // frame), so they are full-height
-    // ---- the frame-state loader (rtl/fs_load.sv): the read channel belongs to it while it runs (before the first tile),
-    // to ref_fetch otherwise; its band and CDF writes merge with the host's register writes
+    // the motion-field and segmentation-map bands hold four 64-pixel bands of the PREVIOUS frame's tables in window builds
+    // (filled band by band ahead of the engines), the whole picture otherwise (the test bench writes them before the frame)
+    // ---- the frame-state loader (rtl/fs_load.sv): its band and CDF writes merge with the host's register writes
     logic           def_we_i, sp_we_i;
     logic [CDF_AW-1:0] def_addr_i; logic [245:0] def_data_i;
     logic [MIW-1:0] sp_wrow_i; logic [MIW-5:0] sp_wwc_i; logic [47:0] sp_wdata_i;
-    logic [39:0]    rf_araddr, ld_araddr; logic [7:0] rf_arlen, ld_arlen; logic [2:0] rf_arsize, ld_arsize; logic [1:0] rf_arburst, ld_arburst;
-    logic [3:0]     rf_arcache, ld_arcache; logic [2:0] rf_arprot, ld_arprot; logic rf_arvalid, ld_arvalid, rf_arready, ld_arready, rf_rvalid, ld_rvalid, rf_rready, ld_rready;
+    logic [39:0]    rf_araddr, ld_araddr; logic [7:0] rf_arlen, ld_arlen; logic [2:0] rf_arsize; logic [1:0] rf_arburst;
+    logic [3:0]     rf_arcache; logic [2:0] rf_arprot; logic rf_arvalid, ld_arvalid, rf_arready, ld_arready, rf_rvalid, ld_rvalid, rf_rready, ld_rready;
     logic           ld_sp_we, ld_def_we; logic [MIW-1:0] ld_sp_wrow; logic [MIW-5:0] ld_sp_wwc; logic [47:0] ld_sp_wdata; logic [CDF_AW-1:0] ld_def_addr; logic [245:0] ld_def_data;
     // the loader group: fs_load (segment map, CDF rows) and, with ld_cfg[3], mf_project, started together: the engine clears the
     // band while fs_load reads, then takes the read channel once fs_load is idle (src_go); one busy / done to the host
     logic           fsl_busy, fsl_done, fsl_err, pj_err, pj_start;
+    logic           sg_band_en, sg_band_go, fsl_bands_all; logic [MIW-5:0] fsl_bands_done;   // the segment map band by band (docs/segment-map-band.md)
+    logic           ld_rd_req, ld_rd_busy, pj_rd_req, pj_rd_busy, rd_own_ld, rd_own_pj;      // the read channel's port 1: who has it
+    logic           band_en, bands_all; logic [MIW-5:0] bands_ready; logic [MIW-4:0] band_lim;   // both tables, for the engines' hold
     logic           mf_band_en, mf_band_go, mf_bands_all; logic [MIW-5:0] mf_bands_done;   // the field band by band (docs/motion-field-band.md)
     logic [39:0]    pj_araddr; logic [7:0] pj_arlen;
     logic           pj_arvalid, pj_arready, pj_rvalid, pj_rready;
     logic [6:0]     pj_we; logic [MIW-2:0] pj_wy8, pj_wx8; logic pj_wvalid; logic [111:0] pj_wrow, pj_wcol;
     if (FRAME_WIN > 0) begin : g_fsl
-        fs_load u_fsl (.clk, .rst, .hdr, .ld_start, .ld_cfg(ld_cfg[2:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy(fsl_busy), .ld_done(fsl_done), .ld_err(fsl_err),
-            .m_axi_araddr(ld_araddr), .m_axi_arlen(ld_arlen), .m_axi_arsize(ld_arsize), .m_axi_arburst(ld_arburst), .m_axi_arcache(ld_arcache), .m_axi_arprot(ld_arprot),
+        fs_load u_fsl (.clk, .rst, .hdr, .ld_start, .ld_cfg(ld_cfg[2:0]), .ld_seg_base, .ld_seg_rowb, .ld_cdf_base, .ld_busy(fsl_busy), .ld_done(fsl_done), .ld_err(fsl_err), .band_go(sg_band_go), .band_en(sg_band_en), .bands_done(fsl_bands_done), .bands_all(fsl_bands_all), .rd_req(ld_rd_req), .rd_grant(rd_own_ld), .rd_busy(ld_rd_busy),
+            .m_axi_araddr(ld_araddr), .m_axi_arlen(ld_arlen),   // (the burst attributes are ref_fetch's: every reader uses the same)
             .m_axi_arvalid(ld_arvalid), .m_axi_arready(ld_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(ld_rvalid), .m_axi_rready(ld_rready),
             .sp_we(ld_sp_we), .sp_wrow(ld_sp_wrow), .sp_wwc(ld_sp_wwc), .sp_wdata(ld_sp_wdata), .def_we(ld_def_we), .def_addr(ld_def_addr), .def_data(ld_def_data));
-        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(!fsl_busy), .band_go(mf_band_go), .bands_done(mf_bands_done), .bands_all(mf_bands_all), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
+        mf_project u_pj (.clk, .rst, .hdr, .mf_start(pj_start), .src_go(rd_own_pj), .rd_req(pj_rd_req), .rd_busy(pj_rd_busy), .band_go(mf_band_go), .bands_done(mf_bands_done), .bands_all(mf_bands_all), .mf_nsrc, .src_base(mf_src_base), .src_rowb(mf_src_rowb), .src_sign(mf_src_sign),
             .src_tocur(mf_src_tocur), .src_off(mf_src_off), .dst_dist(mf_dst_dist), .mf_err(pj_err),
             .m_axi_araddr(pj_araddr), .m_axi_arlen(pj_arlen),   // (the burst attributes are ref_fetch's: every reader uses the same)
             .m_axi_arvalid(pj_arvalid), .m_axi_arready(pj_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(pj_rvalid), .m_axi_rready(pj_rready),
             .mf_we(pj_we), .mf_wy8(pj_wy8), .mf_wx8(pj_wx8), .mf_wvalid(pj_wvalid), .mf_wrow(pj_wrow), .mf_wcol(pj_wcol));
         assign pj_start = ld_start && ld_cfg[3];
-        // the host waits for fs_load alone: the projection goes on behind, band by band ahead of the tile engines, which
-        // wait at a superblock row for its band (tile_engines). A read error of the projection flags the frame.
+        // the host waits for fs_load's CDF rows alone: the segment map and the projection go on behind, band by band ahead
+        // of the tile engines, which wait at a superblock row for its band (tile_engines). A read error of either flags the frame.
+        // Port 1 of the read channel has one owner at a time, held while that reader asks or reads; the loader goes first
+        // (a band: the segment map's lines, then the projection's).
+        always_ff @(posedge clk) begin
+            if (rst) begin rd_own_ld <= 1'b0; rd_own_pj <= 1'b0; end
+            else if (rd_own_ld) rd_own_ld <= ld_rd_req || ld_rd_busy;
+            else if (rd_own_pj) rd_own_pj <= pj_rd_req || pj_rd_busy;
+            else if (ld_rd_req) rd_own_ld <= 1'b1;
+            else if (pj_rd_req) rd_own_pj <= 1'b1;
+        end
         assign ld_busy = fsl_busy;
         assign ld_done = fsl_done;
         assign ld_err  = fsl_err;
@@ -178,35 +189,56 @@ module dec_top
             else if (pj_start) mf_band_en <= 1'b1;
         end
     end else begin : g_nofsl
-        assign ld_busy = 1'b0; assign ld_done = 1'b0; assign ld_err = 1'b0; assign fsl_busy = 1'b0; assign fsl_done = 1'b0; assign fsl_err = 1'b0;
+        assign ld_busy = 1'b0; assign ld_done = 1'b0; assign ld_err = 1'b0; assign fsl_busy = 1'b0; assign fsl_done = 1'b0; assign fsl_err = 1'b0; assign fsl_bands_done = '0; assign fsl_bands_all = 1'b0; assign sg_band_en = 1'b0;
+        assign ld_rd_req = 1'b0; assign ld_rd_busy = 1'b0; assign pj_rd_req = 1'b0; assign pj_rd_busy = 1'b0; assign rd_own_ld = 1'b0; assign rd_own_pj = 1'b0;
         assign pj_err = 1'b0; assign pj_start = 1'b0;
         assign mf_band_en = 1'b0; assign mf_bands_done = '0; assign mf_bands_all = 1'b0;
-        assign ld_araddr = '0; assign ld_arlen = '0; assign ld_arsize = '0; assign ld_arburst = '0; assign ld_arcache = '0; assign ld_arprot = '0;
+        assign ld_araddr = '0; assign ld_arlen = '0;
         assign ld_arvalid = 1'b0; assign ld_rready = 1'b0;
         assign pj_araddr = '0; assign pj_arlen = '0;
         assign pj_arvalid = 1'b0; assign pj_rready = 1'b0;
         assign ld_sp_we = 1'b0; assign ld_sp_wrow = '0; assign ld_sp_wwc = '0; assign ld_sp_wdata = '0; assign ld_def_we = 1'b0; assign ld_def_addr = '0; assign ld_def_data = '0;
         assign pj_we = '0; assign pj_wy8 = '0; assign pj_wx8 = '0; assign pj_wvalid = 1'b0; assign pj_wrow = '0; assign pj_wcol = '0;
     end
-    // the read channel: fs_load has it while it runs (before the tiles: nothing else is in flight then); after that
-    // reference fetch and the projection engine share it burst by burst (rtl/axi_rd_share.sv: the projection reads its
-    // sources band by band during the decode, docs/motion-field-band.md). Every reader uses the same burst attributes.
-    logic [39:0]    sh_araddr; logic [7:0] sh_arlen; logic sh_arvalid, sh_rready;
+    // the read channel (rtl/axi_rd_share.sv): reference fetch on port 0; on port 1 the frame-state loader or the projection
+    // engine, whichever owns it (rd_own_ld / rd_own_pj above: one at a time, released only with no beat in flight). Both
+    // read during the decode, band by band ahead of the tile engines (docs/motion-field-band.md,
+    // docs/segment-map-band.md). Every reader uses the same burst attributes (ref_fetch's).
+    logic [39:0]    ls_araddr; logic [7:0] ls_arlen; logic ls_arvalid, ls_arready, ls_rvalid, ls_rready;
+    assign ls_araddr  = rd_own_ld ? ld_araddr  : pj_araddr;
+    assign ls_arlen   = rd_own_ld ? ld_arlen   : pj_arlen;
+    assign ls_arvalid = rd_own_ld ? ld_arvalid : (rd_own_pj && pj_arvalid);
+    assign ls_rready  = rd_own_ld ? ld_rready  : pj_rready;
+    assign ld_arready = rd_own_ld && ls_arready;   assign pj_arready = rd_own_pj && ls_arready;
+    assign ld_rvalid  = rd_own_ld && ls_rvalid;    assign pj_rvalid  = rd_own_pj && ls_rvalid;
+    // the engines' hold counts the bands that every band-wise table of the frame has; each table is let on by its own count
+    assign band_en     = mf_band_en || sg_band_en;
+    assign bands_ready = !sg_band_en ? mf_bands_done : !mf_band_en ? fsl_bands_done : (mf_bands_done < fsl_bands_done) ? mf_bands_done : fsl_bands_done;
+    assign bands_all   = (!mf_band_en || mf_bands_all) && (!sg_band_en || fsl_bands_all);
+    assign mf_band_go  = mf_band_en && ((MIW-3)'(mf_bands_done) < band_lim);
+    assign sg_band_go  = sg_band_en && ((MIW-3)'(fsl_bands_done) < band_lim);
+`ifndef SYNTHESIS
+    // The property the hold exists for, checked on each table's own count (not on the combined one the engines wait on):
+    // no superblock starts before its band of every band-wise table is in. A decoder without the wait fails here whether
+    // or not the stale band happens to hold the same values (2026-11-20: such a decoder passed three picture-compare runs).
+    for (genvar e = 0; e < TE; e++) begin : g_band_chk
+        always_ff @(posedge clk) if (!rst && u_ts.e_sb_start[e]) begin
+            if (sg_band_en && !fsl_bands_all && (MIW-3)'(fsl_bands_done) < (MIW-3)'(u_ts.e_sb_r[e] >> 4) + (hdr.sb128 ? (MIW-3)'(2) : (MIW-3)'(1)))
+                $fatal(1, "[dec_top] t=%0t engine %0d starts superblock row %0d with %0d bands of the segment map in", $time, e, u_ts.e_sb_r[e] >> 4, fsl_bands_done);
+            if (mf_band_en && !mf_bands_all && (MIW-3)'(mf_bands_done) < (MIW-3)'(u_ts.e_sb_r[e] >> 4) + (hdr.sb128 ? (MIW-3)'(2) : (MIW-3)'(1)))
+                $fatal(1, "[dec_top] t=%0t engine %0d starts superblock row %0d with %0d bands of the motion field in", $time, e, u_ts.e_sb_r[e] >> 4, mf_bands_done);
+        end
+    end
+`endif
     axi_rd_share #(.QL2(5)) u_rsh (.clk, .rst,
-        .s_araddr({pj_araddr, rf_araddr}), .s_arlen({pj_arlen, rf_arlen}), .s_arvalid({pj_arvalid, rf_arvalid}),
-        .s_arready({pj_arready, rf_arready}), .s_rvalid({pj_rvalid, rf_rvalid}), .s_rready({pj_rready, rf_rready}),
-        .m_araddr(sh_araddr), .m_arlen(sh_arlen), .m_arvalid(sh_arvalid), .m_arready(!fsl_busy && m_axi_arready),
-        .m_rvalid(!fsl_busy && m_axi_rvalid), .m_rlast(m_axi_rlast), .m_rready(sh_rready));
-    assign m_axi_araddr  = fsl_busy ? ld_araddr  : sh_araddr;
-    assign m_axi_arlen   = fsl_busy ? ld_arlen   : sh_arlen;
-    assign m_axi_arsize  = fsl_busy ? ld_arsize  : rf_arsize;
-    assign m_axi_arburst = fsl_busy ? ld_arburst : rf_arburst;
-    assign m_axi_arcache = fsl_busy ? ld_arcache : rf_arcache;
-    assign m_axi_arprot  = fsl_busy ? ld_arprot  : rf_arprot;
-    assign m_axi_arvalid = fsl_busy ? ld_arvalid : sh_arvalid;
-    assign m_axi_rready  = fsl_busy ? ld_rready  : sh_rready;
-    assign ld_arready = fsl_busy && m_axi_arready;
-    assign ld_rvalid  = fsl_busy && m_axi_rvalid;
+        .s_araddr({ls_araddr, rf_araddr}), .s_arlen({ls_arlen, rf_arlen}), .s_arvalid({ls_arvalid, rf_arvalid}),
+        .s_arready({ls_arready, rf_arready}), .s_rvalid({ls_rvalid, rf_rvalid}), .s_rready({ls_rready, rf_rready}),
+        .m_araddr(m_axi_araddr), .m_arlen(m_axi_arlen), .m_arvalid(m_axi_arvalid), .m_arready(m_axi_arready),
+        .m_rvalid(m_axi_rvalid), .m_rlast(m_axi_rlast), .m_rready(m_axi_rready));
+    assign m_axi_arsize  = rf_arsize;
+    assign m_axi_arburst = rf_arburst;
+    assign m_axi_arcache = rf_arcache;
+    assign m_axi_arprot  = rf_arprot;
     assign def_we_i   = def_we | ld_def_we;
     assign def_addr_i = ld_def_we ? ld_def_addr : def_addr;
     assign def_data_i = ld_def_we ? ld_def_data : def_data;
@@ -215,8 +247,8 @@ module dec_top
     assign sp_wwc_i   = ld_sp_we ? ld_sp_wwc : sp_wwc;
     assign sp_wdata_i = ld_sp_we ? ld_sp_wdata : sp_wdata;
     tile_engines #(.TE(TE), .ML2R(FRAME_WIN > 0 ? 5 + SB128 : FBY - 2), .ML2C(FBX - 2), .MFL2R(FRAME_WIN > 0 ? 5 : FBY - 3), .MFL2C(FBX - 3),
-                   .SPL2R(FBY - 2), .SPL2W(FBX - 6)) u_ts (
-                   .clk, .rst, .hdr, .ihdr, .eng_mask, .mf_band_en, .mf_bands_done, .mf_bands_all, .mf_band_go, .col_start, .col_end,
+                   .SPL2R(FRAME_WIN > 0 ? 6 : FBY - 2), .SPL2W(FBX - 6)) u_ts (
+                   .clk, .rst, .hdr, .ihdr, .eng_mask, .band_en, .bands_ready, .bands_all, .band_lim, .col_start, .col_end,
                    .in_data, .in_valid, .in_ready, .in_eos, .def_we(def_we_i), .def_addr(def_addr_i), .def_data(def_data_i), .rb_en, .rb_addr, .rb_sel, .rb_data,
                    .mf_we(mf_we | pj_we), .mf_wy8(pj_we != 7'd0 ? pj_wy8 : mf_wy8), .mf_wx8(pj_we != 7'd0 ? pj_wx8 : mf_wx8),
                    .mf_wvalid(pj_we != 7'd0 ? pj_wvalid : mf_wvalid), .mf_wrow(pj_we != 7'd0 ? pj_wrow : mf_wrow), .mf_wcol(pj_we != 7'd0 ? pj_wcol : mf_wcol),
@@ -441,7 +473,7 @@ module dec_top
     if (FRAME_URAM != 0 && FRAME_WIN > 0 && FRAME_WIN < 3) begin : g_win_depth
         $error("dec_top: FRAME_WIN must be 0 (the whole picture) or at least 3 superblock rows");
     end
-    assign unsupported = ts_unsup || win_unsup || mc_unsup || mem_err || pj_err;   // mc_unsup: an inter feature beyond stage 2a; mem_err: a failed reference read
+    assign unsupported = ts_unsup || win_unsup || mc_unsup || mem_err || pj_err || fsl_err;   // mc_unsup: an inter feature beyond stage 2a; mem_err: a failed reference read
     always_ff @(posedge clk) begin
         row_final <= 1'b0;
         if (rst || frame_start) begin

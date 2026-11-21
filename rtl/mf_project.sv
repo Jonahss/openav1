@@ -34,7 +34,9 @@ module mf_project
     input  logic          rst,
     input  hdr_t          hdr,
     input  logic          mf_start,
-    input  logic          src_go,              // the read channel is free (the frame-state loader's reads are over)
+    input  logic          src_go,              // the read channel is this engine's (dec_top's owner register; held while rd_req or rd_busy)
+    output logic          rd_req,              // a cleared band waits for the read channel
+    output logic          rd_busy,             // reads issued or in flight, cells still in the pipeline
     input  logic          band_go,             // the next band may be projected (its slot in the band store is free)
     output logic [MIW-5:0] bands_done,         // bands finished since mf_start (band k = rows 8k .. 8k+7)
     output logic          bands_all,           // every band of the frame is projected (since mf_start; the engines' hold ends on it)
@@ -115,6 +117,8 @@ module mf_project
     logic [BW:0]    resv;                                    // beats reserved in the beat FIFO
     assign m_axi_araddr = addr; assign m_axi_arlen = 8'(len - 5'd1); assign m_axi_arvalid = (as == A_AR);
     assign m_axi_rready = 1'b1;                              // room is reserved at issue
+    assign rd_req  = (as == A_WAIT);
+    assign rd_busy = (as == A_SRC) || (as == A_LINE) || (as == A_LEN) || (as == A_AR) || (as == A_DRAIN);
     logic [4:0] burst_len;
     always_comb begin
         burst_len = 5'd16;
