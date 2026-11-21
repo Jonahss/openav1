@@ -21,7 +21,7 @@
 //                       push with a partial write strobe (sticky until rst), 15 fifo empty (and no byte pending),
 //                       [31:16] free FIFO words
 //   0x014 PERF_SYN  R   perf_syn_stall       0x018 PERF_REC  R   perf_rec_idle
-//   0x1E0 PERF_SEL  RW  [5:0] which of reconstruction's state counters PERF_VAL shows: [5] = 1 a block-FSM state,
+//   0x1E0 PERF_SEL  RW  [6:0] which of reconstruction's state counters PERF_VAL shows: [5] = 1 a block-FSM state,
 //                       0 a transform-FSM state, [4:0] the state (rtl/recon_top.sv bst_t / rst_t; tb/host_regs.py has the names)
 //   0x1E4 PERF_VAL  R   clocks reconstruction spent in that state since the decoder's last reset
 //   0x01C DATA1     W   push one tile byte [7:0]        0x020 DATA4  W  push four bytes, [7:0] first (into the FIFO of
@@ -194,7 +194,7 @@ module dec_host
     logic [7:0]        start;                                // tile, frame, (2-5 unused), state load, cdf save
     logic              tile_busy, tile_done_lvl, unsupported;
     logic [31:0]       perf_syn_stall, perf_rec_idle, perf_val;
-    logic [5:0]        perf_sel;
+    logic [6:0]        perf_sel;
     logic              frame_busy, frame_done_lvl;
     logic [47:0]       h_rdata4;
     logic              h_ok;
@@ -669,7 +669,7 @@ module dec_host
             for (int i = 0; i < 64; i++) ih_w[i] <= '0;
             start <= '0; push <= 1'b0; def_we <= 1'b0; f_badw <= 1'b0; rb_en <= 1'b0; rb_l1 <= 1'b0;
             dma_cfg <= '0;
-            fs_cfg <= '0; fs_mv_base <= '0; fs_seg_base <= '0; fs_mv_rowb <= '0; fs_seg_rowb <= '0; perf_sel <= 6'd0;
+            fs_cfg <= '0; fs_mv_base <= '0; fs_seg_base <= '0; fs_mv_rowb <= '0; fs_seg_rowb <= '0; perf_sel <= 7'd0;
             ld_cfg_r <= '0; ld_seg_base <= '0; ld_seg_rowb <= '0; ld_cdf_base <= '0; sv_cdf_base <= '0; sv_eng <= '0;
             mf_nsrc_r <= '0; mf_src_base <= '0; mf_src_rowb <= '0; mf_src_sign <= '0; mf_src_tocur <= '0; mf_src_off <= '0; mf_dst_dist <= '0;
             for (int p = 0; p < 3; p++) begin dma_base[p] <= '0; dma_stride[p] <= '0; dma_w[p] <= '0; dma_h[p] <= '0; end
@@ -706,7 +706,7 @@ module dec_host
                 case (wi)
                     10'h060: dma_cfg <= strb(dma_cfg, w_d, w_s);                                              // 0x180
                     10'h070: fs_cfg <= strb(fs_cfg, w_d, w_s);                                                // 0x1C0
-                    10'h078: perf_sel <= w_d[5:0];                                                            // 0x1E0
+                    10'h078: perf_sel <= w_d[6:0];                                                            // 0x1E0
                     10'h071: fs_mv_base[31:0] <= strb(fs_mv_base[31:0], w_d, w_s);                            // 0x1C4
                     10'h072: fs_mv_base[39:32] <= w_d[7:0];                                                   // 0x1C8
                     10'h073: fs_mv_rowb <= w_d[15:0];                                                         // 0x1CC
@@ -793,7 +793,7 @@ module dec_host
                     10'h060: s_axi_rdata <= dma_cfg;
                     10'h062: s_axi_rdata <= {8'd0, fl_rows, 12'd0, dma_busy || !fq_empty, dma_err, 1'b0, dma_busy};
                     10'h063: s_axi_rdata <= dma_beats;
-                    10'h078: s_axi_rdata <= {26'd0, perf_sel};
+                    10'h078: s_axi_rdata <= {25'd0, perf_sel};
                     10'h079: s_axi_rdata <= perf_val;
                     10'h070: s_axi_rdata <= fs_cfg;
                     10'h071: s_axi_rdata <= fs_mv_base[31:0];

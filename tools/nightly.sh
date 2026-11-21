@@ -152,7 +152,7 @@ if [ -d "$ARGON" ]; then
   run dec_host_inter_argon FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_IVF="$ARGON/test47.obu,$ARGON/test6641.obu,$ARGON/test8854.obu" python tb/runner.py dec_host test_dec_host_inter
   # stage B (docs/frame-state.md: the card loads / saves the frame state itself) with the host's 10-buffer pool and recycling rule
   # (TS_POOL): test5439 is the stream whose state areas aliased on the card (2026-11-01), test47 the multi-tile-row one
-  run dec_host_cardload  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_IVF="$ARGON/test5439.obu,$ARGON/test47.obu" python tb/runner.py dec_host test_dec_host_inter
+  run dec_host_cardload  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_PERF_RECON=1 TS_IVF="$ARGON/test5439.obu,$ARGON/test47.obu" python tb/runner.py dec_host test_dec_host_inter
   # the card's own configuration (two tile engines, an 8-deep reference ring, sb128, FBX 11) on two streams of card census 15
   # (2026-11-10): the run-record reuse under the blend pipelines (rung B) passed every suite above and the gate rung and
   # showed only on the card, in 30 Argon streams; test5530 fails on 86c2847 only with TE=2, test6687 with one engine as well

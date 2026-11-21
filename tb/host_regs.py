@@ -193,6 +193,13 @@ RECON_WHY = {25: "W_no_block_record", 26: "W_block_waits_prev_block", 27: "W_blo
              29: "W_tx_waits_prediction", 30: "W_nothing_offered", 31: "W_sb_start_waits",
              55: "H_fb0_window", 56: "H_row_store", 57: "H_frame_state", 58: "H_fb2_ring", 59: "T_tile_busy",
              60: "T_ar_waits_memory", 61: "T_read_beats", 62: "T_ref_fetch_waits_arbiter", 63: "T_sb_events"}
+# inside motion compensation (recon_top perf_mc, PERF_SEL 64 + index): which of the fetch engine and the filter the
+# strips wait for, what each is doing, and what moved
+RECON_MC = ("M_strip_waits_run_queue M_strip_waits_fetch_engine M_run_waits_patch M_run_waits_filter_h M_run_waits_blend "
+            "M_filt_h_busy M_filt_v_busy M_filt_h_and_v M_filt_run_between_sides M_filt_out_fifo M_filt_idle M_out_not_drained "
+            "M_rf_addr_idle M_rf_ring_full M_rf_writer_busy M_rf_waits_data M_rf_writer_waits_buffer M_rf_engine_idle "
+            "M_rf_reads M_rf_beats M_patch_writes M_patch_second_words M_filt_out_clocks "
+            "M_idle_pipeline_busy M_idle_pipeline_empty M_fetch_and_filter M_fetch_only M_filter_only").split()
 R_TILE_ENG, R_TILE_COL, R_TILE_FIFO = 0x038, 0x060, 0x070      # tile engines: mask, columns per engine (+4e), FIFO status per engine (+4e)
 CTRL_ENG_SHIFT, CTRL_ENG_MASK = 24, 3 << 24                     # CTRL[25:24]: the engine DATA1 / DATA4 push to
 R_DATA1, R_DATA4, R_DEF_ADDR = 0x01C, 0x020, 0x02C
@@ -706,6 +713,10 @@ class HostDecoder:
         for i, n in RECON_WHY.items():
             self.wr(R_PERF_SEL, i)
             self.rd(R_PERF_VAL); self.rd(R_PERF_VAL)     # dec_top registers the read-out once more
+            out[n] = self.rd(R_PERF_VAL)
+        for i, n in enumerate(RECON_MC):
+            self.wr(R_PERF_SEL, 64 + i)
+            self.rd(R_PERF_VAL); self.rd(R_PERF_VAL)
             out[n] = self.rd(R_PERF_VAL)
         return out
 

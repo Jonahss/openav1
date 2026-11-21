@@ -251,6 +251,35 @@ async def win_trace(dut, rc, spec):
             ring.clear(); left = after
 
 
+async def read_perf(ax):
+    """Reconstruction's counters as the host reads them (PERF_SEL / PERF_VAL; HR.HostDecoder.read_recon_hist's sequence):
+    {name: count since the decoder's last reset}."""
+    out = {}
+    sel = [(b + i, n) for b, names in ((0, HR.RECON_RS), (32, HR.RECON_BST), (64, HR.RECON_MC)) for i, n in enumerate(names)] + list(HR.RECON_WHY.items())
+    for i, n in sel:
+        await ax.write(HR.R_PERF_SEL, i)
+        await ax.read(HR.R_PERF_VAL); await ax.read(HR.R_PERF_VAL)
+        out[n] = await ax.read(HR.R_PERF_VAL)
+    return out
+
+
+def check_perf(p, tag):
+    """What must hold between the counters whatever the stream: a wrong index or name on either side breaks one of these."""
+    clocks = sum(v for n, v in p.items() if n.startswith("B_"))
+    slack = 20000                                    # the counters keep running while they are read one by one
+    assert clocks > 0 and abs(clocks - sum(v for n, v in p.items() if n.startswith("R_"))) <= slack, f"{tag}: the two FSM histograms differ in total"
+    assert p["M_idle_pipeline_busy"] + p["M_idle_pipeline_empty"] == p["W_no_block_record"], f"{tag}: idle split {p['M_idle_pipeline_busy']} + {p['M_idle_pipeline_empty']} != {p['W_no_block_record']}"
+    assert p["M_strip_waits_run_queue"] + p["M_strip_waits_fetch_engine"] <= p["B_MC_FETCH"] + 2, f"{tag}: strip waits exceed B_MC_FETCH"
+    assert p["M_fetch_and_filter"] + p["M_fetch_only"] + p["M_rf_engine_idle"] in range(clocks - slack, clocks + slack), f"{tag}: fetch engine busy + idle != clocks"
+    assert p["M_fetch_and_filter"] + p["M_filter_only"] + p["M_filt_idle"] in range(clocks - slack, clocks + slack), f"{tag}: filter busy + idle != clocks"
+    assert p["M_filt_h_and_v"] <= min(p["M_filt_h_busy"], p["M_filt_v_busy"]), f"{tag}: both sides busy more than either"
+    assert p["M_rf_beats"] <= p["T_read_beats"], f"{tag}: the fetch's beats exceed the channel's"
+    assert p["M_patch_second_words"] <= p["M_patch_writes"], f"{tag}: second words without writes"
+    if p["B_MC_STRIP2"]:
+        assert p["M_rf_reads"] and p["M_rf_beats"] >= p["M_rf_reads"] and p["M_patch_writes"] and p["M_filt_h_busy"] and p["M_filt_v_busy"] and p["M_filt_out_clocks"], \
+            f"{tag}: an inter frame with idle motion-compensation counters: { {n: v for n, v in p.items() if n.startswith('M_')} }"
+
+
 @cocotb.test()
 async def dec_host_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
@@ -538,6 +567,13 @@ async def dec_host_inter_vs_model(dut):
             if debug:
                 dut._log.info(f"{tag}: picture {len(planes_ref[0][0])}x{len(planes_ref[0])} -> slots {[i for i in range(8) if (ph.refresh_frame_flags >> i) & 1]}"
                               f"{' at ' + hex(layout[0][0]) if layout else ' (model only)'}")
+            if os.environ.get("TS_PERF_RECON") == "1" and not model_only:
+                pf = await read_perf(ax)
+                check_perf(pf, tag)
+                stats["perf_frames"] = stats.get("perf_frames", 0) + 1
+                stats["perf_mc_frames"] = stats.get("perf_mc_frames", 0) + (1 if pf["B_MC_STRIP2"] else 0)
+                if debug or os.environ.get("TS_PERF_PRINT") == "1":
+                    dut._log.info(f"{tag}: perf " + ", ".join(f"{n} {v}" for n, v in pf.items() if v and n[:2] in ("M_", "W_", "T_")) + f", B_MC_FETCH {pf['B_MC_FETCH']}, B_IDLE {pf['B_IDLE']}")
             del decs
     assert not mem.errors, f"AXI errors: {mem.errors[:4]}"
     # a run in which no frame reached the RTL is not a pass (2026-11-19: a two-tile-column clip on a TE=1 build

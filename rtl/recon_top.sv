@@ -112,7 +112,7 @@ module recon_top
     input  logic        cur_fmt16,            //    (intra block copy sources the window has already flushed)
     output logic        mc_unsup,             // sticky: an inter block used a feature beyond stage 2a (masks, OBMC, warp, scaled references)
     output logic          mem_err,              // sticky: a reference read answered with an AXI error (ref_fetch err); the picture is not trustworthy
-    input  logic [5:0]    perf_sel,             // the cycle counter to read: [5] = 1 a block-FSM state, 0 a transform-FSM state; [4:0] the state
+    input  logic [6:0]    perf_sel,             // the cycle counter to read: [6] = 1 a motion-compensation counter [4:0]; else [5] = 1 a block-FSM state, 0 a transform-FSM state; [4:0] the state
     output logic [31:0]   perf_val,             // its count since the last reset (registered; valid two clocks after perf_sel settles)
     output logic [39:0] m_axi_araddr,
     output logic [7:0]  m_axi_arlen,
@@ -313,6 +313,7 @@ module recon_top
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_done_tag, mc_v_active, mc_out_valid;
     logic        mc_h_ready;                                 // mc_filt can take the next run (its horizontal side is free)
+    logic [3:0]  mc_pf; logic [5:0] rf_pf;                   // mc_filt's and ref_fetch's flags for the counters (perf_mc)
     logic        mc_out_tag;                                 // the run record the outputs belong to
     logic        srun;                                       // run record written by the next start (toggles per run)
     logic        mc_tag;                                     // the record of the run being started (registered with mc_start, as run_buf is)
@@ -530,7 +531,7 @@ module recon_top
     ref_fetch #(.PW(12), .RING(REF_RING)) u_rf (.clk, .rst,
         .req_valid(rf_req_valid && !pq_full), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(mc_ibc ? cur_fmt16 : ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
-        .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .req_buf(pbuf), .buf_busy(mc_buf_busy), .done(rf_done), .err(rf_err),
+        .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .req_buf(pbuf), .buf_busy(mc_buf_busy), .done(rf_done), .err(rf_err), .perf_flags(rf_pf),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
         .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_d4(rf_pw_d4),
@@ -545,7 +546,7 @@ module recon_top
         .start(mc_start), .run_tag(mc_tag), .lst(st_l), .rbuf(run_buf), .w(st_sw), .h(st_sh), .interp_x(st_i1), .interp_y(st_i0),
         .x_frac0(st_xf0), .y_frac0(st_yf0), .x_step(st_xs), .y_step(st_ys),
         .warp(st_warp), .w_alpha(st_wa), .w_beta(st_wb), .w_gamma(st_wg), .w_delta(st_wd), .w_sx4(st_wsx), .w_sy4(st_wsy),
-        .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .v_hold(rs != R_IDLE),
+        .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .perf_flags(mc_pf), .v_hold(rs != R_IDLE),
         .out_wait(!out_drained), .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
     end else begin : g_nointer
         assign rf_req_ready = 1'b1; assign rf_done = 1'b0; assign rf_err = 1'b0;
@@ -554,7 +555,7 @@ module recon_top
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
         assign pw_we = 1'b0; assign pw_buf = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0; assign pw_we2 = 1'b0; assign pw_d4b = '0;
         assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 1'b0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
-        assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0;
+        assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0; assign mc_pf = '0; assign rf_pf = '0;
     end endgenerate
 
     // 7.11.3.15 distance weights: {BckWeight (list 1), FwdWeight (list 0)} from the order-hint distances
@@ -1424,6 +1425,7 @@ module recon_top
     logic [31:0] perf_bst [0:31];
     logic [4:0]  perf_rs_q, perf_bst_q;
     logic [31:0] perf_why [0:7];
+    logic [31:0] perf_mc [0:31];                             // inside motion compensation (below)
     logic [7:1]  perf_c;
     logic        perf_run;
     always_ff @(posedge clk) begin
@@ -1435,7 +1437,7 @@ module recon_top
             perf_rs[perf_rs_q] <= perf_rs[perf_rs_q] + 32'd1;
             perf_bst[perf_bst_q] <= perf_bst[perf_bst_q] + 32'd1;
         end
-        perf_val <= perf_sel[5] ? perf_bst[perf_sel[4:0]] : (perf_sel[4:0] >= 5'd25) ? perf_why[perf_sel[2:0]] : perf_rs[perf_sel[4:0]];
+        perf_val <= perf_sel[6] ? perf_mc[perf_sel[4:0]] : perf_sel[5] ? perf_bst[perf_sel[4:0]] : (perf_sel[4:0] >= 5'd25) ? perf_why[perf_sel[2:0]] : perf_rs[perf_sel[4:0]];
         // why an FSM sits idle with work queued (the transform FSM's unused indices 25 .. 31), from registered conditions
         perf_c <= {ev_valid && (ev_kind == 2'd2),                                                       // 31: a superblock start waits for both FSMs
                    !ev_valid,                                                                           // 30: nothing offered (empty, or held outside: dec_top's counters)
@@ -1446,6 +1448,44 @@ module recon_top
                    (bst == B_IDLE) && ev_valid && !nb_valid};                                           // 25: no block record to take
         if (rst) for (int i = 0; i < 8; i++) perf_why[i] <= 32'd0;
         else for (int i = 1; i < 8; i++) if (perf_c[i]) perf_why[i] <= perf_why[i] + 32'd1;
+    end
+    // Inside motion compensation (PERF_SEL 64 + 0 .. 27; 2026-11-21): B_MC_FETCH waits for the fetch engine to take the
+    // strip AND for room in the run queue, so its 59 % of a 4K frame did not say whether the reference fetch or the
+    // filter sets the pace. Conditions registered first, counted a clock late, since the decoder's reset.
+    logic [27:0] perf_m;
+    logic        perf_pipe;                                  // something is in the fetch engine, the run queue or the filter
+    assign perf_pipe = mc_busy || !pq_empty || !rf_pf[5];
+    always_ff @(posedge clk) begin
+        perf_m <= {rf_pf[5] && mc_busy,                                             // 27: the filter works, the fetch engine is idle
+                   !rf_pf[5] && !mc_busy,                                            // 26: the fetch engine works, the filter is idle
+                   !rf_pf[5] && mc_busy,                                             // 25: both work
+                   (bst == B_IDLE) && ev_valid && !nb_valid && !perf_pipe,           // 24: no block record to take, nothing in the MC pipeline
+                   (bst == B_IDLE) && ev_valid && !nb_valid && perf_pipe,            // 23: no block record to take, the MC pipeline still at work
+                   mc_out_valid,                                                     // 22: clocks with a filter output word
+                   pw_we2,                                                           // 21: patch writes that carried a second word
+                   pw_we,                                                            // 20: patch writes (a 4-sample word each; the second word: 21; the intra block copy's included)
+                   m_axi_rvalid && m_axi_rready,                                     // 19: the reference fetch's own read beats
+                   m_axi_arvalid && m_axi_arready,                                   // 18: its reads (a patch row or part of one each)
+                   rf_pf[5],                                                         // 17: fetch engine idle (nothing outstanding)
+                   rf_pf[4],                                                         // 16: its writer waits for the patch buffer the filter reads
+                   rf_pf[3],                                                         // 15: rows on their way, none complete: waiting for data
+                   rf_pf[2],                                                         // 14: its writer busy
+                   rf_pf[1],                                                         // 13: its address side waits for a line buffer (ring full)
+                   rf_pf[0],                                                         // 12: its address side idle
+                   !out_drained,                                                     // 11: the output and blend pipelines hold words
+                   !mc_busy,                                                         // 10: the filter idle
+                   mc_pf[3],                                                         //  9: the filter's output FIFO not empty
+                   mc_pf[2],                                                         //  8: a run waits between the filter's two sides
+                   mc_pf[1] && mc_pf[0],                                             //  7: both sides of the filter busy
+                   mc_pf[1],                                                         //  6: the vertical side busy
+                   mc_pf[0],                                                         //  5: the horizontal side busy
+                   !pq_empty && qh_ready && mc_h_ready && (run_v || rec_held),       //  4: a queued run waits for the blend pipelines / the start handshake
+                   !pq_empty && qh_ready && !mc_h_ready,                             //  3: a queued run waits for the filter's horizontal side
+                   !pq_empty && !qh_ready,                                           //  2: a queued run waits for its patch
+                   (bst == B_MC_FETCH) && rf_req_valid && !pq_full && !rf_req_ready, //  1: the strip waits for the fetch engine
+                   (bst == B_MC_FETCH) && rf_req_valid && pq_full};                  //  0: the strip waits for room in the run queue
+        if (rst) for (int i = 0; i < 32; i++) perf_mc[i] <= 32'd0;
+        else for (int i = 0; i < 28; i++) if (perf_m[i]) perf_mc[i] <= perf_mc[i] + 32'd1;
     end
     logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);

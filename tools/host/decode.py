@@ -286,6 +286,8 @@ def main():
         tot = {n: sum(h[n] for h in last.values()) for n in names}
         nfr = len(last)
         print("reconstruction waits and holds, clocks a frame: " + ", ".join(f"{n[2:]} {tot[n] / nfr:,.0f}" for n in names if n[:2] in ("W_", "H_", "T_")))
+        if any(tot.get(n) for n in names if n[:2] == "M_"):
+            print("inside motion compensation, clocks (or counts) a frame: " + ", ".join(f"{n[2:]} {tot[n] / nfr:,.0f}" for n in names if n[:2] == "M_"))
         for fsm, pre in (("block FSM", "B_"), ("transform FSM", "R_")):
             t = {n: v for n, v in tot.items() if n.startswith(pre)}
             all_ = sum(t.values()) or 1

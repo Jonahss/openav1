@@ -93,6 +93,7 @@ module mc_filt
     output logic          done,
     output logic          done_tag,            // the tag of the run that just finished (with done)
     output logic          v_active,            // a run is in or waiting for the vertical side (it will write the frame buffer)
+    output logic [3:0]    perf_flags,          // for recon_top's counters: {output FIFO not empty, a run waits between the sides, vertical side busy, horizontal side busy}
     // ---- output stream (modes 0, 2, 3) ----
     input  logic          out_wait,            // recon_top's blend pipelines hold words of an earlier run: the first word of a run waits
     output logic          out_valid,
@@ -262,6 +263,7 @@ module mc_filt
     assign h_ready = (hst == H_IDLE) && !pend && (alive < 2'd2);
     assign h_buf_busy = ((hst != H_IDLE) ? (2'b01 << p_buf) : 2'b00) | (start ? (2'b01 << rbuf) : 2'b00);
     assign v_active = pend || (vst != V_IDLE) || !f_empty;
+    assign perf_flags = {!f_empty, pend, vst != V_IDLE, hst != H_IDLE};
 
     // ---------------------------------------------------------------- memory ports
     logic [11:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)

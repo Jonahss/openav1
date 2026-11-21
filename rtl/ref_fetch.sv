@@ -63,6 +63,7 @@ module ref_fetch #(
     input  logic [1:0]    buf_busy,             // per patch buffer: being read (mc_filt h_buf_busy); the writer waits for it
     output logic          done,                 // 1-cycle pulse: the patch is complete (one per request, in order)
     output logic          err,                  // sticky: a read response other than OKAY
+    output logic [5:0]    perf_flags,           // for recon_top's counters: {engine idle, writer waits for its patch buffer, waiting for data, writer busy, ring full, address side idle}
     // ---- AXI4 read master ----
     output logic [39:0]   m_axi_araddr,
     output logic [7:0]    m_axi_arlen,
@@ -162,6 +163,12 @@ module ref_fetch #(
     // observability: recon_top's B_MC_FETCH heartbeat and tb/test_dec_top.py print `st` as a number
     logic [7:0] st;
     assign st = {wr_busy, 4'(rows_alloc), 3'(ast)};
+    assign perf_flags = {(ast == A_IDLE) && (rows_alloc == CW'(0)) && !wr_busy,
+                         !wr_busy && (rows_ready != CW'(0)) && buf_busy[s_buf[slot_wr]],
+                         !wr_busy && (rows_alloc != CW'(0)) && (rows_ready == CW'(0)),
+                         wr_busy,
+                         (ast == A_ROW) && !(rows_alloc < CW'(RING)),
+                         ast == A_IDLE};
 
     // events
     logic accept, alloc, rx_beat, rx_last, wr_take, wr_last;

@@ -82,7 +82,7 @@ module dec_top
     output logic              mem_err,             // a reference read failed on the AXI bus (recon_top): the frame is not trustworthy
     output logic [31:0]       perf_syn_stall,      // tile cycles the syntax decoder held a transform block waiting for reconstruction
     output logic [31:0]       perf_rec_idle,       // tile cycles reconstruction had nothing to do (syntax-bound)
-    input  logic [5:0]        perf_sel,            // reconstruction's state counters, one at a time (recon_top)
+    input  logic [6:0]        perf_sel,            // reconstruction's state counters, one at a time (recon_top)
     output logic [31:0]       perf_val,
     // frame sequencer: the filter chain trails the tile decoder by superblock rows; software pulses frame_start
     // after the headers, feeds the tiles as usual and waits for frame_done
@@ -468,7 +468,7 @@ module dec_top
                     hold_rc && !hold_rs};                            // 55: held by fb0's window (rows not yet flushed)
         if (rst) for (int i = 0; i < 9; i++) perf_top[i] <= 32'd0;
         else for (int i = 0; i < 9; i++) if (perf_tc[i]) perf_top[i] <= perf_top[i] + 32'd1;
-        perf_val <= (perf_sel[5] && perf_sel[4:0] >= 5'd23) ? perf_top[4'(perf_sel[4:0] - 5'd23)] : rc_perf_val;
+        perf_val <= (perf_sel[6:5] == 2'b01 && perf_sel[4:0] >= 5'd23) ? perf_top[4'(perf_sel[4:0] - 5'd23)] : rc_perf_val;
     end
     // the frame-state sideband writer taps the popped block events (docs/frame-state.md)
     if (FRAME_WIN > 0) begin : g_fsw
