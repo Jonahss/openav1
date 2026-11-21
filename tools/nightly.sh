@@ -176,13 +176,14 @@ run dec_host_band_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_
 run dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_MF_SLOW=300 TS_IVF="$PWD/streams/inter/mf_tall1c_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 # The segment map as a band (docs/segment-map-band.md): the same tall pictures encoded with aomenc --aq-mode=3 (cyclic
 # refresh: segmentation with temporal update, six of eight frames read the previous frame's map; headers checked with
-# tb/obu_parser.py, 2026-11-20). dec_host_segband: both superblock sizes on two engines. _slow: the loads behind the
+# tb/obu_parser.py, 2026-11-20). dec_host_segband: both superblock sizes on two engines, a clip a process (in one
+# process it took 13,854 s alone and ran into the 4 h step limit beside an image build). _slow: the loads behind the
 # engines, on the same picture encoded with --enable-ref-frame-mvs=0: the engines' wait for the segment map is only its
 # own when no motion field is projected (the loader goes first on the read port, so with a projection the field's
 # band is never in before the map's; a decoder without the wait on the map passed the clip that has both). TS_SEG_SLOW
 # delays the segment-id area's reads alone (a band is 16 one-burst lines here: 300 cycles a burst left the map ahead of
 # the engines and the same broken decoder passed again; 4000 puts a band at 64k cycles).
-run dec_host_segband      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$PWD/streams/inter/seg_tall_8bit.ivf,$PWD/streams/inter/seg_tall128_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_segband    FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$PWD/streams/inter/seg_tall_8bit.ivf,$PWD/streams/inter/seg_tall128_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 run dec_host_segband_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_SEG_SLOW=4000 TS_IVF="$PWD/streams/inter/seg_tall_nomf_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 # Four tile engines (2026-11-20; nothing above runs more than two): the 256 x 768 picture in four tile columns of one
 # 64-pixel superblock (aomenc --tile-columns=2 --aq-mode=3: a motion field and a segment map, both as bands).
