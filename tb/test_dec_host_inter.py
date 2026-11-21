@@ -9,7 +9,7 @@ The frame sequence follows tb/seq_model.py (inherited CDFs through the DEF windo
 field through the band registers, slot table and ref_frame_idx through 0x400 / 0x600). Frames the window build
 cannot take (sb128, 4:4:4 / 4:2:2, several tile columns, intra block copy) and frames outside TS_FRAMES are
 decoded by the model only; a reference the RTL did not produce is loaded into the AXI memory at a slot address.
-Env: TS_IVF=a.obu[,b.obu] and / or TS_SEEDS=n[,n] with TS_W, TS_H (generated one-frame streams), TS_FRAMES, TD_DEBUG. TS_STAGE is lr, TS_WIN / TS_DMA are 1.
+Env: TS_IVF=a.obu[,b.obu] and / or TS_SEEDS=n[,n] with TS_W, TS_H (generated one-frame streams), TS_FRAMES, TD_DEBUG.
 """
 import json
 import os
@@ -22,14 +22,11 @@ from cocotb.triggers import ClockCycles, Timer
 from cocotb.utils import get_sim_time
 CLK_NS = 10                                                  # Clock(dut.clk, 10, unit="ns") below
 
-os.environ["TS_STAGE"] = "lr"
-os.environ["TS_WIN"] = os.environ["TS_DMA"] = "1"
-import test_dec_host as TH                                   # noqa: E402
+import dec_host_tb as TH                                     # noqa: E402
 import test_dec_top as TD                                    # noqa: E402
 import test_dec_inter as TI                                  # noqa: E402
 import test_tile_syntax as TT                                # noqa: E402
 import seq_model as sm                                       # noqa: E402
-import superres_model as srm                                 # noqa: E402
 import cdf_map as M                                          # noqa: E402
 import obu_parser as op                                      # noqa: E402
 import host_regs as HR                                       # noqa: E402
@@ -461,6 +458,8 @@ async def dec_host_inter_vs_model(dut):
                     pending.append((th, dec, data)); pending_k.append(k)
                     if k == len(tile_idx) - 1:
                         await TH.run_tile_row(ax, pending, f"{tag} tile row {pending[0][0].MiRowStart}", stats, rows=rows)
+                        if os.environ.get("TS_RB") == "1" and len(pending) == 1 and stats.get("rb_checks", 0) < 2 and not th.disable_cdf_update:
+                            await TH.check_cdf_readback(ax, dec, f"{tag} tile {k}", stats)      # the working store through DEF_ADDR bit 31
                         if ph.context_update_tile_id in pending_k and not getattr(ph, "disable_frame_end_update_cdf", 0):
                             await cdf_save(ax, dut, cdf_area, pending_k.index(ph.context_update_tile_id), tag, stats)
                         pending, pending_k = [], []

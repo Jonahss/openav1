@@ -1,7 +1,7 @@
 """The decoder's host-side protocol, with no simulator dependency: the register map of rtl/dec_host.sv, the
 header structs packed the way syn_pkg declares them (hdr_t, rec_hdr_t, lf_hdr_t), and HostDecoder, the sequence
 that drives a frame through the register file (headers, CDF default rows, tile bytes, stage starts, done polls,
-picture read-back). tb/test_dec_host.py uses the packing from here under cocotb; tools/host/decode.py runs
+picture read-back). tb/test_dec_host_inter.py uses the packing from here under cocotb; tools/host/decode.py runs
 HostDecoder on the KV260 over /dev/mem. One definition of the protocol, so the board does what the test does."""
 import array
 import sys
@@ -482,7 +482,7 @@ class HostError(Exception):
 
 class HostDecoder:
     """Drives one register file (regs.rd(addr) / regs.wr(addr, value), each one 32-bit bus transfer) through a
-    frame the way tb/test_dec_host.py does in simulation. Synchronous: meant for software on the PS."""
+    frame the way tb/test_dec_host_inter.py does in simulation. Synchronous: meant for software on the PS."""
     def __init__(self, regs, poll_timeout=30.0, log=None, fast=None):
         """fast: an optional bulk backend (tools/host/hostlib.py over the C helper) with write_seq(addrs, vals),
         push(data, timeout) -> bytes pushed or -1, poll(addr, mask, value, timeout) -> value or None, and

@@ -122,19 +122,10 @@ run tile_syntax_screen TS_SCREEN=1 TS_SEEDS=24 python tb/runner.py tile_syntax
 # the whole decoder: every frame under the frame sequencer, the streaming filter chain behind the tiles (docs/filter-chain.md)
 run dec_top_small      TS_SEEDS=12 python tb/runner.py dec_top
 run dec_top_large      TS_SEEDS=101,102,103,104,105,106 TS_W=256 TS_H=160 python tb/runner.py dec_top
-# the core FPGA configuration through its AXI-Lite host interface (rtl/dec_host.sv): registers, FIFO, read-back
-run dec_host_core      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=1,2,3,4 TS_W=128 TS_H=96 python tb/runner.py dec_host                 # read-back through HDATA
-run dec_host_dma       FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=5,6,7 TS_W=120 TS_H=72 TS_DMA=1 python tb/runner.py dec_host          # read-back through the DMA engine
-run dec_host_pipe      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=8,9 TS_W=128 TS_H=96 TS_DMA=1 python tb/runner.py dec_host
-run dec_host_recon     FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 TS_SEEDS=1,9 TS_W=128 TS_H=96 TS_STAGE=recon TS_DMA=1 python tb/runner.py dec_host     # the reconstruction the chain leaves in fb0
-# the RING build (docs/picture-memory.md step A): every frame buffer an UltraRAM ring (fb0 + mirror, fb0s, fb1, fb2), CDEF / SR / LR
-# under the frame sequencer, the final picture flushed row by row; seeds 7 / 17 / 20 have CDEF + LR, 8 neither; 5 rows at 320 wrap the rings
-# (fb0 needs 3 + CDEF + LR = 5 rows: recon, LF, CDEF, LR in flight plus the hold slot; a shallower ring flags the frame unsupported)
-run dec_host_ring      FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
-run dec_host_ring_tall FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_SEEDS=28,32 TS_W=128 TS_H=320 TS_STAGE=lr TS_DMA=1 TS_WIN=1 python tb/runner.py dec_host
-# the same generated streams on the card's host path (sequencer, row flush; test_dec_host_inter): the ring suites above
-# go once these are shown to decode the same frames (K60-70)
-run dec_host_gen       FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 python tb/runner.py dec_host test_dec_host_inter
+# generated one-frame streams through the card's configuration and host path (registers, sequencer, UltraRAM rings, row
+# flush; tb/test_dec_host_inter.py): seeds 7 / 17 / 20 have CDEF + LR, 8 neither, 17 is monochrome; 5 rows at 320 wrap the
+# rings; TS_RB: the working CDF store read back through the registers after the tile
+run dec_host_gen       FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_RB=1 TS_SEEDS=7,8,17,20 TS_W=128 TS_H=96 python tb/runner.py dec_host test_dec_host_inter
 run dec_host_gen_tall  FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_SEEDS=28,32 TS_W=128 TS_H=320 python tb/runner.py dec_host test_dec_host_inter
 # inter streams through dec_host (registers, sequencer, flush; references = the flushed pictures, as on the board): tb/test_dec_host_inter.py
 run dec_host_inter     FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
