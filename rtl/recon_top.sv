@@ -1423,6 +1423,8 @@ module recon_top
     logic [31:0] perf_rs [0:31];
     logic [31:0] perf_bst [0:31];
     logic [4:0]  perf_rs_q, perf_bst_q;
+    logic [31:0] perf_why [0:7];
+    logic [7:1]  perf_c;
     logic        perf_run;
     always_ff @(posedge clk) begin
         perf_rs_q <= 5'(rs); perf_bst_q <= 5'(bst); perf_run <= !rst;
@@ -1433,7 +1435,17 @@ module recon_top
             perf_rs[perf_rs_q] <= perf_rs[perf_rs_q] + 32'd1;
             perf_bst[perf_bst_q] <= perf_bst[perf_bst_q] + 32'd1;
         end
-        perf_val <= perf_sel[5] ? perf_bst[perf_sel[4:0]] : perf_rs[perf_sel[4:0]];
+        perf_val <= perf_sel[5] ? perf_bst[perf_sel[4:0]] : (perf_sel[4:0] >= 5'd25) ? perf_why[perf_sel[2:0]] : perf_rs[perf_sel[4:0]];
+        // why an FSM sits idle with work queued (the transform FSM's unused indices 25 .. 31), from registered conditions
+        perf_c <= {ev_valid && (ev_kind == 2'd2),                                                       // 31: a superblock start waits for both FSMs
+                   !ev_valid,                                                                           // 30: nothing offered (empty, or held outside: dec_top's counters)
+                   (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && !blk_ready_q[ev_par],             // 29: a transform block waits for its block's prediction
+                   (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && blk_ready_q[ev_par] && (mc_v_active || !out_drained),   // 28: ... for the MC output to drain
+                   (bst == B_IDLE) && nb_valid && blk_ready_q[nb_par] && (rs != R_IDLE) && (tx_par == nb_par),                // 27: the next block waits for the transform FSM on its parity
+                   (bst == B_IDLE) && ev_valid && nb_valid && !blk_ready_q[nb_par],                     // 26: the next block waits for the block before it to land
+                   (bst == B_IDLE) && ev_valid && !nb_valid};                                           // 25: no block record to take
+        if (rst) for (int i = 0; i < 8; i++) perf_why[i] <= 32'd0;
+        else for (int i = 1; i < 8; i++) if (perf_c[i]) perf_why[i] <= perf_why[i] + 32'd1;
     end
     logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);

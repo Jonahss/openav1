@@ -268,6 +268,7 @@ module dec_top
     logic ev_par, ev_taken, nb_valid, nb_par, nb_at_head, nb_pop; blk_rec_t nb_blk;   // early block take (rec_fifo)
     // declared ahead of their first use: Vivado makes an implicit 1-bit net of an identifier used before its declaration
     logic rc_busy;
+    logic [31:0] rc_perf_val;
     logic [3:0] cdr_val; mi_lf_t cd_rd_info;
 
     logic fb_re, fb_we; logic [1:0] fb_plane; logic [FBX-1:0] fb_x; logic [FBY-1:0] fb_y; logic [11:0] fb_wdata, fb_rdata;
@@ -287,7 +288,7 @@ module dec_top
     recon_top #(.FBX(FBX), .FBY(FBY), .ML2R(FRAME_WIN > 0 ? 6 + SB128 : FBY - 2), .ML2C(FBX - 2), .ITX_LANES(ITX_LANES), .FRAME_WIN(FRAME_WIN), .REF_RING(REF_RING)) u_rc (.clk, .rst, .hdr(hdr_rc), .rh,
                                             .ev_valid(ev_valid_rc), .ev_kind, .ev_sb_r, .ev_sb_c, .ev_tx, .ev_pop, .tx_rel,
                                             .ev_par, .ev_taken, .nb_valid, .nb_blk, .nb_par, .nb_at_head, .nb_pop,
-                                            .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy), .perf_sel, .perf_val,
+                                            .q_slot(q_slot_r), .q_addr, .q_data, .pm_plane, .pm_x, .pm_y, .pm_idx, .busy(rc_busy), .perf_sel, .perf_val(rc_perf_val),
                                             .mi_blk_we, .mi_blk_r, .mi_blk_c, .mi_blk_bw4, .mi_blk_bh4, .mi_blk_data, .mi_blk_busy,
                                             .mi_tx_we, .mi_tx_plane, .mi_tx_row, .mi_tx_col, .mi_tx_w4, .mi_tx_h4, .mi_tx_sz, .mi_tx_busy,
                                             .mi_cd_clr, .mi_cd_we, .mi_cd_row64, .mi_cd_col64, .mi_cd_mask, .mi_cd_idx,
@@ -451,6 +452,24 @@ module dec_top
                       && (32'(sb_pop_row) - FRAME_WIN >= 32'(fb0_free))) || hold_rs;
     logic fs_hold;
     assign ev_valid_rc = ev_valid && !hold_rc && !fs_hold;
+    // what holds reconstruction from outside, and the read channel's traffic: counters behind the block FSM's unused
+    // indices (PERF_SEL 32 + 23 .. 31), since the decoder's reset; conditions registered first
+    logic [31:0] perf_top [0:8];
+    logic [8:0]  perf_tc;
+    always_ff @(posedge clk) begin
+        perf_tc <= {sb_pop,                                          // 63: superblock events popped
+                    rf_arvalid && !rf_arready,                       // 62: reference fetch waits for the read channel's arbiter
+                    m_axi_rvalid && m_axi_rready,                    // 61: read beats (8 bytes each: every reader)
+                    m_axi_arvalid && !m_axi_arready,                 // 60: the read channel's address waits for the memory
+                    tile_busy,                                       // 59: clocks of the tile rows
+                    hold_fc,                                         // 58: the chain held by fb2's ring (the flush behind)
+                    ev_valid && fs_hold,                             // 57: held by the frame-state sideband writer
+                    hold_rs,                                         // 56: held by the chain's row store
+                    hold_rc && !hold_rs};                            // 55: held by fb0's window (rows not yet flushed)
+        if (rst) for (int i = 0; i < 9; i++) perf_top[i] <= 32'd0;
+        else for (int i = 0; i < 9; i++) if (perf_tc[i]) perf_top[i] <= perf_top[i] + 32'd1;
+        perf_val <= (perf_sel[5] && perf_sel[4:0] >= 5'd23) ? perf_top[4'(perf_sel[4:0] - 5'd23)] : rc_perf_val;
+    end
     // the frame-state sideband writer taps the popped block events (docs/frame-state.md)
     if (FRAME_WIN > 0) begin : g_fsw
         frame_state_w #(.FBX(FBX), .SB128(SB128)) u_fsw (.clk, .rst, .hdr, .ihdr, .frame_start, .tile_done,

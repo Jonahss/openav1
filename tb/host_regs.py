@@ -187,6 +187,12 @@ RECON_RS = ("R_IDLE R_SETUP R_PAL R_PAL_LAST R_EDGE R_IP_START R_IP_W R_CFL_L R_
             "R_DQ_LAST R_DQ_LAST2 R_ITX_START R_ITX_W R_ADD R_ADD_LAST R_ADD_LAST2 R_ADD_LAST3 R_ADD_LAST4 R_FIN R_MIW").split()
 RECON_BST = ("B_IDLE B_FT0 B_FT1 B_FT2 B_FT3 B_FT4 B_WR B_WR_W B_MC_INIT B_MC_WSET B_MC_WSET_W B_MC_PL B_MC_UNIT B_MC_STRIP "
              "B_MC_STRIPM B_MC_STRIP2 B_MC_FETCH B_MC_NEXT B_MC_DRAIN B_MC_PLEND B_MC_OB B_MC_MASK B_MC_II").split()
+# the counters behind the FSMs' unused indices: why reconstruction waits (recon_top, 25 .. 31) and what holds it from
+# outside, with the read channel's traffic (dec_top, 32 + 23 .. 31)
+RECON_WHY = {25: "W_no_block_record", 26: "W_block_waits_prev_block", 27: "W_block_waits_tx_parity", 28: "W_tx_waits_mc_drain",
+             29: "W_tx_waits_prediction", 30: "W_nothing_offered", 31: "W_sb_start_waits",
+             55: "H_fb0_window", 56: "H_row_store", 57: "H_frame_state", 58: "H_fb2_ring", 59: "T_tile_busy",
+             60: "T_ar_waits_memory", 61: "T_read_beats", 62: "T_ref_fetch_waits_arbiter", 63: "T_sb_events"}
 R_TILE_ENG, R_TILE_COL, R_TILE_FIFO = 0x038, 0x060, 0x070      # tile engines: mask, columns per engine (+4e), FIFO status per engine (+4e)
 CTRL_ENG_SHIFT, CTRL_ENG_MASK = 24, 3 << 24                     # CTRL[25:24]: the engine DATA1 / DATA4 push to
 R_DATA1, R_DATA4, R_DEF_ADDR = 0x01C, 0x020, 0x02C
@@ -697,6 +703,10 @@ class HostDecoder:
                 self.wr(R_PERF_SEL, base + i)
                 self.rd(R_PERF_VAL)                      # the registered read-out settles behind the select
                 out[n] = self.rd(R_PERF_VAL)
+        for i, n in RECON_WHY.items():
+            self.wr(R_PERF_SEL, i)
+            self.rd(R_PERF_VAL); self.rd(R_PERF_VAL)     # dec_top registers the read-out once more
+            out[n] = self.rd(R_PERF_VAL)
         return out
 
     def run_tile_row(self, tiles, tag, dec=None, rows=None, chunk=1024):
