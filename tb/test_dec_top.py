@@ -103,6 +103,12 @@ def perf_report(dut, tag, stats, cycles):
         tot = sum(d_rs.values()) or 1
         dut._log.info(f"{tag}: recon tx-FSM cycles " + ", ".join(f"{n} {v} ({100 * v // tot}%)" for n, v in d_rs.items() if v))
         dut._log.info(f"{tag}: recon blk-FSM cycles " + ", ".join(f"{n} {v}" for n, v in d_b.items() if v))
+        if hasattr(dut.u_rc, "perf_mc"):                                     # inside motion compensation (host_regs.RECON_MC)
+            import host_regs as _HR
+            cur_m = {n[2:]: int(dut.u_rc.perf_mc[i].value) for i, n in enumerate(_HR.RECON_MC)}
+            prev_m = getattr(perf_report, "_perf_prev_mc", None) or {}
+            perf_report._perf_prev_mc = cur_m
+            dut._log.info(f"{tag}: recon mc counters " + ", ".join(f"{n} {v - prev_m.get(n, 0)}" for n, v in cur_m.items()))
         if stats.get("tx_hist"):
             names_sz = ["4x4","8x8","16x16","32x32","64x64","4x8","8x4","8x16","16x8","16x32","32x16","32x64","64x32","4x16","16x4","8x32","32x8","16x64","64x16"]
             names_ty = ["DCT_DCT","ADST_DCT","DCT_ADST","ADST_ADST","FLIPADST_DCT","DCT_FLIPADST","FLIPADST_FLIPADST","ADST_FLIPADST","FLIPADST_ADST","IDTX","V_DCT","H_DCT","V_ADST","H_ADST","V_FLIPADST","H_FLIPADST"]
