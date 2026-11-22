@@ -51,7 +51,7 @@ decoder 3462 printed, shell 27, vendor 1148. The file is `census-u200-fc3rf16te2
 | DPIP-2, DPOP-3, DPOP-4 | 1126, 524, 602 | DSP blocks without input / output / multiplier registers: performance advice | to read per block: where the path is timing-critical, register; elsewhere waive by block |
 | DPREG-7 | 1 | `u_rc/p_1_out`: dynamic OPMODE may form an unregistered feedback path | OPEN: to read |
 | Synth 8-6014, 8-3332, 8-3936, 8-3917 | cut off at 100 each | registers and bits removed or tied because nothing reads them | each one is either dead RTL (delete) or a configuration-dependent leftover; follows the simulator's UNUSEDSIGNAL work |
-| Synth 8-4767 RAM built from registers | 6 | `mi_store.sv:163/164`, `rec_fifo.sv:88` (two), `fb_fetch.sv:82` (two): the known six, small | to waive with sizes, or give them `ram_style`; a NEW line of this kind stays a stop (2026-11-14) |
+| Synth 8-4767 RAM built from registers | 4 | `mi_store.sv:163/164`, `fb_fetch.sv:82` (two): the known four, small. `rec_fifo`'s two (`kind_q`, `taken_q`: 32 entries, read at every entry by the scan) carry `ram_style = "registers"` since 2026-11-22 and no longer report | to waive with sizes, or give them `ram_style`; a NEW line of this kind stays a stop (2026-11-14; it stopped the first version of the early block take, whose row compare put a 32 x 13 queue in flip-flops) |
 | Synth 8-6841 byte-wide write enable not used | 24 | block RAMs written with one enable | to read |
 | Synth 8-6057, 8-6013 UltraRAM without pipeline registers | 12 + 1 | performance advice on `mi_store` and `u_mvm` | to read against timing |
 | Synth 8-11357 | 1 | `line_reg` with 15360 registers (the same `fb_fetch` RAM as 8-4767) | with 8-4767 |

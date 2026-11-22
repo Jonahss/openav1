@@ -55,16 +55,24 @@ module rec_fifo
     output logic [3:0]  tx_inflight
 );
     localparam int AW = $clog2(DEPTH);
-    logic [1:0]  kind_q [0:DEPTH-1];
+    // kind_q, taken_q and srow_q are read at every entry by the scan below: flip-flops by intent (ram_style says so;
+    // without it Vivado tries a RAM first and reports Synth 8-4767)
+    (* ram_style = "registers" *) logic [1:0] kind_q [0:DEPTH-1];
     // record queues as flat vectors in distributed RAM (struct-typed arrays became 14k flops + read muxes)
     localparam int BW = $bits(blk_rec_t), TXW = $bits(tx_rec_t);
     (* ram_style = "distributed" *) logic [BW-1:0]  blk_q [0:DEPTH-1];
     (* ram_style = "distributed" *) logic [TXW-1:0] tx_q  [0:DEPTH-1];
     logic [MIW-1:0] sbr_q  [0:DEPTH-1], sbc_q [0:DEPTH-1];
     logic        par_q   [0:DEPTH-1];                      // the record's block parity
-    logic        taken_q [0:DEPTH-1];                      // block record taken early
-    logic        sbdone_q [0:DEPTH-1];                     // superblock start: its cdef_idx clear was done early
-    logic [MIW-1:0] cur_sbr; logic cur_sbv;                // the row of the last superblock start popped (the row being decoded)
+    (* ram_style = "registers" *) logic taken_q [0:DEPTH-1];   // block record taken early
+    // two write ports (push clears, the early take sets): flip-flops by intent, not a RAM that failed to infer
+    (* ram_style = "registers" *) logic sbdone_q [0:DEPTH-1];  // superblock start: its cdef_idx clear was done early
+    // superblock start: same row as the start pushed before it. The scan below reaches a start only when every start
+    // pushed before it has been popped, so "the start before it" is the last one popped and this bit says "a start of
+    // the row being decoded" without comparing every queued row against the current one (32 comparators of MIW bits,
+    // and sbr_q in 416 flip-flops: Synth 8-4767 on the first version, 2026-11-22).
+    (* ram_style = "registers" *) logic srow_q [0:DEPTH-1];
+    logic [MIW-1:0] last_sbr; logic last_sbv;              // the row of the last superblock start pushed
     logic        ppar;                                     // parity of the block being pushed
     logic [AW-1:0] wr, rd;
     logic [AW:0]   count;
@@ -100,7 +108,7 @@ module rec_fifo
                 // row store, the engine arbiter's row order) has already let this row through. A stream of one 64x64 block
                 // per superblock had every record behind a start: the block FSM idled 27 % of each block (2026-11-21).
                 if (kind_q[i] == 2'd2) begin
-                    if (k != 0 && !sb_passed && cur_sbv && sbr_q[i] == cur_sbr) begin sb_passed = 1'b1; sb_scan = i; end
+                    if (k != 0 && !sb_passed && srow_q[i]) begin sb_passed = 1'b1; sb_scan = i; end
                     else stop = 1'b1;
                 end else if (kind_q[i] == 2'd1 && taken_q[i]) stop = 1'b1;
                 else if (kind_q[i] == 2'd1) begin nb_found = 1'b1; nb_scan = i; end
@@ -131,11 +139,14 @@ module rec_fifo
     assign ev_sb_c = sbc_q[rd];
     always_ff @(posedge clk) begin
         if (rst || flush) begin
-            wr <= '0; rd <= '0; count <= '0; tx_pushes <= 3'd0; tx_inflight <= 4'd0; ppar <= 1'b0; cur_sbv <= 1'b0; cur_sbr <= '0;
+            wr <= '0; rd <= '0; count <= '0; tx_pushes <= 3'd0; tx_inflight <= 4'd0; ppar <= 1'b0; last_sbv <= 1'b0; last_sbr <= '0;
         end else begin
             if (push) begin
                 kind_q[wr] <= push_kind;
-                if (push_kind == 2'd2) begin sbr_q[wr] <= sb_r; sbc_q[wr] <= sb_c; sbdone_q[wr] <= 1'b0; end
+                if (push_kind == 2'd2) begin
+                    sbr_q[wr] <= sb_r; sbc_q[wr] <= sb_c; sbdone_q[wr] <= 1'b0;
+                    srow_q[wr] <= last_sbv && (sb_r == last_sbr); last_sbr <= sb_r; last_sbv <= 1'b1;
+                end
                 if (push_kind == 2'd1) begin ppar <= !ppar; par_q[wr] <= !ppar; taken_q[wr] <= 1'b0; end
                 else par_q[wr] <= ppar;
                 wr <= wr + 1'b1;
@@ -143,7 +154,6 @@ module rec_fifo
             end
             if (nb_pop) taken_q[nb_idx] <= 1'b1;
             if (nb_sb_ack) sbdone_q[nb_sbi] <= 1'b1;
-            if (ev_pop && kind_q[rd] == 2'd2) begin cur_sbr <= sbr_q[rd]; cur_sbv <= 1'b1; end
             if (ev_pop) rd <= rd + 1'b1;
             count <= count + (push ? (AW + 1)'(1) : (AW + 1)'(0)) - (ev_pop ? (AW + 1)'(1) : (AW + 1)'(0));
             // in flight = pushed and not yet released by reconstruction (since 2026-11-08 the event is popped when taken, so the
