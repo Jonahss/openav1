@@ -105,8 +105,11 @@ def blocks(cols, cyc, v):
     idle_from = rise(X["bst"] == 0)                         # the block FSM returns to idle: its strips are issued
     done = np.flatnonzero(X["mc_done"] == 1)
     per, idl, tail, why = [], [], [], collections.Counter()
+    gap = 4 * np.median(np.diff(take)) if len(take) > 2 else 0     # a longer take-to-take span is the pause between two frames
     for i in range(len(take) - 1):
         t0, t1 = take[i], take[i + 1]
+        if gap and t1 - t0 > gap:
+            continue
         k = idle_from[(idle_from > t0) & (idle_from < t1)]
         if not len(k):
             continue
@@ -118,7 +121,7 @@ def blocks(cols, cyc, v):
             kinds = X["ev_kind"][seg][(X["ev_valid"][seg] == 1) & (X["nb_valid"][seg] == 0)]
             why["event offered, no block record to take"] += len(kinds)
             why["nothing offered"] += int((X["ev_valid"][seg] == 0).sum())
-    print(f"{len(per)} blocks: period {np.mean(per):.0f} clocks, block FSM idle before the next take {np.mean(idl):.0f} ({100 * np.sum(idl) / np.sum(per):.1f} %), "
+    print(f"{len(per)} blocks (inside frames): period {np.mean(per):.0f} clocks, block FSM idle before the next take {np.mean(idl):.0f}, median {np.median(idl):.0f} ({100 * np.sum(idl) / np.sum(per):.1f} %), "
           f"of which after the block's last run was done {np.mean(tail):.0f}")
     for k, c in why.items():
         print(f"  while idle: {k} {c} clocks")
