@@ -47,6 +47,10 @@ module recon_top
     input  logic        nb_par,
     input  logic        nb_at_head,
     output logic        nb_pop,
+    input  logic        nb_sb,                // the record offered is behind a superblock start (same row) whose cdef_idx clear is owed
+    input  logic [MIW-1:0] nb_sb_r, nb_sb_c,
+    output logic        nb_sb_ack,            // the clear is done in this cycle; the take follows
+    input  logic        ev_sb_early,          // the head superblock start had its clear done early
     output logic        tx_rel,               // a transform block is fully written (R_MIW): its coefficient slot is free
     output logic [2:0]  q_slot,
     output logic [9:0]  q_addr,
@@ -634,9 +638,15 @@ module recon_top
     // cdef_idx bookkeeping: clear on sb_start (uses sb_r/sb_c), set with the block record (superblock-relative units)
     logic [MIW-1:0] sb_mask;
     assign sb_mask = hdr.sb128 ? ~MIW'(31) : ~MIW'(15);
-    assign mi_cd_clr = sb_start;
-    assign mi_cd_row64 = sb_start ? SBW'(sb_r >> 4) : SBW'((b.r & sb_mask) >> 4);
-    assign mi_cd_col64 = sb_start ? SBW'(sb_c >> 4) : SBW'((b.c & sb_mask) >> 4);
+    // A superblock start has two halves. The cdef_idx clear belongs to the block FSM's side (the block record sets
+    // the units after it) and is done early when the next block is taken across the start (nb_sb_ack); the BlockDecoded
+    // reset belongs to the transform FSM and stays with the event at the head (sb_start), where it then no longer waits
+    // for the block FSM.
+    logic sb_clr;
+    assign sb_clr = sb_start && !ev_sb_early;
+    assign mi_cd_clr = sb_clr || nb_sb_ack;
+    assign mi_cd_row64 = nb_sb_ack ? SBW'(nb_sb_r >> 4) : sb_clr ? SBW'(sb_r >> 4) : SBW'((b.r & sb_mask) >> 4);
+    assign mi_cd_col64 = nb_sb_ack ? SBW'(nb_sb_c >> 4) : sb_clr ? SBW'(sb_c >> 4) : SBW'((b.c & sb_mask) >> 4);
     assign mi_cd_mask = hdr.sb128 ? b.cdef_units : 4'b0001;
     assign mi_cd_idx = b.cdef_idx;
     assign mi_blk_data = '{bsize: b.bsize, skip: b.skip, seg: b.seg, delta_lf: b.delta_lf, ref0: 3'(b.ref0),
@@ -1488,7 +1498,7 @@ module recon_top
         else for (int i = 0; i < 28; i++) if (perf_m[i]) perf_mc[i] <= perf_mc[i] + 32'd1;
     end
     logic tx_take, tx_pop;
-    assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && (bst == B_IDLE);
+    assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && ((bst == B_IDLE) || ev_sb_early);
     assign sb_r = ev_sb_r; assign sb_c = ev_sb_c;
     // the block FSM takes the next untaken block record, past the transform events still queued for the current block
     // (early block take, 2026-11-09); one block ahead at most: the parity it reuses must have landed. A transform event
@@ -1496,7 +1506,11 @@ module recon_top
     // and never into the record slot the transform FSM is still reading: with the early take the next-but-one block (same
     // parity) becomes visible as soon as the current block's last transform event is popped, while that event is still in
     // progress on bq[par] (2026-11-09: the left-column availability flipped mid-edge-preparation, dec_top seed 3 444)
-    assign blk_take = ev_valid && nb_valid && (bst == B_IDLE) && blk_ready_q[nb_par] && !((rs != R_IDLE) && (tx_par == nb_par));
+    // across a superblock start (rec_fifo nb_sb): one cycle for that superblock's cdef_idx clear, then the take
+    logic blk_take_ok;
+    assign blk_take_ok = ev_valid && nb_valid && (bst == B_IDLE) && blk_ready_q[nb_par] && !((rs != R_IDLE) && (tx_par == nb_par));
+    assign nb_sb_ack = blk_take_ok && nb_sb;
+    assign blk_take = blk_take_ok && !nb_sb;
     assign nb_pop = blk_take && !nb_at_head;
     assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && !mc_v_active && out_drained;
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)

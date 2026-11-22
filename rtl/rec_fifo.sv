@@ -43,6 +43,14 @@ module rec_fifo
     output logic        nb_par,
     output logic        nb_at_head,           // that record is the head itself
     input  logic        nb_pop,               // taken early (not at the head)
+    // Across a superblock start (2026-11-21): the next block record may lie behind ONE superblock start of the
+    // superblock row being decoded. Reconstruction then does that start's cdef_idx clear before it takes the block
+    // (nb_sb with the superblock's position; it answers nb_sb_ack in the cycle of the clear), and the start itself,
+    // when it reaches the head, only resets the transform side's state (ev_sb_early).
+    output logic        nb_sb,                // the record offered is behind a superblock start whose clear is still owed
+    output logic [MIW-1:0] nb_sb_r, nb_sb_c,
+    input  logic        nb_sb_ack,
+    output logic        ev_sb_early,          // the head is a superblock start whose clear was done early
     input  logic        tx_rel,               // reconstruction finished a transform block: its coefficient slot is free
     output logic [3:0]  tx_inflight
 );
@@ -55,6 +63,8 @@ module rec_fifo
     logic [MIW-1:0] sbr_q  [0:DEPTH-1], sbc_q [0:DEPTH-1];
     logic        par_q   [0:DEPTH-1];                      // the record's block parity
     logic        taken_q [0:DEPTH-1];                      // block record taken early
+    logic        sbdone_q [0:DEPTH-1];                     // superblock start: its cdef_idx clear was done early
+    logic [MIW-1:0] cur_sbr; logic cur_sbv;                // the row of the last superblock start popped (the row being decoded)
     logic        ppar;                                     // parity of the block being pushed
     logic [AW-1:0] wr, rd;
     logic [AW:0]   count;
@@ -73,11 +83,11 @@ module rec_fifo
     assign ev_taken = (kind_q[rd] == 2'd1) && taken_q[rd];
     // the next untaken block record: scanned from the head, stopping at a superblock event; the pointer is registered
     // (the scan is a long priority chain) and validated against the live flags, so a stale pointer never reads as valid
-    logic [AW-1:0] nb_scan, nb_idx;
-    logic          nb_found;
+    logic [AW-1:0] nb_scan, nb_idx, sb_scan, nb_sbi;
+    logic          nb_found, sb_passed;
     always_comb begin
         logic stop;
-        nb_found = 1'b0; nb_scan = rd; stop = 1'b0;
+        nb_found = 1'b0; nb_scan = rd; stop = 1'b0; sb_passed = 1'b0; sb_scan = rd;
         for (int k = 0; k < DEPTH; k++) begin
             logic [AW-1:0] i;
             i = rd + AW'(k);
@@ -85,19 +95,32 @@ module rec_fifo
                 // stop at a superblock event, and at a block record already taken early: the transform events before it
                 // belong to the block whose parity the next record would reuse (bq[par]), so that record may be taken
                 // only once the head has passed them (one block ahead of event consumption at most)
-                if (kind_q[i] == 2'd2 || (kind_q[i] == 2'd1 && taken_q[i])) stop = 1'b1;
+                // One superblock start may be passed: not the head itself (reconstruction takes that one the usual way), and
+                // only a start of the row being decoded, so every hold that acts on a superblock row (the frame window, the
+                // row store, the engine arbiter's row order) has already let this row through. A stream of one 64x64 block
+                // per superblock had every record behind a start: the block FSM idled 27 % of each block (2026-11-21).
+                if (kind_q[i] == 2'd2) begin
+                    if (k != 0 && !sb_passed && cur_sbv && sbr_q[i] == cur_sbr) begin sb_passed = 1'b1; sb_scan = i; end
+                    else stop = 1'b1;
+                end else if (kind_q[i] == 2'd1 && taken_q[i]) stop = 1'b1;
                 else if (kind_q[i] == 2'd1) begin nb_found = 1'b1; nb_scan = i; end
             end
         end
     end
-    logic nb_q_valid;
+    logic nb_q_valid, nb_sb_q;
     always_ff @(posedge clk) begin
-        if (rst || flush) begin nb_q_valid <= 1'b0; nb_idx <= '0; end
-        else begin nb_q_valid <= nb_found; nb_idx <= nb_scan; end
+        if (rst || flush) begin nb_q_valid <= 1'b0; nb_idx <= '0; nb_sb_q <= 1'b0; nb_sbi <= '0; end
+        else begin nb_q_valid <= nb_found; nb_idx <= nb_scan; nb_sb_q <= nb_found && sb_passed; nb_sbi <= sb_scan; end
     end
     // live validation: still an untaken block record inside the queue (a pop never passes an untaken block record,
     // and a superblock event never appears between the head and a record already behind one)
     assign nb_valid = nb_q_valid && (kind_q[nb_idx] == 2'd1) && !taken_q[nb_idx] && ((AW + 1)'(nb_idx - rd) < count);
+    // the start that was passed, validated live: still a superblock start between the head and the record (once it has
+    // been popped the record is simply the next one), its clear not yet done
+    assign nb_sb = nb_valid && nb_sb_q && (kind_q[nb_sbi] == 2'd2) && (AW'(nb_sbi - rd) < AW'(nb_idx - rd)) && !sbdone_q[nb_sbi];
+    assign nb_sb_r = sbr_q[nb_sbi];
+    assign nb_sb_c = sbc_q[nb_sbi];
+    assign ev_sb_early = (kind_q[rd] == 2'd2) && sbdone_q[rd];
     assign nb_blk = blk_rec_t'(blk_q[nb_idx]);
     assign nb_par = par_q[nb_idx];
     assign nb_at_head = nb_valid && (nb_idx == rd);
@@ -108,17 +131,19 @@ module rec_fifo
     assign ev_sb_c = sbc_q[rd];
     always_ff @(posedge clk) begin
         if (rst || flush) begin
-            wr <= '0; rd <= '0; count <= '0; tx_pushes <= 3'd0; tx_inflight <= 4'd0; ppar <= 1'b0;
+            wr <= '0; rd <= '0; count <= '0; tx_pushes <= 3'd0; tx_inflight <= 4'd0; ppar <= 1'b0; cur_sbv <= 1'b0; cur_sbr <= '0;
         end else begin
             if (push) begin
                 kind_q[wr] <= push_kind;
-                if (push_kind == 2'd2) begin sbr_q[wr] <= sb_r; sbc_q[wr] <= sb_c; end
+                if (push_kind == 2'd2) begin sbr_q[wr] <= sb_r; sbc_q[wr] <= sb_c; sbdone_q[wr] <= 1'b0; end
                 if (push_kind == 2'd1) begin ppar <= !ppar; par_q[wr] <= !ppar; taken_q[wr] <= 1'b0; end
                 else par_q[wr] <= ppar;
                 wr <= wr + 1'b1;
                 if (push_kind == 2'd0) tx_pushes <= tx_pushes + 3'd1;
             end
             if (nb_pop) taken_q[nb_idx] <= 1'b1;
+            if (nb_sb_ack) sbdone_q[nb_sbi] <= 1'b1;
+            if (ev_pop && kind_q[rd] == 2'd2) begin cur_sbr <= sbr_q[rd]; cur_sbv <= 1'b1; end
             if (ev_pop) rd <= rd + 1'b1;
             count <= count + (push ? (AW + 1)'(1) : (AW + 1)'(0)) - (ev_pop ? (AW + 1)'(1) : (AW + 1)'(0));
             // in flight = pushed and not yet released by reconstruction (since 2026-11-08 the event is popped when taken, so the

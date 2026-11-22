@@ -81,6 +81,10 @@ module tile_engines
     output logic              nb_par,
     output logic              nb_at_head,
     input  logic              nb_pop,
+    output logic              nb_sb,          // rec_fifo: the record offered is behind a superblock start whose clear is owed
+    output logic [MIW-1:0]    nb_sb_r, nb_sb_c,
+    input  logic              nb_sb_ack,
+    output logic              ev_sb_early,
     input  logic              tx_rel,         // reconstruction finished a transform block (to the current engine's queue)
     output logic [3:0]        tx_inflight,
     input  logic              rc_busy,        // reconstruction busy: engines are switched only between blocks
@@ -126,7 +130,8 @@ module tile_engines
     logic [3:0]  h_infl [TE];
     logic [TE-1:0] h_rel;
     logic [TE-1:0] h_pop;
-    logic [TE-1:0] h_par, h_taken, h_nb_valid, h_nb_par, h_nb_at_head, h_nb_pop;
+    logic [TE-1:0] h_par, h_taken, h_nb_valid, h_nb_par, h_nb_at_head, h_nb_pop, h_nb_sb, h_nb_sb_ack, h_sb_early;
+    logic [MIW-1:0] h_nb_sb_r [TE], h_nb_sb_c [TE];
     blk_rec_t    h_nb_blk [TE];
     logic [TE-1:0] mask;                                      // the engines of this tile row (eng_mask, or engine 0)
     assign mask = (TE == 1 || eng_mask == '0) ? TE'(1) : eng_mask;
@@ -178,6 +183,7 @@ module tile_engines
                       .ev_valid(h_valid[e]), .ev_kind(h_kind[e]), .ev_sb_r(h_sb_r[e]), .ev_sb_c(h_sb_c[e]), .ev_blk(h_blk[e]), .ev_tx(h_tx[e]),
                       .ev_pop(h_pop[e]), .ev_par(h_par[e]), .ev_taken(h_taken[e]),
                       .nb_valid(h_nb_valid[e]), .nb_blk(h_nb_blk[e]), .nb_par(h_nb_par[e]), .nb_at_head(h_nb_at_head[e]), .nb_pop(h_nb_pop[e]),
+                      .nb_sb(h_nb_sb[e]), .nb_sb_r(h_nb_sb_r[e]), .nb_sb_c(h_nb_sb_c[e]), .nb_sb_ack(h_nb_sb_ack[e]), .ev_sb_early(h_sb_early[e]),
                       .tx_rel(h_rel[e]), .tx_inflight(h_infl[e]));
     end
     assign in_ready = e_in_ready;
@@ -280,10 +286,15 @@ module tile_engines
     assign nb_blk   = h_nb_blk[cur];
     assign nb_par   = h_nb_par[cur];
     assign nb_at_head = h_nb_at_head[cur];
+    assign nb_sb = h_nb_sb[cur] && nb_valid;
+    assign nb_sb_r = h_nb_sb_r[cur];
+    assign nb_sb_c = h_nb_sb_c[cur];
+    assign ev_sb_early = h_sb_early[cur];
     assign tx_inflight = h_infl[cur];
     always_comb begin
         h_pop = '0; h_pop[cur] = ev_pop && ev_valid;
         h_nb_pop = '0; h_nb_pop[cur] = nb_pop && nb_valid;
+        h_nb_sb_ack = '0; h_nb_sb_ack[cur] = nb_sb_ack && nb_sb;
         h_rel = '0; h_rel[cur] = tx_rel;
         // a held palette block (its colour map lives in the syntax stage) is released once ITS engine's queue has
         // drained and reconstruction is idle (the pop's busy may follow a cycle later). dec_top's old engine-blind
