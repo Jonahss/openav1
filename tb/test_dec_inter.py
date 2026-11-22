@@ -88,6 +88,37 @@ async def mc_trace(dut, rc):
 
 
 
+MC_TL = ("bst rs pq_n rf_req_valid ast wr_busy rows_alloc rows_ready buf_busy hst vst pend alive f_stall f_empty run_v rec_held "
+         "out_drained mc_start rf_done mc_done blk_take ev_valid ev_kind nb_valid ready0 ready1 q_count tx_inflight tx_done tx_ack blk_info").split()
+
+
+async def mc_timeline(dut, rc, path):
+    """TD_MCTL=<file>: the motion-compensation pipeline clock by clock, run-length coded: a line '<cycle> <values>'
+    (columns MC_TL, first line) whenever any of them changes. recon_top's block and transform FSMs and run queue, the
+    fetch engine's address side, ring and writer, the filter's two sides and output FIFO, the hand-over pulses, and
+    engine 0's event queue (what reconstruction is offered, whether a next block record can be taken, what the syntax
+    decoder pushes).
+    tools/mc_timeline.py reads it: what each strip's fetch, write, horizontal and vertical pass waited for
+    (2026-11-21: totals said 'ring full half the frame', a four times deeper ring changed nothing)."""
+    rf, mc = rc.g_inter.u_rf, rc.g_inter.u_mc
+    q = dut.u_ts.g_e[0].u_q
+    sig = [rc.bst, rc.rs, rc.pq_n, rc.rf_req_valid, rf.ast, rf.wr_busy, rf.rows_alloc, rf.rows_ready, rc.g_inter.mc_buf_busy, mc.hst, mc.vst, mc.pend,
+           mc.alive, mc.f_stall, mc.f_empty, rc.run_v, rc.rec_held, rc.out_drained, rc.mc_start, rc.rf_done, rc.mc_done, rc.blk_take,
+           rc.ev_valid, rc.ev_kind, rc.nb_valid, rc.blk_ready_q[0], rc.blk_ready_q[1], q.count, q.tx_inflight, q.tx_done, q.tx_ack, q.blk_info]
+    prev, n = None, 0
+    with open(path, "w") as f:
+        f.write("cycle " + " ".join(MC_TL) + "\n")
+        while True:
+            await RisingEdge(dut.clk)
+            cur = tuple(int(x.value) for x in sig)
+            if cur != prev:
+                f.write(f"{n} " + " ".join(map(str, cur)) + "\n")
+                prev = cur
+            n += 1
+            if n & 0xFFFF == 0:
+                f.flush()
+
+
 async def ar_trace(dut):
     """TD_ARTRACE: every AXI read address handshake of the decoder (address, beats), to compare the reference reads of two harnesses."""
     while True:
@@ -149,6 +180,8 @@ async def dec_inter_vs_model(dut):
     debug = bool(os.environ.get("TD_DEBUG"))
     if os.environ.get("TD_MCTRACE"):
         cocotb.start_soon(mc_trace(dut, dut.u_rc))
+    if os.environ.get("TD_MCTL"):
+        cocotb.start_soon(mc_timeline(dut, dut.u_rc, os.environ["TD_MCTL"]))
     if os.environ.get("TD_ARTRACE"):
         cocotb.start_soon(ar_trace(dut))
     if os.environ.get("TD_TAKETRACE"):

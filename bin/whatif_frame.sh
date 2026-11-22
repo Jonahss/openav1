@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # whatif_frame.sh <frame> <tag> <axi_lat> <ring> [VAR=value ...]: one frame of the 1080p clip through dec_top in simulation
 # with the per-state profile (TS_PERF: the FSM histograms and the motion-compensation counters), at a given AXI read
-# latency and reference ring depth, in this checkout. The what-if run before a fetch-side redesign: how much a frame
+# latency and reference ring depth, in this checkout (TS_IVF=<clip> for another stream, e.g. one from bin/crop_clip.sh; TD_MCTL=<file> for the
+# timeline tools/mc_timeline.py reads). The what-if run before a fetch-side redesign: how much a frame
 # shortens when one cost is taken away (2026-11-12: three "biggest shares" were each worth 3 %). Earlier frames are
 # decoded by the model only. Output: logs/whatif-<tag>.log; the frame's "tile done in ~N cycles" line is the figure.
 set -u
