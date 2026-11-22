@@ -148,7 +148,21 @@ module dec_host
     input  logic [1:0]  m_axi_rresp,
     input  logic        m_axi_rlast,
     input  logic        m_axi_rvalid,
-    output logic        m_axi_rready
+    output logic        m_axi_rready,
+    // reference fetch's own read channel: 64 bytes a beat (2026-11-22; it shared the 64-bit channel before)
+    output logic [39:0] m_rf_axi_araddr,
+    output logic [7:0]  m_rf_axi_arlen,
+    output logic [2:0]  m_rf_axi_arsize,
+    output logic [1:0]  m_rf_axi_arburst,
+    output logic [3:0]  m_rf_axi_arcache,
+    output logic [2:0]  m_rf_axi_arprot,
+    output logic        m_rf_axi_arvalid,
+    input  logic        m_rf_axi_arready,
+    input  logic [511:0]m_rf_axi_rdata,
+    input  logic [1:0]  m_rf_axi_rresp,
+    input  logic        m_rf_axi_rlast,
+    input  logic        m_rf_axi_rvalid,
+    output logic        m_rf_axi_rready
 );
     localparam int HDR_W = $bits(hdr_t), RH_W = $bits(rec_hdr_t), LH_W = $bits(lf_hdr_t), CH_W = $bits(cdef_hdr_t), IH_W = $bits(ihdr_t);
     initial begin
@@ -259,6 +273,8 @@ module dec_host
         .ref_slot(ref_slot_r), .ref_planes, .ref_dims, .ref_scales, .ref_fmt16(ref_cfg_r[0]), .cur_planes, .cur_fmt16(fmt16),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
+        .m_rf_axi_araddr, .m_rf_axi_arlen, .m_rf_axi_arsize, .m_rf_axi_arburst, .m_rf_axi_arcache, .m_rf_axi_arprot, .m_rf_axi_arvalid, .m_rf_axi_arready,
+        .m_rf_axi_rdata, .m_rf_axi_rresp, .m_rf_axi_rlast, .m_rf_axi_rvalid, .m_rf_axi_rready,
         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done(), .tile_done_lvl, .unsupported, .mem_err, .perf_sel, .perf_val, .perf_syn_stall, .perf_rec_idle,
         .frame_start(start[1]), .n_tile_cols(ctrl[21:16]), .frame_busy, .frame_done(), .frame_done_lvl,
         .row_final, .row_final_idx(), .flush_done,

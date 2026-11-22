@@ -192,7 +192,7 @@ RECON_BST = ("B_IDLE B_FT0 B_FT1 B_FT2 B_FT3 B_FT4 B_WR B_WR_W B_MC_INIT B_MC_WS
 RECON_WHY = {25: "W_no_block_record", 26: "W_block_waits_prev_block", 27: "W_block_waits_tx_parity", 28: "W_tx_waits_mc_drain",
              29: "W_tx_waits_prediction", 30: "W_nothing_offered", 31: "W_sb_start_waits",
              55: "H_fb0_window", 56: "H_row_store", 57: "H_frame_state", 58: "H_fb2_ring", 59: "T_tile_busy",
-             60: "T_ar_waits_memory", 61: "T_read_beats", 62: "T_ref_fetch_waits_arbiter", 63: "T_sb_events"}
+             60: "T_loader_ar_waits_memory", 61: "T_loader_read_beats", 62: "T_ref_fetch_ar_waits_memory", 63: "T_sb_events"}
 # inside motion compensation (recon_top perf_mc, PERF_SEL 64 + index): which of the fetch engine and the filter the
 # strips wait for, what each is doing, and what moved
 RECON_MC = ("M_strip_waits_run_queue M_strip_waits_fetch_engine M_run_waits_patch M_run_waits_filter_h M_run_waits_blend "

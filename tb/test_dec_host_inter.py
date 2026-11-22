@@ -273,7 +273,6 @@ def check_perf(p, tag):
     assert p["M_fetch_and_filter"] + p["M_fetch_only"] + p["M_rf_engine_idle"] in range(clocks - slack, clocks + slack), f"{tag}: fetch engine busy + idle != clocks"
     assert p["M_fetch_and_filter"] + p["M_filter_only"] + p["M_filt_idle"] in range(clocks - slack, clocks + slack), f"{tag}: filter busy + idle != clocks"
     assert p["M_filt_h_and_v"] <= min(p["M_filt_h_busy"], p["M_filt_v_busy"]), f"{tag}: both sides busy more than either"
-    assert p["M_rf_beats"] <= p["T_read_beats"], f"{tag}: the fetch's beats exceed the channel's"
     assert p["M_patch_second_words"] <= p["M_patch_writes"], f"{tag}: second words without writes"
     if p["B_MC_STRIP2"]:
         assert p["M_rf_reads"] and p["M_rf_beats"] >= p["M_rf_reads"] and p["M_patch_writes"] and p["M_filt_h_busy"] and p["M_filt_v_busy"] and p["M_filt_out_clocks"], \
@@ -318,6 +317,7 @@ async def dec_host_inter_vs_model(dut):
         mem.slow = slow
     cocotb.start_soon(mem.run())
     cocotb.start_soon(mem.run_read())
+    cocotb.start_soon(mem.reader("m_rf_axi_").run_read())    # reference fetch's channel
     dut.aresetn.value = 0
     await ClockCycles(dut.clk, 4)
     dut.aresetn.value = 1

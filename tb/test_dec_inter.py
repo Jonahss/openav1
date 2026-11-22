@@ -123,8 +123,8 @@ async def ar_trace(dut):
     """TD_ARTRACE: every AXI read address handshake of the decoder (address, beats), to compare the reference reads of two harnesses."""
     while True:
         await RisingEdge(dut.clk)
-        if int(dut.m_axi_arvalid.value) and int(dut.m_axi_arready.value):
-            dut._log.info(f"AR 0x{int(dut.m_axi_araddr.value):x} len {int(dut.m_axi_arlen.value) + 1}")
+        if int(dut.m_rf_axi_arvalid.value) and int(dut.m_rf_axi_arready.value):
+            dut._log.info(f"AR 0x{int(dut.m_rf_axi_araddr.value):x} len {int(dut.m_rf_axi_arlen.value) + 1}")
 
 
 async def fb_trace(dut, rc, plane=None):
@@ -241,6 +241,7 @@ async def dec_inter_vs_model(dut):
             getattr(dut, s).value = 0
     mem = AxiMem(dut, dut.clk, seed=1, stall=0.2)
     cocotb.start_soon(mem.run_read())
+    cocotb.start_soon(mem.reader("m_rf_axi_").run_read())    # reference fetch's channel
     dut.rst.value = 1
     TD.run_tile._perf_prev = None
     TD.perf_report._perf_prev = None

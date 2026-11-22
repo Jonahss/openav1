@@ -67,7 +67,21 @@ module dec_host_v #(
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RRESP" *)   input  wire [1:0]  m_axi_rresp,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RLAST" *)   input  wire        m_axi_rlast,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RVALID" *)  input  wire        m_axi_rvalid,
-    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RREADY" *)  output wire        m_axi_rready
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RREADY" *)  output wire        m_axi_rready,
+    // reference fetch: a read-only master of 512 bits
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARADDR" *) output wire [39:0] m_rf_axi_araddr,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARLEN" *) output wire [7:0]  m_rf_axi_arlen,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARSIZE" *) output wire [2:0]  m_rf_axi_arsize,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARBURST" *) output wire [1:0]  m_rf_axi_arburst,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARCACHE" *) output wire [3:0]  m_rf_axi_arcache,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARPROT" *) output wire [2:0]  m_rf_axi_arprot,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARVALID" *) output wire        m_rf_axi_arvalid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARREADY" *) input  wire        m_rf_axi_arready,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi RDATA" *) input  wire [511:0] m_rf_axi_rdata,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi RRESP" *) input  wire [1:0]  m_rf_axi_rresp,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi RLAST" *) input  wire        m_rf_axi_rlast,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi RVALID" *) input  wire        m_rf_axi_rvalid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi RREADY" *) output wire        m_rf_axi_rready
 );
     dec_host #(.FBX(FBX), .FBY(FBY), .ITX_LANES(ITX_LANES), .FRAME_URAM(FRAME_URAM), .FRAME_WIN(FRAME_WIN), .FRAME_WIN2(FRAME_WIN2), .SB128(SB128), .TE(TE), .REF_RING(REF_RING)) u (
         .clk(clk), .clk2x(clk2x), .phase(phase), .aresetn(aresetn),
@@ -82,6 +96,7 @@ module dec_host_v #(
         .m_axi_bresp(m_axi_bresp), .m_axi_bvalid(m_axi_bvalid), .m_axi_bready(m_axi_bready),
         .m_axi_araddr(m_axi_araddr), .m_axi_arlen(m_axi_arlen), .m_axi_arsize(m_axi_arsize), .m_axi_arburst(m_axi_arburst),
         .m_axi_arcache(m_axi_arcache), .m_axi_arprot(m_axi_arprot), .m_axi_arvalid(m_axi_arvalid), .m_axi_arready(m_axi_arready),
-        .m_axi_rdata(m_axi_rdata), .m_axi_rresp(m_axi_rresp), .m_axi_rlast(m_axi_rlast), .m_axi_rvalid(m_axi_rvalid), .m_axi_rready(m_axi_rready)
+        .m_axi_rdata(m_axi_rdata), .m_axi_rresp(m_axi_rresp), .m_axi_rlast(m_axi_rlast), .m_axi_rvalid(m_axi_rvalid), .m_axi_rready(m_axi_rready),
+        .m_rf_axi_araddr(m_rf_axi_araddr), .m_rf_axi_arlen(m_rf_axi_arlen), .m_rf_axi_arsize(m_rf_axi_arsize), .m_rf_axi_arburst(m_rf_axi_arburst), .m_rf_axi_arcache(m_rf_axi_arcache), .m_rf_axi_arprot(m_rf_axi_arprot), .m_rf_axi_arvalid(m_rf_axi_arvalid), .m_rf_axi_arready(m_rf_axi_arready), .m_rf_axi_rdata(m_rf_axi_rdata), .m_rf_axi_rresp(m_rf_axi_rresp), .m_rf_axi_rlast(m_rf_axi_rlast), .m_rf_axi_rvalid(m_rf_axi_rvalid), .m_rf_axi_rready(m_rf_axi_rready)
     );
 endmodule
