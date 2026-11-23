@@ -2,6 +2,9 @@
 # Nightly regression (run from cron on the batch host): RTL syntax decoder on generated streams, the full decoder
 # on generated frames, and the corpus through the whole RTL pipeline compared with dav1d's pictures (model-free).
 # Writes logs/nightly-<date>.txt with one line per suite and exits non-zero on any failure.
+# Two decoder forms are in here on purpose (2026-11-22): the dec_top suites (corpus, Argon features, dec_inter*) use the
+# plain whole-picture frame memory (FRAME_URAM = 0), a test harness that simulates fast and is never built for the card;
+# the dec_host suites use the card's form (UltraRAM windows, DDR areas), which the gate and the card runs check further.
 # Usage: [NIGHTLY_ONLY=regex] tools/nightly.sh [tag]   (needs bootstrap.sh done and refout/ populated by tools/regress.sh once)
 set -uo pipefail
 cd "$(dirname "$0")/.."

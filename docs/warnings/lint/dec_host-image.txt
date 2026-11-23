@@ -72,32 +72,32 @@
 %Warning-PINCONNECTEMPTY: rtl/fc_top.sv:83:66: Instance pin connected by name with empty reference: 'busy'
    83 |             .first_band_i(first_band), .last_band_i(last_band), .busy(), .band_done(p_done[p]), .err_ovf(p_ovf[p]),
       |                                                                  ^~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:276:30: Instance pin connected by name with empty reference: 'tx_inflight'
-  276 |                    .tx_rel, .tx_inflight(), .rc_busy, .rc_col_start, .rc_col_end,
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:280:30: Instance pin connected by name with empty reference: 'tx_inflight'
+  280 |                    .tx_rel, .tx_inflight(), .rc_busy, .rc_col_start, .rc_col_end,
       |                              ^~~~~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:390:62: Instance pin connected by name with empty reference: 'rdata'
-  390 |             .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:394:62: Instance pin connected by name with empty reference: 'rdata'
+  394 |             .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
       |                                                              ^~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:390:72: Instance pin connected by name with empty reference: 'rdata4'
-  390 |             .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:394:72: Instance pin connected by name with empty reference: 'rdata4'
+  394 |             .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
       |                                                                        ^~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:394:131: Instance pin connected by name with empty reference: 'rdata'
-  394 |         frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:398:131: Instance pin connected by name with empty reference: 'rdata'
+  398 |         frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
       |                                                                                                                                   ^~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:394:141: Instance pin connected by name with empty reference: 'rdata4'
-  394 |         frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:398:141: Instance pin connected by name with empty reference: 'rdata4'
+  398 |         frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
       |                                                                                                                                             ^~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:600:138: Instance pin connected by name with empty reference: 'blk_busy'
-  600 |             .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:604:138: Instance pin connected by name with empty reference: 'blk_busy'
+  604 |             .blk_we(mi_blk_we), .blk_r(mi_blk_r), .blk_c(mi_blk_c), .blk_bw4(mi_blk_bw4), .blk_bh4(mi_blk_bh4), .blk_data(mi_blk_data), .blk_busy(),
       |                                                                                                                                          ^~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:601:150: Instance pin connected by name with empty reference: 'tx_busy'
-  601 |             .tx_we(mi_tx_we), .tx_plane(mi_tx_plane), .tx_row(mi_tx_row), .tx_col(mi_tx_col), .tx_w4(mi_tx_w4), .tx_h4(mi_tx_h4), .tx_sz(mi_tx_sz), .tx_busy(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:605:150: Instance pin connected by name with empty reference: 'tx_busy'
+  605 |             .tx_we(mi_tx_we), .tx_plane(mi_tx_plane), .tx_row(mi_tx_row), .tx_col(mi_tx_col), .tx_w4(mi_tx_w4), .tx_h4(mi_tx_h4), .tx_sz(mi_tx_sz), .tx_busy(),
       |                                                                                                                                                      ^~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:602:123: Instance pin connected by name with empty reference: 'rd2_info'
-  602 |             .rd_row(fc_rd_row[p]), .rd_col(fc_rd_col[p]), .rd_info(fc_rd_info[p]), .rd2_row(MIW'(0)), .rd2_col(MIW'(0)), .rd2_info(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:606:123: Instance pin connected by name with empty reference: 'rd2_info'
+  606 |             .rd_row(fc_rd_row[p]), .rd_col(fc_rd_col[p]), .rd_info(fc_rd_info[p]), .rd2_row(MIW'(0)), .rd2_col(MIW'(0)), .rd2_info(),
       |                                                                                                                           ^~~~~~~~
-%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:605:56: Instance pin connected by name with empty reference: 'cdr_val'
-  605 |             .cdr_row64(SBW'(0)), .cdr_col64(SBW'(0)), .cdr_val(),
+%Warning-PINCONNECTEMPTY: rtl/dec_top.sv:609:56: Instance pin connected by name with empty reference: 'cdr_val'
+  609 |             .cdr_row64(SBW'(0)), .cdr_col64(SBW'(0)), .cdr_val(),
       |                                                        ^~~~~~~
 %Warning-PINCONNECTEMPTY: rtl/dec_host.sv:278:114: Instance pin connected by name with empty reference: 'tile_done'
   278 |         .tile_start(start[0]), .eng_mask(eng_mask_r), .col_start(col_start_r), .col_end(col_end_r), .tile_busy, .tile_done(), .tile_done_lvl, .unsupported, .mem_err, .perf_sel, .perf_val, .perf_syn_stall, .perf_rec_idle,
@@ -175,25 +175,25 @@
                                              : ... note: In instance 'dec_host'
   677 |     logic [31:0] ctrl_nx;                                    
       |                  ^~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:289:34: Bits of signal are not used: 'cd_rd_info'[40:36,34:0]
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:293:34: Bits of signal are not used: 'cd_rd_info'[40:36,34:0]
                                             : ... note: In instance 'dec_host.u_dec'
-  289 |     logic [3:0] cdr_val; mi_lf_t cd_rd_info;
+  293 |     logic [3:0] cdr_val; mi_lf_t cd_rd_info;
       |                                  ^~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:322:48: Bits of signal are not used: 'fc_rd2_row'[38:13]
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:326:48: Bits of signal are not used: 'fc_rd2_row'[38:13]
                                             : ... note: In instance 'dec_host.u_dec'
-  322 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+  326 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
       |                                                ^~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:322:60: Bits of signal are not used: 'fc_rd2_col'[38:13]
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:326:60: Bits of signal are not used: 'fc_rd2_col'[38:13]
                                             : ... note: In instance 'dec_host.u_dec'
-  322 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
+  326 |     logic [2:0][MIW-1:0] fc_rd_row, fc_rd_col, fc_rd2_row, fc_rd2_col, fc_txr_row, fc_txr_col;
       |                                                            ^~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:324:26: Bits of signal are not used: 'fc_cdr_row64'[26:9]
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:328:26: Bits of signal are not used: 'fc_cdr_row64'[26:9]
                                             : ... note: In instance 'dec_host.u_dec'
-  324 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
+  328 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
       |                          ^~~~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:324:40: Bits of signal are not used: 'fc_cdr_col64'[26:9]
+%Warning-UNUSEDSIGNAL: rtl/dec_top.sv:328:40: Bits of signal are not used: 'fc_cdr_col64'[26:9]
                                             : ... note: In instance 'dec_host.u_dec'
-  324 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
+  328 |     logic [2:0][SBW-1:0] fc_cdr_row64, fc_cdr_col64, fc_lrr_row, fc_lrr_col;
       |                                        ^~~~~~~~~~~~
 %Warning-UNUSEDSIGNAL: rtl/fs_load.sv:24:27: Bits of signal are not used: 'hdr'[218:0]
                                            : ... note: In instance 'dec_host.u_dec.g_fsl.u_fsl'
@@ -1538,5 +1538,5 @@
    50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
       |                                                        ^~~
 - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
-- Verilator: Built from 61.789 MB sources in 73 modules, into 54.085 MB in 61 C++ files needing 0.000 MB
-- Verilator: Walltime 8.813 s (elab=0.731, cvt=6.939, bld=0.000); cpu 8.812 s on 1 threads; allocated 426.738 MB
+- Verilator: Built from 61.790 MB sources in 73 modules, into 54.085 MB in 61 C++ files needing 0.000 MB
+- Verilator: Walltime 8.740 s (elab=0.726, cvt=6.889, bld=0.000); cpu 8.739 s on 1 threads; allocated 423.504 MB

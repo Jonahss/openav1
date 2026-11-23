@@ -11,6 +11,10 @@ module dec_top
     parameter int FBY = 9,
     parameter int ITX_LANES = 4,             // transform engines: 4 (throughput) or 2 (K26 area, +2.6% cycles)
     parameter int FRAME_URAM = 0,             // 1: the frame buffers are on-chip double-pumped UltraRAM (rtl/frame_mem_uram.sv, needs clk2x / phase)
+                                             // 0: plain whole-picture frame memories (rtl/frame_mem.sv). That form is the TEST HARNESS, kept on
+                                             // purpose (2026-11-22): the big correctness suites (corpus_full_rtl, argon_features, dec_inter*)
+                                             // run on it because it simulates fast. No card image builds it: the card is FRAME_URAM = 1 with
+                                             // the windows, which the dec_host suites, the gate's netlist replay and the card runs cover.
     parameter int FRAME_WIN = 0,             // >0 with FRAME_URAM: fb0 holds this many superblock rows (window, docs/frame-memory.md)
     parameter int FRAME_WIN2 = 0,            // with FRAME_URAM: fb2 (the final picture) as a ring of this many superblock rows, each flushed
                                              //    to DDR before its slot is reused (docs/picture-memory.md); 0: the whole picture
