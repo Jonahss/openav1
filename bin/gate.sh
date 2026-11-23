@@ -9,7 +9,7 @@
 # board, closed however the script ends. How:
 #   - the recordings run against the card-like memory (TS_AXI_LAT=48 TS_AXI_OUT=16): up to 16 reads in flight, which only the
 #     new engine issues, so the netlist replay exercises the outstanding logic;
-#   - harnesses generated WITH --genphase phase (the 2026-11-01 lesson), the IN list must equal dec_host9m2's (else abort);
+#   - harnesses generated WITH --genphase phase (the 2026-11-01 lesson), the IN list must equal the worktree's tools/gate_in_list.txt (else abort);
 #   - every shard cut to 450k vectors (the harness array; a longer recording makes Verilator's $readmemh abort);
 #   - the netlist replays under Verilator (vgate): ONE build of the funcsim netlist (VOPT / VTHR: g++ opt and --threads), the
 #     shards in parallel. The shards run through ramq (kind vreplay).
@@ -47,13 +47,17 @@ python tools/gen_replay.py rtl/dec_host.sv --param FBX=9 --param FBY=9 --param I
   --gate m_axi_awvalid:m_axi_awaddr,m_axi_awlen,m_axi_awsize,m_axi_awburst,m_axi_awcache,m_axi_awprot \
   --gate m_axi_wvalid:m_axi_wdata,m_axi_wstrb,m_axi_wlast \
   --gate m_axi_arvalid:m_axi_araddr,m_axi_arlen,m_axi_arsize,m_axi_arburst,m_axi_arcache,m_axi_arprot \
+  --gate m_rf_axi_arvalid:m_rf_axi_araddr,m_rf_axi_arlen,m_rf_axi_arsize,m_rf_axi_arburst,m_rf_axi_arcache,m_rf_axi_arprot \
   > $G/replay_dec_host9fc.sv 2> $G/gen_replay.lists || { echo "gen_replay failed: $(tail -2 $G/gen_replay.lists)" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
 sed -i "s/module replay_dec_host;/module replay_dec_host9fc;/" $G/replay_dec_host9fc.sv
 IN=$(grep -o -- "--in [^ ]*" $G/gen_replay.lists | head -1 | cut -c6-); OUT=$(grep -o -- "--out [^ ]*" $G/gen_replay.lists | head -1 | cut -c7-)
 [ -n "$IN" ] && [ -n "$OUT" ] || { echo "empty port lists" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
 echo "$IN" | grep -qw phase && { echo "harness records phase" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
-if diff <(grep -o -- "--in [^ ]*" ~/gate/dec_host9m2/gen_replay.lists | head -1) <(echo "--in $IN") >> $L; then echo "IN list == dec_host9m2 (generated phase)" >> $L
-else echo "IN LIST CHANGED vs dec_host9m2: abort, not a note" >> $L; echo PF_GATE_ABORT >> $L; exit 1; fi
+# the recorded inputs are the decoder's input ports, in order: the list the commit under test expects is in its own
+# tree (tools/gate_in_list.txt; until 2026-11-22 a directory on the build machine held it, which a change of ports
+# could not update). A port change edits that file in the same commit; any other difference is an abort, not a note.
+if diff <(tr -d "\n" < $W/tools/gate_in_list.txt) <(echo -n "$IN") >> $L; then echo "IN list == tools/gate_in_list.txt ($(echo $IN | tr "," "\n" | wc -l) ports, generated phase)" >> $L
+else echo "IN LIST differs from tools/gate_in_list.txt: abort, not a note" >> $L; echo PF_GATE_ABORT >> $L; exit 1; fi
 # C. the recordings, one after another (they share the build directory), against the card-like memory
 A=$W/streams/argon/profile0_core/streams
 P="REF_RING=8 TE=1 SB128=0 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 WAVES=1 WAVE_FMT=vcd WAVE_DEPTH=1 TS_AXI_LAT=48 TS_AXI_OUT=16"
