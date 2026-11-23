@@ -1,6 +1,6 @@
 """A minimal AXI4 slave memory for cocotb: the write channels of the picture DMA (INCR bursts, byte strobes) into
-a dict of bytes keyed by address, the read channels of the reference fetch (run_read: INCR bursts of 8-byte beats
-out of the same dict), and a read side for the testbench. Independent handshakes with random ready / valid gaps so
+a dict of bytes keyed by address, the read channels (run_read: INCR bursts of whole-bus beats out of the same dict:
+8 bytes on the 64-bit master, 64 on reference fetch's; reader() makes the second channel), and a read side for the testbench. Independent handshakes with random ready / valid gaps so
 the masters' back-pressure handling is exercised; one write burst at a time, reads up to TS_AXI_OUT ahead with
 TS_AXI_LAT cycles of latency (defaults 1 and 0)."""
 import random
@@ -26,6 +26,15 @@ class AxiMem:
                 self.sig(name).value = 0
             except AttributeError:
                 pass
+
+    def reader(self, prefix, seed=2):
+        """A second read channel on the same memory (reference fetch's 64-byte one beside the 64-bit master): its own
+        handshakes and stalls, the same bytes, errors and slow() rule. Start its run_read()."""
+        r = AxiMem(self.dut, self.clk, prefix=prefix, seed=seed, stall=self.stall)
+        r.mem = self.mem
+        r.errors = self.errors
+        r.slow = lambda a: (self.slow(a) if getattr(self, "slow", None) else 0)
+        return r
 
     def sig(self, name):
         return getattr(self.dut, self.p + name)
@@ -93,7 +102,7 @@ class AxiMem:
             self.bursts += 1
 
     async def run_read(self):
-        """Serve the read channels: INCR bursts of 8-byte beats from self.mem (unwritten bytes read fill). Up to
+        """Serve the read channels: INCR bursts of whole-bus beats from self.mem (unwritten bytes read fill). Up to
         TS_AXI_OUT bursts are accepted ahead (default 1: one at a time, as before 2026-11-03) and each is answered
         TS_AXI_LAT cycles (default 0) after its address was accepted, in order (one ID). TS_AXI_LAT=48 TS_AXI_OUT=16
         is the U200's XDMA / DDR4 path as measured on 2026-11-02 (docs/reference-prefetch.md): the configuration that
@@ -104,6 +113,8 @@ class AxiMem:
         lat = int(os.environ.get("TS_AXI_LAT", "0"))
         out = max(1, int(os.environ.get("TS_AXI_OUT", "1")))
         s = self.sig
+        nb = len(s("rdata")) // 8            # bytes a beat = the read data bus (8: the 64-bit master; 64: reference fetch's)
+        self.rsize = nb.bit_length() - 1
         q = collections.deque()
         self.cycle = 0
         self.in_flight = 0
@@ -130,13 +141,13 @@ class AxiMem:
                 await RisingEdge(self.clk)
                 await Timer(1, "ns")
                 s("arready").value = 0
-                if size != 3 or burst != 1:
+                if size != self.rsize or burst != 1:
                     self.errors.append(f"read burst at 0x{addr:x}: size {size} burst {burst}")
-                if addr & 7:
+                if addr & (nb - 1):
                     self.errors.append(f"read burst at 0x{addr:x}: unaligned")
-                if (addr & 0xFFF) + 8 * length > 0x1000:
+                if (addr & 0xFFF) + nb * length > 0x1000:
                     self.errors.append(f"read burst at 0x{addr:x} of {length} beats crosses 4 KB")
-                q.append((addr & ~7, length, self.cycle))
+                q.append((addr & ~(nb - 1), length, self.cycle))
 
         cocotb.start_soon(ticks())
         cocotb.start_soon(ar_side())
@@ -152,7 +163,7 @@ class AxiMem:
                 while self.rng.random() < self.stall:
                     await RisingEdge(self.clk)
                 data = 0
-                for b in range(8):
+                for b in range(nb):
                     data |= self._get(a + b) << (8 * b)
                 s("rvalid").value = 1
                 s("rdata").value = data
@@ -167,7 +178,7 @@ class AxiMem:
                 await Timer(1, "ns")
                 s("rvalid").value = 0
                 s("rlast").value = 0
-                a += 8
+                a += nb
                 self.read_beats = getattr(self, "read_beats", 0) + 1
             self.in_flight = 0
             self.read_bursts = getattr(self, "read_bursts", 0) + 1

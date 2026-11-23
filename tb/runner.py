@@ -26,7 +26,7 @@ EXTRA = {"fc_lfifo": [], "sr_stream": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "bl
          "dec_top": ["cdf_map_pkg.sv", "tx_tables_pkg.sv", "blk_tables_pkg.sv", "q_tables_pkg.sv", "syn_pkg.sv", "scan_rom.sv", "cdf_store.sv", "msac.sv",
                      "sym_seq.sv", "coef_rd.sv", "blk_ctx.sv", "pal_syntax.sv", "mv_mem.sv", "mf_band.sv", "seg_band.sv", "mv_stack.sv", "blk_syntax.sv", "lr_syntax.sv", "tile_syntax.sv",
                      "itx_pair.sv", "itx_lvl.sv", "itx_row.sv", "itx2d.sv", "ipred.sv", "cfl.sv", "qm_rom.sv", "mc_tables_pkg.sv", "mc_filt.sv", "fb_fetch.sv", "ref_fetch.sv", "warp_setup.sv", "frame_mem.sv", "frame_mem_w.sv", "edge_line.sv", "frame_mem_uram.sv", "recon_top.sv",
-                     "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "frame_state_w.sv", "fs_load.sv", "mf_project.sv", "rec_fifo.sv", "tile_engines.sv", "axi_rd_share.sv",
+                     "cdef_pkg.sv", "lr_pkg.sv", "mi_store.sv", "frame_state_w.sv", "fs_load.sv", "mf_project.sv", "rec_fifo.sv", "tile_engines.sv",
                      # the streaming filter chain
                      "lf_cbuf.sv", "lf_filt.sv", "lf_edge.sv", "lf_feed.sv", "lf_stream.sv", "cdef_dir.sv", "cdef_str.sv", "cdef_row.sv", "cdef_stream.sv",
                      "lr_wiener_pkg.sv", "lr_wiener_h.sv", "lr_wiener_v.sv", "lr_sgr_ab.sv", "lr_sgr_f.sv", "lr_stream.sv", "lr_bconv.sv", "lr_bstore.sv",

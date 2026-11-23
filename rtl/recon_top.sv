@@ -126,7 +126,7 @@ module recon_top
     output logic [2:0]  m_axi_arprot,
     output logic        m_axi_arvalid,
     input  logic        m_axi_arready,
-    input  logic [63:0] m_axi_rdata,
+    input  logic [511:0] m_axi_rdata,          // reference fetch's channel: 64 bytes a beat
     input  logic [1:0]  m_axi_rresp,
     input  logic        m_axi_rlast,
     input  logic        m_axi_rvalid,

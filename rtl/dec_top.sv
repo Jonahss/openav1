@@ -11,6 +11,10 @@ module dec_top
     parameter int FBY = 9,
     parameter int ITX_LANES = 4,             // transform engines: 4 (throughput) or 2 (K26 area, +2.6% cycles)
     parameter int FRAME_URAM = 0,             // 1: the frame buffers are on-chip double-pumped UltraRAM (rtl/frame_mem_uram.sv, needs clk2x / phase)
+                                             // 0: plain whole-picture frame memories (rtl/frame_mem.sv). That form is the TEST HARNESS, kept on
+                                             // purpose (2026-11-22): the big correctness suites (corpus_full_rtl, argon_features, dec_inter*)
+                                             // run on it because it simulates fast. No card image builds it: the card is FRAME_URAM = 1 with
+                                             // the windows, which the dec_host suites, the gate's netlist replay and the card runs cover.
     parameter int FRAME_WIN = 0,             // >0 with FRAME_URAM: fb0 holds this many superblock rows (window, docs/frame-memory.md)
     parameter int FRAME_WIN2 = 0,            // with FRAME_URAM: fb2 (the final picture) as a ring of this many superblock rows, each flushed
                                              //    to DDR before its slot is reused (docs/picture-memory.md); 0: the whole picture
@@ -71,6 +75,20 @@ module dec_top
     input  logic              m_axi_rlast,
     input  logic              m_axi_rvalid,
     output logic              m_axi_rready,
+    // reference fetch's own read channel: 64 bytes a beat (2026-11-22; it shared the 64-bit channel before)
+    output logic [39:0]       m_rf_axi_araddr,
+    output logic [7:0]        m_rf_axi_arlen,
+    output logic [2:0]        m_rf_axi_arsize,
+    output logic [1:0]        m_rf_axi_arburst,
+    output logic [3:0]        m_rf_axi_arcache,
+    output logic [2:0]        m_rf_axi_arprot,
+    output logic              m_rf_axi_arvalid,
+    input  logic              m_rf_axi_arready,
+    input  logic [511:0]     m_rf_axi_rdata,
+    input  logic [1:0]        m_rf_axi_rresp,
+    input  logic              m_rf_axi_rlast,
+    input  logic              m_rf_axi_rvalid,
+    output logic              m_rf_axi_rready,
     input  logic              tile_start,
     input  logic [TE-1:0]     eng_mask,            // engines of this tile row (0: engine 0, the header's columns)
     input  logic [TE*MIW-1:0] col_start,           // MiColStart / MiColEnd per engine
@@ -148,8 +166,7 @@ module dec_top
     logic           def_we_i, sp_we_i;
     logic [CDF_AW-1:0] def_addr_i; logic [245:0] def_data_i;
     logic [MIW-1:0] sp_wrow_i; logic [MIW-5:0] sp_wwc_i; logic [47:0] sp_wdata_i;
-    logic [39:0]    rf_araddr, ld_araddr; logic [7:0] rf_arlen, ld_arlen; logic [2:0] rf_arsize; logic [1:0] rf_arburst;
-    logic [3:0]     rf_arcache; logic [2:0] rf_arprot; logic rf_arvalid, ld_arvalid, rf_arready, ld_arready, rf_rvalid, ld_rvalid, rf_rready, ld_rready;
+    logic [39:0]    ld_araddr; logic [7:0] ld_arlen; logic ld_arvalid, ld_arready, ld_rvalid, ld_rready;
     logic           ld_sp_we, ld_def_we; logic [MIW-1:0] ld_sp_wrow; logic [MIW-5:0] ld_sp_wwc; logic [47:0] ld_sp_wdata; logic [CDF_AW-1:0] ld_def_addr; logic [245:0] ld_def_data;
     // the loader group: fs_load (segment map, CDF rows) and, with ld_cfg[3], mf_project, started together: the engine clears the
     // band while fs_load reads, then takes the read channel once fs_load is idle (src_go); one busy / done to the host
@@ -197,15 +214,17 @@ module dec_top
         assign mf_band_en = 1'b0; assign mf_bands_done = '0; assign mf_bands_all = 1'b0;
         assign ld_araddr = '0; assign ld_arlen = '0;
         assign ld_arvalid = 1'b0; assign ld_rready = 1'b0;
+        logic unused_ld_rd;                                  // no loader in this build: nothing reads the 64-bit channel's data
+        assign unused_ld_rd = &{1'b0, m_axi_rdata, m_axi_rresp, m_axi_rlast};
         assign pj_araddr = '0; assign pj_arlen = '0;
         assign pj_arvalid = 1'b0; assign pj_rready = 1'b0;
         assign ld_sp_we = 1'b0; assign ld_sp_wrow = '0; assign ld_sp_wwc = '0; assign ld_sp_wdata = '0; assign ld_def_we = 1'b0; assign ld_def_addr = '0; assign ld_def_data = '0;
         assign pj_we = '0; assign pj_wy8 = '0; assign pj_wx8 = '0; assign pj_wvalid = 1'b0; assign pj_wrow = '0; assign pj_wcol = '0;
     end
-    // the read channel (rtl/axi_rd_share.sv): reference fetch on port 0; on port 1 the frame-state loader or the projection
-    // engine, whichever owns it (rd_own_ld / rd_own_pj above: one at a time, released only with no beat in flight). Both
-    // read during the decode, band by band ahead of the tile engines (docs/motion-field-band.md,
-    // docs/segment-map-band.md). Every reader uses the same burst attributes (ref_fetch's).
+    // the 64-bit read channel: the frame-state loader or the projection engine, whichever owns it (rd_own_ld /
+    // rd_own_pj above: one at a time, released only with no beat in flight). Both read during the decode, band by band
+    // ahead of the tile engines (docs/motion-field-band.md, docs/segment-map-band.md), in 8-byte INCR bursts.
+    // Reference fetch has its own channel (m_rf_axi_*, 64 bytes a beat).
     logic [39:0]    ls_araddr; logic [7:0] ls_arlen; logic ls_arvalid, ls_arready, ls_rvalid, ls_rready;
     assign ls_araddr  = rd_own_ld ? ld_araddr  : pj_araddr;
     assign ls_arlen   = rd_own_ld ? ld_arlen   : pj_arlen;
@@ -232,15 +251,16 @@ module dec_top
         end
     end
 `endif
-    axi_rd_share #(.QL2(5)) u_rsh (.clk, .rst,
-        .s_araddr({ls_araddr, rf_araddr}), .s_arlen({ls_arlen, rf_arlen}), .s_arvalid({ls_arvalid, rf_arvalid}),
-        .s_arready({ls_arready, rf_arready}), .s_rvalid({ls_rvalid, rf_rvalid}), .s_rready({ls_rready, rf_rready}),
-        .m_araddr(m_axi_araddr), .m_arlen(m_axi_arlen), .m_arvalid(m_axi_arvalid), .m_arready(m_axi_arready),
-        .m_rvalid(m_axi_rvalid), .m_rlast(m_axi_rlast), .m_rready(m_axi_rready));
-    assign m_axi_arsize  = rf_arsize;
-    assign m_axi_arburst = rf_arburst;
-    assign m_axi_arcache = rf_arcache;
-    assign m_axi_arprot  = rf_arprot;
+    assign m_axi_araddr  = ls_araddr;
+    assign m_axi_arlen   = ls_arlen;
+    assign m_axi_arvalid = ls_arvalid;
+    assign ls_arready    = m_axi_arready;
+    assign ls_rvalid     = m_axi_rvalid;
+    assign m_axi_rready  = ls_rready;
+    assign m_axi_arsize  = 3'b011;                            // 8 bytes
+    assign m_axi_arburst = 2'b01;                             // INCR
+    assign m_axi_arcache = 4'b0011;
+    assign m_axi_arprot  = 3'b000;
     assign def_we_i   = def_we | ld_def_we;
     assign def_addr_i = ld_def_we ? ld_def_addr : def_addr;
     assign def_data_i = ld_def_we ? ld_def_data : def_data;
@@ -298,8 +318,8 @@ module dec_top
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
                                             .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
                                             .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .cur_planes, .cur_fmt16, .mc_unsup, .mem_err,
-                                            .m_axi_araddr(rf_araddr), .m_axi_arlen(rf_arlen), .m_axi_arsize(rf_arsize), .m_axi_arburst(rf_arburst), .m_axi_arcache(rf_arcache), .m_axi_arprot(rf_arprot),
-                                            .m_axi_arvalid(rf_arvalid), .m_axi_arready(rf_arready), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(rf_rvalid), .m_axi_rready(rf_rready));
+                                            .m_axi_araddr(m_rf_axi_araddr), .m_axi_arlen(m_rf_axi_arlen), .m_axi_arsize(m_rf_axi_arsize), .m_axi_arburst(m_rf_axi_arburst), .m_axi_arcache(m_rf_axi_arcache), .m_axi_arprot(m_rf_axi_arprot),
+                                            .m_axi_arvalid(m_rf_axi_arvalid), .m_axi_arready(m_rf_axi_arready), .m_axi_rdata(m_rf_axi_rdata), .m_axi_rresp(m_rf_axi_rresp), .m_axi_rlast(m_rf_axi_rlast), .m_axi_rvalid(m_rf_axi_rvalid), .m_axi_rready(m_rf_axi_rready));
 
     // ---- the streaming filter chain's side of the shared stores (the chain itself is instantiated after the frame sequencer)
     localparam int FCW = FBX - 2;
@@ -459,9 +479,9 @@ module dec_top
     logic [8:0]  perf_tc;
     always_ff @(posedge clk) begin
         perf_tc <= {sb_pop,                                          // 63: superblock events popped
-                    rf_arvalid && !rf_arready,                       // 62: reference fetch waits for the read channel's arbiter
-                    m_axi_rvalid && m_axi_rready,                    // 61: read beats (8 bytes each: every reader)
-                    m_axi_arvalid && !m_axi_arready,                 // 60: the read channel's address waits for the memory
+                    m_rf_axi_arvalid && !m_rf_axi_arready,           // 62: reference fetch's read address waits for the memory
+                    m_axi_rvalid && m_axi_rready,                    // 61: the loaders' read beats (8 bytes each; reference fetch's 64-byte beats: PERF_SEL 64 + .., M_rf_beats)
+                    m_axi_arvalid && !m_axi_arready,                 // 60: the loaders' read address waits for the memory
                     tile_busy,                                       // 59: clocks of the tile rows
                     hold_fc,                                         // 58: the chain held by fb2's ring (the flush behind)
                     ev_valid && fs_hold,                             // 57: held by the frame-state sideband writer

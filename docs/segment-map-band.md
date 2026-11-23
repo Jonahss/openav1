@@ -48,7 +48,8 @@ Load band by band, just ahead of the tile engines, in step with the motion-field
   The engines' hold (`tile_engines`, at `T_SB`) and the "less than four bands above the lowest busy engine" rule do
   not change; they take the smaller of the two counts and the AND of the two `bands_all`.
 - Read channel: today `fs_load` has the channel to itself before the tiles and the projection shares it with
-  reference fetch through `axi_rd_share`. The loader's band reads now fall in the decode too, so loader and projection
+  reference fetch through `axi_rd_share` (until 2026-11-22: reference fetch then got a 512-bit read channel of its
+  own and the share module went; loader and projection alone are on the 64-bit channel). The loader's band reads now fall in the decode too, so loader and projection
   (which never read at the same time) go into the arbiter's one port together.
 - Frames with neither table (no segmentation map to load and no projection): nothing is switched on, nothing waits.
 

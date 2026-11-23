@@ -6,7 +6,7 @@
 // (x0, y0: may lie outside the picture) and size (w, h <= 64). The region is rows [y0 - 3, y0 + h + 4) and columns
 // [x0 - 3, x0 - 3 + 4 (ngrp + 2)), ngrp = ceil(w / 4) (mc_filt reads whole 4-sample words up to word ngrp + 1), with
 // 7.11.3.4's clamping = edge replication: a row outside the picture is the nearest picture row, a column outside the
-// nearest column. Per row: the clamped column range [cx_lo, cx_hi] is read as 8-byte INCR bursts (<= 16 beats, never
+// nearest column. Per row: the clamped column range [cx_lo, cx_hi] is read as 64-byte INCR bursts (<= 16 beats, never
 // across 4 KB) into a line buffer, then the patch words are written with each lane's column clamped into that range.
 // Rows that clamp to the same picture row are read again (simple; bandwidth is not the limit in stage 2a).
 //
@@ -34,10 +34,15 @@
 // Two words a cycle (2026-11-09, rung A of the 8-sample datapath). The writer delivers the patch words of a row in
 // pairs (word w4 on patch_d4, word w4 + 1 on patch_d4b with patch_we2; a row of an odd word count ends with a single),
 // and the address side takes two cycles a row instead of five: the row address is a running sum (the first row's by
-// the multiply, then + stride whenever the clamped source row advances; the lead bytes and the beat count are the
-// same for every row of a request, the stride being a multiple of 8), so a row is its slot bookkeeping plus one cycle
-// per burst. With one-byte samples a row is then ~words / 2 cycles in all three parts; 16-bit samples stay bound by
-// the data side (4 samples a beat).
+// the multiply, then + stride whenever the clamped source row advances), so a row is its slot bookkeeping plus one
+// cycle per burst.
+//
+// 64 bytes a beat (2026-11-22, K60-37). The read channel is the DDR4 controller's own width and reference fetch has
+// it to itself (the loaders keep the 64-bit channel). At 8 bytes a beat a 64-wide luma row was 10 to 11 beats and the
+// data side set the pace of the whole prediction path once the block stage no longer idled (timeline of 2026-11-22:
+// a patch of 71 rows ~890 clocks). A row is now 1 or 2 beats (3 or 4 with 16-bit samples); its lead bytes and beat
+// count are worked out per row, since a stride is a multiple of 8 but not always of 64. The writer (two words a
+// cycle) is the fetch's pace again: measured on the crop clip, 542 clocks a patch against 628, the frame 8.8 % shorter.
 module ref_fetch #(
     parameter int PW = 12,
     parameter int RING = 16                               // line buffers = rows in flight ahead of the writer
@@ -73,7 +78,7 @@ module ref_fetch #(
     output logic [2:0]    m_axi_arprot,
     output logic          m_axi_arvalid,
     input  logic          m_axi_arready,
-    input  logic [63:0]   m_axi_rdata,
+    input  logic [511:0]  m_axi_rdata,          // 64 bytes a beat (2026-11-22: the DDR4 controller's own width; 8 bytes a beat set the fetch's pace)
     input  logic [1:0]    m_axi_rresp,
     input  logic          m_axi_rlast,
     input  logic          m_axi_rvalid,
@@ -88,7 +93,11 @@ module ref_fetch #(
     output logic          patch_we2,            // word patch_w4 + 1 as well (patch_w4 is even)
     output logic [4*PW-1:0] patch_d4b
 );
-    localparam int LINE = 80;                             // line buffer samples (a row reads at most 72)
+    // line buffer samples. A beat goes in as it comes, lane k of the row's beat b at sample 64 b + k (32 b + k with
+    // 16-bit samples): every entry has one source lane and the row's lead is added where the writer reads. (Moving each
+    // beat down by the lead on the way in gave every entry a 64-way source select: its out-of-context synthesis had not
+    // finished after 2 h 46 min, 2026-11-22.) A row is at most 63 + 76 bytes = 3 beats, or 62 + 152 = 4 beats of 32.
+    localparam int LINE = 192;
     localparam int SW = (RING > 1) ? $clog2(RING) : 1;    // ring slot index
     localparam int CW = $clog2(RING + 1);                 // ring occupancy counters, 0 .. RING
 
@@ -111,15 +120,20 @@ module ref_fetch #(
     logic signed [17:0] yy_cur;                           // unclamped source row of row r_ar
     logic [47:0] mul;                                     // src_y * stride
     logic [39:0] row_a;                                   // address of the first wanted byte of row r_ar
-    logic [2:0]  q_lead;                                  // the request's rows: bytes before the first wanted byte in the first beat
-    logic [15:0] q_beats;                                 // and beats per row
+    logic [15:0] q_nbytes;                                // bytes per row of the request
+    logic [5:0]  lead_c;                                  // row r_ar: bytes before the first wanted byte in its first beat
+    logic [15:0] beats_c;                                 // and its beats (per row: a stride need not be a multiple of 64)
     logic [39:0] cur_addr;
     logic [15:0] beats_left;                              // beats of the row still to issue
     logic [SW-1:0] slot_ar;                               // line buffer the row being issued was given
 
     // ---- ring ----
-    logic [PW-1:0] line [0:RING-1][0:LINE-1];
-    logic [2:0]  row_lead  [0:RING-1];                    // per slot: bytes before the first wanted byte in the row's first beat
+    // one packed row a slot, each written by a process of its own and read through the slot select first, then the
+    // lanes: as a three-dimensional array Vivado took it for a RAM with one write port a lane (Synth 8-11357) and its
+    // elaboration alone ran 42 minutes and 40 GB (2026-11-22)
+    logic [LINE*PW-1:0] line_q [0:RING-1];
+    logic [LINE*PW-1:0] row_w;                            // the writer's row
+    logic [5:0]  row_lead  [0:RING-1];                    // per slot: bytes before the first wanted byte in the row's first beat
     logic [15:0] row_beats [0:RING-1];                    // per slot: beats of the row
     logic [CW-1:0] rows_alloc;                            // rows issued and not yet written: ring occupancy
     logic [CW-1:0] rows_ready;                            // rows fully received and not yet taken by the writer
@@ -128,7 +142,6 @@ module ref_fetch #(
     logic        s_lst   [0:RING-1];
     logic        s_buf   [0:RING-1];
     logic        s_last  [0:RING-1];                      // the request's last row: its last word pulses done
-    logic [15:0] s_nsamp [0:RING-1];
     logic [15:0] s_cxlo  [0:RING-1];
     logic [15:0] s_lastx [0:RING-1];
     logic signed [16:0] s_x0 [0:RING-1];
@@ -138,8 +151,6 @@ module ref_fetch #(
     // ---- data side ----
     logic [SW-1:0] slot_rx;                               // line buffer of the row being received
     logic [15:0] beats_rx;                                // beats received of that row
-    logic [6:0]  wptr;                                    // next line sample to write
-    logic        first_beat;
 
     // ---- writer ----
     logic        wr_busy;
@@ -147,6 +158,7 @@ module ref_fetch #(
     logic [4:0]  w4;                                      // patch word being written
     logic        w_lst, w_buf, w_last;                    // the row's geometry, copied from its slot when the writer takes it
     logic [15:0] w_cxlo, w_lastx;
+    logic [5:0]  w_lead;                                  // samples before the first wanted one in the row's line buffer
     logic signed [16:0] w_x0;
     logic [4:0]  w_nw;
     logic [6:0]  w_row;                                   // patch row being written
@@ -183,7 +195,9 @@ module ref_fetch #(
     logic req_empty;
     assign req_empty = !(req_r_lo < ((req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi));
     assign req_ready = (ast == A_IDLE) && (!req_empty || (!wr_busy && (rows_alloc == CW'(0))));
-    assign m_axi_arsize  = 3'b011;                        // 8 bytes
+    assign m_axi_arsize  = 3'b110;                        // 64 bytes
+    assign lead_c  = row_a[5:0];
+    assign beats_c = 16'((16'(row_a[5:0]) + q_nbytes + 16'd63) >> 6);
     assign m_axi_arburst = 2'b01;                         // INCR
     assign m_axi_arcache = 4'b0011;
     assign m_axi_arprot  = 3'b000;
@@ -194,7 +208,7 @@ module ref_fetch #(
     // burst length: <= 16 beats, <= beats_left, never across a 4 KB boundary
     logic [4:0] burst_len;
     logic [9:0] to4k;
-    assign to4k = 10'((13'd4096 - 13'(cur_addr[11:0])) >> 3);
+    assign to4k = 10'((13'd4096 - 13'(cur_addr[11:0])) >> 6);
     always_comb begin
         burst_len = 5'd16;
         if (beats_left < 16'(burst_len)) burst_len = 5'(beats_left);
@@ -209,10 +223,11 @@ module ref_fetch #(
             logic signed [17:0] col;
             logic [15:0] cc;
             col = 18'(w_x0) - 18'sd3 + 18'(signed'({13'd0, w4})) * 18'sd4 + 18'(l);
-            cc = clip_col(col, w_lastx) - w_cxlo;
-            word_d8[l*PW +: PW] = line[slot_wr][cc[6:0]];
+            cc = clip_col(col, w_lastx) - w_cxlo + 16'(w_lead);
+            word_d8[l*PW +: PW] = row_w[32'(cc[7:0])*PW +: PW];
         end
     end
+    assign row_w = line_q[slot_wr];
     assign patch_d4 = word_d8[4*PW-1:0];
     assign patch_d4b = word_d8[8*PW-1:4*PW];
     assign patch_we2 = wr_busy && (6'(w4) + 6'd1 < 6'(w_nw));
@@ -222,11 +237,11 @@ module ref_fetch #(
     assign patch_w4 = w4;
     assign patch_we = wr_busy;
 
-    // the samples of a beat (8 bytes): 8 one-byte samples or 4 16-bit samples
-    function automatic logic [PW-1:0] beat_sample(input logic [63:0] d, input logic fmt16, input int k);
-        // 16-bit samples occupy lanes 0..3 only (the beat loop stops at nk); the masked index keeps the
-        // select in range for the unrolled k = 4..7 copies, which Vivado elaborates even though they never run
-        if (fmt16) return PW'(d[(k & 3)*16 +: 16]);
+    // the samples of a beat (64 bytes): 64 one-byte samples or 32 16-bit samples
+    function automatic logic [PW-1:0] beat_sample(input logic [511:0] d, input logic fmt16, input int k);
+        // 16-bit samples occupy lanes 0..31 only (the beat loop stops at nk); the masked index keeps the
+        // select in range for the unrolled k = 32..63 copies, which Vivado elaborates even though they never run
+        if (fmt16) return PW'(d[(k & 31)*16 +: 16]);
         return PW'(d[k*8 +: 8]);
     endfunction
 
@@ -262,27 +277,24 @@ module ref_fetch #(
                 ast <= A_ADDR;
             end
             A_ADDR: begin
-                logic [39:0] a_lo, a_hi_excl;
-                logic [15:0] nbytes;
+                logic [39:0] a_lo;
                 a_lo = q_base + 40'(mul) + (q_fmt16 ? {23'd0, cx_lo, 1'b0} : {24'd0, cx_lo});
-                nbytes = q_fmt16 ? {nsamp[14:0], 1'b0} : nsamp;
-                a_hi_excl = a_lo + 40'(nbytes);
-                row_a <= a_lo; q_lead <= a_lo[2:0];
-                q_beats <= 16'((a_hi_excl + 40'd7 - {a_lo[39:3], 3'b000}) >> 3);
+                q_nbytes <= q_fmt16 ? {nsamp[14:0], 1'b0} : nsamp;
+                row_a <= a_lo;
                 ast <= A_ROW;
             end
             A_ROW: if (rows_alloc < CW'(RING)) begin                          // a line buffer is free for this row: it takes the slot
-                cur_addr <= {row_a[39:3], 3'b000};
-                beats_left <= q_beats;
-                row_lead[slot_ar] <= q_lead;
-                row_beats[slot_ar] <= q_beats;
-                s_fmt16[slot_ar] <= q_fmt16; s_nsamp[slot_ar] <= nsamp; s_cxlo[slot_ar] <= cx_lo; s_x0[slot_ar] <= q_x0;
+                cur_addr <= {row_a[39:6], 6'b000000};
+                beats_left <= beats_c;
+                row_lead[slot_ar] <= lead_c;
+                row_beats[slot_ar] <= beats_c;
+                s_fmt16[slot_ar] <= q_fmt16; s_cxlo[slot_ar] <= cx_lo; s_x0[slot_ar] <= q_x0;
                 s_lastx[slot_ar] <= q_lastx; s_nw[slot_ar] <= q_nw; s_lst[slot_ar] <= q_lst; s_buf[slot_ar] <= q_buf;
                 s_row[slot_ar] <= r_ar; s_last[slot_ar] <= (r_ar == q_nrow - 7'd1);
                 ast <= A_AR;
             end
             A_AR: if (m_axi_arready) begin
-                cur_addr <= cur_addr + 40'(burst_len) * 40'd8;
+                cur_addr <= cur_addr + 40'(burst_len) * 40'd64;
                 beats_left <= beats_left - 16'(burst_len);
                 if (beats_left == 16'(burst_len)) begin                       // the row's last burst: on to the next row
                     slot_ar <= slot_next(slot_ar);
@@ -299,22 +311,24 @@ module ref_fetch #(
     // ---- data side: responses in order into the line buffer of the row they belong to ----
     always_ff @(posedge clk) begin
         if (rst) begin
-            slot_rx <= SW'(0); beats_rx <= 16'd0; wptr <= 7'd0; first_beat <= 1'b1;
+            slot_rx <= SW'(0); beats_rx <= 16'd0;
         end else if (rx_beat) begin
-            logic [3:0] k0;                               // first wanted sample of the beat
-            logic [3:0] nk;                               // samples in the beat
-            logic [2:0] lead;
-            lead = row_lead[slot_rx];
-            nk = s_fmt16[slot_rx] ? 4'd4 : 4'd8;
-            k0 = first_beat ? (s_fmt16[slot_rx] ? 4'(lead >> 1) : 4'(lead)) : 4'd0;
-            for (int k = 0; k < 8; k++)
-                if (4'(k) >= k0 && 4'(k) < nk && (wptr + 7'(k) - 7'(k0)) < 7'(s_nsamp[slot_rx]))
-                    line[slot_rx][wptr + 7'(k) - 7'(k0)] <= beat_sample(m_axi_rdata, s_fmt16[slot_rx], k);
-            wptr <= wptr + 7'(nk) - 7'(k0);
-            first_beat <= 1'b0;
             beats_rx <= beats_rx + 16'd1;
             if (rx_last) begin
-                slot_rx <= slot_next(slot_rx); beats_rx <= 16'd0; wptr <= 7'd0; first_beat <= 1'b1;
+                slot_rx <= slot_next(slot_rx); beats_rx <= 16'd0;
+            end
+        end
+    end
+
+    // lane k of the row's beat b lands at sample 64 b + k (32 b + k with 16-bit samples): an entry's only select is its beat
+    for (genvar gs = 0; gs < RING; gs++) begin : g_line
+        always_ff @(posedge clk) if (rx_beat && slot_rx == SW'(gs)) begin
+            for (int b = 0; b < 4; b++) if (beats_rx[1:0] == 2'(b)) begin
+                if (s_fmt16[gs]) begin
+                    for (int k = 0; k < 32; k++) line_q[gs][(32*b + k)*PW +: PW] <= beat_sample(m_axi_rdata, 1'b1, k);
+                end else if (b < 3) begin
+                    for (int k = 0; k < 64; k++) line_q[gs][(64*b + k)*PW +: PW] <= beat_sample(m_axi_rdata, 1'b0, k);
+                end
             end
         end
     end
@@ -328,6 +342,7 @@ module ref_fetch #(
                 wr_busy <= 1'b1; w4 <= 5'd0;
                 w_lst <= s_lst[slot_wr]; w_buf <= s_buf[slot_wr]; w_last <= s_last[slot_wr]; w_row <= s_row[slot_wr];
                 w_x0 <= s_x0[slot_wr]; w_lastx <= s_lastx[slot_wr]; w_cxlo <= s_cxlo[slot_wr]; w_nw <= s_nw[slot_wr];
+                w_lead <= s_fmt16[slot_wr] ? {1'b0, row_lead[slot_wr][5:1]} : row_lead[slot_wr];
             end else if (wr_busy) begin
                 if (wr_last) begin
                     wr_busy <= 1'b0; slot_wr <= slot_next(slot_wr);

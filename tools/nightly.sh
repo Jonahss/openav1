@@ -2,6 +2,9 @@
 # Nightly regression (run from cron on the batch host): RTL syntax decoder on generated streams, the full decoder
 # on generated frames, and the corpus through the whole RTL pipeline compared with dav1d's pictures (model-free).
 # Writes logs/nightly-<date>.txt with one line per suite and exits non-zero on any failure.
+# Two decoder forms are in here on purpose (2026-11-22): the dec_top suites (corpus, Argon features, dec_inter*) use the
+# plain whole-picture frame memory (FRAME_URAM = 0), a test harness that simulates fast and is never built for the card;
+# the dec_host suites use the card's form (UltraRAM windows, DDR areas), which the gate and the card runs check further.
 # Usage: [NIGHTLY_ONLY=regex] tools/nightly.sh [tag]   (needs bootstrap.sh done and refout/ populated by tools/regress.sh once)
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -116,7 +119,6 @@ run lf_filt_unit       python tb/runner.py lf_filt          # the deblocking sam
 run lf_filt_pipe       LFF_PIPE=1 python tb/runner.py lf_filt   # the same filter in its two-stage form (PIPE = 1): outputs from the stage registers alone
 run lf_stream_unit     TS_SEEDS=2,3,7,8,9,10,20,47,70 TS_W=192 TS_H=160 python tb/runner.py lf_stream   # the streaming deblock stage vs lf_model, band by band (seeds 7, 20, 47, 70: samples that depend on the last column's vertical edge)
 run edge_line_unit     python tb/runner.py edge_line        # the unfiltered last-line copy (intra edge reads; LF a row earlier) vs a model
-run axi_rd_share_unit  python tb/runner.py axi_rd_share   # two readers on one AXI read channel (reference fetch + the motion-field projection): 800 random bursts, answers in order
 run mc_filt_unit       python tb/runner.py mc_filt          # the motion-compensation filter vs the model: fuzz + back-to-back (overlapped) runs
 run tile_syntax_plain  TS_SCREEN=0 TS_SEEDS=12 python tb/runner.py tile_syntax
 run tile_syntax_screen TS_SCREEN=1 TS_SEEDS=24 python tb/runner.py tile_syntax
