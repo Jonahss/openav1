@@ -65,7 +65,7 @@ module mc_filt
     input  logic [16*PW-1:0] patch_dq,         // words patch_w4 .. patch_w4 + patch_n, the first in the low bits
     // ---- run (parameters sampled at start) ----
     input  logic          start,
-    input  logic          run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
+    input  logic [1:0]    run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
     input  logic          v_hold,              // hold the vertical side in V_IDLE (recon_top: while the transform FSM writes the frame buffer)
     input  logic          lst,                 // the patch list to filter
     input  logic          rbuf,                // the patch buffer to filter from
@@ -90,13 +90,13 @@ module mc_filt
     output logic          busy,
     output logic          h_ready,             // the horizontal side can take a run: idle, previous run handed to the vertical side
     output logic          done,
-    output logic          done_tag,            // the tag of the run that just finished (with done)
+    output logic [1:0]    done_tag,            // the tag of the run that just finished (with done)
     output logic          v_active,            // a run is in or waiting for the vertical side (it will write the frame buffer)
     output logic [3:0]    perf_flags,          // for recon_top's counters: {output FIFO not empty, a run waits between the sides, vertical side busy, horizontal side busy}
     // ---- output stream (modes 0, 2, 3) ----
     input  logic          out_wait,            // recon_top's blend pipelines hold words of an earlier run: the first word of a run waits
     output logic          out_valid,
-    output logic          out_tag,
+    output logic [1:0]    out_tag,
     output logic [6:0]    out_x,
     output logic [6:0]    out_y,
     output logic [4*PW-1:0] out_pix4,
@@ -183,7 +183,7 @@ module mc_filt
     // The two passes of consecutive runs overlap (2026-11-08): the horizontal side runs on p_* (sampled at start); when its
     // last strip word has landed the run is handed over (q_*: one pending run) and the vertical side copies it into v_*
     // when it is free. At most one run in each side, so the filter holds two runs in flight.
-    logic        p_tag, q_tag, v_tag;
+    logic [1:0]  p_tag, q_tag, v_tag;
     logic        q_sb;                                   // strip buffer of the pending run
     logic        q_scaled, v_scaled, q_warp, v_warp;
     logic signed [15:0] q_wg, q_wd, v_wg, v_wd;
@@ -259,7 +259,7 @@ module mc_filt
     typedef struct packed {
         logic [1:0]   nw;                                // words - 1: groups g .. g + nw of row y
         logic         fin;                               // the run's done marker (no words)
-        logic         tag;
+        logic [1:0]   tag;
         logic [3:0]   mask;
         logic [6:0]   y;
         logic [4:0]   g;
@@ -276,11 +276,12 @@ module mc_filt
     assign f_stall = (f_cnt >= FCW'(OUT_FIFO - 12));   // the vertical pipeline holds up to 6 entries in flight
     assign f_empty = (f_cnt == '0) && !f_qv && !f_curv && !f_we;
     assign busy = (hst != H_IDLE) || pend || (vst != V_IDLE) || !f_empty;
-    // At most two runs alive (started, done not yet pulsed): recon_top keeps two run records, selected by the one-bit
+    // At most four runs alive (started, done not yet pulsed; two until 2026-11-23, when a ready patch waited a third of
+    // a frame for the output of two runs to leave at one word a cycle): recon_top keeps four run records, selected by the two-bit
     // tag, and a run's output words stay in the FIFO after the vertical side has moved on, so a third run started
     // then would take the record its words still need (2026-11-09: every inter suite failed without this)
-    logic [1:0]  alive;
-    assign h_ready = (hst == H_IDLE) && !pend && (alive < 2'd2);
+    logic [2:0]  alive;
+    assign h_ready = (hst == H_IDLE) && !pend && (alive < 3'd4);
     assign h_buf_busy = ((hst != H_IDLE) ? (2'b01 << p_buf) : 2'b00) | (start ? (2'b01 << rbuf) : 2'b00);
     assign v_active = pend || (vst != V_IDLE) || !f_empty;
     assign perf_flags = {!f_empty, pend, vst != V_IDLE, hst != H_IDLE};
@@ -437,7 +438,7 @@ module mc_filt
         h0_v <= 1'b0; h0_q <= 1'b0; h0_gv <= 4'b0000; v0_v <= 1'b0; v0_q <= 1'b0; v0_gv <= 4'b0000;
         if (f_we) fifo_ram[f_wp] <= f_d;
         if (rst) begin
-            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 2'd0; alive <= 2'd0; f_first <= 1'b1;
+            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 2'd0; alive <= 3'd0; f_first <= 1'b1;
             hst <= H_IDLE; vst <= V_IDLE; pend <= 1'b0; hb <= 1'b0; vb <= 1'b0; hdrain <= 3'd0;
             h1_v <= 1'b0; h2_v <= 1'b0; h3_v <= 1'b0; h4_v <= 1'b0;
             v1_v <= 1'b0; v2_v <= 1'b0; v3_v <= 1'b0; v4_v <= 1'b0;
@@ -446,9 +447,9 @@ module mc_filt
             // still runs the previous one (the passes of consecutive runs overlap); it is handed over once its strip is complete
 `ifndef SYNTHESIS
             if (start && !(hst == H_IDLE && !pend)) $fatal(1, "mc_filt: start while not h_ready");
-            if (start && alive == 2'd2 && !done) $fatal(1, "mc_filt: a third run started while two are alive");
+            if (start && alive == 3'd4 && !done) $fatal(1, "mc_filt: a fifth run started while four are alive");
 `endif
-            alive <= alive + 2'(start) - 2'(done);       // done is registered: the pulse visible this cycle
+            alive <= alive + 3'(start) - 3'(done);       // done is registered: the pulse visible this cycle
             case (hst)
                 H_IDLE: if (start) begin
                     p_list <= lst; p_buf <= rbuf;

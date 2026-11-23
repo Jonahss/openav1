@@ -309,7 +309,7 @@ class RunCollector:
     def __init__(self, dut):
         self.dut = dut
         self.pending = []                      # dicts: tag, label, w, h, mode, exp (None for a parked list-0 run)
-        self.buckets = {0: [], 1: []}
+        self.buckets = {0: [], 1: [], 2: [], 3: []}        # four run tags (recon_top's four run records)
         self.dones = 0
         self.failures = []
         self.overlap_cycles = 0                # cycles with both sides busy
@@ -468,9 +468,10 @@ async def mc_filt_overlap(dut):
                 await write_patch_buf(dut, pb, r["lst"], r["ref"], refW, refH, r["x0"], r["y0"], 8, 8)
             else:
                 await write_patch_buf(dut, pb, r["lst"], r["ref"], refW, refH, r["x0"], r["y0"], w, h, xs, ys)
-            col.pending.append(dict(tag=pb, label=label, w=w, h=h, mode=r["mode"], exp=exp if k == len(plan) - 1 else None))
+            tag = runs & 3
+            col.pending.append(dict(tag=tag, label=label, w=w, h=h, mode=r["mode"], exp=exp if k == len(plan) - 1 else None))
             await start_when_ready(dut, r["lst"], w, h, r["interp_x"], r["interp_y"], r["fx"], r["fy"], bd, r["mode"], r["wt0"], r["wt1"],
-                                   xs, ys, r["warp"], pb, pb)
+                                   xs, ys, r["warp"], pb, tag)
             runs += 1
             assert not col.failures, col.failures[0]
         stats[kind] += 1
