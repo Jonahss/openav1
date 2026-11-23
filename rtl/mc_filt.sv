@@ -33,8 +33,9 @@
 // streams (15 rows, 2 groups; 8 output rows) with Warped_Filters taps per sample from (sx4, alpha, beta) and
 // (sy4, gamma, delta); the blend modes apply as for any unit.
 // Two words a cycle (2026-11-09, rung A of the 8-sample datapath): the patch and the strip buffer are stored as word
-// pairs (an even and an odd memory, one address per pair). The writer may deliver words 2j and 2j + 1 of a row in one
-// cycle (patch_we2 / patch_d4b beside the first word), and the horizontal pass of an unscaled, non-warp run reads a
+// pairs (an even and an odd memory, one address per pair; the patch as quads since 2026-11-23). The writer may deliver up
+// to four words of a row in one cycle (patch_n + 1 words on patch_dq, from a word that is a multiple of 4), and the
+// horizontal pass of an unscaled, non-warp run reads a
 // pair a cycle and produces two groups a cycle (64 products): groups 2j - 2 and 2j - 1 from pairs j - 1 and j. Scaled
 // and warp runs keep one word and one group a cycle (per-lane geometry; rare).
 // Rung B (same day): the vertical pass of such a run reads a strip pair a cycle and computes two groups a cycle
@@ -60,10 +61,9 @@ module mc_filt
     input  logic          patch_buf,           // which of the two patch buffers (block-ahead fetch: one is written while the other is run)
     input  logic          patch_list,
     input  logic [6:0]    patch_row,           // 0 .. 71
-    input  logic [4:0]    patch_w4,            // word 0 .. 17 (samples 4 w4 .. 4 w4 + 3)
-    input  logic [4*PW-1:0] patch_d4,
-    input  logic          patch_we2,           // with patch_we and an even patch_w4: word patch_w4 + 1 as well
-    input  logic [4*PW-1:0] patch_d4b,
+    input  logic [4:0]    patch_w4,            // the first word written, 0 .. 17 (samples 4 w4 .. 4 w4 + 3)
+    input  logic [1:0]    patch_n,             // words written - 1; more than one word only from a patch_w4 that is a multiple of 4
+    input  logic [16*PW-1:0] patch_dq,         // words patch_w4 .. patch_w4 + patch_n, the first in the low bits
     // ---- run (parameters sampled at start) ----
     input  logic          start,
     input  logic          run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
@@ -106,16 +106,21 @@ module mc_filt
 );
     localparam int PATCH_WPR = 18;                        // words per patch row
     localparam int PATCH_ROWS = 72;
-    localparam int PATCH_LN = 2 * PATCH_ROWS * PATCH_WPR; // 2592: a buffer (two lists)
-    localparam int PATCH_N = 2 * PATCH_LN;                // two buffers: the fetch of strip n + 1 fills one while strip n runs from the other
+    localparam int PATCH_QPR = (PATCH_WPR + 3) / 4;       // 5: word quads per patch row
+    localparam int PATCH_LQ = PATCH_ROWS * PATCH_QPR;     // 360: quads of one list
+    localparam int PATCH_QN = 4 * PATCH_LQ;               // 1440: two buffers of two lists (the fetch of strip n + 1 fills one buffer while strip n runs from the other)
     localparam int STRIP_ROWS = 71;                       // nrow <= 71
     localparam int STRIP_LN = STRIP_ROWS * 16;            // 1136: one strip buffer (GRP words a row)
     localparam int GRP = 16;                              // groups per row (64 / 4)
 
     // ================================================================ memories
-    // word pairs: the even words and the odd words of a row in two memories, one address per pair
-    logic [4*PW-1:0] patch_e [0:PATCH_N/2-1];
-    logic [4*PW-1:0] patch_o [0:PATCH_N/2-1];
+    // The patch as word quads (2026-11-23, K60-87): words 4q .. 4q + 3 of a row in four memories, one address per quad,
+    // so the writer can deliver four words a cycle. The strip and the parked prediction are word pairs: the even words
+    // and the odd words of a row in two memories, one address per pair.
+    logic [4*PW-1:0] patch_m0 [0:PATCH_QN-1];
+    logic [4*PW-1:0] patch_m1 [0:PATCH_QN-1];
+    logic [4*PW-1:0] patch_m2 [0:PATCH_QN-1];
+    logic [4*PW-1:0] patch_m3 [0:PATCH_QN-1];
     logic [63:0]     strip_e [0:STRIP_ROWS*GRP-1];        // intermediate: 4 x 16-bit signed per word; two buffers: the
     logic [63:0]     strip_o [0:STRIP_ROWS*GRP-1];        // horizontal pass of run n + 1 writes one while the vertical pass of run n reads the other
     logic [67:0]     pred_e [0:64*GRP/2-1];               // parked list-0 prediction: 4 x 17-bit signed per word, as pairs
@@ -123,19 +128,29 @@ module mc_filt
     localparam int OUT_FIFO = 256;                        // output FIFO entries (a 64 x 64 run leaves at most 8 x 57 = 456 words = 228 entries waiting)
     localparam int FCW = $clog2(OUT_FIFO) + 1;            // entry counter width
 
-    function automatic logic [11:0] patch_addr(input logic bf, input logic l, input logic [6:0] r, input logic [3:0] pr);
-        return 12'(bf) * 12'(PATCH_LN / 2) + 12'(l) * 12'(PATCH_ROWS * PATCH_WPR / 2) + 12'(r) * 12'(PATCH_WPR / 2) + 12'(pr);
+    function automatic logic [10:0] patch_addr(input logic bf, input logic l, input logic [6:0] r, input logic [2:0] q);
+        return 11'(bf) * 11'(2 * PATCH_LQ) + 11'(l) * 11'(PATCH_LQ) + 11'(r) * 11'(PATCH_QPR) + 11'(q);
     endfunction
 
-    // a single word goes to the memory of its parity; a pair (patch_we2, even patch_w4) to both
-    logic [11:0] patch_waddr;
-    assign patch_waddr = patch_addr(patch_buf, patch_list, patch_row, patch_w4[4:1]);
+    // a single word goes to the memory of its lane; a write of several words (from a multiple of 4) to lanes 0 .. patch_n
+    logic [10:0] patch_waddr;
+    logic [3:0]  patch_lwe;
+    logic [4*PW-1:0] patch_ld [0:3];
+    assign patch_waddr = patch_addr(patch_buf, patch_list, patch_row, patch_w4[4:2]);
+    always_comb begin
+        for (int j = 0; j < 4; j++) begin
+            patch_lwe[j] = patch_we && ((patch_n == 2'd0) ? (patch_w4[1:0] == 2'(j)) : (2'(j) <= patch_n));
+            patch_ld[j]  = (patch_n == 2'd0) ? patch_dq[0 +: 4*PW] : patch_dq[j*4*PW +: 4*PW];
+        end
+    end
     always_ff @(posedge clk) begin
-        if (patch_we && !patch_w4[0]) patch_e[patch_waddr] <= patch_d4;
-        if (patch_we && (patch_w4[0] || patch_we2)) patch_o[patch_waddr] <= patch_w4[0] ? patch_d4 : patch_d4b;
+        if (patch_lwe[0]) patch_m0[patch_waddr] <= patch_ld[0];
+        if (patch_lwe[1]) patch_m1[patch_waddr] <= patch_ld[1];
+        if (patch_lwe[2]) patch_m2[patch_waddr] <= patch_ld[2];
+        if (patch_lwe[3]) patch_m3[patch_waddr] <= patch_ld[3];
     end
 `ifndef SYNTHESIS
-    always_ff @(posedge clk) if (!rst && patch_we && patch_we2 && patch_w4[0]) $fatal(1, "mc_filt: patch pair write at an odd word");
+    always_ff @(posedge clk) if (!rst && patch_we && (patch_n != 2'd0) && (patch_w4[1:0] != 2'd0)) $fatal(1, "mc_filt: patch write of several words not from a multiple of 4");
 `endif
 
     // ================================================================ run parameters
@@ -266,9 +281,10 @@ module mc_filt
     assign perf_flags = {!f_empty, pend, vst != V_IDLE, hst != H_IDLE};
 
     // ---------------------------------------------------------------- memory ports
-    logic [11:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
+    logic [10:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
     logic [4*PW-1:0] prde_q, prdo_q, prde_q1, prdo_q1;   // the pair read: even and odd word (prd_q = the one a single-word read asked for)
-    logic        prd_sel;
+    logic [4*PW-1:0] prl_q [0:3];                        // the quad at prd_addr; prd_hi: the pair (or single word) asked for is in its upper half
+    logic        prd_sel, prd_hi;
     logic [10:0] srd_addr;  logic [63:0] srd_q, srd_q1;  // strip read (q1 with the v1 tags)
     logic [63:0] srde_q, srdo_q;  logic srd_sel;
     logic [10:0] swr_addr;  logic [63:0] swe_d, swo_d;  logic swe_we, swo_we;
@@ -278,7 +294,8 @@ module mc_filt
     logic [8:0]  pwr_addr;  logic [67:0] pwe_d, pwo_d;  logic pwe_we, pwo_we;
     logic [6:0]  srd_row;
     always_ff @(posedge clk) begin
-        prde_q <= patch_e[prd_addr]; prdo_q <= patch_o[prd_addr]; prd_sel <= hk[0];
+        prl_q[0] <= patch_m0[prd_addr]; prl_q[1] <= patch_m1[prd_addr]; prl_q[2] <= patch_m2[prd_addr]; prl_q[3] <= patch_m3[prd_addr];
+        prd_hi <= p_two ? hk[0] : hk[1]; prd_sel <= hk[0];
         if (swe_we) strip_e[swr_addr] <= swe_d;
         if (swo_we) strip_o[swr_addr] <= swo_d;
         srde_q <= strip_e[srd_addr]; srdo_q <= strip_o[srd_addr]; srd_sel <= vg[0];
@@ -287,11 +304,13 @@ module mc_filt
         pdre_q <= pred_e[pdr_addr]; pdro_q <= pred_o[pdr_addr]; pdr_sel <= vg[0];
         prd_q1 <= prd_q; prde_q1 <= prde_q; prdo_q1 <= prdo_q; srd_q1 <= srd_q; srdo_q1 <= srdo_q; pdr_q1 <= pdr_q; pdro_q1 <= pdro_q;
     end
+    assign prde_q = prd_hi ? prl_q[2] : prl_q[0];
+    assign prdo_q = prd_hi ? prl_q[3] : prl_q[1];
     assign prd_q = prd_sel ? prdo_q : prde_q;
     assign srd_q = srd_sel ? srdo_q : srde_q;
     assign pdr_q = pdr_sel ? pdro_q : pdre_q;
     always_comb begin
-        prd_addr = patch_addr(p_buf, p_list, hr, p_two ? hk[3:0] : hk[4:1]);
+        prd_addr = patch_addr(p_buf, p_list, hr, p_two ? hk[3:1] : hk[4:2]);
         srd_row  = v_scaled ? 7'(vpos[16:10]) + 7'(vt) : vk;
         srd_addr = 11'(vb) * 11'(STRIP_LN / 2) + 11'(srd_row) * 11'(GRP / 2) + 11'(vg[4:1]);
         pdr_addr = (v_scaled ? 9'(vi) : 9'(vk - 7'd7)) * 9'(GRP / 2) + 9'(vg[4:1]);

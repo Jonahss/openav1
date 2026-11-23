@@ -119,13 +119,13 @@ async def ref_fetch_regions(dut):
             if int(dut.patch_we.value):
                 assert int(dut.patch_buf.value) == buf, f"iter {it}: patch write names buffer {int(dut.patch_buf.value)}, request said {buf}"
                 key = (int(dut.patch_list.value), int(dut.patch_row.value), int(dut.patch_w4.value))
-                assert key not in got, f"iter {it}: patch word {key} written twice"
-                got[key] = int(dut.patch_d4.value)
-                if int(dut.patch_we2.value):                 # the pair's second word (two words a cycle, 2026-11-09)
-                    assert key[2] % 2 == 0, f"iter {it}: pair write at odd word {key}"
-                    key2 = (key[0], key[1], key[2] + 1)
-                    assert key2 not in got, f"iter {it}: patch word {key2} written twice"
-                    got[key2] = int(dut.patch_d4b.value)
+                nw = int(dut.patch_n.value) + 1              # up to four words a cycle (2026-11-23)
+                assert nw == 1 or key[2] % 4 == 0, f"iter {it}: write of {nw} words at word {key}"
+                dq = int(dut.patch_dq.value)
+                for j in range(nw):
+                    kj = (key[0], key[1], key[2] + j)
+                    assert kj not in got, f"iter {it}: patch word {kj} written twice"
+                    got[kj] = (dq >> (48 * j)) & ((1 << 48) - 1)
             if int(dut.done.value):
                 break
             await Timer(1, "ns")
@@ -220,13 +220,13 @@ async def ref_fetch_pipelined(dut):
                     assert not (busy_now >> pb) & 1, f"group {stats['groups']} request {dones}: row taken for buffer {pb} while busy"
                 assert pb == reqs[dones][5], f"group {stats['groups']} request {dones}: buffer {pb}, request said {reqs[dones][5]}"
                 key = (int(dut.patch_list.value), int(dut.patch_row.value), int(dut.patch_w4.value))
-                assert key not in got[dones], f"group {stats['groups']} request {dones}: patch word {key} written twice"
-                got[dones][key] = int(dut.patch_d4.value)
-                if int(dut.patch_we2.value):
-                    assert key[2] % 2 == 0, f"group {stats['groups']} request {dones}: pair write at odd word {key}"
-                    key2 = (key[0], key[1], key[2] + 1)
-                    assert key2 not in got[dones], f"group {stats['groups']} request {dones}: patch word {key2} written twice"
-                    got[dones][key2] = int(dut.patch_d4b.value)
+                nw = int(dut.patch_n.value) + 1
+                assert nw == 1 or key[2] % 4 == 0, f"group {stats['groups']} request {dones}: write of {nw} words at word {key}"
+                dq = int(dut.patch_dq.value)
+                for j in range(nw):
+                    kj = (key[0], key[1], key[2] + j)
+                    assert kj not in got[dones], f"group {stats['groups']} request {dones}: patch word {kj} written twice"
+                    got[dones][kj] = (dq >> (48 * j)) & ((1 << 48) - 1)
             if int(dut.done.value):
                 dones += 1
                 state["dones"] = dones

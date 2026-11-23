@@ -273,7 +273,7 @@ def check_perf(p, tag):
     assert p["M_fetch_and_filter"] + p["M_fetch_only"] + p["M_rf_engine_idle"] in range(clocks - slack, clocks + slack), f"{tag}: fetch engine busy + idle != clocks"
     assert p["M_fetch_and_filter"] + p["M_filter_only"] + p["M_filt_idle"] in range(clocks - slack, clocks + slack), f"{tag}: filter busy + idle != clocks"
     assert p["M_filt_h_and_v"] <= min(p["M_filt_h_busy"], p["M_filt_v_busy"]), f"{tag}: both sides busy more than either"
-    assert p["M_patch_second_words"] <= p["M_patch_writes"], f"{tag}: second words without writes"
+    assert p["M_patch_multi_writes"] <= p["M_patch_writes"], f"{tag}: more writes of several words than writes"
     if p["B_MC_STRIP2"]:
         assert p["M_rf_reads"] and p["M_rf_beats"] >= p["M_rf_reads"] and p["M_patch_writes"] and p["M_filt_h_busy"] and p["M_filt_v_busy"] and p["M_filt_out_clocks"], \
             f"{tag}: an inter frame with idle motion-compensation counters: { {n: v for n, v in p.items() if n.startswith('M_')} }"
