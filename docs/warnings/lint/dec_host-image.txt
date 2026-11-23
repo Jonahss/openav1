@@ -509,13 +509,13 @@
                                              : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_rf'
    83 |     input  logic          m_axi_rlast,
       |                           ^~~~~~~~~~~
-%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:117:18: Bits of signal are not used: 'mul'[47:40]
+%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:121:18: Bits of signal are not used: 'mul'[47:40]
                                               : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_rf'
-  117 |     logic [47:0] mul;                                      
+  121 |     logic [47:0] mul;                                      
       |                  ^~~
-%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:218:26: Bits of signal are not used: 'cc'[15:7]
+%Warning-UNUSEDSIGNAL: rtl/ref_fetch.sv:224:26: Bits of signal are not used: 'cc'[15:8]
                                               : ... note: In instance 'dec_host.u_dec.u_rc.g_inter.u_rf'
-  218 |             logic [15:0] cc;
+  224 |             logic [15:0] cc;
       |                          ^~
 %Warning-UNUSEDPARAM: rtl/tile_syntax.sv:79:79: Parameter is not used: 'P_VERT_4'
                                               : ... note: In instance 'dec_host.u_dec.u_ts.g_e[1].u_ts'
@@ -1538,5 +1538,5 @@
    50 |     function automatic logic [2:0] sec_tap(input logic odd, input logic k);
       |                                                        ^~~
 - V e r i l a t i o n   R e p o r t: Verilator 5.053 devel rev v5.052-222-gd234caafc (mod)
-- Verilator: Built from 61.791 MB sources in 73 modules, into 48.138 MB in 56 C++ files needing 0.000 MB
-- Verilator: Walltime 8.337 s (elab=0.790, cvt=6.530, bld=0.000); cpu 8.336 s on 1 threads; allocated 358.023 MB
+- Verilator: Built from 61.789 MB sources in 73 modules, into 54.085 MB in 61 C++ files needing 0.000 MB
+- Verilator: Walltime 8.813 s (elab=0.731, cvt=6.939, bld=0.000); cpu 8.812 s on 1 threads; allocated 426.738 MB

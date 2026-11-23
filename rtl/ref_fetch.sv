@@ -93,7 +93,11 @@ module ref_fetch #(
     output logic          patch_we2,            // word patch_w4 + 1 as well (patch_w4 is even)
     output logic [4*PW-1:0] patch_d4b
 );
-    localparam int LINE = 80;                             // line buffer samples (a row reads at most 72)
+    // line buffer samples. A beat goes in as it comes, lane k of the row's beat b at sample 64 b + k (32 b + k with
+    // 16-bit samples): every entry has one source lane and the row's lead is added where the writer reads. (Moving each
+    // beat down by the lead on the way in gave every entry a 64-way source select: its out-of-context synthesis had not
+    // finished after 2 h 46 min, 2026-11-22.) A row is at most 63 + 76 bytes = 3 beats, or 62 + 152 = 4 beats of 32.
+    localparam int LINE = 192;
     localparam int SW = (RING > 1) ? $clog2(RING) : 1;    // ring slot index
     localparam int CW = $clog2(RING + 1);                 // ring occupancy counters, 0 .. RING
 
@@ -124,7 +128,11 @@ module ref_fetch #(
     logic [SW-1:0] slot_ar;                               // line buffer the row being issued was given
 
     // ---- ring ----
-    logic [PW-1:0] line [0:RING-1][0:LINE-1];
+    // one packed row a slot, each written by a process of its own and read through the slot select first, then the
+    // lanes: as a three-dimensional array Vivado took it for a RAM with one write port a lane (Synth 8-11357) and its
+    // elaboration alone ran 42 minutes and 40 GB (2026-11-22)
+    logic [LINE*PW-1:0] line_q [0:RING-1];
+    logic [LINE*PW-1:0] row_w;                            // the writer's row
     logic [5:0]  row_lead  [0:RING-1];                    // per slot: bytes before the first wanted byte in the row's first beat
     logic [15:0] row_beats [0:RING-1];                    // per slot: beats of the row
     logic [CW-1:0] rows_alloc;                            // rows issued and not yet written: ring occupancy
@@ -134,7 +142,6 @@ module ref_fetch #(
     logic        s_lst   [0:RING-1];
     logic        s_buf   [0:RING-1];
     logic        s_last  [0:RING-1];                      // the request's last row: its last word pulses done
-    logic [15:0] s_nsamp [0:RING-1];
     logic [15:0] s_cxlo  [0:RING-1];
     logic [15:0] s_lastx [0:RING-1];
     logic signed [16:0] s_x0 [0:RING-1];
@@ -144,8 +151,6 @@ module ref_fetch #(
     // ---- data side ----
     logic [SW-1:0] slot_rx;                               // line buffer of the row being received
     logic [15:0] beats_rx;                                // beats received of that row
-    logic [6:0]  wptr;                                    // next line sample to write
-    logic        first_beat;
 
     // ---- writer ----
     logic        wr_busy;
@@ -153,6 +158,7 @@ module ref_fetch #(
     logic [4:0]  w4;                                      // patch word being written
     logic        w_lst, w_buf, w_last;                    // the row's geometry, copied from its slot when the writer takes it
     logic [15:0] w_cxlo, w_lastx;
+    logic [5:0]  w_lead;                                  // samples before the first wanted one in the row's line buffer
     logic signed [16:0] w_x0;
     logic [4:0]  w_nw;
     logic [6:0]  w_row;                                   // patch row being written
@@ -217,10 +223,11 @@ module ref_fetch #(
             logic signed [17:0] col;
             logic [15:0] cc;
             col = 18'(w_x0) - 18'sd3 + 18'(signed'({13'd0, w4})) * 18'sd4 + 18'(l);
-            cc = clip_col(col, w_lastx) - w_cxlo;
-            word_d8[l*PW +: PW] = line[slot_wr][cc[6:0]];
+            cc = clip_col(col, w_lastx) - w_cxlo + 16'(w_lead);
+            word_d8[l*PW +: PW] = row_w[32'(cc[7:0])*PW +: PW];
         end
     end
+    assign row_w = line_q[slot_wr];
     assign patch_d4 = word_d8[4*PW-1:0];
     assign patch_d4b = word_d8[8*PW-1:4*PW];
     assign patch_we2 = wr_busy && (6'(w4) + 6'd1 < 6'(w_nw));
@@ -281,7 +288,7 @@ module ref_fetch #(
                 beats_left <= beats_c;
                 row_lead[slot_ar] <= lead_c;
                 row_beats[slot_ar] <= beats_c;
-                s_fmt16[slot_ar] <= q_fmt16; s_nsamp[slot_ar] <= nsamp; s_cxlo[slot_ar] <= cx_lo; s_x0[slot_ar] <= q_x0;
+                s_fmt16[slot_ar] <= q_fmt16; s_cxlo[slot_ar] <= cx_lo; s_x0[slot_ar] <= q_x0;
                 s_lastx[slot_ar] <= q_lastx; s_nw[slot_ar] <= q_nw; s_lst[slot_ar] <= q_lst; s_buf[slot_ar] <= q_buf;
                 s_row[slot_ar] <= r_ar; s_last[slot_ar] <= (r_ar == q_nrow - 7'd1);
                 ast <= A_AR;
@@ -304,25 +311,24 @@ module ref_fetch #(
     // ---- data side: responses in order into the line buffer of the row they belong to ----
     always_ff @(posedge clk) begin
         if (rst) begin
-            slot_rx <= SW'(0); beats_rx <= 16'd0; wptr <= 7'd0; first_beat <= 1'b1;
+            slot_rx <= SW'(0); beats_rx <= 16'd0;
         end else if (rx_beat) begin
-            logic [6:0] k0;                               // first wanted sample of the beat
-            logic [6:0] nk;                               // samples in the beat
-            logic [5:0] lead;
-            lead = row_lead[slot_rx];
-            nk = s_fmt16[slot_rx] ? 7'd32 : 7'd64;
-            k0 = first_beat ? (s_fmt16[slot_rx] ? 7'(lead >> 1) : 7'(lead)) : 7'd0;
-            for (int k = 0; k < 64; k++) begin
-                logic [7:0] li;                           // line sample of lane k (8 bits: past the row's end it must not wrap)
-                li = 8'(wptr) + 8'(k) - 8'(k0);
-                if (7'(k) >= k0 && 7'(k) < nk && li < 8'(s_nsamp[slot_rx]))
-                    line[slot_rx][li[6:0]] <= beat_sample(m_axi_rdata, s_fmt16[slot_rx], k);
-            end
-            wptr <= wptr + nk - k0;
-            first_beat <= 1'b0;
             beats_rx <= beats_rx + 16'd1;
             if (rx_last) begin
-                slot_rx <= slot_next(slot_rx); beats_rx <= 16'd0; wptr <= 7'd0; first_beat <= 1'b1;
+                slot_rx <= slot_next(slot_rx); beats_rx <= 16'd0;
+            end
+        end
+    end
+
+    // lane k of the row's beat b lands at sample 64 b + k (32 b + k with 16-bit samples): an entry's only select is its beat
+    for (genvar gs = 0; gs < RING; gs++) begin : g_line
+        always_ff @(posedge clk) if (rx_beat && slot_rx == SW'(gs)) begin
+            for (int b = 0; b < 4; b++) if (beats_rx[1:0] == 2'(b)) begin
+                if (s_fmt16[gs]) begin
+                    for (int k = 0; k < 32; k++) line_q[gs][(32*b + k)*PW +: PW] <= beat_sample(m_axi_rdata, 1'b1, k);
+                end else if (b < 3) begin
+                    for (int k = 0; k < 64; k++) line_q[gs][(64*b + k)*PW +: PW] <= beat_sample(m_axi_rdata, 1'b0, k);
+                end
             end
         end
     end
@@ -336,6 +342,7 @@ module ref_fetch #(
                 wr_busy <= 1'b1; w4 <= 5'd0;
                 w_lst <= s_lst[slot_wr]; w_buf <= s_buf[slot_wr]; w_last <= s_last[slot_wr]; w_row <= s_row[slot_wr];
                 w_x0 <= s_x0[slot_wr]; w_lastx <= s_lastx[slot_wr]; w_cxlo <= s_cxlo[slot_wr]; w_nw <= s_nw[slot_wr];
+                w_lead <= s_fmt16[slot_wr] ? {1'b0, row_lead[slot_wr][5:1]} : row_lead[slot_wr];
             end else if (wr_busy) begin
                 if (wr_last) begin
                     wr_busy <= 1'b0; slot_wr <= slot_next(slot_wr);
