@@ -10,7 +10,7 @@
 # Address maps (docs/u200-bringup.md):
 #   host (BAR0, /dev/xdma0_user) and JTAG master:  0x0000_0000 .. 0x0000_0FFF  dec_host registers (as on the KV260)
 #                                                  0x0001_0000 .. 0x0001_FFFF  DDR4 controller ECC status (PG150)
-#   host DMA (/dev/xdma0_h2c_0, _c2h_0) and the decoder's m_axi:  0x0_0000_0000 .. 0x3_FFFF_FFFF  the 16 GB DDR4 bank
+#   host DMA (/dev/xdma0_h2c_0, _c2h_0) and the decoder's m_axi / m_rf_axi:  0x0_0000_0000 .. 0x3_FFFF_FFFF  the 16 GB DDR4 bank
 set root $::env(U200_ROOT)
 set out  $::env(U200_OUT)
 set mhz  $::env(U200_MHZ)
@@ -179,7 +179,9 @@ connect_bd_net [get_bd_pins xdma/axi_aclk] [get_bd_pins jtag/aclk]
 connect_bd_net [get_bd_pins xdma/axi_aresetn] [get_bd_pins jtag/aresetn]
 
 # Interconnect. Registers: XDMA's AXI-Lite master and the JTAG master (both at axi_aclk) -> dec_host (clk).
-# Memory: XDMA's 512-bit master (axi_aclk) and the decoder's 64-bit master (clk) -> the DDR4 bank (ui_clk).
+# Memory: XDMA's 512-bit master (axi_aclk), the decoder's 64-bit master (clk: the picture flush, the frame-state
+# loads and saves) and reference fetch's read-only 512-bit master (clk; the bank's own width, so only the clock is
+# converted on that path: 2026-11-22, K60-37) -> the DDR4 bank (ui_clk).
 # The smartconnects do the width and clock conversions (every clock they see is listed on their aclk pins).
 # (the ECC controller's AXI-Lite control port, which the IP insists is connected, is the second register target:
 # ECC status / injection registers at 0x1_0000, PG150 "AXI4-Lite Slave Control/Status Register Interface")
@@ -194,7 +196,7 @@ connect_bd_intf_net [get_bd_intf_pins jtag/M_AXI] [get_bd_intf_pins sc_regs/S01_
 connect_bd_intf_net [get_bd_intf_pins sc_regs/M00_AXI] [get_bd_intf_pins [expr {$twin ? "gpio/S_AXI" : "host/s_axi"}]]
 connect_bd_intf_net [get_bd_intf_pins sc_regs/M01_AXI] [get_bd_intf_pins ddr/C0_DDR4_S_AXI_CTRL]
 set sc_mem [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 sc_mem]
-set_property -dict [list CONFIG.NUM_SI [expr {$twin ? 1 : 2}] CONFIG.NUM_MI {1} CONFIG.NUM_CLKS [expr {$twin ? 2 : 3}]] $sc_mem
+set_property -dict [list CONFIG.NUM_SI [expr {$twin ? 1 : 3}] CONFIG.NUM_MI {1} CONFIG.NUM_CLKS [expr {$twin ? 2 : 3}]] $sc_mem
 connect_bd_net [get_bd_pins xdma/axi_aclk] [get_bd_pins sc_mem/aclk]
 if {$twin} {
     connect_bd_net [get_bd_pins ddr/c0_ddr4_ui_clk] [get_bd_pins sc_mem/aclk1]    ;# one master (XDMA) at axi_aclk -> DDR at ui_clk
@@ -204,7 +206,10 @@ if {$twin} {
 }
 connect_bd_net [get_bd_pins xdma/axi_aresetn] [get_bd_pins sc_mem/aresetn]
 connect_bd_intf_net [get_bd_intf_pins xdma/M_AXI] [get_bd_intf_pins sc_mem/S00_AXI]
-if {!$twin} { connect_bd_intf_net [get_bd_intf_pins host/m_axi] [get_bd_intf_pins sc_mem/S01_AXI] }
+if {!$twin} {
+    connect_bd_intf_net [get_bd_intf_pins host/m_axi] [get_bd_intf_pins sc_mem/S01_AXI]
+    connect_bd_intf_net [get_bd_intf_pins host/m_rf_axi] [get_bd_intf_pins sc_mem/S02_AXI]
+}
 connect_bd_intf_net [get_bd_intf_pins sc_mem/M00_AXI] [get_bd_intf_pins ddr/C0_DDR4_S_AXI]
 
 # Address maps
@@ -218,7 +223,10 @@ if {$twin} {
 assign_bd_address -offset 0x00010000 -range 64K -target_address_space [get_bd_addr_spaces xdma/M_AXI_LITE] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP_CTRL/C0_REG]
 assign_bd_address -offset 0x00010000 -range 64K -target_address_space [get_bd_addr_spaces jtag/Data] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP_CTRL/C0_REG]
 assign_bd_address -offset 0x00000000 -range 16G -target_address_space [get_bd_addr_spaces xdma/M_AXI] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK]
-if {!$twin} { assign_bd_address -offset 0x00000000 -range 16G -target_address_space [get_bd_addr_spaces host/m_axi] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK] }
+if {!$twin} {
+    assign_bd_address -offset 0x00000000 -range 16G -target_address_space [get_bd_addr_spaces host/m_axi] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK]
+    assign_bd_address -offset 0x00000000 -range 16G -target_address_space [get_bd_addr_spaces host/m_rf_axi] [get_bd_addr_segs ddr/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK]
+}
 validate_bd_design
 puts "clk = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out1]] Hz, clk2x = [get_property CONFIG.FREQ_HZ [get_bd_pins clkgen/clk_out2]] Hz, ui_clk = [get_property CONFIG.FREQ_HZ [get_bd_pins ddr/c0_ddr4_ui_clk]] Hz, axi_aclk = [get_property CONFIG.FREQ_HZ [get_bd_pins xdma/axi_aclk]] Hz"
 save_bd_design

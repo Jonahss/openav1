@@ -13,7 +13,7 @@ module dec_host_v #(
     parameter REF_RING = 16
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axi, ASSOCIATED_RESET aresetn" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axi:m_axi:m_rf_axi, ASSOCIATED_RESET aresetn" *)
     input  wire        clk,
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk2x CLK" *)
     input  wire        clk2x,
@@ -69,6 +69,7 @@ module dec_host_v #(
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RVALID" *)  input  wire        m_axi_rvalid,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_axi RREADY" *)  output wire        m_axi_rready,
     // reference fetch: a read-only master of 512 bits
+    (* X_INTERFACE_PARAMETER = "READ_WRITE_MODE READ_ONLY" *)
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARADDR" *) output wire [39:0] m_rf_axi_araddr,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARLEN" *) output wire [7:0]  m_rf_axi_arlen,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_rf_axi ARSIZE" *) output wire [2:0]  m_rf_axi_arsize,
