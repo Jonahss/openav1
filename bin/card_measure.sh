@@ -9,7 +9,8 @@
 # driven by the previous day's decode.py read as "broken on the card").
 #
 # Afterwards (Jonah 2026-11-19, WF-21) the new image STAYS as the standing image when it is bit-exact (both clips ran,
-# pictures compared, none differs) and its build met timing (WNS >= 0 in ~/logs/u200-builds.log); otherwise the image
+# pictures compared, none differs) and its build met timing (the routed report's own sentence, which covers setup, hold
+# and pulse width; until 2026-11-23 this read WNS >= 0 only and kept images with a failing pulse-width check); otherwise the image
 # that was on the card before is programmed back. ~/measure1080/card_image.txt names what is on the card.
 set -u
 [ $# -eq 2 ] || { echo "usage: card_measure.sh <bitstream> <tag>" >&2; exit 2; }
@@ -50,9 +51,11 @@ for clip in in_to_tree-aom in_to_tree_1080p50_20; do
 done
 wns=$(grep " $img rc=0 WNS " ~/logs/u200-builds.log | tail -1 | sed -E "s/.* WNS ([-0-9.]+) .*/\1/")
 case "$wns" in "") why="no rc=0 build line for it in u200-builds.log";; -*) why="timing not met (WNS $wns)";; *) why="";; esac
+rpt=~/openav1-synth/$img/impl_timing.rpt
+[ -n "$why" ] || grep -q "All user specified timing constraints are met" $rpt 2>/dev/null || why="timing not met: $(grep -A6 "Design Timing Summary" $rpt 2>/dev/null | tail -1 | awk '{print "WNS", $1, "WHS", $5, "WPWS", $9}') (pulse width / skew: read $rpt)"
 [ $good -eq 1 ] || why="not bit-exact${why:+, $why}"
 if [ -z "$why" ]; then
-    echo "kept $img: bit-exact on both clips, WNS $wns" >> $L
+    echo "kept $img: bit-exact on both clips, timing met (WNS $wns)" >> $L
 elif [ "$prev" = "$img" ]; then
     echo "NOT GOOD ($why) and it was already the standing image: $img left on the card" >> $L
 else
