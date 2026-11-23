@@ -15,6 +15,13 @@ A checkpoint is a card image that decodes the reference clip faster than the one
   2026-11-19 from the builds that were still on the build machine (C01 and C02 got their image, commit and usage
   figures then too, from the journal's record of which image each measurement ran on).
 
+**The 4K line** (`checkpoints_4k.csv`, rows K01 on, since 2026-11-22). The goal is 4K at 60 frames a second, and the
+1080p clip cannot show progress there: the 4K images run at 80 MHz and read lower on it than the last 1080p
+checkpoint. So the YouTube 2160p clip (`G6aI1-vYHxM`, 248 coded frames, 240 shown, four tile columns) has a table of
+its own with the same columns, measured the same way (unchecked for the speed, a checked pass for `identical`), and a
+second line in the chart on the same axis. A row is added when a kept image beats the last one on that clip. When the
+4K line has caught up with the 1080p one, the chart goes back to one number.
+
 `fps.png` plots the unchecked speed from C10 on and the checked speed before it (the dagger on C10 marks the change of
 measurement). It is drawn from the table: `python3 tools/checkpoints/chart.py docs/checkpoints` (SVG, and a PNG when a
 headless Chromium is found). The `label` column places the few annotations: `dx;dy;anchor;text` with `|` between lines.

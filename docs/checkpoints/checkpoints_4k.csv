@@ -1,0 +1,3 @@
+id,date_pt,fps_unchecked,fps_checked,identical,clock_mhz,image,commit,lut_pct,ff_pct,bram_pct,uram_pct,dsp_pct,layout,label,what_changed
+K01,2026-11-20 19:10,8.7,8.0,240/240,80,u200-k4te4s80-23c0216,23c0216,61.20,12.35,82.82,86.67,24.91,,0;26;start;first 4K decode,"the first image built for 3840 x 2160 (four tile syntax engines, one reconstruction stage, 80 MHz): the YouTube 2160p clip decodes bit-exact"
+K02,2026-11-22 14:05,10.9,9.6,240/240,80,u200-k4sb80-e59b4e7,e59b4e7,60.97,12.50,82.80,86.67,24.94,,-14;-14;end;early block take,"the block stage takes the next block across a superblock start of the row being decoded: on content of one 64x64 block per superblock it idled 27 % of every block (6.5 % now)"
