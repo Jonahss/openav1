@@ -20,7 +20,9 @@ A checkpoint is a card image that decodes the reference clip faster than the one
 checkpoint. So the YouTube 2160p clip (`G6aI1-vYHxM`, 248 coded frames, 240 shown, four tile columns) has a table of
 its own with the same columns, measured the same way (unchecked for the speed, a checked pass for `identical`), and a
 second line in the chart on the same axis. A row is added when a kept image beats the last one on that clip. When the
-4K line has caught up with the 1080p one, the chart goes back to one number.
+4K line has caught up with the 1080p one, the chart goes back to one number. Each K row has its layout
+picture too (`K<nn>-layout.png`; K01 to K04 were drawn on 2026-11-24 from the routed checkpoints of their images, K03
+from the checkpoint after its post-route repair).
 
 `fps.png` plots the unchecked speed from C10 on and the checked speed before it (the dagger on C10 marks the change of
 measurement). It is drawn from the table: `python3 tools/checkpoints/chart.py docs/checkpoints` (SVG, and a PNG when a
