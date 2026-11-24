@@ -315,12 +315,13 @@ module recon_top
     logic        blk_inter;
     assign blk_inter = b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
-    logic        mc_start, mc_busy, mc_done, mc_done_tag, mc_v_active, mc_out_valid;
+    logic        mc_start, mc_busy, mc_done, mc_v_active, mc_out_valid;
+    logic [1:0]  mc_done_tag;
     logic        mc_h_ready;                                 // mc_filt can take the next run (its horizontal side is free)
     logic [3:0]  mc_pf; logic [5:0] rf_pf;                   // mc_filt's and ref_fetch's flags for the counters (perf_mc)
-    logic        mc_out_tag;                                 // the run record the outputs belong to
-    logic        srun;                                       // run record written by the next start (toggles per run)
-    logic        mc_tag;                                     // the record of the run being started (registered with mc_start, as run_buf is)
+    logic [1:0]  mc_out_tag;                                 // the run record the outputs belong to
+    logic [1:0]  srun;                                       // run record written by the next start (the next of four per run)
+    logic [1:0]  mc_tag;                                     // the record of the run being started (registered with mc_start, as run_buf is)
     // Block-ahead fetch (docs/reference-prefetch.md step B, 2026-11-03): a strip's reference patch is fetched into one of
     // mc_filt's two patch buffers while the filter still runs the previous strip from the other, so a fetch's round trip
     // hides behind a run. The sequencer moves on as soon as a run starts: the registers the output path reads during a
@@ -376,16 +377,16 @@ module recon_top
     assign run_go = !pq_empty && qh_ready && mc_h_ready && !run_v && !rec_held;
     assign pq_pend[0] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b0) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b0);
     assign pq_pend[1] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b1) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b1);
-    // Two run records (2026-11-08): mc_filt overlaps the horizontal pass of run n + 1 with the vertical pass of run n, so a
+    // Four run records (two from 2026-11-08 to 2026-11-23; mc_filt allows four runs alive): mc_filt overlaps the horizontal pass of run n + 1 with the vertical pass of run n, so a
     // start may come while the previous run still outputs. The record of a start goes to rq_*[srun]; the output path reads
     // r_* = the record of the run whose outputs arrive (mc_out_tag, which mc_filt returns with every output word).
     // Between runs the tag keeps the last run's value, so the blend pipelines draining after its last word still see it
     // (the next run's first word comes at least 13 cycles later: the vertical drain and pipeline fill).
-    logic [PXW-1:0] rq_px [0:1], rq_py [0:1], rq_bx [0:1], rq_by [0:1];
-    logic [1:0]  rq_pl [0:1]; logic rq_sx [0:1], rq_sy [0:1], rq_l [0:1];
-    logic        rq_ob_active [0:1], rq_ob_pass [0:1]; logic [5:0] rq_ob_mlen [0:1];
-    logic        rq_ii_active [0:1], rq_ii_wedge [0:1]; logic [3:0] rq_ii_mode [0:1]; logic [2:0] rq_ii_lsh [0:1];
-    logic        rq_mb_active [0:1], rq_mb_diff [0:1]; logic [3:0] rq_post [0:1]; logic rq_mask_type [0:1]; logic rq_par [0:1];
+    logic [PXW-1:0] rq_px [0:3], rq_py [0:3], rq_bx [0:3], rq_by [0:3];
+    logic [1:0]  rq_pl [0:3]; logic rq_sx [0:3], rq_sy [0:3], rq_l [0:3];
+    logic        rq_ob_active [0:3], rq_ob_pass [0:3]; logic [5:0] rq_ob_mlen [0:3];
+    logic        rq_ii_active [0:3], rq_ii_wedge [0:3]; logic [3:0] rq_ii_mode [0:3]; logic [2:0] rq_ii_lsh [0:3];
+    logic        rq_mb_active [0:3], rq_mb_diff [0:3]; logic [3:0] rq_post [0:3]; logic rq_mask_type [0:3]; logic rq_par [0:3];
     logic [PXW-1:0] r_px, r_py, r_bx, r_by;                  // run record of the outputs: strip origin, plane block origin
     logic [1:0]  r_pl; logic r_sx, r_sy, r_l;
     logic        r_ob_active, r_ob_pass; logic [5:0] r_ob_mlen;
@@ -521,32 +522,31 @@ module recon_top
                               6'd20: return 7'd60; 6'd21: return 7'd60; 6'd22: return 7'd61; 6'd23: return 7'd62; default: return 7'd64; endcase
         endcase
     endfunction
-    logic        pw_we, pw_buf, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4; logic [47:0] pw_d4;
-    logic        pw_we2, rf_pw_we2; logic [47:0] pw_d4b, rf_pw_d4b;   // ref_fetch writes word pairs (two words a cycle, 2026-11-09); the ring loader single words
+    logic        pw_we, pw_buf, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4;
+    logic [1:0]  pw_n, rf_pw_n; logic [191:0] pw_dq, rf_pw_dq;        // ref_fetch writes up to four words a cycle (2026-11-23); the ring loader single words
 
     generate if (1) begin : g_inter
-    logic rf_pw_we, ff_pw_we, rf_pw_list, ff_pw_list; logic [6:0] rf_pw_row, ff_pw_row; logic [4:0] rf_pw_w4, ff_pw_w4; logic [47:0] rf_pw_d4, ff_pw_d4;
+    logic rf_pw_we, ff_pw_we, rf_pw_list, ff_pw_list; logic [6:0] rf_pw_row, ff_pw_row; logic [4:0] rf_pw_w4, ff_pw_w4; logic [47:0] ff_pw_d4;
     logic rf_pw_buf; logic [1:0] mc_buf_busy;
     assign pw_we = rf_pw_we || ff_pw_we;
     assign pw_buf = ff_pw_we ? ibc_buf : rf_pw_buf;                 // ref_fetch names its buffer per request; the ring loader writes the copy's
     assign pw_list = ff_pw_we ? ff_pw_list : rf_pw_list; assign pw_row = ff_pw_we ? ff_pw_row : rf_pw_row;
-    assign pw_w4 = ff_pw_we ? ff_pw_w4 : rf_pw_w4; assign pw_d4 = ff_pw_we ? ff_pw_d4 : rf_pw_d4;
-    assign pw_we2 = rf_pw_we2 && !ff_pw_we; assign pw_d4b = rf_pw_d4b;
+    assign pw_w4 = ff_pw_we ? ff_pw_w4 : rf_pw_w4; assign pw_dq = ff_pw_we ? 192'(ff_pw_d4) : rf_pw_dq;
+    assign pw_n = ff_pw_we ? 2'd0 : rf_pw_n;
     ref_fetch #(.PW(12), .RING(REF_RING)) u_rf (.clk, .rst,
         .req_valid(rf_req_valid && !pq_full), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(mc_ibc ? cur_fmt16 : ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
         .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .req_buf(pbuf), .buf_busy(mc_buf_busy), .done(rf_done), .err(rf_err), .perf_flags(rf_pf),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
-        .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_d4(rf_pw_d4),
-        .patch_we2(rf_pw_we2), .patch_d4b(rf_pw_d4b));
+        .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_n(rf_pw_n), .patch_dq(rf_pw_dq));
     fb_fetch #(.PW(12), .FBX(FBX), .FBY(FBY)) u_ff (.clk, .rst,
         .req_valid(ff_req_valid), .req_ready(ff_req_ready), .req_lst(rf_lst), .req_plane(mc_pl), .req_lastx(rf_lastx), .req_lasty(rf_lasty),
         .req_x0(rf_x0), .req_y0(rf_y0), .req_w(rf_w), .req_r_lo(ff_r_lo), .req_r_hi(ff_r_hi), .done(ff_done),
         .fb_re(ff_fb_re), .fb_plane(ff_fb_plane), .fb_x(ff_fb_x), .fb_y(ff_fb_y), .fb_rdata4,
         .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
-        .patch_we(pw_we), .patch_buf(pw_buf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_d4(pw_d4), .patch_we2(pw_we2), .patch_d4b(pw_d4b),
+        .patch_we(pw_we), .patch_buf(pw_buf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_n(pw_n), .patch_dq(pw_dq),
         .start(mc_start), .run_tag(mc_tag), .lst(st_l), .rbuf(run_buf), .w(st_sw), .h(st_sh), .interp_x(st_i1), .interp_y(st_i0),
         .x_frac0(st_xf0), .y_frac0(st_yf0), .x_step(st_xs), .y_step(st_ys),
         .warp(st_warp), .w_alpha(st_wa), .w_beta(st_wb), .w_gamma(st_wg), .w_delta(st_wd), .w_sx4(st_wsx), .w_sy4(st_wsy),
@@ -557,8 +557,8 @@ module recon_top
         assign ff_req_ready = 1'b1; assign ff_done = 1'b0; assign ff_fb_re = 1'b0; assign ff_fb_plane = 2'd0; assign ff_fb_x = '0; assign ff_fb_y = '0;
         assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
-        assign pw_we = 1'b0; assign pw_buf = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_d4 = '0; assign pw_we2 = 1'b0; assign pw_d4b = '0;
-        assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 1'b0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 1'b0; assign mc_out_x = '0; assign mc_out_y = '0;
+        assign pw_we = 1'b0; assign pw_buf = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_n = '0; assign pw_dq = '0;
+        assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 2'd0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 2'd0; assign mc_out_x = '0; assign mc_out_y = '0;
         assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0; assign mc_pf = '0; assign rf_pf = '0;
     end endgenerate
 
@@ -658,7 +658,7 @@ module recon_top
         if (!rst && run_go) begin
             // the run thread: the oldest queued run's patch is in and the horizontal side is free; mc_filt samples st_* with
             // mc_start next cycle, the output path reads the record rq_*[srun] (as before)
-            mc_start <= 1'b1; run_v <= 1'b1; mc_tag <= srun; srun <= !srun; run_buf <= pq_buf[pq_h[0]];
+            mc_start <= 1'b1; run_v <= 1'b1; mc_tag <= srun; srun <= srun + 2'd1; run_buf <= pq_buf[pq_h[0]];
             st_l <= pq_l[pq_h[0]]; st_warp <= pq_warp[pq_h[0]]; st_sw <= pq_sw[pq_h[0]]; st_sh <= pq_sh[pq_h[0]];
             st_i0 <= pq_i0[pq_h[0]]; st_i1 <= pq_i1[pq_h[0]]; st_xf0 <= pq_xf0[pq_h[0]]; st_yf0 <= pq_yf0[pq_h[0]]; st_xs <= pq_xs[pq_h[0]]; st_ys <= pq_ys[pq_h[0]];
             st_wa <= pq_wa[pq_h[0]]; st_wb <= pq_wb[pq_h[0]]; st_wg <= pq_wg[pq_h[0]]; st_wd <= pq_wd[pq_h[0]]; st_wsx <= pq_wsx[pq_h[0]]; st_wsy <= pq_wsy[pq_h[0]];
@@ -672,7 +672,7 @@ module recon_top
             pq_h <= pq_h + 2'd1;
         end
         if (rst) begin
-            bst <= B_IDLE; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 1'b0; mc_tag <= 1'b0; cur_par <= 1'b0;
+            bst <= B_IDLE; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 2'd0; mc_tag <= 2'd0; cur_par <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             acc_cnt <= 3'd0; done_cnt <= 3'd0; pq_h <= 2'd0; pq_t <= 2'd0; ibc_acc <= 1'b0; ibc_has_rf <= 1'b0; pq_last <= '{default: 1'b0};
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
@@ -1472,8 +1472,8 @@ module recon_top
                    (bst == B_IDLE) && ev_valid && !nb_valid && !perf_pipe,           // 24: no block record to take, nothing in the MC pipeline
                    (bst == B_IDLE) && ev_valid && !nb_valid && perf_pipe,            // 23: no block record to take, the MC pipeline still at work
                    mc_out_valid,                                                     // 22: clocks with a filter output word
-                   pw_we2,                                                           // 21: patch writes that carried a second word
-                   pw_we,                                                            // 20: patch writes (a 4-sample word each; the second word: 21; the intra block copy's included)
+                   pw_we && (pw_n != 2'd0),                                          // 21: patch writes of more than one word
+                   pw_we,                                                            // 20: patch writes (one to four 4-sample words each; the intra block copy's included)
                    m_axi_rvalid && m_axi_rready,                                     // 19: the reference fetch's own read beats
                    m_axi_arvalid && m_axi_arready,                                   // 18: its reads (a patch row or part of one each)
                    rf_pf[5],                                                         // 17: fetch engine idle (nothing outstanding)

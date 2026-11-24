@@ -5,6 +5,7 @@ engine 0's event queue clock by clock, run-length coded) and say what waited for
   mc_timeline.py <file> summary              shares of the span, the joint states, events
   mc_timeline.py <file> runs                 per run: request -> accepted -> patch complete -> start -> done, and
                                              which of run_go's conditions each start waited for last
+  mc_timeline.py <file> waits                per clock: what keeps the next run from starting (patch, sides, runs alive)
   mc_timeline.py <file> blocks               per block: issue of its strips, idle until the next take, why
   mc_timeline.py <file> print <lo> <hi> [col ...]   the state changes between two clocks (relative to the first
                                              accepted request); default columns: the queue and both FSMs
@@ -56,7 +57,7 @@ def summary(cols, cyc, v):
     H, V = g("hst") != 0, g("vst") != 0
     rows = [("block FSM idle", g("bst") == 0), ("block FSM in B_MC_FETCH", g("bst") == 16), ("transform FSM busy", g("rs") != 0),
             ("H busy", H), ("V busy", V), ("H and V", H & V), ("V busy, stalled by the output FIFO", V & (g("f_stall") == 1)),
-            ("a run waits between the sides (pend)", g("pend") == 1), ("two runs alive in the filter", g("alive") == 2),
+            ("a run waits between the sides (pend)", g("pend") == 1), ("four runs alive in the filter (the limit)", g("alive") == 4),
             ("writer busy", g("wr_busy") == 1), ("rows ready, writer waits for its buffer", (g("wr_busy") == 0) & (g("rows_ready") > 0)),
             ("run queue full", g("pq_n") == 2), ("run queue empty", g("pq_n") == 0), ("rec_held", g("rec_held") == 1)]
     if "nb_valid" in C:
@@ -86,7 +87,7 @@ def runs(cols, cyc, v):
             k = np.searchsorted(f0, x - 1, side="right") - 1
             out[i] = x if not mask[x - 1] else (f0[k] + 1 if k >= 0 else 0)
         return out
-    conds = {"its patch": rfd, "the filter (h side idle, not pend, fewer than 2 alive)": true_since((X["hst"] == 0) & (X["pend"] == 0) & (X["alive"] < 2), start),
+    conds = {"its patch": rfd, "the filter (h side idle, not pend, fewer than 4 alive)": true_since((X["hst"] == 0) & (X["pend"] == 0) & (X["alive"] < 4), start),
              "its run record (rec_held)": true_since(X["rec_held"] == 0, start)}
     cause, wait = collections.Counter(), collections.defaultdict(list)
     for i in range(n):
@@ -132,6 +133,28 @@ def blocks(cols, cyc, v):
         print(f"  a block record sits in the queue {np.mean(sat):.0f} clocks before it is taken (median {np.median(sat):.0f})")
 
 
+def waits(cols, cyc, v):
+    """Per clock: what keeps the next run from starting. The 'runs' table names the LAST condition a start waited for
+    and misled once (2026-11-23: 'its patch' for a third of the starts read as a slow fetch, while a patch was ready
+    96 % of the frame and the filter held back for the output of the runs alive)."""
+    X = per_clock(cols, cyc, v)
+    t0 = first_accept(X)
+    n = len(X["bst"]) - t0
+    lim = int(X["alive"].max())
+    h0, pq, np_ = X["hst"] == 0, X["pq_n"] > 0, X["pend"] == 0
+    print(f"span {n} clocks; most runs alive at once: {lim}")
+    for name, m in (("a patch is queued, horizontal side busy", pq & ~h0),
+                    ("a patch is queued, horizontal side idle, a run waits between the sides", pq & h0 & ~np_),
+                    (f"a patch is queued, filter free, {lim} runs alive (their output is leaving)", pq & h0 & np_ & (X["alive"] == lim)),
+                    (f"a patch is queued, filter free, fewer than {lim} alive (the patch is not complete, or its record is held)", pq & h0 & np_ & (X["alive"] < lim)),
+                    ("no patch queued, horizontal side busy", ~pq & ~h0),
+                    ("no patch queued, horizontal side idle", ~pq & h0),
+                    ("output FIFO not empty (one word a cycle leaves)", X["f_empty"] == 0),
+                    ("vertical side stalled by the output FIFO", X["f_stall"] == 1)):
+        c = int(m[t0:].sum())
+        print(f"  {name:<100} {c:8d} {100.0 * c / n:5.1f} %")
+
+
 def show(cols, cyc, v, lo, hi, names):
     X = per_clock(cols, cyc, v)
     t0 = first_accept(X)
@@ -156,6 +179,8 @@ if __name__ == "__main__":
         runs(cols, cyc, v)
     elif cmd == "blocks":
         blocks(cols, cyc, v)
+    elif cmd == "waits":
+        waits(cols, cyc, v)
     elif cmd == "print":
         show(cols, cyc, v, int(sys.argv[3]), int(sys.argv[4]), sys.argv[5:])
     else:

@@ -31,9 +31,9 @@
 // buffer has finished. done pulses once per request, in order, at the last word of its last row; an empty request
 // (no rows) is accepted only when nothing is outstanding, so its done cannot overtake another's.
 //
-// Two words a cycle (2026-11-09, rung A of the 8-sample datapath). The writer delivers the patch words of a row in
-// pairs (word w4 on patch_d4, word w4 + 1 on patch_d4b with patch_we2; a row of an odd word count ends with a single),
-// and the address side takes two cycles a row instead of five: the row address is a running sum (the first row's by
+// Four words a cycle (two since 2026-11-09, rung A of the 8-sample datapath; four since 2026-11-23, K60-87). The
+// writer delivers the patch words of a row four at a time (words w4 .. w4 + patch_n on patch_dq, w4 a multiple of 4;
+// the last write of a row carries what is left), and the address side takes two cycles a row instead of five: the row address is a running sum (the first row's by
 // the multiply, then + stride whenever the clamped source row advances), so a row is its slot bookkeeping plus one
 // cycle per burst.
 //
@@ -89,9 +89,8 @@ module ref_fetch #(
     output logic          patch_list,
     output logic [6:0]    patch_row,
     output logic [4:0]    patch_w4,
-    output logic [4*PW-1:0] patch_d4,
-    output logic          patch_we2,            // word patch_w4 + 1 as well (patch_w4 is even)
-    output logic [4*PW-1:0] patch_d4b
+    output logic [1:0]    patch_n,              // words written - 1 (patch_w4 is a multiple of 4)
+    output logic [16*PW-1:0] patch_dq           // words patch_w4 .. patch_w4 + patch_n, the first in the low bits
 );
     // line buffer samples. A beat goes in as it comes, lane k of the row's beat b at sample 64 b + k (32 b + k with
     // 16-bit samples): every entry has one source lane and the row's lead is added where the writer reads. (Moving each
@@ -189,7 +188,7 @@ module ref_fetch #(
     assign rx_beat = m_axi_rvalid && m_axi_rready;
     assign rx_last = rx_beat && (beats_rx == row_beats[slot_rx] - 16'd1);           // the row's last beat
     assign wr_take = !wr_busy && (rows_ready != CW'(0)) && !buf_busy[s_buf[slot_wr]];   // the head row's buffer is free to write
-    assign wr_last = wr_busy && (6'(w4) + 6'd2 >= 6'(w_nw));                       // the row's last word(s): its slot is free
+    assign wr_last = wr_busy && (6'(w4) + 6'd4 >= 6'(w_nw));                       // the row's last word(s): its slot is free
 
     // a request with rows is accepted whenever the address side is idle; an empty one only when nothing is outstanding
     logic req_empty;
@@ -217,20 +216,21 @@ module ref_fetch #(
     assign m_axi_arlen = 8'(burst_len - 5'd1);
 
     // patch word lanes: column of lane l clamped into the region's range, read from the row's line buffer
-    logic [8*PW-1:0] word_d8;                             // words w4 (lanes 0 .. 3) and w4 + 1 (lanes 4 .. 7)
+    logic [16*PW-1:0] word_d16;                           // words w4 (lanes 0 .. 3) .. w4 + 3 (lanes 12 .. 15)
+    logic [5:0] w_left;                                   // words of the row from w4 on
+    assign w_left = 6'(w_nw) - 6'(w4);
     always_comb begin
-        for (int l = 0; l < 8; l++) begin
+        for (int l = 0; l < 16; l++) begin
             logic signed [17:0] col;
             logic [15:0] cc;
             col = 18'(w_x0) - 18'sd3 + 18'(signed'({13'd0, w4})) * 18'sd4 + 18'(l);
             cc = clip_col(col, w_lastx) - w_cxlo + 16'(w_lead);
-            word_d8[l*PW +: PW] = row_w[32'(cc[7:0])*PW +: PW];
+            word_d16[l*PW +: PW] = row_w[32'(cc[7:0])*PW +: PW];
         end
     end
     assign row_w = line_q[slot_wr];
-    assign patch_d4 = word_d8[4*PW-1:0];
-    assign patch_d4b = word_d8[8*PW-1:4*PW];
-    assign patch_we2 = wr_busy && (6'(w4) + 6'd1 < 6'(w_nw));
+    assign patch_dq = word_d16;
+    assign patch_n = (w_left >= 6'd4) ? 2'd3 : 2'(w_left - 6'd1);
     assign patch_buf = w_buf;
     assign patch_list = w_lst;
     assign patch_row = w_row;
@@ -346,7 +346,7 @@ module ref_fetch #(
             end else if (wr_busy) begin
                 if (wr_last) begin
                     wr_busy <= 1'b0; slot_wr <= slot_next(slot_wr);
-                end else w4 <= w4 + 5'd2;
+                end else w4 <= w4 + 5'd4;
             end
         end
     end

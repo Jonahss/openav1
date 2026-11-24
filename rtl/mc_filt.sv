@@ -32,20 +32,20 @@
 // Warp (warp = 1): one 8 x 8 of block_warp per run from a 15-row x 4-word patch at (ix4 - 7, iy4 - 7): the unscaled
 // streams (15 rows, 2 groups; 8 output rows) with Warped_Filters taps per sample from (sx4, alpha, beta) and
 // (sy4, gamma, delta); the blend modes apply as for any unit.
-// Two words a cycle (2026-11-09, rung A of the 8-sample datapath): the patch and the strip buffer are stored as word
-// pairs (an even and an odd memory, one address per pair). The writer may deliver words 2j and 2j + 1 of a row in one
-// cycle (patch_we2 / patch_d4b beside the first word), and the horizontal pass of an unscaled, non-warp run reads a
-// pair a cycle and produces two groups a cycle (64 products): groups 2j - 2 and 2j - 1 from pairs j - 1 and j. Scaled
-// and warp runs keep one word and one group a cycle (per-lane geometry; rare).
-// Rung B (same day): the vertical pass of such a run reads a strip pair a cycle and computes two groups a cycle
-// (V_RUN2: a second window and 32 more products; the parked prediction is stored and read as pairs too). The frame
-// memory takes one 4-sample word a cycle, so the outputs go through a FIFO of pair entries (OUT_FIFO entries of one
-// or two words) and leave one word a cycle, in the order (group g, row i), (group g + 1, row i), (g, i + 1), ...;
+// Four words a cycle (two since 2026-11-09, rungs A and B of the 8-sample datapath; four since 2026-11-23, K60-86):
+// the patch, the strip buffer and the parked prediction are stored as word quads (four lane memories, one address per
+// quad). The writer may deliver up to four words of a row in one cycle (patch_n + 1 words on patch_dq, from a word
+// that is a multiple of 4). The horizontal pass of an unscaled or warp run reads a patch quad a cycle and produces
+// four groups a cycle (128 products): quad k completes groups 4k - 2 .. 4k + 1. Its vertical pass reads a strip quad a
+// cycle and computes groups g .. g + 3 (four windows, 128 products). Scaled runs keep one word and one group a cycle
+// (per-lane geometry; rare) on lane set 0 of both pipelines.
+// The frame memory takes one 4-sample word a cycle, so the outputs go through a FIFO (OUT_FIFO entries of one to
+// four words) and leave one word a cycle, in the order (group g, row i) .. (group g + 3, row i), (g, i + 1), ...;
 // the vertical side stalls while the FIFO is nearly full. done is an entry of the FIFO as well: it pulses after the
 // run's last output word has left (a parked run: when its marker reaches the head), and busy / v_active stay up
 // until the FIFO is empty.
-// Cycles, unscaled: (h + 7) (ngrp / 2 + 1) horizontal + ceil(ngrp / 2) (h + 7) vertical + ~12, and ngrp h output
-// words at one a cycle: a 64 x 64 unit is 639 + 568 cycles of filtering and 1,024 of output, the passes and the
+// Cycles, unscaled: (h + 7) ((ngrp + 1) / 4 + 1) horizontal + ceil(ngrp / 4) (h + 7) vertical + ~12, and ngrp h output
+// words at one a cycle: a 64 x 64 unit is 355 + 284 cycles of filtering and 1,024 of output, the passes and the
 // output of consecutive runs overlapping. Scaled: 16 (position table) + nrow (words + ngrp)
 // + ngrp h 8 + ~12: a 32 x 32 unit with 2:1 steps is ~5,400.
 module mc_filt
@@ -60,13 +60,12 @@ module mc_filt
     input  logic          patch_buf,           // which of the two patch buffers (block-ahead fetch: one is written while the other is run)
     input  logic          patch_list,
     input  logic [6:0]    patch_row,           // 0 .. 71
-    input  logic [4:0]    patch_w4,            // word 0 .. 17 (samples 4 w4 .. 4 w4 + 3)
-    input  logic [4*PW-1:0] patch_d4,
-    input  logic          patch_we2,           // with patch_we and an even patch_w4: word patch_w4 + 1 as well
-    input  logic [4*PW-1:0] patch_d4b,
+    input  logic [4:0]    patch_w4,            // the first word written, 0 .. 17 (samples 4 w4 .. 4 w4 + 3)
+    input  logic [1:0]    patch_n,             // words written - 1; more than one word only from a patch_w4 that is a multiple of 4
+    input  logic [16*PW-1:0] patch_dq,         // words patch_w4 .. patch_w4 + patch_n, the first in the low bits
     // ---- run (parameters sampled at start) ----
     input  logic          start,
-    input  logic          run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
+    input  logic [1:0]    run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
     input  logic          v_hold,              // hold the vertical side in V_IDLE (recon_top: while the transform FSM writes the frame buffer)
     input  logic          lst,                 // the patch list to filter
     input  logic          rbuf,                // the patch buffer to filter from
@@ -91,13 +90,13 @@ module mc_filt
     output logic          busy,
     output logic          h_ready,             // the horizontal side can take a run: idle, previous run handed to the vertical side
     output logic          done,
-    output logic          done_tag,            // the tag of the run that just finished (with done)
+    output logic [1:0]    done_tag,            // the tag of the run that just finished (with done)
     output logic          v_active,            // a run is in or waiting for the vertical side (it will write the frame buffer)
     output logic [3:0]    perf_flags,          // for recon_top's counters: {output FIFO not empty, a run waits between the sides, vertical side busy, horizontal side busy}
     // ---- output stream (modes 0, 2, 3) ----
     input  logic          out_wait,            // recon_top's blend pipelines hold words of an earlier run: the first word of a run waits
     output logic          out_valid,
-    output logic          out_tag,
+    output logic [1:0]    out_tag,
     output logic [6:0]    out_x,
     output logic [6:0]    out_y,
     output logic [4*PW-1:0] out_pix4,
@@ -106,43 +105,65 @@ module mc_filt
 );
     localparam int PATCH_WPR = 18;                        // words per patch row
     localparam int PATCH_ROWS = 72;
-    localparam int PATCH_LN = 2 * PATCH_ROWS * PATCH_WPR; // 2592: a buffer (two lists)
-    localparam int PATCH_N = 2 * PATCH_LN;                // two buffers: the fetch of strip n + 1 fills one while strip n runs from the other
+    localparam int PATCH_QPR = (PATCH_WPR + 3) / 4;       // 5: word quads per patch row
+    localparam int PATCH_LQ = PATCH_ROWS * PATCH_QPR;     // 360: quads of one list
+    localparam int PATCH_QN = 4 * PATCH_LQ;               // 1440: two buffers of two lists (the fetch of strip n + 1 fills one buffer while strip n runs from the other)
     localparam int STRIP_ROWS = 71;                       // nrow <= 71
-    localparam int STRIP_LN = STRIP_ROWS * 16;            // 1136: one strip buffer (GRP words a row)
     localparam int GRP = 16;                              // groups per row (64 / 4)
 
     // ================================================================ memories
-    // word pairs: the even words and the odd words of a row in two memories, one address per pair
-    logic [4*PW-1:0] patch_e [0:PATCH_N/2-1];
-    logic [4*PW-1:0] patch_o [0:PATCH_N/2-1];
-    logic [63:0]     strip_e [0:STRIP_ROWS*GRP-1];        // intermediate: 4 x 16-bit signed per word; two buffers: the
-    logic [63:0]     strip_o [0:STRIP_ROWS*GRP-1];        // horizontal pass of run n + 1 writes one while the vertical pass of run n reads the other
-    logic [67:0]     pred_e [0:64*GRP/2-1];               // parked list-0 prediction: 4 x 17-bit signed per word, as pairs
-    logic [67:0]     pred_o [0:64*GRP/2-1];
-    localparam int OUT_FIFO = 256;                        // output FIFO entries (a 64 x 64 run leaves at most 8 x 57 = 456 words = 228 entries waiting)
+    // The patch as word quads (2026-11-23, K60-87): words 4q .. 4q + 3 of a row in four memories, one address per quad,
+    // so the writer can deliver four words a cycle. The strip and the parked prediction are word pairs: the even words
+    // and the odd words of a row in two memories, one address per pair.
+    logic [4*PW-1:0] patch_m0 [0:PATCH_QN-1];
+    logic [4*PW-1:0] patch_m1 [0:PATCH_QN-1];
+    logic [4*PW-1:0] patch_m2 [0:PATCH_QN-1];
+    logic [4*PW-1:0] patch_m3 [0:PATCH_QN-1];
+    // intermediate strip: 4 x 16-bit signed per word (a group), as quads like the patch (groups 4q .. 4q + 3 of a row in
+    // four memories); two buffers: the horizontal pass of run n + 1 writes one while the vertical pass of run n reads the other
+    localparam int STRIP_QPR = GRP / 4;                   // 4: group quads per strip row
+    localparam int STRIP_LQ = STRIP_ROWS * STRIP_QPR;     // 284: quads of one strip buffer
+    logic [63:0]     strip_m0 [0:2*STRIP_LQ-1];
+    logic [63:0]     strip_m1 [0:2*STRIP_LQ-1];
+    logic [63:0]     strip_m2 [0:2*STRIP_LQ-1];
+    logic [63:0]     strip_m3 [0:2*STRIP_LQ-1];
+    logic [67:0]     pred_m0 [0:64*GRP/4-1];              // parked list-0 prediction: 4 x 17-bit signed per word, as quads
+    logic [67:0]     pred_m1 [0:64*GRP/4-1];
+    logic [67:0]     pred_m2 [0:64*GRP/4-1];
+    logic [67:0]     pred_m3 [0:64*GRP/4-1];
+    localparam int OUT_FIFO = 256;                        // output FIFO entries of up to four words (a 64 x 64 run is 16 x 64 words = 256 entries)
     localparam int FCW = $clog2(OUT_FIFO) + 1;            // entry counter width
 
-    function automatic logic [11:0] patch_addr(input logic bf, input logic l, input logic [6:0] r, input logic [3:0] pr);
-        return 12'(bf) * 12'(PATCH_LN / 2) + 12'(l) * 12'(PATCH_ROWS * PATCH_WPR / 2) + 12'(r) * 12'(PATCH_WPR / 2) + 12'(pr);
+    function automatic logic [10:0] patch_addr(input logic bf, input logic l, input logic [6:0] r, input logic [2:0] q);
+        return 11'(bf) * 11'(2 * PATCH_LQ) + 11'(l) * 11'(PATCH_LQ) + 11'(r) * 11'(PATCH_QPR) + 11'(q);
     endfunction
 
-    // a single word goes to the memory of its parity; a pair (patch_we2, even patch_w4) to both
-    logic [11:0] patch_waddr;
-    assign patch_waddr = patch_addr(patch_buf, patch_list, patch_row, patch_w4[4:1]);
+    // a single word goes to the memory of its lane; a write of several words (from a multiple of 4) to lanes 0 .. patch_n
+    logic [10:0] patch_waddr;
+    logic [3:0]  patch_lwe;
+    logic [4*PW-1:0] patch_ld [0:3];
+    assign patch_waddr = patch_addr(patch_buf, patch_list, patch_row, patch_w4[4:2]);
+    always_comb begin
+        for (int j = 0; j < 4; j++) begin
+            patch_lwe[j] = patch_we && ((patch_n == 2'd0) ? (patch_w4[1:0] == 2'(j)) : (2'(j) <= patch_n));
+            patch_ld[j]  = (patch_n == 2'd0) ? patch_dq[0 +: 4*PW] : patch_dq[j*4*PW +: 4*PW];
+        end
+    end
     always_ff @(posedge clk) begin
-        if (patch_we && !patch_w4[0]) patch_e[patch_waddr] <= patch_d4;
-        if (patch_we && (patch_w4[0] || patch_we2)) patch_o[patch_waddr] <= patch_w4[0] ? patch_d4 : patch_d4b;
+        if (patch_lwe[0]) patch_m0[patch_waddr] <= patch_ld[0];
+        if (patch_lwe[1]) patch_m1[patch_waddr] <= patch_ld[1];
+        if (patch_lwe[2]) patch_m2[patch_waddr] <= patch_ld[2];
+        if (patch_lwe[3]) patch_m3[patch_waddr] <= patch_ld[3];
     end
 `ifndef SYNTHESIS
-    always_ff @(posedge clk) if (!rst && patch_we && patch_we2 && patch_w4[0]) $fatal(1, "mc_filt: patch pair write at an odd word");
+    always_ff @(posedge clk) if (!rst && patch_we && (patch_n != 2'd0) && (patch_w4[1:0] != 2'd0)) $fatal(1, "mc_filt: patch write of several words not from a multiple of 4");
 `endif
 
     // ================================================================ run parameters
     logic        p_list;
     logic        p_buf;
     logic        p_scaled;                               // x_step or y_step != 1024
-    logic        p_two;                                  // unscaled or warp: the horizontal pass takes a word pair a cycle
+    logic        p_quad;                                 // unscaled or warp: the horizontal pass takes a word quad a cycle
     logic        p_warp;                                 // block_warp: 15 x 8 horizontal, 8 x 8 vertical, per-sample taps; on the pair path since 2026-11-12
     logic signed [15:0] p_wa, p_wb, p_wg, p_wd;
     logic [15:0] p_wsx, p_wsy;
@@ -162,7 +183,7 @@ module mc_filt
     // The two passes of consecutive runs overlap (2026-11-08): the horizontal side runs on p_* (sampled at start); when its
     // last strip word has landed the run is handed over (q_*: one pending run) and the vertical side copies it into v_*
     // when it is free. At most one run in each side, so the filter holds two runs in flight.
-    logic        p_tag, q_tag, v_tag;
+    logic [1:0]  p_tag, q_tag, v_tag;
     logic        q_sb;                                   // strip buffer of the pending run
     logic        q_scaled, v_scaled, q_warp, v_warp;
     logic signed [15:0] q_wg, q_wd, v_wg, v_wd;
@@ -195,8 +216,8 @@ module mc_filt
     // ================================================================ control
     // H_RUN and V_RUN (the warp path at one word / one group a cycle) are no longer entered: warp runs take the pair
     // path since 2026-11-12. The enumerators stay so the profilers' state indices do not move.
-    typedef enum logic [2:0] {H_IDLE, H_PRE, H_RUN, H_RUNS, H_DRAIN, H_RUN2} hst_t;   // horizontal side
-    typedef enum logic [2:0] {V_IDLE, V_RUN, V_RUNS, V_DRAIN, V_RUN2} vst_t;         // vertical side
+    typedef enum logic [2:0] {H_IDLE, H_PRE, H_RUN, H_RUNS, H_DRAIN, H_RUN4} hst_t;   // horizontal side
+    typedef enum logic [2:0] {V_IDLE, V_RUN, V_RUNS, V_DRAIN, V_RUN4} vst_t;         // vertical side
     hst_t hst;
     vst_t vst;
     logic        pend;                                   // a run waits between the sides (its strip is complete)
@@ -209,7 +230,7 @@ module mc_filt
     always_comb begin
         case (vst)
             V_RUN:   st = S_V;
-            V_RUN2:  st = S_V;
+            V_RUN4:  st = S_V;
             V_RUNS:  st = S_VS;
             V_DRAIN: st = S_DRAIN;
             default: st = (hst == H_IDLE && !pend) ? S_IDLE : (hst == H_PRE) ? S_PRE : (hst == H_RUNS) ? S_HS : S_H;
@@ -224,7 +245,7 @@ module mc_filt
     end
 `endif
     logic [6:0] hr;                                      // horizontal: patch row
-    logic [4:0] hk;                                      // horizontal: next word of the row to read (H_RUN2: next pair)
+    logic [4:0] hk;                                      // horizontal: next word of the row to read (H_RUN4: next quad)
     logic [4:0] hg;                                      // horizontal, scaled: the group being completed
     logic [4:0] pg;                                      // S_PRE: group whose positions are computed
     logic [16:0] ppos;                                   // S_PRE: position of lane 0 of group pg
@@ -236,19 +257,18 @@ module mc_filt
     logic [3:0] drain;
     // ---------------------------------------------------------------- output FIFO (pair entries, one word a cycle out)
     typedef struct packed {
-        logic         va, vb;                            // word A (group g) / word B (group g + 1) present
+        logic [1:0]   nw;                                // words - 1: groups g .. g + nw of row y
         logic         fin;                               // the run's done marker (no words)
-        logic         tag;
+        logic [1:0]   tag;
         logic [3:0]   mask;
         logic [6:0]   y;
         logic [4:0]   g;
-        logic [1:0]   pad;
-        logic [4*PW-1:0] pixa, pixb;
-        logic [135:0] paira, pairb;
+        logic [16*PW-1:0] pix;
+        logic [4*136-1:0] pair;
     } fent_t;
     fent_t       fifo_ram [0:OUT_FIFO-1];
     fent_t       f_d, f_q, f_cur;                        // entry being written / read ahead / being emitted
-    logic        f_we, f_qv, f_curv, f_sel;
+    logic        f_we, f_qv, f_curv;  logic [1:0] f_sel;
     logic        f_first;                                // the next output word is the first of its run
     logic [$clog2(OUT_FIFO)-1:0] f_wp, f_rp;
     logic [FCW-1:0] f_cnt;                  // entries in the memory, not yet read ahead
@@ -256,45 +276,60 @@ module mc_filt
     assign f_stall = (f_cnt >= FCW'(OUT_FIFO - 12));   // the vertical pipeline holds up to 6 entries in flight
     assign f_empty = (f_cnt == '0) && !f_qv && !f_curv && !f_we;
     assign busy = (hst != H_IDLE) || pend || (vst != V_IDLE) || !f_empty;
-    // At most two runs alive (started, done not yet pulsed): recon_top keeps two run records, selected by the one-bit
+    // At most four runs alive (started, done not yet pulsed; two until 2026-11-23, when a ready patch waited a third of
+    // a frame for the output of two runs to leave at one word a cycle): recon_top keeps four run records, selected by the two-bit
     // tag, and a run's output words stay in the FIFO after the vertical side has moved on, so a third run started
     // then would take the record its words still need (2026-11-09: every inter suite failed without this)
-    logic [1:0]  alive;
-    assign h_ready = (hst == H_IDLE) && !pend && (alive < 2'd2);
+    logic [2:0]  alive;
+    assign h_ready = (hst == H_IDLE) && !pend && (alive < 3'd4);
     assign h_buf_busy = ((hst != H_IDLE) ? (2'b01 << p_buf) : 2'b00) | (start ? (2'b01 << rbuf) : 2'b00);
     assign v_active = pend || (vst != V_IDLE) || !f_empty;
     assign perf_flags = {!f_empty, pend, vst != V_IDLE, hst != H_IDLE};
 
     // ---------------------------------------------------------------- memory ports
-    logic [11:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
-    logic [4*PW-1:0] prde_q, prdo_q, prde_q1, prdo_q1;   // the pair read: even and odd word (prd_q = the one a single-word read asked for)
-    logic        prd_sel;
-    logic [10:0] srd_addr;  logic [63:0] srd_q, srd_q1;  // strip read (q1 with the v1 tags)
-    logic [63:0] srde_q, srdo_q;  logic srd_sel;
-    logic [10:0] swr_addr;  logic [63:0] swe_d, swo_d;  logic swe_we, swo_we;
-    logic [63:0] srdo_q1;                                // the pair's odd strip word with the v1 tags (the even one is srd_q1: vg is even)
-    logic [8:0]  pdr_addr;  logic [67:0] pdr_q, pdr_q1;  // parked prediction read (q1 with the v1 tags)
-    logic [67:0] pdre_q, pdro_q, pdro_q1;  logic pdr_sel;
-    logic [8:0]  pwr_addr;  logic [67:0] pwe_d, pwo_d;  logic pwe_we, pwo_we;
+    // every memory is four lanes at one quad address: a quad pass takes all four, a single-word (scaled) pass the lane it asked for
+    logic [10:0] prd_addr;  logic [4*PW-1:0] prd_q, prd_q1;   // patch read (registered data; q1 = one cycle later, with the h1 tags)
+    logic [4*PW-1:0] prl_q [0:3];
+    logic [4*PW-1:0] prl_q1 [0:3];
+    logic [1:0]  prd_ls;
+    logic [9:0]  srd_addr;  logic [63:0] srd_q, srd_q1;  // strip read (q1 with the v1 tags)
+    logic [63:0] sl_q [0:3];
+    logic [63:0] sl_q1 [0:3];
+    logic [1:0]  srd_ls;
+    logic [9:0]  swr_a01, swr_a23;                       // strip write: lanes 0, 1 at one quad address, lanes 2, 3 at another
+    logic [63:0] sw_d [0:3];  logic [3:0] sw_we;
+    logic [7:0]  pdr_addr;  logic [67:0] pdr_q, pdr_q1;  // parked prediction read (q1 with the v1 tags)
+    logic [67:0] pl_q [0:3];
+    logic [67:0] pl_q1 [0:3];
+    logic [1:0]  pdr_ls;
+    logic [7:0]  pwr_addr;  logic [67:0] pk_d [0:3];  logic [3:0] pk_we;
     logic [6:0]  srd_row;
     always_ff @(posedge clk) begin
-        prde_q <= patch_e[prd_addr]; prdo_q <= patch_o[prd_addr]; prd_sel <= hk[0];
-        if (swe_we) strip_e[swr_addr] <= swe_d;
-        if (swo_we) strip_o[swr_addr] <= swo_d;
-        srde_q <= strip_e[srd_addr]; srdo_q <= strip_o[srd_addr]; srd_sel <= vg[0];
-        if (pwe_we) pred_e[pwr_addr] <= pwe_d;
-        if (pwo_we) pred_o[pwr_addr] <= pwo_d;
-        pdre_q <= pred_e[pdr_addr]; pdro_q <= pred_o[pdr_addr]; pdr_sel <= vg[0];
-        prd_q1 <= prd_q; prde_q1 <= prde_q; prdo_q1 <= prdo_q; srd_q1 <= srd_q; srdo_q1 <= srdo_q; pdr_q1 <= pdr_q; pdro_q1 <= pdro_q;
+        prl_q[0] <= patch_m0[prd_addr]; prl_q[1] <= patch_m1[prd_addr]; prl_q[2] <= patch_m2[prd_addr]; prl_q[3] <= patch_m3[prd_addr];
+        prd_ls <= hk[1:0];
+        if (sw_we[0]) strip_m0[swr_a01] <= sw_d[0];
+        if (sw_we[1]) strip_m1[swr_a01] <= sw_d[1];
+        if (sw_we[2]) strip_m2[swr_a23] <= sw_d[2];
+        if (sw_we[3]) strip_m3[swr_a23] <= sw_d[3];
+        sl_q[0] <= strip_m0[srd_addr]; sl_q[1] <= strip_m1[srd_addr]; sl_q[2] <= strip_m2[srd_addr]; sl_q[3] <= strip_m3[srd_addr];
+        srd_ls <= vg[1:0];
+        if (pk_we[0]) pred_m0[pwr_addr] <= pk_d[0];
+        if (pk_we[1]) pred_m1[pwr_addr] <= pk_d[1];
+        if (pk_we[2]) pred_m2[pwr_addr] <= pk_d[2];
+        if (pk_we[3]) pred_m3[pwr_addr] <= pk_d[3];
+        pl_q[0] <= pred_m0[pdr_addr]; pl_q[1] <= pred_m1[pdr_addr]; pl_q[2] <= pred_m2[pdr_addr]; pl_q[3] <= pred_m3[pdr_addr];
+        pdr_ls <= vg[1:0];
+        prd_q1 <= prd_q; srd_q1 <= srd_q; pdr_q1 <= pdr_q;
+        for (int j = 0; j < 4; j++) begin prl_q1[j] <= prl_q[j]; sl_q1[j] <= sl_q[j]; pl_q1[j] <= pl_q[j]; end
     end
-    assign prd_q = prd_sel ? prdo_q : prde_q;
-    assign srd_q = srd_sel ? srdo_q : srde_q;
-    assign pdr_q = pdr_sel ? pdro_q : pdre_q;
+    assign prd_q = prl_q[prd_ls];
+    assign srd_q = sl_q[srd_ls];
+    assign pdr_q = pl_q[pdr_ls];
     always_comb begin
-        prd_addr = patch_addr(p_buf, p_list, hr, p_two ? hk[3:0] : hk[4:1]);
+        prd_addr = patch_addr(p_buf, p_list, hr, p_quad ? hk[2:0] : hk[4:2]);
         srd_row  = v_scaled ? 7'(vpos[16:10]) + 7'(vt) : vk;
-        srd_addr = 11'(vb) * 11'(STRIP_LN / 2) + 11'(srd_row) * 11'(GRP / 2) + 11'(vg[4:1]);
-        pdr_addr = (v_scaled ? 9'(vi) : 9'(vk - 7'd7)) * 9'(GRP / 2) + 9'(vg[4:1]);
+        srd_addr = 10'(vb) * 10'(STRIP_LQ) + 10'(srd_row) * 10'(STRIP_QPR) + 10'(vg[4:2]);
+        pdr_addr = (v_scaled ? 8'(vi) : 8'(vk - 7'd7)) * 8'(GRP / 4) + 8'(vg[4:2]);
     end
 
     // ---------------------------------------------------------------- horizontal pass pipeline
@@ -302,24 +337,35 @@ module mc_filt
     // h1: prd_q1 is word hk of row hr; the window W0 .. W4 holds the previous words (W4 = newest); the 32 samples
     //     and taps of the group are selected and registered
     // h2: 32 products registered      h3: sums rounded      h4: strip[r][g] written
-    // Pair reads (H_RUN2, the *_two tags): h1: {prde_q1, prdo_q1} is pair k of row r, W3 / W4 the pair before; group
-    // g = 2k - 2 (lanes' taps = samples l + t of {W3, W4, prde_q1}) goes down the pipeline above, group g + 1 (samples
-    // 4 + l + t of {W3, W4, prde_q1, prdo_q1}; h*_b: it exists) down a second one (hsampb, hpb, hsb), and both strip
-    // words are written in the h4 cycle
-    logic        h0_v, h0_rd, h0_em, h0_two, h0_b;  logic [6:0] h0_r;  logic [4:0] h0_k, h0_g;
-    logic        h1_v, h1_rd, h1_em, h1_two, h1_b;  logic [6:0] h1_r;  logic [4:0] h1_k, h1_g;
+    // Quad reads (H_RUN4, the *_q tags; 2026-11-23, K60-88): h1: prl_q1[0..3] is quad k of row r (words 4k .. 4k + 3), W3 / W4
+    // the last two words of the quad before. Group g needs words g .. g + 2, so quad k completes groups 4k - 2 .. 4k + 1:
+    // lane set j (0 .. 3) is group 4k - 2 + j, its taps samples 4j + l + t of the 24-sample window {W3, W4, quad}; h*_gv
+    // says which of the four exist (>= 0 and < ngrp). Four pipelines (128 products), and the four strip words are written
+    // in the h4 cycle: groups 4k - 2, 4k - 1 are lanes 2, 3 of strip quad k - 1, groups 4k, 4k + 1 lanes 0, 1 of quad k.
+    // The scaled path (one word, one group a cycle) uses lane set 0.
+    logic        h0_v, h0_rd, h0_em, h0_q;  logic [3:0] h0_gv;  logic [6:0] h0_r;  logic [4:0] h0_k, h0_g;
+    logic        h1_v, h1_rd, h1_em, h1_q;  logic [3:0] h1_gv;  logic [6:0] h1_r;  logic [4:0] h1_k, h1_g;
     logic [4*PW-1:0] W0, W1, W2, W3, W4;
-    logic        h2_v, h2_two, h2_b;  logic [6:0] h2_r;  logic [4:0] h2_g;
-    logic [PW-1:0]      hsamp [0:3][0:7];
-    logic [PW-1:0]      hsampb [0:3][0:7];
-    logic signed [8:0]  htap  [0:3][0:7];
-    logic signed [8:0]  htapb [0:3][0:7];                // the odd group's taps (pair reads)
-    logic        h3_v, h3_two, h3_b;  logic [6:0] h3_r;  logic [4:0] h3_g;
-    logic signed [20:0] hp [0:3][0:7];
-    logic signed [20:0] hpb [0:3][0:7];
-    logic        h4_v, h4_two, h4_b;  logic [6:0] h4_r;  logic [4:0] h4_g;
-    logic signed [15:0] hs [0:3];
-    logic signed [15:0] hsb [0:3];
+    logic        h2_v, h2_q;  logic [3:0] h2_gv;  logic [6:0] h2_r;  logic [4:0] h2_k, h2_g;
+    logic [PW-1:0]      hsamp [0:3][0:3][0:7];           // [lane set][lane][tap]
+    logic signed [8:0]  htap  [0:3][0:3][0:7];
+    logic        h3_v, h3_q;  logic [3:0] h3_gv;  logic [6:0] h3_r;  logic [4:0] h3_k, h3_g;
+    logic signed [20:0] hp [0:3][0:3][0:7];
+    logic        h4_v, h4_q;  logic [3:0] h4_gv;  logic [6:0] h4_r;  logic [4:0] h4_k, h4_g;
+    logic signed [15:0] hs [0:3][0:3];
+
+    // sample s (0 .. 23) of the 24-sample window {a, b, quad c .. f} (a = oldest)
+    function automatic logic [PW-1:0] wsamp6(input logic [4*PW-1:0] a, input logic [4*PW-1:0] b, input logic [4*PW-1:0] c,
+                                             input logic [4*PW-1:0] d, input logic [4*PW-1:0] e, input logic [4*PW-1:0] f, input logic [4:0] s);
+        case (s[4:2])
+            3'd0: return a[s[1:0]*PW +: PW];
+            3'd1: return b[s[1:0]*PW +: PW];
+            3'd2: return c[s[1:0]*PW +: PW];
+            3'd3: return d[s[1:0]*PW +: PW];
+            3'd4: return e[s[1:0]*PW +: PW];
+            default: return f[s[1:0]*PW +: PW];
+        endcase
+    endfunction
 
     // sample s (0 .. 19) of the 20-sample window {a, b, c, d, e} (a = oldest)
     function automatic logic [PW-1:0] wsamp(input logic [4*PW-1:0] a, input logic [4*PW-1:0] b, input logic [4*PW-1:0] c,
@@ -347,23 +393,19 @@ module mc_filt
     //     in turn, the last one tagged to compute
     // v1: srd_q1 / pdr_q1 are their data; 8-row window shift; samples and taps registered
     // v2: 32 products registered      v3: sums rounded (p); parked word delayed      v4: blend / clip / output, or park
-    // Pair reads (V_RUN2, the *_two tags): srd_q1 / srdo_q1 are groups g (even) and g + 1 of the strip row, pdr_q1 /
-    // pdro_q1 their parked words; group g + 1 (v*_b: it exists) has its own window and products (vwinb, vsampb, vpb, vsb)
-    logic        v0_v, v0_c, v0_two, v0_b;  logic [6:0] v0_i;  logic [4:0] v0_g;  logic [3:0] v0_ph;
-    logic        v1_v, v1_c, v1_two, v1_b;  logic [6:0] v1_i;  logic [4:0] v1_g;  logic [3:0] v1_ph;
-    logic [63:0] vwin [0:6];                             // the 7 strip words before srd_q1 (vwin[0] = oldest)
-    logic [63:0] vwinb [0:6];
-    logic        v2_v, v2_two, v2_b;  logic [6:0] v2_i;  logic [4:0] v2_g;  logic [67:0] v2_pred, v2_predb;
-    logic signed [15:0] vsamp [0:3][0:7];
-    logic signed [15:0] vsampb [0:3][0:7];
-    logic signed [8:0]  vtap  [0:3][0:7];
-    logic signed [8:0]  vtapb [0:3][0:7];                // the odd group's taps (pair reads)
-    logic        v3_v, v3_two, v3_b;  logic [6:0] v3_i;  logic [4:0] v3_g;  logic [67:0] v3_pred, v3_predb;
-    logic signed [24:0] vp [0:3][0:7];
-    logic signed [24:0] vpb [0:3][0:7];
-    logic        v4_v, v4_two, v4_b;  logic [6:0] v4_i;  logic [4:0] v4_g;  logic [67:0] v4_pred, v4_predb;
-    logic signed [16:0] vs [0:3];                       // the vertical output: 17 bits (compound intermediates)
-    logic signed [16:0] vsb [0:3];
+    // Quad reads (V_RUN4, the *_q tags; 2026-11-23, K60-89): sl_q1[0..3] are groups g .. g + 3 of the strip row (g a multiple
+    // of 4), pl_q1[0..3] their parked words; lane set j is group g + j with a window and products of its own (v*_gv: it
+    // exists). The scaled path (one group a cycle) uses lane set 0.
+    logic        v0_v, v0_c, v0_q;  logic [3:0] v0_gv;  logic [6:0] v0_i;  logic [4:0] v0_g;  logic [3:0] v0_ph;
+    logic        v1_v, v1_c, v1_q;  logic [3:0] v1_gv;  logic [6:0] v1_i;  logic [4:0] v1_g;  logic [3:0] v1_ph;
+    logic [63:0] vwin [0:3][0:6];                        // per lane set: the 7 strip words before the one just read ([0] = oldest)
+    logic        v2_v, v2_q;  logic [3:0] v2_gv;  logic [6:0] v2_i;  logic [4:0] v2_g;  logic [67:0] v2_pred [0:3];
+    logic signed [15:0] vsamp [0:3][0:3][0:7];           // [lane set][lane][tap]
+    logic signed [8:0]  vtap  [0:3][0:3][0:7];
+    logic        v3_v, v3_q;  logic [3:0] v3_gv;  logic [6:0] v3_i;  logic [4:0] v3_g;  logic [67:0] v3_pred [0:3];
+    logic signed [24:0] vp [0:3][0:3][0:7];
+    logic        v4_v, v4_q;  logic [3:0] v4_gv;  logic [6:0] v4_i;  logic [4:0] v4_g;  logic [67:0] v4_pred [0:3];
+    logic signed [16:0] vs [0:3][0:3];                   // the vertical output: 17 bits (compound intermediates)
     logic [PW-1:0] pix_max;
     assign pix_max = PW'((13'd1 << v_bd) - 13'd1);      // the vertical side clips
     // v5: the output word of a group: the blend of the parked word (modes 2, 3) with this list's sums, clipped
@@ -391,12 +433,12 @@ module mc_filt
 
     always_ff @(posedge clk) begin
         done <= 1'b0;
-        swe_we <= 1'b0; swo_we <= 1'b0; pwe_we <= 1'b0; pwo_we <= 1'b0;
+        sw_we <= 4'b0000; pk_we <= 4'b0000;
         out_valid <= 1'b0; f_we <= 1'b0;
-        h0_v <= 1'b0; h0_two <= 1'b0; h0_b <= 1'b0; v0_v <= 1'b0; v0_two <= 1'b0; v0_b <= 1'b0;
+        h0_v <= 1'b0; h0_q <= 1'b0; h0_gv <= 4'b0000; v0_v <= 1'b0; v0_q <= 1'b0; v0_gv <= 4'b0000;
         if (f_we) fifo_ram[f_wp] <= f_d;
         if (rst) begin
-            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 1'b0; alive <= 2'd0; f_first <= 1'b1;
+            f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 2'd0; alive <= 3'd0; f_first <= 1'b1;
             hst <= H_IDLE; vst <= V_IDLE; pend <= 1'b0; hb <= 1'b0; vb <= 1'b0; hdrain <= 3'd0;
             h1_v <= 1'b0; h2_v <= 1'b0; h3_v <= 1'b0; h4_v <= 1'b0;
             v1_v <= 1'b0; v2_v <= 1'b0; v3_v <= 1'b0; v4_v <= 1'b0;
@@ -405,14 +447,14 @@ module mc_filt
             // still runs the previous one (the passes of consecutive runs overlap); it is handed over once its strip is complete
 `ifndef SYNTHESIS
             if (start && !(hst == H_IDLE && !pend)) $fatal(1, "mc_filt: start while not h_ready");
-            if (start && alive == 2'd2 && !done) $fatal(1, "mc_filt: a third run started while two are alive");
+            if (start && alive == 3'd4 && !done) $fatal(1, "mc_filt: a fifth run started while four are alive");
 `endif
-            alive <= alive + 2'(start) - 2'(done);       // done is registered: the pulse visible this cycle
+            alive <= alive + 3'(start) - 3'(done);       // done is registered: the pulse visible this cycle
             case (hst)
                 H_IDLE: if (start) begin
                     p_list <= lst; p_buf <= rbuf;
                     p_scaled <= !warp && ((x_step != 12'd1024) || (y_step != 12'd1024));
-                    p_two <= warp || ((x_step == 12'd1024) && (y_step == 12'd1024));
+                    p_quad <= warp || ((x_step == 12'd1024) && (y_step == 12'd1024));
                     p_warp <= warp; p_wa <= w_alpha; p_wb <= w_beta; p_wg <= w_gamma; p_wd <= w_delta; p_wsx <= w_sx4; p_wsy <= w_sy4;
                     p_ngrp <= warp ? 5'd2 : 5'((w + 7'd3) >> 2); p_h <= warp ? 7'd8 : h;
                     p_nrow <= warp ? 7'd15 : 7'(nrow_calc[18:10] + 9'd8);
@@ -432,7 +474,7 @@ module mc_filt
                     hr <= 7'd0; hk <= 5'd0; hg <= 5'd0;
                     if (!warp && ((x_step != 12'd1024) || (y_step != 12'd1024))) begin
                         pg <= 5'd0; ppos <= 17'(x_frac0); hst <= H_PRE;
-                    end else hst <= H_RUN2;
+                    end else hst <= H_RUN4;
                 end
                 H_PRE: begin                             // one group per cycle: lane positions p = ppos + l x_step
                     for (int l = 0; l < 4; l++) begin
@@ -444,10 +486,11 @@ module mc_filt
                     ppos <= ppos + 17'(p_xs) * 17'd4;
                     if (pg == 5'(GRP - 1)) hst <= H_RUNS; else pg <= pg + 5'd1;
                 end
-                H_RUN2: begin                              // unscaled and warp: one word pair per cycle, groups 2 hk - 2 and 2 hk - 1 emitted at pair hk
-                    h0_v <= 1'b1; h0_rd <= 1'b1; h0_two <= 1'b1; h0_em <= (hk != 5'd0); h0_r <= hr; h0_k <= hk;
-                    h0_g <= 5'({hk, 1'b0} - 6'd2); h0_b <= (6'({hk, 1'b0}) - 6'd1 < 6'(p_ngrp));
-                    if (hk == 5'((6'(p_ngrp) + 6'd1) >> 1)) begin               // the pair holding word ngrp + 1 (or ngrp, the last one group A needs)
+                H_RUN4: begin                              // unscaled and warp: one word quad per cycle, groups 4 hk - 2 .. 4 hk + 1 emitted at quad hk
+                    h0_v <= 1'b1; h0_rd <= 1'b1; h0_q <= 1'b1; h0_em <= 1'b1; h0_r <= hr; h0_k <= hk;
+                    for (int j = 0; j < 4; j++)
+                        h0_gv[j] <= (7'({hk, 2'b00}) + 7'(j) >= 7'd2) && (7'({hk, 2'b00}) + 7'(j) < 7'(p_ngrp) + 7'd2);
+                    if (hk == 5'((6'(p_ngrp) + 6'd1) >> 2)) begin               // the quad holding word ngrp + 1: the row's last groups
                         hk <= 5'd0;
                         if (hr == p_nrow - 7'd1) begin hdrain <= 3'd4; hst <= H_DRAIN; end
                         else hr <= hr + 7'd1;
@@ -488,17 +531,18 @@ module mc_filt
                     v_r1 <= q_r1; v_post <= q_post; v_mask <= q_mask; v_fidy <= q_fidy; v_yf0 <= q_yf0; v_ys <= q_ys;
                     for (int t = 0; t < 8; t++) vty[t] <= qty[t];
                     vg <= 5'd0; vk <= 7'd0; vi <= 7'd0; vt <= 3'd0; vpos <= 17'(q_yf0);
-                    vst <= q_scaled ? V_RUNS : V_RUN2;
+                    vst <= q_scaled ? V_RUNS : V_RUN4;
                 end
-                V_RUN2: if (!f_stall) begin                // unscaled and warp: a strip pair per cycle, groups vg (even) and vg + 1
+                V_RUN4: if (!f_stall) begin                // unscaled and warp: a strip quad per cycle, groups vg .. vg + 3 (vg a multiple of 4)
                     // the strip is complete before any read of it that matters: the last horizontal write lands 4
                     // cycles after its issue, and the vertical pass reads rows 0 .. 6 first (written long before)
-                    v0_v <= 1'b1; v0_two <= 1'b1; v0_b <= (6'(vg) + 6'd1 < 6'(v_ngrp));
+                    v0_v <= 1'b1; v0_q <= 1'b1;
+                    for (int j = 0; j < 4; j++) v0_gv[j] <= (6'(vg) + 6'(j) < 6'(v_ngrp));
                     v0_g <= vg; v0_c <= (vk >= 7'd7); v0_i <= vk - 7'd7; v0_ph <= v_yf0[9:6];
                     if (vk == v_nrow - 7'd1) begin
                         vk <= 7'd0;
-                        if (6'(vg) + 6'd2 >= 6'(v_ngrp)) begin drain <= 4'd8; vst <= V_DRAIN; end
-                        else vg <= vg + 5'd2;
+                        if (6'(vg) + 6'd4 >= 6'(v_ngrp)) begin drain <= 4'd8; vst <= V_DRAIN; end
+                        else vg <= vg + 5'd4;
                     end else vk <= vk + 7'd1;
                 end
                 V_RUNS: if (!f_stall) begin                // scaled: 8 tap rows per output row, compute on the eighth
@@ -520,109 +564,121 @@ module mc_filt
             endcase
 
             // ---------------- horizontal pipeline
-            h1_v <= h0_v; h1_rd <= h0_rd; h1_em <= h0_em; h1_r <= h0_r; h1_k <= h0_k; h1_g <= h0_g; h1_two <= h0_two; h1_b <= h0_b;
+            h1_v <= h0_v; h1_rd <= h0_rd; h1_em <= h0_em; h1_r <= h0_r; h1_k <= h0_k; h1_g <= h0_g; h1_q <= h0_q; h1_gv <= h0_gv;
             if (h1_v && h1_rd) begin
-                if (h1_two) begin W3 <= prde_q1; W4 <= prdo_q1; end                 // the pair, for the next one
+                if (h1_q) begin W3 <= prl_q1[2]; W4 <= prl_q1[3]; end               // the quad's last two words, for the next one
                 else begin W0 <= W1; W1 <= W2; W2 <= W3; W3 <= W4; W4 <= prd_q1; end
             end
-            h2_v <= h1_v && h1_em; h2_r <= h1_r; h2_g <= h1_g; h2_two <= h1_two; h2_b <= h1_b;
-            for (int l = 0; l < 4; l++)
-                for (int t = 0; t < 8; t++)
-                    hsampb[l][t] <= wsamp(W3, W4, prde_q1, prdo_q1, prdo_q1, 5'(4 + l + t));   // pair reads: the odd group
-            for (int l = 0; l < 4; l++)
-                for (int t = 0; t < 8; t++)
-                    if (h1_two) begin
-                        // pair reads: the even group's taps are samples l + t of words 2k - 2, 2k - 1, 2k = W3, W4, prde_q1.
-                        // One phase per unscaled run; a warp run has a filter row per sample (lane l of groups g and g + 1)
-                        hsamp[l][t] <= wsamp(W3, W4, prde_q1, prdo_q1, prdo_q1, 5'(l + t));
-                        htap[l][t]  <= p_warp ? 9'(warp_tap(warp_offs(p_wsx, p_wa, p_wb, h1_g, l, 8'(signed'({1'b0, h1_r})) - 8'sd7), 3'(t))) : tx[t];
-                        htapb[l][t] <= p_warp ? 9'(warp_tap(warp_offs(p_wsx, p_wa, p_wb, h1_g + 5'd1, l, 8'(signed'({1'b0, h1_r})) - 8'sd7), 3'(t))) : tx[t];
-                    end else begin
-                        // scaled: window words kw - 4 .. kw = {W1 .. W4, prd_q1} on a read cycle (kw = h1_k), else
-                        // {W0 .. W4}; lane l's first tap is sample g_int - 4 (kw - 4) of it
-                        logic [6:0] off;
-                        off = g_int[h1_g[3:0]][l] + 7'd16 - {h1_k, 2'b00};
-                        hsamp[l][t] <= h1_rd ? wsamp(W1, W2, W3, W4, prd_q1, 5'(off + 7'(t)))
-                                             : wsamp(W0, W1, W2, W3, W4, 5'(off + 7'(t)));
-                        htap[l][t]  <= subpel_tap(p_fidx, g_ph[h1_g[3:0]][l], 3'(t));
-                    end
-            h3_v <= h2_v; h3_r <= h2_r; h3_g <= h2_g; h3_two <= h2_two; h3_b <= h2_b;
-            for (int l = 0; l < 4; l++)
-                for (int t = 0; t < 8; t++) begin
-                    hp[l][t]  <= 21'(signed'({1'b0, hsamp[l][t]})) * 21'(htap[l][t]);
-                    hpb[l][t] <= 21'(signed'({1'b0, hsampb[l][t]})) * 21'(htapb[l][t]);
+            h2_v <= h1_v && h1_em; h2_r <= h1_r; h2_g <= h1_g; h2_k <= h1_k; h2_q <= h1_q; h2_gv <= h1_gv;
+            for (int j = 0; j < 4; j++)
+                for (int l = 0; l < 4; l++)
+                    for (int t = 0; t < 8; t++)
+                        if (h1_q) begin
+                            // quad reads: lane set j = group 4k - 2 + j, taps = samples 4j + l + t of {W3, W4, quad k}.
+                            // One phase per unscaled run; a warp run has a filter row per sample
+                            hsamp[j][l][t] <= wsamp6(W3, W4, prl_q1[0], prl_q1[1], prl_q1[2], prl_q1[3], 5'(4 * j + l + t));
+                            htap[j][l][t]  <= p_warp ? 9'(warp_tap(warp_offs(p_wsx, p_wa, p_wb, 5'({h1_k[2:0], 2'b00}) + 5'(j) - 5'd2, l,
+                                                                             8'(signed'({1'b0, h1_r})) - 8'sd7), 3'(t))) : tx[t];
+                        end else if (j == 0) begin
+                            // scaled: window words kw - 4 .. kw = {W1 .. W4, prd_q1} on a read cycle (kw = h1_k), else
+                            // {W0 .. W4}; lane l's first tap is sample g_int - 4 (kw - 4) of it
+                            logic [6:0] off;
+                            off = g_int[h1_g[3:0]][l] + 7'd16 - {h1_k, 2'b00};
+                            hsamp[j][l][t] <= h1_rd ? wsamp(W1, W2, W3, W4, prd_q1, 5'(off + 7'(t)))
+                                                    : wsamp(W0, W1, W2, W3, W4, 5'(off + 7'(t)));
+                            htap[j][l][t]  <= subpel_tap(p_fidx, g_ph[h1_g[3:0]][l], 3'(t));
+                        end
+            h3_v <= h2_v; h3_r <= h2_r; h3_g <= h2_g; h3_k <= h2_k; h3_q <= h2_q; h3_gv <= h2_gv;
+            for (int j = 0; j < 4; j++)
+                for (int l = 0; l < 4; l++)
+                    for (int t = 0; t < 8; t++)
+                        hp[j][l][t] <= 21'(signed'({1'b0, hsamp[j][l][t]})) * 21'(htap[j][l][t]);
+            h4_v <= h3_v; h4_r <= h3_r; h4_g <= h3_g; h4_k <= h3_k; h4_q <= h3_q; h4_gv <= h3_gv;
+            for (int j = 0; j < 4; j++)
+                for (int l = 0; l < 4; l++) begin
+                    logic signed [23:0] s;
+                    s = 24'sd0;
+                    for (int t = 0; t < 8; t++) s = s + 24'(hp[j][l][t]);
+                    hs[j][l] <= 16'((s + (24'sd1 <<< (p_r0 - 4'd1))) >>> p_r0);
                 end
-            h4_v <= h3_v; h4_r <= h3_r; h4_g <= h3_g; h4_two <= h3_two; h4_b <= h3_b;
-            for (int l = 0; l < 4; l++) begin
-                logic signed [23:0] s, sb;
-                s = 24'sd0; sb = 24'sd0;
-                for (int t = 0; t < 8; t++) begin s = s + 24'(hp[l][t]); sb = sb + 24'(hpb[l][t]); end
-                hs[l]  <= 16'((s + (24'sd1 <<< (p_r0 - 4'd1))) >>> p_r0);
-                hsb[l] <= 16'((sb + (24'sd1 <<< (p_r0 - 4'd1))) >>> p_r0);
-            end
             if (h4_v) begin
-                // a single group goes to the memory of its parity; a pair (group h4_g even, h4_g + 1 if it exists) to both
-                swr_addr <= 11'(hb) * 11'(STRIP_LN / 2) + 11'(h4_r) * 11'(GRP / 2) + 11'(h4_g[4:1]);
-                swe_we <= h4_two || !h4_g[0]; swe_d <= {hs[3], hs[2], hs[1], hs[0]};
-                swo_we <= h4_two ? h4_b : h4_g[0];
-                swo_d <= h4_two ? {hsb[3], hsb[2], hsb[1], hsb[0]} : {hs[3], hs[2], hs[1], hs[0]};
+                if (h4_q) begin
+                    // lane sets 2, 3 (groups 4k, 4k + 1) are lanes 0, 1 of strip quad k; lane sets 0, 1 (groups 4k - 2, 4k - 1)
+                    // lanes 2, 3 of quad k - 1
+                    swr_a01 <= 10'(hb) * 10'(STRIP_LQ) + 10'(h4_r) * 10'(STRIP_QPR) + 10'(h4_k[2:0]);
+                    swr_a23 <= 10'(hb) * 10'(STRIP_LQ) + 10'(h4_r) * 10'(STRIP_QPR) + 10'(h4_k[2:0]) - 10'd1;
+                    sw_we <= {h4_gv[1], h4_gv[0], h4_gv[3], h4_gv[2]};
+                    sw_d[0] <= {hs[2][3], hs[2][2], hs[2][1], hs[2][0]};
+                    sw_d[1] <= {hs[3][3], hs[3][2], hs[3][1], hs[3][0]};
+                    sw_d[2] <= {hs[0][3], hs[0][2], hs[0][1], hs[0][0]};
+                    sw_d[3] <= {hs[1][3], hs[1][2], hs[1][1], hs[1][0]};
+                end else begin
+                    // a single group (scaled) goes to the memory of its lane
+                    swr_a01 <= 10'(hb) * 10'(STRIP_LQ) + 10'(h4_r) * 10'(STRIP_QPR) + 10'(h4_g[4:2]);
+                    swr_a23 <= 10'(hb) * 10'(STRIP_LQ) + 10'(h4_r) * 10'(STRIP_QPR) + 10'(h4_g[4:2]);
+                    sw_we <= 4'b0001 << h4_g[1:0];
+                    for (int j = 0; j < 4; j++) sw_d[j] <= {hs[0][3], hs[0][2], hs[0][1], hs[0][0]};
+                end
             end
 
             // ---------------- vertical pipeline
-            v1_v <= v0_v; v1_c <= v0_c; v1_i <= v0_i; v1_g <= v0_g; v1_ph <= v0_ph; v1_two <= v0_two; v1_b <= v0_b;
+            v1_v <= v0_v; v1_c <= v0_c; v1_i <= v0_i; v1_g <= v0_g; v1_ph <= v0_ph; v1_q <= v0_q; v1_gv <= v0_gv;
             if (v1_v) begin
-                for (int j = 0; j < 6; j++) begin vwin[j] <= vwin[j + 1]; vwinb[j] <= vwinb[j + 1]; end
-                vwin[6] <= srd_q1; vwinb[6] <= srdo_q1;
+                for (int j = 0; j < 4; j++) begin
+                    for (int i = 0; i < 6; i++) vwin[j][i] <= vwin[j][i + 1];
+                    vwin[j][6] <= v1_q ? sl_q1[j] : srd_q1;
+                end
             end
-            // output row i from the 8 strip rows {vwin[0..6], srd_q1}
-            v2_v <= v1_v && v1_c; v2_i <= v1_i; v2_g <= v1_g; v2_pred <= pdr_q1; v2_predb <= pdro_q1; v2_two <= v1_two; v2_b <= v1_b;
-            for (int l = 0; l < 4; l++)
-                for (int t = 0; t < 8; t++) begin
-                    vsamp[l][t]  <= signed'((t < 7) ? vwin[t][l*16 +: 16] : srd_q1[l*16 +: 16]);
-                    vsampb[l][t] <= signed'((t < 7) ? vwinb[t][l*16 +: 16] : srdo_q1[l*16 +: 16]);
+            // output row i from the 8 strip rows {vwin[0..6], the word just read}
+            v2_v <= v1_v && v1_c; v2_i <= v1_i; v2_g <= v1_g; v2_q <= v1_q; v2_gv <= v1_gv;
+            for (int j = 0; j < 4; j++) begin
+                v2_pred[j] <= v1_q ? pl_q1[j] : pdr_q1;
+                for (int l = 0; l < 4; l++)
+                    for (int t = 0; t < 8; t++) begin
+                        vsamp[j][l][t] <= signed'((t < 7) ? vwin[j][t][l*16 +: 16] : v1_q ? sl_q1[j][l*16 +: 16] : srd_q1[l*16 +: 16]);
+                        vtap[j][l][t]  <= v_warp ? 9'(warp_tap(warp_offs(v_wsy, v_wg, v_wd, v1_g + 5'(j), l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t)))
+                                        : v_scaled ? subpel_tap(v_fidy, v1_ph, 3'(t)) : vty[t];
+                    end
+            end
+            v3_v <= v2_v; v3_i <= v2_i; v3_g <= v2_g; v3_q <= v2_q; v3_gv <= v2_gv;
+            for (int j = 0; j < 4; j++) begin
+                v3_pred[j] <= v2_pred[j];
+                for (int l = 0; l < 4; l++)
+                    for (int t = 0; t < 8; t++)
+                        vp[j][l][t] <= 25'(vsamp[j][l][t]) * 25'(vtap[j][l][t]);
+            end
+            v4_v <= v3_v; v4_i <= v3_i; v4_g <= v3_g; v4_q <= v3_q; v4_gv <= v3_gv;
+            for (int j = 0; j < 4; j++) begin
+                v4_pred[j] <= v3_pred[j];
+                for (int l = 0; l < 4; l++) begin
+                    logic signed [27:0] s;
+                    s = 28'sd0;
+                    for (int t = 0; t < 8; t++) s = s + 28'(vp[j][l][t]);
+                    vs[j][l] <= 17'((s + (28'sd1 <<< (v_r1 - 4'd1))) >>> v_r1);
                 end
-            for (int l = 0; l < 4; l++)
-                for (int t = 0; t < 8; t++)
-                begin
-                    vtap[l][t] <= v_warp ? 9'(warp_tap(warp_offs(v_wsy, v_wg, v_wd, v1_g, l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t)))
-                                : v_scaled ? subpel_tap(v_fidy, v1_ph, 3'(t)) : vty[t];
-                    vtapb[l][t] <= v_warp ? 9'(warp_tap(warp_offs(v_wsy, v_wg, v_wd, v1_g + 5'd1, l, 8'(signed'({1'b0, v1_i})) - 8'sd4), 3'(t))) : vty[t];
-                end
-            v3_v <= v2_v; v3_i <= v2_i; v3_g <= v2_g; v3_pred <= v2_pred; v3_predb <= v2_predb; v3_two <= v2_two; v3_b <= v2_b;
-            for (int l = 0; l < 4; l++)
-                for (int t = 0; t < 8; t++) begin
-                    vp[l][t]  <= 25'(vsamp[l][t]) * 25'(vtap[l][t]);
-                    vpb[l][t] <= 25'(vsampb[l][t]) * 25'(vtapb[l][t]);
-                end
-            v4_v <= v3_v; v4_i <= v3_i; v4_g <= v3_g; v4_pred <= v3_pred; v4_predb <= v3_predb; v4_two <= v3_two; v4_b <= v3_b;
-            for (int l = 0; l < 4; l++) begin
-                logic signed [27:0] s, sb;
-                s = 28'sd0; sb = 28'sd0;
-                for (int t = 0; t < 8; t++) begin s = s + 28'(vp[l][t]); sb = sb + 28'(vpb[l][t]); end
-                vs[l]  <= 17'((s + (28'sd1 <<< (v_r1 - 4'd1))) >>> v_r1);
-                vsb[l] <= 17'((sb + (28'sd1 <<< (v_r1 - 4'd1))) >>> v_r1);
             end
             // v5: park, or blend / clip into the output FIFO
             if (v4_v) begin
                 if (v_mode == 3'd1) begin
-                    // a single group goes to the memory of its parity; a pair (group v4_g even, v4_g + 1 if it exists) to both
-                    pwr_addr <= 9'(v4_i) * 9'(GRP / 2) + 9'(v4_g[4:1]);
-                    pwe_we <= v4_two || !v4_g[0]; pwe_d <= {vs[3], vs[2], vs[1], vs[0]};
-                    pwo_we <= v4_two ? v4_b : v4_g[0];
-                    pwo_d <= v4_two ? {vsb[3], vsb[2], vsb[1], vsb[0]} : {vs[3], vs[2], vs[1], vs[0]};
+                    // a quad (groups v4_g .. v4_g + 3, those that exist) to the lanes; a single group to the memory of its lane
+                    pwr_addr <= 8'(v4_i) * 8'(GRP / 4) + 8'(v4_g[4:2]);
+                    pk_we <= v4_q ? v4_gv : (4'b0001 << v4_g[1:0]);
+                    for (int j = 0; j < 4; j++)
+                        pk_d[j] <= v4_q ? {vs[j][3], vs[j][2], vs[j][1], vs[j][0]} : {vs[0][3], vs[0][2], vs[0][1], vs[0][0]};
                 end else begin
                     f_we <= 1'b1;
-                    f_d.va <= 1'b1; f_d.vb <= v4_two && v4_b; f_d.fin <= 1'b0; f_d.tag <= v_tag; f_d.mask <= v_mask;
-                    f_d.y <= v4_i; f_d.g <= v4_g; f_d.pad <= 2'b00;
-                    f_d.pixa <= blend4({vs[3], vs[2], vs[1], vs[0]}, v4_pred, v_mode, v_wt0, v_wt1, v_post, pix_max);
-                    f_d.pixb <= blend4({vsb[3], vsb[2], vsb[1], vsb[0]}, v4_predb, v_mode, v_wt0, v_wt1, v_post, pix_max);
-                    f_d.paira <= {vs[3], vs[2], vs[1], vs[0], v4_pred};
-                    f_d.pairb <= {vsb[3], vsb[2], vsb[1], vsb[0], v4_predb};
+                    f_d.nw <= !v4_q ? 2'd0 : v4_gv[3] ? 2'd3 : v4_gv[2] ? 2'd2 : v4_gv[1] ? 2'd1 : 2'd0;
+                    f_d.fin <= 1'b0; f_d.tag <= v_tag; f_d.mask <= v_mask;
+                    f_d.y <= v4_i; f_d.g <= v4_g;
+                    for (int j = 0; j < 4; j++) begin
+                        f_d.pix[j*4*PW +: 4*PW] <= blend4({vs[j][3], vs[j][2], vs[j][1], vs[j][0]}, v4_pred[j], v_mode, v_wt0, v_wt1, v_post, pix_max);
+                        f_d.pair[j*136 +: 136]  <= {vs[j][3], vs[j][2], vs[j][1], vs[j][0], v4_pred[j]};
+                    end
                 end
             end
 
-            // ---------------- output FIFO: entries in, one word a cycle out (f_q reads ahead of f_cur, so a one-word
-            // entry costs one cycle and a two-word entry two)
+            // ---------------- output FIFO: entries in, one word a cycle out (f_q reads ahead of f_cur, so an entry of
+            // n words costs n cycles)
             begin
                 logic fin, take, rd;
                 fin = 1'b0;
@@ -635,18 +691,14 @@ module mc_filt
                     else begin
                         f_first <= 1'b0;
                         out_valid <= 1'b1; out_tag <= f_cur.tag; out_y <= f_cur.y; out_mask <= f_cur.mask;
-                        if (!f_sel) begin
-                            out_x <= {f_cur.g, 2'b00}; out_pix4 <= f_cur.pixa; out_pair <= f_cur.paira;
-                            if (f_cur.vb) f_sel <= 1'b1; else fin = 1'b1;
-                        end else begin
-                            out_x <= {f_cur.g, 2'b00} + 7'd4; out_pix4 <= f_cur.pixb; out_pair <= f_cur.pairb;
-                            fin = 1'b1;
-                        end
+                        out_x <= {f_cur.g, 2'b00} + {3'd0, f_sel, 2'b00};
+                        out_pix4 <= f_cur.pix[32'(f_sel)*4*PW +: 4*PW]; out_pair <= f_cur.pair[32'(f_sel)*136 +: 136];
+                        if (f_sel == f_cur.nw) fin = 1'b1; else f_sel <= f_sel + 2'd1;
                     end
                 end
                 take = (!f_curv || fin) && f_qv;
-                if (take) begin f_cur <= f_q; f_curv <= 1'b1; f_sel <= 1'b0; end
-                else if (fin) begin f_curv <= 1'b0; f_sel <= 1'b0; end
+                if (take) begin f_cur <= f_q; f_curv <= 1'b1; f_sel <= 2'd0; end
+                else if (fin) begin f_curv <= 1'b0; f_sel <= 2'd0; end
                 rd = (!f_qv || take) && (f_cnt != '0);
                 if (rd) begin f_q <= fifo_ram[f_rp]; f_qv <= 1'b1; f_rp <= f_rp + 1'b1; end
                 else if (take) f_qv <= 1'b0;
