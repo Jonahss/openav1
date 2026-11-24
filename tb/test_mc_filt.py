@@ -163,7 +163,7 @@ async def mc_filt_vs_model(dut):
     rng = random.Random(seed)
     cocotb.start_soon(Clock(dut.clk, 10, "ns").start())
     dut.rst.value = 1
-    dut.patch_we.value = 0; dut.patch_n.value = 0; dut.start.value = 0
+    dut.patch_we.value = 0; dut.patch_n.value = 0; dut.start.value = 0; dut.direct.value = 0
     for _ in range(3):
         await RisingEdge(dut.clk)
     dut.rst.value = 0
@@ -273,7 +273,7 @@ async def write_patch_buf(dut, pb, lst, ref, refW, refH, x0, y0, w, h, xs=1024, 
     await write_patch(dut, lst, ref, refW, refH, x0, y0, w, h, xs, ys)
 
 
-async def start_when_ready(dut, lst, w, h, interp_x, interp_y, xf, yf, bd, mode, wt0, wt1, xs, ys, warp, rbuf, tag):
+async def start_when_ready(dut, lst, w, h, interp_x, interp_y, xf, yf, bd, mode, wt0, wt1, xs, ys, warp, rbuf, tag, direct=0):
     """Wait for h_ready, then one start pulse with the run's parameters (the registered handshake recon_top uses)."""
     waited = 0
     while True:
@@ -296,7 +296,7 @@ async def start_when_ready(dut, lst, w, h, interp_x, interp_y, xf, yf, bd, mode,
         dut.w_gamma.value = shear[2] & 0xFFFF; dut.w_delta.value = shear[3] & 0xFFFF
         dut.w_sx4.value = sx4; dut.w_sy4.value = sy4
     dut.bit_depth.value = bd; dut.mode.value = mode; dut.wt0.value = wt0; dut.wt1.value = wt1
-    dut.rbuf.value = rbuf; dut.run_tag.value = tag
+    dut.rbuf.value = rbuf; dut.run_tag.value = tag; dut.direct.value = direct
     dut.start.value = 1
     await RisingEdge(dut.clk)
     await Timer(1, "ns")
@@ -311,6 +311,7 @@ class RunCollector:
         self.pending = []                      # dicts: tag, label, w, h, mode, exp (None for a parked list-0 run)
         self.buckets = {0: [], 1: [], 2: [], 3: []}        # four run tags (recon_top's four run records)
         self.dones = 0
+        self.two_word_cycles = 0
         self.failures = []
         self.overlap_cycles = 0                # cycles with both sides busy
         self.busy_cycles = 0
@@ -323,6 +324,12 @@ class RunCollector:
             if int(dut.out_valid.value):
                 self.buckets[int(dut.out_tag.value)].append((int(dut.out_x.value), int(dut.out_y.value), int(dut.out_pix4.value),
                                                             int(dut.out_pair.value), int(dut.out_mask.value)))
+                if int(dut.out_valid_b.value):         # a direct run's second word of the cycle: the next group, all lanes
+                    self.two_word_cycles += 1
+                    self.buckets[int(dut.out_tag.value)].append((int(dut.out_x.value) + 4, int(dut.out_y.value),
+                                                                int(dut.out_pix4_b.value), 0, 0xF))
+            elif int(dut.out_valid_b.value):
+                self.failures.append("out_valid_b without out_valid")
             h_busy = int(dut.hst.value) != 0
             v_busy = int(dut.vst.value) != 0
             self.busy_cycles += h_busy or v_busy
@@ -374,7 +381,7 @@ async def mc_filt_overlap(dut):
     rng = random.Random(seed)
     cocotb.start_soon(Clock(dut.clk, 10, "ns").start())
     dut.rst.value = 1
-    dut.patch_we.value = 0; dut.patch_n.value = 0; dut.start.value = 0; dut.patch_buf.value = 0; dut.rbuf.value = 0; dut.run_tag.value = 0
+    dut.patch_we.value = 0; dut.patch_n.value = 0; dut.start.value = 0; dut.direct.value = 0; dut.patch_buf.value = 0; dut.rbuf.value = 0; dut.run_tag.value = 0
     for _ in range(3):
         await RisingEdge(dut.clk)
     dut.rst.value = 0
@@ -471,7 +478,7 @@ async def mc_filt_overlap(dut):
             tag = runs & 3
             col.pending.append(dict(tag=tag, label=label, w=w, h=h, mode=r["mode"], exp=exp if k == len(plan) - 1 else None))
             await start_when_ready(dut, r["lst"], w, h, r["interp_x"], r["interp_y"], r["fx"], r["fy"], bd, r["mode"], r["wt0"], r["wt1"],
-                                   xs, ys, r["warp"], pb, tag)
+                                   xs, ys, r["warp"], pb, tag, direct=int(rng.random() < 0.6))
             runs += 1
             assert not col.failures, col.failures[0]
         stats[kind] += 1

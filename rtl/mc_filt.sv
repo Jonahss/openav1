@@ -39,8 +39,8 @@
 // four groups a cycle (128 products): quad k completes groups 4k - 2 .. 4k + 1. Its vertical pass reads a strip quad a
 // cycle and computes groups g .. g + 3 (four windows, 128 products). Scaled runs keep one word and one group a cycle
 // (per-lane geometry; rare) on lane set 0 of both pipelines.
-// The frame memory takes one 4-sample word a cycle, so the outputs go through a FIFO (OUT_FIFO entries of one to
-// four words) and leave one word a cycle, in the order (group g, row i) .. (group g + 3, row i), (g, i + 1), ...;
+// The outputs go through a FIFO (OUT_FIFO entries of one to four words) and leave one word a cycle, or two for a run
+// whose words go straight to the frame memory (direct: its second write port takes the word at out_x + 4), in the order (group g, row i) .. (group g + 3, row i), (g, i + 1), ...;
 // the vertical side stalls while the FIFO is nearly full. done is an entry of the FIFO as well: it pulses after the
 // run's last output word has left (a parked run: when its marker reaches the head), and busy / v_active stay up
 // until the FIFO is empty.
@@ -85,6 +85,7 @@ module mc_filt
     input  logic [15:0]   w_sy4,
     input  logic [3:0]    bit_depth,
     input  logic [2:0]    mode,                // 0 single, 1 park, 2 average, 3 distance, 4 pair (masked blends outside)
+    input  logic          direct,              // the run's output words go straight to the frame memory (no blend outside): two of them may leave in a cycle
     input  logic [4:0]    wt0,                 // distance weights (Quant_Dist_Lookup): parked list, this list
     input  logic [4:0]    wt1,
     output logic          busy,
@@ -101,7 +102,11 @@ module mc_filt
     output logic [6:0]    out_y,
     output logic [4*PW-1:0] out_pix4,
     output logic [3:0]    out_mask,
-    output logic [135:0]  out_pair             // mode 4: lane l: list 0 at [17l +: 17], list 1 at [68 + 17l +: 17] (signed)
+    output logic [135:0]  out_pair,            // mode 4: lane l: list 0 at [17l +: 17], list 1 at [68 + 17l +: 17] (signed)
+    // a second word in the same cycle (direct runs, 2026-11-23, K60-92): the next group of the same row, at out_x + 4,
+    // all four lanes; only with out_valid
+    output logic          out_valid_b,
+    output logic [4*PW-1:0] out_pix4_b
 );
     localparam int PATCH_WPR = 18;                        // words per patch row
     localparam int PATCH_ROWS = 72;
@@ -172,6 +177,7 @@ module mc_filt
     logic [6:0]  p_nrow;                                 // patch / strip rows to filter
     logic [3:0]  p_bd;
     logic [2:0]  p_mode;
+    logic        p_direct, q_direct, v_direct;           // two output words a cycle (direct, not a pair run, not 2 wide)
     logic [4:0]  p_wt0, p_wt1;
     logic [3:0]  p_r0, p_r1, p_post;
     logic [3:0]  p_mask;
@@ -258,6 +264,7 @@ module mc_filt
     // ---------------------------------------------------------------- output FIFO (pair entries, one word a cycle out)
     typedef struct packed {
         logic [1:0]   nw;                                // words - 1: groups g .. g + nw of row y
+        logic         two;                               // the words may leave two a cycle
         logic         fin;                               // the run's done marker (no words)
         logic [1:0]   tag;
         logic [3:0]   mask;
@@ -434,7 +441,7 @@ module mc_filt
     always_ff @(posedge clk) begin
         done <= 1'b0;
         sw_we <= 4'b0000; pk_we <= 4'b0000;
-        out_valid <= 1'b0; f_we <= 1'b0;
+        out_valid <= 1'b0; out_valid_b <= 1'b0; f_we <= 1'b0;
         h0_v <= 1'b0; h0_q <= 1'b0; h0_gv <= 4'b0000; v0_v <= 1'b0; v0_q <= 1'b0; v0_gv <= 4'b0000;
         if (f_we) fifo_ram[f_wp] <= f_d;
         if (rst) begin
@@ -458,7 +465,7 @@ module mc_filt
                     p_warp <= warp; p_wa <= w_alpha; p_wb <= w_beta; p_wg <= w_gamma; p_wd <= w_delta; p_wsx <= w_sx4; p_wsy <= w_sy4;
                     p_ngrp <= warp ? 5'd2 : 5'((w + 7'd3) >> 2); p_h <= warp ? 7'd8 : h;
                     p_nrow <= warp ? 7'd15 : 7'(nrow_calc[18:10] + 9'd8);
-                    p_bd <= bit_depth; p_mode <= mode; p_wt0 <= wt0; p_wt1 <= wt1;
+                    p_bd <= bit_depth; p_mode <= mode; p_direct <= direct && (mode != 3'd4) && !(w == 7'd2 && !warp); p_wt0 <= wt0; p_wt1 <= wt1;
                     p_r0 <= (bit_depth == 4'd12) ? 4'd5 : 4'd3;
                     p_r1 <= (mode != 3'd0) ? 4'd7 : (bit_depth == 4'd12) ? 4'd9 : 4'd11;
                     p_post <= 4'd14 - ((bit_depth == 4'd12) ? 4'd5 : 4'd3)
@@ -515,7 +522,7 @@ module mc_filt
                 H_DRAIN: if (hdrain == 3'd0) begin                  // the last strip words have landed (h1 .. h4 + the write)
                     pend <= 1'b1; hb <= !hb; q_sb <= hb; q_tag <= p_tag;
                     q_scaled <= p_scaled; q_warp <= p_warp; q_wg <= p_wg; q_wd <= p_wd; q_wsy <= p_wsy;
-                    q_ngrp <= p_ngrp; q_h <= p_h; q_nrow <= p_nrow; q_bd <= p_bd; q_mode <= p_mode; q_wt0 <= p_wt0; q_wt1 <= p_wt1;
+                    q_ngrp <= p_ngrp; q_h <= p_h; q_nrow <= p_nrow; q_bd <= p_bd; q_mode <= p_mode; q_direct <= p_direct; q_wt0 <= p_wt0; q_wt1 <= p_wt1;
                     q_r1 <= p_r1; q_post <= p_post; q_mask <= p_mask; q_fidy <= p_fidy; q_yf0 <= p_yf0; q_ys <= p_ys;
                     for (int t = 0; t < 8; t++) qty[t] <= ty[t];
                     hst <= H_IDLE;
@@ -527,7 +534,7 @@ module mc_filt
                 V_IDLE: if (pend && !v_hold) begin                  // take the pending run (not while the transform FSM owns the write port)
                     pend <= 1'b0; vb <= q_sb; v_tag <= q_tag;
                     v_scaled <= q_scaled; v_warp <= q_warp; v_wg <= q_wg; v_wd <= q_wd; v_wsy <= q_wsy;
-                    v_ngrp <= q_ngrp; v_h <= q_h; v_nrow <= q_nrow; v_bd <= q_bd; v_mode <= q_mode; v_wt0 <= q_wt0; v_wt1 <= q_wt1;
+                    v_ngrp <= q_ngrp; v_h <= q_h; v_nrow <= q_nrow; v_bd <= q_bd; v_mode <= q_mode; v_direct <= q_direct; v_wt0 <= q_wt0; v_wt1 <= q_wt1;
                     v_r1 <= q_r1; v_post <= q_post; v_mask <= q_mask; v_fidy <= q_fidy; v_yf0 <= q_yf0; v_ys <= q_ys;
                     for (int t = 0; t < 8; t++) vty[t] <= qty[t];
                     vg <= 5'd0; vk <= 7'd0; vi <= 7'd0; vt <= 3'd0; vpos <= 17'(q_yf0);
@@ -668,7 +675,7 @@ module mc_filt
                 end else begin
                     f_we <= 1'b1;
                     f_d.nw <= !v4_q ? 2'd0 : v4_gv[3] ? 2'd3 : v4_gv[2] ? 2'd2 : v4_gv[1] ? 2'd1 : 2'd0;
-                    f_d.fin <= 1'b0; f_d.tag <= v_tag; f_d.mask <= v_mask;
+                    f_d.fin <= 1'b0; f_d.tag <= v_tag; f_d.mask <= v_mask; f_d.two <= v_direct;
                     f_d.y <= v4_i; f_d.g <= v4_g;
                     for (int j = 0; j < 4; j++) begin
                         f_d.pix[j*4*PW +: 4*PW] <= blend4({vs[j][3], vs[j][2], vs[j][1], vs[j][0]}, v4_pred[j], v_mode, v_wt0, v_wt1, v_post, pix_max);
@@ -693,7 +700,10 @@ module mc_filt
                         out_valid <= 1'b1; out_tag <= f_cur.tag; out_y <= f_cur.y; out_mask <= f_cur.mask;
                         out_x <= {f_cur.g, 2'b00} + {3'd0, f_sel, 2'b00};
                         out_pix4 <= f_cur.pix[32'(f_sel)*4*PW +: 4*PW]; out_pair <= f_cur.pair[32'(f_sel)*136 +: 136];
-                        if (f_sel == f_cur.nw) fin = 1'b1; else f_sel <= f_sel + 2'd1;
+                        if (f_cur.two && f_sel != f_cur.nw) begin                      // the next word of the entry with it
+                            out_valid_b <= 1'b1; out_pix4_b <= f_cur.pix[(32'(f_sel) + 1)*4*PW +: 4*PW];
+                            if (f_sel + 2'd1 == f_cur.nw) fin = 1'b1; else f_sel <= f_sel + 2'd2;
+                        end else if (f_sel == f_cur.nw) fin = 1'b1; else f_sel <= f_sel + 2'd1;
                     end
                 end
                 take = (!f_curv || fin) && f_qv;

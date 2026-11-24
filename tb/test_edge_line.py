@@ -34,8 +34,8 @@ async def edge_line_vs_model(dut):
     iters = int(os.environ.get("EL_ITERS", "6000"))
     rng = random.Random(int(os.environ.get("EL_SEED", "1")))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    dut.we.value = 0; dut.re.value = 0; dut.be.value = 0; dut.sb128.value = 0; dut.ssy.value = 0
-    stats = {"writes_kept": 0, "writes_dropped": 0, "reads_sel": 0, "reads_other": 0, "same_cycle": 0, "cross_parity": 0}
+    dut.we.value = 0; dut.we_b.value = 0; dut.re.value = 0; dut.be.value = 0; dut.sb128.value = 0; dut.ssy.value = 0
+    stats = {"second": 0, "writes_kept": 0, "writes_dropped": 0, "reads_sel": 0, "reads_other": 0, "same_cycle": 0, "cross_parity": 0}
     XG = 12                                                  # groups in play per setting: few, so reads meet earlier writes
     setting = 0
     for sb128 in (0, 1):
@@ -66,9 +66,9 @@ async def edge_line_vs_model(dut):
                 # ---- this cycle's requests (sampled at the next edge)
                 dut.sb128.value = sb128; dut.ssy.value = ssy
                 if cyc >= iters:
-                    dut.we.value = 0; dut.re.value = 0
+                    dut.we.value = 0; dut.we_b.value = 0; dut.re.value = 0
                     continue
-                w = None
+                w = None; w2 = None; dut.we_b.value = 0
                 if rng.random() < 0.6:
                     pl = rng.randrange(3); g = g0 + rng.randrange(XG); y = rand_line(pl)
                     if rng.random() < 0.3:
@@ -79,6 +79,11 @@ async def edge_line_vs_model(dut):
                     dut.we.value = 1; dut.be.value = be; dut.wplane.value = pl; dut.wx.value = x; dut.wy.value = y
                     dut.wdata.value = sum(v << (PW * l) for l, v in enumerate(data))
                     w = (pl, g, y, be, data)
+                    if x == 4 * g and rng.random() < 0.4:      # the second write of a cycle: the next group of the line, all lanes
+                        data2 = [rng.randrange(1 << PW) for _ in range(4)]
+                        dut.we_b.value = 1; dut.wplane_b.value = pl; dut.wx_b.value = 4 * (g + 1); dut.wy_b.value = y
+                        dut.wdata_b.value = sum(v << (PW * l) for l, v in enumerate(data2))
+                        w2 = (pl, g + 1, y, 15, data2); stats["second"] += 1
                 else:
                     dut.we.value = 0
                 if rng.random() < 0.7:
@@ -95,8 +100,10 @@ async def edge_line_vs_model(dut):
                         stats["cross_parity"] += 1           # the other parity was written last: its data must not show
                 else:
                     dut.re.value = 0
-                if w:
-                    pl, g, y, be, data = w
+                for wr in (w, w2):
+                    if wr is None:
+                        continue
+                    pl, g, y, be, data = wr
                     if is_last(pl, y, sb128, ssy):
                         key = (par(pl, y, sb128, ssy), pl, g)
                         cur = mem.setdefault(key, [0, 0, 0, 0])
