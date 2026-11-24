@@ -104,6 +104,13 @@ module recon_top
     output logic [FBY-1:0] fb4_y,
     output logic [47:0] fb4_wdata,
     output logic [3:0]  fb4_be,               // lane enables of the 4-wide write (inter prediction units 2 samples wide)
+    // a second 4-wide write in the same cycle (2026-11-23, K60-92): the next group of the row, for motion-compensation
+    // words that go straight to the frame memory (its second write port; all four lanes)
+    output logic        fb4b_we,
+    output logic [1:0]  fb4b_plane,
+    output logic [FBX-1:0] fb4b_x,
+    output logic [FBY-1:0] fb4b_y,
+    output logic [47:0] fb4b_wdata,
     // ---- inter prediction (stage 2a, docs/inter-syntax.md / the design note §8): the inter header, the reference
     //      slot table (software: REF_SLOT, the slots' plane bases / strides / sizes) and the AXI read master of ref_fetch
     input  ihdr_t       ihdr,
@@ -316,6 +323,8 @@ module recon_top
     assign blk_inter = b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
     logic        mc_start, mc_busy, mc_done, mc_v_active, mc_out_valid;
+    logic        mc_direct;                                  // the run being started writes its words straight to the frame memory (no OBMC, inter-intra or mask)
+    logic        mc_out_valid_b; logic [47:0] mc_out_pix4_b; // its second word of a cycle (the group at mc_out_x + 4)
     logic [1:0]  mc_done_tag;
     logic        mc_h_ready;                                 // mc_filt can take the next run (its horizontal side is free)
     logic [3:0]  mc_pf; logic [5:0] rf_pf;                   // mc_filt's and ref_fetch's flags for the counters (perf_mc)
@@ -551,14 +560,15 @@ module recon_top
         .x_frac0(st_xf0), .y_frac0(st_yf0), .x_step(st_xs), .y_step(st_ys),
         .warp(st_warp), .w_alpha(st_wa), .w_beta(st_wb), .w_gamma(st_wg), .w_delta(st_wd), .w_sx4(st_wsx), .w_sy4(st_wsy),
         .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .perf_flags(mc_pf), .v_hold(rs != R_IDLE),
-        .out_wait(!out_drained), .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair));
+        .out_wait(!out_drained), .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair),
+        .direct(mc_direct), .out_valid_b(mc_out_valid_b), .out_pix4_b(mc_out_pix4_b));
     end else begin : g_nointer
         assign rf_req_ready = 1'b1; assign rf_done = 1'b0; assign rf_err = 1'b0;
         assign ff_req_ready = 1'b1; assign ff_done = 1'b0; assign ff_fb_re = 1'b0; assign ff_fb_plane = 2'd0; assign ff_fb_x = '0; assign ff_fb_y = '0;
         assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
         assign pw_we = 1'b0; assign pw_buf = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_n = '0; assign pw_dq = '0;
-        assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 2'd0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_tag = 2'd0; assign mc_out_x = '0; assign mc_out_y = '0;
+        assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 2'd0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_valid_b = 1'b0; assign mc_out_pix4_b = '0; assign mc_out_tag = 2'd0; assign mc_out_x = '0; assign mc_out_y = '0;
         assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0; assign mc_pf = '0; assign rf_pf = '0;
     end endgenerate
 
@@ -658,7 +668,8 @@ module recon_top
         if (!rst && run_go) begin
             // the run thread: the oldest queued run's patch is in and the horizontal side is free; mc_filt samples st_* with
             // mc_start next cycle, the output path reads the record rq_*[srun] (as before)
-            mc_start <= 1'b1; run_v <= 1'b1; mc_tag <= srun; srun <= srun + 2'd1; run_buf <= pq_buf[pq_h[0]];
+            mc_start <= 1'b1; run_v <= 1'b1; mc_tag <= srun; srun <= srun + 2'd1;
+            mc_direct <= !pq_ob_active[pq_h[0]] && !pq_ii_active[pq_h[0]] && !pq_mb_active[pq_h[0]]; run_buf <= pq_buf[pq_h[0]];
             st_l <= pq_l[pq_h[0]]; st_warp <= pq_warp[pq_h[0]]; st_sw <= pq_sw[pq_h[0]]; st_sh <= pq_sh[pq_h[0]];
             st_i0 <= pq_i0[pq_h[0]]; st_i1 <= pq_i1[pq_h[0]]; st_xf0 <= pq_xf0[pq_h[0]]; st_yf0 <= pq_yf0[pq_h[0]]; st_xs <= pq_xs[pq_h[0]]; st_ys <= pq_ys[pq_h[0]];
             st_wa <= pq_wa[pq_h[0]]; st_wb <= pq_wb[pq_h[0]]; st_wg <= pq_wg[pq_h[0]]; st_wd <= pq_wd[pq_h[0]]; st_wsx <= pq_wsx[pq_h[0]]; st_wsy <= pq_wsy[pq_h[0]];
@@ -1699,6 +1710,7 @@ module recon_top
         fb_re = 1'b0; fb_we = 1'b0; fb_plane = t.plane; fb_x = '0; fb_y = '0; fb_wdata = 12'd0; fb_edge = 1'b0;
         fb2_we = 1'b0; fb2_plane = t.plane; fb2_x = '0; fb2_y = '0; fb2_wdata = 12'd0;
         fb4_we = 1'b0; fb4_plane = t.plane; fb4_x = '0; fb4_y = '0; fb4_wdata = 48'd0; fb4_be = 4'hF;
+        fb4b_we = 1'b0; fb4b_plane = r_pl; fb4b_x = '0; fb4b_y = '0; fb4b_wdata = 48'd0;
         edge_we = 1'b0; edge_side = ep2_side; edge_idx = ep2_idx; edge_data = ep2_const ? ep2_val : e_rd;
         edge_we4 = 1'b0;
         for (int l = 0; l < 4; l++) begin                                    // group lanes with the clamp to above_lim
@@ -1768,6 +1780,9 @@ module recon_top
             fb4_we = 1'b1; fb4_plane = r_pl;
             fb4_x = FBX'({mc_ox[PXW-1:2], 2'b00}); fb4_y = FBY'(r_py + PXW'(mc_out_y));
             fb4_wdata = mc_out_pix4 << (12 * mc_osh); fb4_be = mc_out_mask << mc_osh;
+            if (mc_out_valid_b) begin                        // the next group of the row through the second stream
+                fb4b_we = 1'b1; fb4b_x = FBX'({mc_ox[PXW-1:2], 2'b00}) + FBX'(4); fb4b_y = FBY'(r_py + PXW'(mc_out_y)); fb4b_wdata = mc_out_pix4_b;
+            end
         end
         // OBMC: read the group to blend (stage A), write the blended group (stage B)
         if (ob_rd_v) begin fb_edge = 1'b0; fb_re = 1'b1; fb_plane = r_pl; fb_x = FBX'(ob_a_x); fb_y = FBY'(ob_a_y); end
@@ -1775,6 +1790,12 @@ module recon_top
         if (mb_b_v) begin fb4_we = 1'b1; fb4_plane = r_pl; fb4_x = FBX'(mb_b_x); fb4_y = FBY'(mb_b_y); fb4_wdata = mb_b_pix; fb4_be = mb_b_be; end
     end
     assign busy = (rs != R_IDLE) || (bst != B_IDLE) || !blk_ready_q[0] || !blk_ready_q[1] || mi_blk_busy || mi_tx_busy;
+`ifndef SYNTHESIS
+    // a second word comes only with a first one that is written directly, at an aligned group
+    always_ff @(posedge clk)
+        if (!rst && mc_out_valid_b && !(mc_out_valid && !r_ob_active && !r_ii_active && !r_mb_active && mc_osh == 2'd0))
+            $fatal(1, "recon_top: a second motion-compensation word without a direct, aligned first one");
+`endif
 `ifndef SYNTHESIS
     // Shared-port claims (simulation only). The frame-memory ports fb4 / fb2 (writes) and fb (reads) are driven from
     // several places in the combinational block above, last assignment wins, so two claims in one cycle are one access

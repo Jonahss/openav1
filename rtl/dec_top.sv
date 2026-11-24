@@ -296,6 +296,7 @@ module dec_top
     logic fb2_we; logic [1:0] fb2_plane; logic [FBX-1:0] fb2_x; logic [FBY-1:0] fb2_y; logic [11:0] fb2_wdata;
     logic fb4_we; logic [1:0] fb4_plane; logic [FBX-1:0] fb4_x; logic [FBY-1:0] fb4_y; logic [47:0] fb4_wdata, fb_rdata4;
     logic [3:0] fb4_be; logic mc_unsup;
+    logic fb4b_we; logic [1:0] fb4b_plane; logic [FBX-1:0] fb4b_x; logic [FBY-1:0] fb4b_y; logic [47:0] fb4b_wdata;   // reconstruction's second 4-wide write of a cycle
     logic fb_edge, el_sel; logic [11:0] el_rdata; logic [47:0] el_rdata4;   // intra edge reads from the unfiltered last-line copy (edge_line)
     logic mi_blk_we, mi_blk_busy, mi_tx_we, mi_tx_busy; logic [MIW-1:0] mi_blk_r, mi_blk_c, mi_tx_row, mi_tx_col; logic [5:0] mi_blk_bw4, mi_blk_bh4;
     mi_lf_t mi_blk_data; logic [1:0] mi_tx_plane; logic [4:0] mi_tx_w4, mi_tx_h4, mi_tx_sz;
@@ -316,7 +317,7 @@ module dec_top
                                             .fb_re, .fb_we, .fb_plane, .fb_x, .fb_y, .fb_wdata, .fb_rdata, .fb_rdata4,
                                             .fb_edge, .el_sel, .el_rdata, .el_rdata4,
                                             .fb2_we, .fb2_plane, .fb2_x, .fb2_y, .fb2_wdata,
-                                            .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be,
+                                            .fb4_we, .fb4_plane, .fb4_x, .fb4_y, .fb4_wdata, .fb4_be, .fb4b_we, .fb4b_plane, .fb4b_x, .fb4b_y, .fb4b_wdata,
                                             .ihdr, .ref_slot, .ref_planes, .ref_dims, .ref_scales, .ref_fmt16, .cur_planes, .cur_fmt16, .mc_unsup, .mem_err,
                                             .m_axi_araddr(m_rf_axi_araddr), .m_axi_arlen(m_rf_axi_arlen), .m_axi_arsize(m_rf_axi_arsize), .m_axi_arburst(m_rf_axi_arburst), .m_axi_arcache(m_rf_axi_arcache), .m_axi_arprot(m_rf_axi_arprot),
                                             .m_axi_arvalid(m_rf_axi_arvalid), .m_axi_arready(m_rf_axi_arready), .m_axi_rdata(m_rf_axi_rdata), .m_axi_rresp(m_rf_axi_rresp), .m_axi_rlast(m_rf_axi_rlast), .m_axi_rvalid(m_rf_axi_rvalid), .m_axi_rready(m_rf_axi_rready));
@@ -356,6 +357,7 @@ module dec_top
     // filtering a row need not wait for the next row's reconstruction: fc_ok)
     edge_line #(.FBX(FBX), .FBY(FBY)) u_el (.clk, .sb128(hdr.sb128), .ssy(hdr.ssy),
                                             .we(w_rc_we), .be(w_rc_be), .wplane(w_rc_pl), .wx(w_rc_x), .wy(w_rc_y), .wdata(w_rc_d),
+                                            .we_b(fb4b_we), .wplane_b(fb4b_plane), .wx_b(fb4b_x), .wy_b(fb4b_y), .wdata_b(fb4b_wdata),
                                             .re(fb_re && fb_edge), .rplane(fb_plane), .rx(fb_x), .ry(fb_y),
                                             .sel(el_sel), .rdata(el_rdata), .rdata4(el_rdata4));
 `ifndef SYNTHESIS
@@ -375,16 +377,17 @@ module dec_top
     end
 `endif
     generate if (FRAME_URAM != 0) begin : g_fb0_uram
-        // the on-chip memory has two read and two write ports (double-pumped); reconstruction uses the first of each
+        // the on-chip memory has two read and two write ports (double-pumped); reconstruction uses the first read port and
+        // both write ports (the second for the second motion-compensation word of a cycle)
         logic [11:0] unused_rd; logic [47:0] unused_rd4;
         frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN), .SB128(SB128)) u_fb (.clk, .clk2x, .phase, .sb128(hdr.sb128),
             .re({1'b0, fb_re}), .r_plane({2'd0, fb_plane}), .r_x({FBX'(0), fb_x}), .r_y({FBY'(0), fb_y}),
             .rdata({unused_rd, fb_rdata}), .rdata4({unused_rd4, fb_rdata4}),
-            .we({1'b0, w_rc_we}), .w_be({4'd0, w_rc_be}), .w_plane({2'd0, w_rc_pl}), .w_x({FBX'(0), w_rc_x}), .w_y({FBY'(0), w_rc_y}), .w_data({48'd0, w_rc_d}),
+            .we({fb4b_we, w_rc_we}), .w_be({4'hF, w_rc_be}), .w_plane({fb4b_plane, w_rc_pl}), .w_x({fb4b_x, w_rc_x}), .w_y({fb4b_y, w_rc_y}), .w_data({fb4b_wdata, w_rc_d}),
             .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40), .h_ok(h_ok0));
     end else begin : g_fb0_model
-        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(1)) u_fb (.clk, .re(fb_re), .r_plane(fb_plane), .r_x(fb_x), .r_y(fb_y), .rdata(fb_rdata), .rdata4(fb_rdata4),
-                                                                           .we(w_rc_we), .w_be(w_rc_be), .w_plane(w_rc_pl), .w_x(w_rc_x), .w_y(w_rc_y), .w_data(w_rc_d),
+        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb (.clk, .re(fb_re), .r_plane(fb_plane), .r_x(fb_x), .r_y(fb_y), .rdata(fb_rdata), .rdata4(fb_rdata4),
+                                                                           .we({fb4b_we, w_rc_we}), .w_be({4'hF, w_rc_be}), .w_plane({fb4b_plane, w_rc_pl}), .w_x({fb4b_x, w_rc_x}), .w_y({fb4b_y, w_rc_y}), .w_data({fb4b_wdata, w_rc_d}),
                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40), .h_ok(h_ok0));
     end endgenerate
     // fb2 = the final picture: the chain's two write ports (fc_out), no decoder-side reader, so the host port (and the row
@@ -616,6 +619,7 @@ module dec_top
     always_ff @(posedge clk) begin rs_row0 <= fc_row_first; rs_ssy <= hdr.ssy; end
     fc_rstore #(.FBX(FBX), .FBY(FBY), .CW(FCW), .CWC(FRAME_WIN > 0 ? FCW - 1 : FCW), .RBY(6), .RBC(FRAME_WIN > 0 ? 5 : 6)) u_rs (.clk, .ssy(rs_ssy),
         .we(w_rc_we), .be(w_rc_be), .wplane(w_rc_pl), .wx(w_rc_x), .wy(w_rc_y), .wdata(w_rc_d),
+        .we_b(fb4b_we), .wplane_b(fb4b_plane), .wx_b(fb4b_x), .wy_b(fb4b_y), .wdata_b(fb4b_wdata),
         .row0(rs_row0), .bk_re, .bk_row, .bk_col, .bk_data);
     fc_top #(.NBMAX(32), .CW(FCW)) u_fc (.clk, .rst, .hdr, .lh, .ch, .lf_on(fc_lf_on), .cdef_on(fc_cdef_on),
         .band_start(fc_go), .row0(fc_row_first), .n_blk(fc_n_blk), .first_band(fc_next == SBW'(0)), .last_band(fc_next + SBW'(1) >= n_rows),

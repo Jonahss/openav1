@@ -19,7 +19,7 @@ async def fc_rstore_vs_picture(dut):
     for s in ("we", "be", "wplane", "wx", "wy", "wdata", "row0", "bk_re", "bk_row", "bk_col", "ssy"):
         getattr(dut, s).value = 0
     await ClockCycles(dut.clk, 2); await Timer(1, "ns")
-    stats = dict(writes=0, partial=0, blocks=0, old_rows=0, together=0)
+    stats = dict(writes=0, partial=0, blocks=0, old_rows=0, together=0, second=0)
     for ssy, sb in ((1, 64), (0, 64), (1, 128)):
         dut.ssy.value = ssy
         ssx = 1                                               # the store does not care about the chroma width
@@ -55,11 +55,23 @@ async def fc_rstore_vs_picture(dut):
                         if (be >> i) & 1:
                             pic[p][(y, 4 * g + i)] = d[i]
                     stats["writes"] += 1; stats["partial"] += be != 0xF
+                    if g + 1 < pw[p] // 4 and rng.random() < 0.3:      # the second write of a cycle: the next group, all lanes
+                        d2 = [rng.getrandbits(12) for _ in range(4)]
+                        dut.we_b.value = 1; dut.wplane_b.value = p; dut.wx_b.value = 4 * (g + 1); dut.wy_b.value = y
+                        dut.wdata_b.value = sum(v << (12 * i) for i, v in enumerate(d2))
+                        for i in range(4):
+                            pic[p][(y, 4 * (g + 1) + i)] = d2[i]
+                        stats["second"] += 1
+                    else:
+                        dut.we_b.value = 0
                     await RisingEdge(dut.clk); await Timer(1, "ns")
                     if rng.random() < 0.1:
-                        dut.we.value = 0; dut.wdata.value = rng.getrandbits(48)
+                        dut.we.value = 0; dut.we_b.value = 0; dut.wdata.value = rng.getrandbits(48)
                         await RisingEdge(dut.clk); await Timer(1, "ns")
-            dut.we.value = 0
+            dut.we.value = 0; dut.we_b.value = 0
+            # one clock for the write register to empty: the chain reads a band only after its reconstruction is over, and
+            # the store stops the simulation on a read of a word still in that register
+            await RisingEdge(dut.clk); await Timer(1, "ns")
             # read back: bands = this row and older rows that are still inside every plane's ring
             for back in range(0, 4):
                 rr = r - back
