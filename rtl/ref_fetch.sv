@@ -31,6 +31,11 @@
 // buffer has finished. done pulses once per request, in order, at the last word of its last row; an empty request
 // (no rows) is accepted only when nothing is outstanding, so its done cannot overtake another's.
 //
+// Chasing runs (2026-11-24, K60-94). Every request has a number (req_seq, returned with its rows as patch_seq), and
+// mc_filt may run a request's patch while it is still being written (chase_v, chase_seq: the request its horizontal
+// side is on). The writer then does not wait for that buffer with that request's rows; rows of any other request
+// wait for the buffer as before.
+//
 // Four words a cycle (two since 2026-11-09, rung A of the 8-sample datapath; four since 2026-11-23, K60-87). The
 // writer delivers the patch words of a row four at a time (words w4 .. w4 + patch_n on patch_dq, w4 a multiple of 4;
 // the last write of a row carries what is left), and the address side takes two cycles a row instead of five: the row address is a running sum (the first row's by
@@ -65,6 +70,9 @@ module ref_fetch #(
     input  logic [6:0]    req_r_lo,             // patch rows [r_lo, r_hi) to produce; r_hi = 0: all h + 7 rows
     input  logic [6:0]    req_r_hi,
     input  logic          req_buf,              // the patch buffer the rows go to (named with every patch write)
+    input  logic [2:0]    req_seq,              // the request's sequence number (returned with its rows: patch_seq)
+    input  logic          chase_v,              // mc_filt's horizontal side is on a chasing run of request chase_seq: that request's rows
+    input  logic [2:0]    chase_seq,            //   may be written into the buffer it reads (K60-94); any other row waits for the buffer as before
     input  logic [1:0]    buf_busy,             // per patch buffer: being read (mc_filt h_buf_busy); the writer waits for it
     output logic          done,                 // 1-cycle pulse: the patch is complete (one per request, in order)
     output logic          err,                  // sticky: a read response other than OKAY
@@ -87,6 +95,7 @@ module ref_fetch #(
     output logic          patch_we,
     output logic          patch_buf,
     output logic          patch_list,
+    output logic [2:0]    patch_seq,
     output logic [6:0]    patch_row,
     output logic [4:0]    patch_w4,
     output logic [1:0]    patch_n,              // words written - 1 (patch_w4 is a multiple of 4)
@@ -140,6 +149,8 @@ module ref_fetch #(
     logic        s_fmt16 [0:RING-1];
     logic        s_lst   [0:RING-1];
     logic        s_buf   [0:RING-1];
+    logic [2:0]  s_seq   [0:RING-1];
+    logic [2:0]  q_seq, w_seq;
     logic        s_last  [0:RING-1];                      // the request's last row: its last word pulses done
     logic [15:0] s_cxlo  [0:RING-1];
     logic [15:0] s_lastx [0:RING-1];
@@ -171,11 +182,13 @@ module ref_fetch #(
         return (int'(s) == RING - 1) ? SW'(0) : SW'(s + 1'b1);
     endfunction
 
+    logic        head_busy;                               // the head row's buffer is being read by a run of another request
+    assign head_busy = buf_busy[s_buf[slot_wr]] && !(chase_v && (chase_seq == s_seq[slot_wr]));
     // observability: recon_top's B_MC_FETCH heartbeat and tb/test_dec_top.py print `st` as a number
     logic [7:0] st;
     assign st = {wr_busy, 4'(rows_alloc), 3'(ast)};
     assign perf_flags = {(ast == A_IDLE) && (rows_alloc == CW'(0)) && !wr_busy,
-                         !wr_busy && (rows_ready != CW'(0)) && buf_busy[s_buf[slot_wr]],
+                         !wr_busy && (rows_ready != CW'(0)) && head_busy,
                          !wr_busy && (rows_alloc != CW'(0)) && (rows_ready == CW'(0)),
                          wr_busy,
                          (ast == A_ROW) && !(rows_alloc < CW'(RING)),
@@ -187,7 +200,7 @@ module ref_fetch #(
     assign alloc   = (ast == A_ROW) && (rows_alloc < CW'(RING));                   // the row takes its line buffer
     assign rx_beat = m_axi_rvalid && m_axi_rready;
     assign rx_last = rx_beat && (beats_rx == row_beats[slot_rx] - 16'd1);           // the row's last beat
-    assign wr_take = !wr_busy && (rows_ready != CW'(0)) && !buf_busy[s_buf[slot_wr]];   // the head row's buffer is free to write
+    assign wr_take = !wr_busy && (rows_ready != CW'(0)) && !head_busy;                  // the head row's buffer is free to write (or read by its own run)
     assign wr_last = wr_busy && (6'(w4) + 6'd4 >= 6'(w_nw));                       // the row's last word(s): its slot is free
 
     // a request with rows is accepted whenever the address side is idle; an empty one only when nothing is outstanding
@@ -233,6 +246,7 @@ module ref_fetch #(
     assign patch_n = (w_left >= 6'd4) ? 2'd3 : 2'(w_left - 6'd1);
     assign patch_buf = w_buf;
     assign patch_list = w_lst;
+    assign patch_seq = w_seq;
     assign patch_row = w_row;
     assign patch_w4 = w4;
     assign patch_we = wr_busy;
@@ -263,7 +277,7 @@ module ref_fetch #(
                 nw = 5'((req_w + 7'd3) >> 2) + 5'd2;
                 nrow = (req_r_hi == 7'd0) ? req_h + 7'd7 : req_r_hi;
                 yy = 18'(req_y0) - 18'sd3 + 18'(signed'({11'd0, req_r_lo}));
-                q_lst <= req_lst; q_fmt16 <= req_fmt16; q_buf <= req_buf; q_base <= req_base; q_stride <= req_stride;
+                q_lst <= req_lst; q_fmt16 <= req_fmt16; q_buf <= req_buf; q_seq <= req_seq; q_base <= req_base; q_stride <= req_stride;
                 q_lastx <= req_lastx; q_lasty <= req_lasty; q_x0 <= req_x0;
                 q_nw <= nw; q_nrow <= nrow;
                 cx_lo <= clip_col(18'(req_x0) - 18'sd3, req_lastx);
@@ -289,7 +303,7 @@ module ref_fetch #(
                 row_lead[slot_ar] <= lead_c;
                 row_beats[slot_ar] <= beats_c;
                 s_fmt16[slot_ar] <= q_fmt16; s_cxlo[slot_ar] <= cx_lo; s_x0[slot_ar] <= q_x0;
-                s_lastx[slot_ar] <= q_lastx; s_nw[slot_ar] <= q_nw; s_lst[slot_ar] <= q_lst; s_buf[slot_ar] <= q_buf;
+                s_lastx[slot_ar] <= q_lastx; s_nw[slot_ar] <= q_nw; s_lst[slot_ar] <= q_lst; s_buf[slot_ar] <= q_buf; s_seq[slot_ar] <= q_seq;
                 s_row[slot_ar] <= r_ar; s_last[slot_ar] <= (r_ar == q_nrow - 7'd1);
                 ast <= A_AR;
             end
@@ -340,7 +354,7 @@ module ref_fetch #(
         end else begin
             if (wr_take) begin
                 wr_busy <= 1'b1; w4 <= 5'd0;
-                w_lst <= s_lst[slot_wr]; w_buf <= s_buf[slot_wr]; w_last <= s_last[slot_wr]; w_row <= s_row[slot_wr];
+                w_lst <= s_lst[slot_wr]; w_buf <= s_buf[slot_wr]; w_seq <= s_seq[slot_wr]; w_last <= s_last[slot_wr]; w_row <= s_row[slot_wr];
                 w_x0 <= s_x0[slot_wr]; w_lastx <= s_lastx[slot_wr]; w_cxlo <= s_cxlo[slot_wr]; w_nw <= s_nw[slot_wr];
                 w_lead <= s_fmt16[slot_wr] ? {1'b0, row_lead[slot_wr][5:1]} : row_lead[slot_wr];
             end else if (wr_busy) begin

@@ -495,3 +495,86 @@ async def mc_filt_overlap(dut):
     assert col.overlap_cycles > 0, "the two sides never overlapped"
     dut._log.info(f"OK: {runs} runs back to back, {stats}; both sides busy in {col.overlap_cycles} of {col.busy_cycles} busy cycles "
                   f"({100 * col.overlap_cycles // max(col.busy_cycles, 1)}%)")
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Chasing runs (2026-11-24, K60-94): recon_top starts an unscaled run with its request, before the patch is in, and
+# the horizontal pass follows ref_fetch's writer through the patch buffer. Here the writer (whole quads, as ref_fetch
+# delivers them, with idle cycles between) starts some cycles before or after the run, on alternating buffers and with
+# the request number counting; the outputs are the model's whichever of the two leads.
+async def write_patch_chased(dut, pb, lst, seq, ref, refW, refH, x0, y0, w, h, rng, lead, gap):
+    rows, words = patch_extent(w, h, 1024, 1024)
+    def word(srow, w4):
+        v = 0
+        for l in range(4):
+            v |= srow[im.clip3(0, refW - 1, x0 - 3 + 4 * w4 + l)] << (12 * l)
+        return v
+    for _ in range(lead):
+        await RisingEdge(dut.clk)
+    await Timer(1, "ns")
+    for r in range(rows):
+        srow = ref[im.clip3(0, refH - 1, y0 - 3 + r)]
+        for w4 in range(0, words, 4):
+            while rng.random() < gap:                     # the writer waits for a row (its data, the ring)
+                dut.patch_we.value = 0
+                await RisingEdge(dut.clk)
+                await Timer(1, "ns")
+            n = min(4, words - w4)
+            dq = rng.getrandbits(192) & ~((1 << (48 * n)) - 1)
+            for j in range(n):
+                dq |= word(srow, w4 + j) << (48 * j)
+            dut.patch_we.value = 1; dut.patch_buf.value = pb; dut.patch_list.value = lst; dut.patch_seq.value = seq
+            dut.patch_row.value = r; dut.patch_w4.value = w4; dut.patch_n.value = n - 1; dut.patch_dq.value = dq
+            await RisingEdge(dut.clk)
+            await Timer(1, "ns")
+    dut.patch_we.value = 0; dut.patch_n.value = 0
+
+
+@cocotb.test()
+async def mc_filt_chase(dut):
+    iters = int(os.environ.get("MC_CHASE_ITERS", "120"))
+    rng = random.Random(int(os.environ.get("MC_SEED", "1")) + 77)
+    cocotb.start_soon(Clock(dut.clk, 10, "ns").start())
+    dut.rst.value = 1
+    dut.patch_we.value = 0; dut.patch_n.value = 0; dut.start.value = 0; dut.direct.value = 0; dut.run_tag.value = 0
+    dut.chase.value = 0; dut.run_seq.value = 0; dut.patch_seq.value = 0
+    for _ in range(3):
+        await RisingEdge(dut.clk)
+    dut.rst.value = 0
+    await RisingEdge(dut.clk)
+    await Timer(1, "ns")
+    seq, pb = 5, 0
+    stats = {"runs": 0, "run_first": 0, "writer_first": 0, "samples": 0}
+    for it in range(iters):
+        bd = rng.choice([8, 10, 12])
+        mx = (1 << bd) - 1
+        w, h = rng.choice(SIZES), rng.choice(SIZES)
+        refW, refH = rng.randint(8, 80), rng.randint(8, 80)
+        ref = [[rng.randint(0, mx) for _ in range(refW)] for _ in range(refH)]
+        x0 = rng.randint(-12, refW + 4) if rng.random() < 0.5 else rng.randint(0, max(0, refW - w))
+        y0 = rng.randint(-12, refH + 4) if rng.random() < 0.5 else rng.randint(0, max(0, refH - h))
+        fx, fy = (rng.randint(0, 15) << 6) | 32, (rng.randint(0, 15) << 6) | 32
+        interp_x, interp_y = rng.randint(0, 3), rng.randint(0, 3)
+        exp = model_pred(ref, refW, refH, x0, y0, fx, fy, 1024, 1024, w, h, interp_x, interp_y, bd, False)
+        # who leads: the run by up to 40 cycles (it stalls on the first quad), or the writer by up to a whole patch
+        run_first = rng.random() < 0.5
+        lead = rng.randint(1, 40) if run_first else 0
+        wait = 0 if run_first else rng.choice([0, 1, 2, 3, rng.randint(4, 500)])
+        gap = rng.choice([0.0, 0.0, 0.2, 0.6])
+        wtask = cocotb.start_soon(write_patch_chased(dut, pb, 0, seq, ref, refW, refH, x0, y0, w, h, rng, lead, gap))
+        for _ in range(wait):
+            await RisingEdge(dut.clk)
+        await Timer(1, "ns")
+        dut.rbuf.value = pb; dut.chase.value = 1; dut.run_seq.value = seq
+        got, n, cycles = await run(dut, 0, w, h, interp_x, interp_y, fx, fy, bd, 0, 0, 0)
+        await wtask
+        clip1 = lambda v: 0 if v < 0 else mx if v > mx else v  # noqa: E731
+        assert n == w * h, f"chase iter {it}: got {n} samples, expected {w * h} ({w}x{h})"
+        for i in range(h):
+            for j in range(w):
+                assert got[i][j] == clip1(exp[i][j]), (f"chase iter {it}: {w}x{h} bd {bd} run_first {run_first} lead {lead} wait {wait} gap {gap} "
+                                                       f"seq {seq} buf {pb}: ({j},{i}) rtl {got[i][j]} model {clip1(exp[i][j])}")
+        stats["runs"] += 1; stats["run_first"] += run_first; stats["writer_first"] += not run_first; stats["samples"] += w * h
+        seq = (seq + 1) & 7; pb ^= 1
+    dut.chase.value = 0
+    dut._log.info(f"OK chase: {stats}")
