@@ -211,6 +211,11 @@ async def ref_fetch_pipelined(dut):
             cycles += 1
             await ReadOnly()
             busy_now = int(dut.buf_busy.value)
+            # done pulses the clock after a request's last word; since the writer takes rows back to back (2026-11-25) the
+            # next request's first word can be written in that same clock, so done is counted before the write is read
+            if int(dut.done.value):
+                dones += 1
+                state["dones"] = dones
             if int(dut.patch_we.value):
                 pb = int(dut.patch_buf.value)
                 assert dones < n, f"group {stats['groups']}: patch write after the last done"
@@ -227,9 +232,6 @@ async def ref_fetch_pipelined(dut):
                     kj = (key[0], key[1], key[2] + j)
                     assert kj not in got[dones], f"group {stats['groups']} request {dones}: patch word {kj} written twice"
                     got[dones][kj] = (dq >> (48 * j)) & ((1 << 48) - 1)
-            if int(dut.done.value):
-                dones += 1
-                state["dones"] = dones
             await Timer(1, "ns")
             assert cycles < 400000, f"group {stats['groups']}: no done for request {dones} after {cycles} cycles"
         stop["v"] = True

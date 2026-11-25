@@ -182,25 +182,30 @@ module ref_fetch #(
         return (int'(s) == RING - 1) ? SW'(0) : SW'(s + 1'b1);
     endfunction
 
+    // events
+    logic accept, alloc, rx_beat, rx_last, wr_take, wr_last;
     logic        head_busy;                               // the head row's buffer is being read by a run of another request
-    assign head_busy = buf_busy[s_buf[slot_wr]] && !(chase_v && (chase_seq == s_seq[slot_wr]));
+    // the row the writer takes next: the head row, or the one behind it while the head row's last words are being
+    // written (the take then falls in the row's last clock: until 2026-11-25 every row cost a clock in which nothing
+    // was written, 298 of the 1,476 writer clocks of a compound 64 x 64 block; K60-94)
+    logic [SW-1:0] slot_tk;
+    assign slot_tk = wr_busy ? slot_next(slot_wr) : slot_wr;
+    assign head_busy = buf_busy[s_buf[slot_tk]] && !(chase_v && (chase_seq == s_seq[slot_tk]));
     // observability: recon_top's B_MC_FETCH heartbeat and tb/test_dec_top.py print `st` as a number
     logic [7:0] st;
     assign st = {wr_busy, 4'(rows_alloc), 3'(ast)};
     assign perf_flags = {(ast == A_IDLE) && (rows_alloc == CW'(0)) && !wr_busy,
-                         !wr_busy && (rows_ready != CW'(0)) && head_busy,
+                         (!wr_busy || wr_last) && (rows_ready != CW'(0)) && head_busy,
                          !wr_busy && (rows_alloc != CW'(0)) && (rows_ready == CW'(0)),
                          wr_busy,
                          (ast == A_ROW) && !(rows_alloc < CW'(RING)),
                          ast == A_IDLE};
 
-    // events
-    logic accept, alloc, rx_beat, rx_last, wr_take, wr_last;
     assign accept  = (ast == A_IDLE) && req_valid && req_ready;
     assign alloc   = (ast == A_ROW) && (rows_alloc < CW'(RING));                   // the row takes its line buffer
     assign rx_beat = m_axi_rvalid && m_axi_rready;
     assign rx_last = rx_beat && (beats_rx == row_beats[slot_rx] - 16'd1);           // the row's last beat
-    assign wr_take = !wr_busy && (rows_ready != CW'(0)) && !head_busy;                  // the head row's buffer is free to write (or read by its own run)
+    assign wr_take = (!wr_busy || wr_last) && (rows_ready != CW'(0)) && !head_busy;                  // the head row's buffer is free to write (or read by its own run)
     assign wr_last = wr_busy && (6'(w4) + 6'd4 >= 6'(w_nw));                       // the row's last word(s): its slot is free
 
     // a request with rows is accepted whenever the address side is idle; an empty one only when nothing is outstanding
@@ -371,10 +376,10 @@ module ref_fetch #(
             wr_busy <= 1'b0; slot_wr <= SW'(0); w4 <= 5'd0; w_row <= 7'd0;
         end else begin
             if (wr_take) begin
-                wr_busy <= 1'b1; w4 <= 5'd0;
-                w_lst <= s_lst[slot_wr]; w_buf <= s_buf[slot_wr]; w_seq <= s_seq[slot_wr]; w_last <= s_last[slot_wr]; w_row <= s_row[slot_wr];
-                w_x0 <= s_x0[slot_wr]; w_lastx <= s_lastx[slot_wr]; w_cxlo <= s_cxlo[slot_wr]; w_nw <= s_nw[slot_wr];
-                w_lead <= s_fmt16[slot_wr] ? {1'b0, row_lead[slot_wr][5:1]} : row_lead[slot_wr];
+                wr_busy <= 1'b1; w4 <= 5'd0; slot_wr <= slot_tk;
+                w_lst <= s_lst[slot_tk]; w_buf <= s_buf[slot_tk]; w_seq <= s_seq[slot_tk]; w_last <= s_last[slot_tk]; w_row <= s_row[slot_tk];
+                w_x0 <= s_x0[slot_tk]; w_lastx <= s_lastx[slot_tk]; w_cxlo <= s_cxlo[slot_tk]; w_nw <= s_nw[slot_tk];
+                w_lead <= s_fmt16[slot_tk] ? {1'b0, row_lead[slot_tk][5:1]} : row_lead[slot_tk];
             end else if (wr_busy) begin
                 if (wr_last) begin
                     wr_busy <= 1'b0; slot_wr <= slot_next(slot_wr);
