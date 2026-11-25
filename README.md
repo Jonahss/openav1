@@ -12,7 +12,7 @@ This project is built by AI, though a human is involved.
 # current status
 
 *Argon profile-0 passing*
-*1080p at 29.6 fps*
+*1080p at 34.0 fps*
 
 ![Decode speed on the Alveo U200 over time: the 1080p clip and the 4K clip](docs/checkpoints/fps.png)
 
