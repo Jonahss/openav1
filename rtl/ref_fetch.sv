@@ -126,7 +126,7 @@ module ref_fetch #(
     logic [6:0]  r_ar;                                    // row whose bursts are being issued
     logic [15:0] src_y;                                   // clamped source row of the request's first row
     logic signed [17:0] yy_cur;                           // unclamped source row of row r_ar
-    logic [47:0] mul;                                     // src_y * stride
+    logic [39:0] mul;                                     // src_y * stride (the address is 40 bits)
     logic [39:0] row_a;                                   // address of the first wanted byte of row r_ar
     logic [15:0] q_nbytes;                                // bytes per row of the request
     logic [5:0]  lead_c;                                  // row r_ar: bytes before the first wanted byte in its first beat
@@ -152,7 +152,7 @@ module ref_fetch #(
     logic [2:0]  s_seq   [0:RING-1];
     logic [2:0]  q_seq, w_seq;
     logic        s_last  [0:RING-1];                      // the request's last row: its last word pulses done
-    logic [15:0] s_cxlo  [0:RING-1];
+    logic [7:0]  s_cxlo  [0:RING-1];                      // low byte of the row's first column: all the lane select reads
     logic [15:0] s_lastx [0:RING-1];
     logic signed [16:0] s_x0 [0:RING-1];
     logic [4:0]  s_nw    [0:RING-1];
@@ -167,7 +167,7 @@ module ref_fetch #(
     logic [SW-1:0] slot_wr;
     logic [4:0]  w4;                                      // patch word being written
     logic        w_lst, w_buf, w_last;                    // the row's geometry, copied from its slot when the writer takes it
-    logic [15:0] w_cxlo, w_lastx;
+    logic [7:0]  w_cxlo; logic [15:0] w_lastx;
     logic [5:0]  w_lead;                                  // samples before the first wanted one in the row's line buffer
     logic signed [16:0] w_x0;
     logic [4:0]  w_nw;
@@ -240,10 +240,12 @@ module ref_fetch #(
     always_comb begin
         for (int l = 0; l < 16; l++) begin
             logic signed [17:0] col;
-            logic [15:0] cc;
+            logic [15:0] cl;
+            logic [7:0] cc;                               // a row holds at most 192 samples
             col = 18'(w_x0) - 18'sd3 + 18'(signed'({13'd0, w4})) * 18'sd4 + 18'(l);
-            cc = clip_col(col, w_lastx) - w_cxlo + 16'(w_lead);
-            word_d16[l*PW +: PW] = row_w[32'(cc[7:0])*PW +: PW];
+            cl = clip_col(col, w_lastx);
+            cc = cl[7:0] - w_cxlo + 8'(w_lead);
+            word_d16[l*PW +: PW] = row_w[32'(cc)*PW +: PW];
         end
     end
     assign row_w = line_q[slot_wr];
@@ -292,12 +294,12 @@ module ref_fetch #(
             end
             A_PREP: begin                                                     // the first row's address: the multiply
                 nsamp <= cx_hi - cx_lo + 16'd1;
-                mul <= 48'(src_y) * 48'(q_stride);
+                mul <= 40'(48'(src_y) * 48'(q_stride));
                 ast <= A_ADDR;
             end
             A_ADDR: begin
                 logic [39:0] a_lo;
-                a_lo = q_base + 40'(mul) + (q_fmt16 ? {23'd0, cx_lo, 1'b0} : {24'd0, cx_lo});
+                a_lo = q_base + mul + (q_fmt16 ? {23'd0, cx_lo, 1'b0} : {24'd0, cx_lo});
                 q_nbytes <= q_fmt16 ? {nsamp[14:0], 1'b0} : nsamp;
                 row_a <= a_lo;
                 ast <= A_ROW;
@@ -307,7 +309,7 @@ module ref_fetch #(
                 beats_left <= beats_c;
                 row_lead[slot_ar] <= lead_c;
                 row_beats[slot_ar] <= beats_c;
-                s_fmt16[slot_ar] <= q_fmt16; s_cxlo[slot_ar] <= cx_lo; s_x0[slot_ar] <= q_x0;
+                s_fmt16[slot_ar] <= q_fmt16; s_cxlo[slot_ar] <= cx_lo[7:0]; s_x0[slot_ar] <= q_x0;
                 s_lastx[slot_ar] <= q_lastx; s_nw[slot_ar] <= q_nw; s_lst[slot_ar] <= q_lst; s_buf[slot_ar] <= q_buf; s_seq[slot_ar] <= q_seq;
                 s_row[slot_ar] <= r_ar; s_last[slot_ar] <= (r_ar == q_nrow - 7'd1);
                 ast <= A_AR;
