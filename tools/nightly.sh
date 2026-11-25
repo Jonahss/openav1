@@ -132,6 +132,7 @@ run dec_host_gen       FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WI
 run dec_host_gen_tall  FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_SEEDS=28,32 TS_W=128 TS_H=320 python tb/runner.py dec_host test_dec_host_inter
 # inter streams through dec_host (registers, sequencer, flush; references = the flushed pictures, as on the board): tb/test_dec_host_inter.py
 run dec_host_inter     FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_IVF="$PWD/streams/inter/inter2a_8bit.ivf,$PWD/streams/inter/inter_obmc_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+run dec_host_bd10      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_IVF="$PWD/streams/synth/natural_lf_cdef_lr_10bit.ivf" python tb/runner.py dec_host test_dec_host_inter   # 16-bit samples through the flush (2026-11-24: no host suite had them)
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
 # the corpus, model-free: the RTL alone decodes every stream and its final picture (fb2) is compared with dav1d's
 runsh corpus_full_rtl  TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
