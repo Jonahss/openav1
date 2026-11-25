@@ -14,6 +14,7 @@
 #   - the netlist replays under Verilator (vgate): ONE build of the funcsim netlist (VOPT / VTHR: g++ opt and --threads), the
 #     shards in parallel. The shards run through ramq (kind vreplay).
 set -u
+BIN=$(cd "$(dirname "$0")" && pwd)   # bin/ of the worktree this script runs from (gate_record.sh beside it)
 L=~/measure1080/pf_gate${PFTAG:?PFTAG=<name of this rung>}.txt; : > $L
 W=${PFW:?PFW=<worktree at the commit>}; G=${PFG:-~/gate/dec_host9fc}; SP=${PFSP:-q2}; PFM=${PFM:-fc1}; BLK=${BLK:-dec_host9fc}; VJ=${VJ:-40}; S=~/openav1-synth/dec_host-$PFM; mkdir -p $G
 VOPT=${VOPT:--O0}; VTHR=${VTHR:-}
@@ -58,27 +59,34 @@ echo "$IN" | grep -qw phase && { echo "harness records phase" >> $L; echo PF_GAT
 # could not update). A port change edits that file in the same commit; any other difference is an abort, not a note.
 if diff <(tr -d "\n" < $W/tools/gate_in_list.txt) <(echo -n "$IN") >> $L; then echo "IN list == tools/gate_in_list.txt ($(echo $IN | tr "," "\n" | wc -l) ports, generated phase)" >> $L
 else echo "IN LIST differs from tools/gate_in_list.txt: abort, not a note" >> $L; echo PF_GATE_ABORT >> $L; exit 1; fi
-# C. the recordings, one after another (they share the build directory), against the card-like memory
+# C. the recordings, against the card-like memory, side by side (2026-11-19, WF-17: one after another in one build
+# directory they were ~68 min of the rung's critical path): ONE RTL build of their own (TS_BUILD_TAG=gate_<PFTAG>,
+# TS_BUILD_ONLY), then bin/gate_record.sh per shard through ramq (kind sim), each in a test directory of its own
 A=$W/streams/argon/profile0_core/streams
 P="REF_RING=8 TE=1 SB128=0 FBX=9 FBY=9 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 WAVES=1 WAVE_FMT=vcd WAVE_DEPTH=1 TS_AXI_LAT=48 TS_AXI_OUT=16"
 rm -rf $W/build/dec_host_fb9x9*
-shards=""
-for spec in "${SP}a::$W/streams/inter/mf_small_8bit.ivf" "${SP}b::$W/streams/inter/inter2a_8bit.ivf" "${SP}c::$W/streams/inter/inter_obmc_8bit.ivf" "${SP}d::$A/test47.obu" "${SP}e::$A/test7588_6663.obu"; do
+RT=gate_$PFTAG
+env $P TS_BUILD_TAG=$RT TS_BUILD_ONLY=1 python tb/runner.py dec_host test_dec_host_inter > $G/rec_build.log 2>&1 || { echo "ABORT: RTL build for the recordings failed: $(tail -2 $G/rec_build.log | tr '\n' ' ' | cut -c1-200)" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
+echo "RTL build for the recordings done $(date -u +%H:%M)" >> $L
+SPECS=("${SP}a::$W/streams/inter/mf_small_8bit.ivf" "${SP}b::$W/streams/inter/inter2a_8bit.ivf" "${SP}c::$W/streams/inter/inter_obmc_8bit.ivf" "${SP}d::$A/test47.obu" "${SP}e::$A/test7588_6663.obu")
+for spec in "${SPECS[@]}"; do IVF=${spec#*:}; IVF=${IVF#*:}; [ -f "$IVF" ] || { echo "ABORT: stream $IVF missing for ${spec%%:*}" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }; done   # before any launch
+shards=""; recs=""
+for spec in "${SPECS[@]}"; do
   T=${spec%%:*}; rest=${spec#*:}; EXTRA=${rest%%:*}; IVF=${rest#*:}
-  if [ -f $G/${T}_vec.hex ] && [ "$(wc -l < $G/${T}_vec.hex)" -ge 100000 ]; then echo "shard $T already recorded ($(wc -l < $G/${T}_vec.hex) vectors)" >> $L; shards="$shards $T"; continue; fi
-  [ -f "$IVF" ] || { echo "ABORT: stream $IVF missing for $T" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
-  t0=$(date +%s)
-  env $P $EXTRA TS_IVF=$IVF python tb/runner.py dec_host test_dec_host_inter > $G/rec_$T.log 2>&1
-  TRC=$?; echo "twin $T rc=$TRC $(( $(date +%s) - t0 ))s $(grep -oE "OK: \{.*|AssertionError.*" $G/rec_$T.log | tail -1 | cut -c1-160) $(date -u +%H:%M)" >> $L
-  B=$(ls -d $W/build/dec_host_fb9x9* 2>/dev/null | while read d; do [ -f $d/dump.vcd ] && echo $d; done | head -1)
-  [ -n "$B" ] || { echo "no dump.vcd under $W/build for $T" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
-  python tools/vcd2vec.py $B/dump.vcd TOP.dec_host clk --in $IN --out $OUT > $G/${T}_raw.hex 2> $G/${T}_vec.err
-  cut -d" " -f1 $G/${T}_raw.hex | head -n 450000 > $G/${T}_vec.hex; cut -d" " -f2 $G/${T}_raw.hex | head -n 450000 > $G/${T}_vec.hex.out
-  NV=$(wc -l < $G/${T}_vec.hex); NR=$(wc -l < $G/${T}_raw.hex); echo "vectors $T: $NV of $NR recorded cycles ($(tail -1 $G/${T}_vec.err | cut -c1-80))" >> $L
-  [ "$TRC" = 0 ] && grep -q "OK: {" $G/rec_$T.log && ! grep -q "AssertionError" $G/rec_$T.log && [ "$NV" -ge 100000 ] || { echo "ABORT: twin $T rc=$TRC, $NV cycles recorded (need rc 0, an OK line, no AssertionError, >= 100000)" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
-  rm -f $B/dump.vcd $G/${T}_raw.hex
   shards="$shards $T"
+  if [ -f $G/${T}_vec.hex ] && [ "$(wc -l < $G/${T}_vec.hex)" -ge 100000 ]; then echo "shard $T already recorded ($(wc -l < $G/${T}_vec.hex) vectors)" >> $L; continue; fi
+  $HOME/ramq/bin/ramq run sim --max-width 1 --detach --name rec-$PFTAG-$T --log $G/rec_$T.launch.log -- $BIN/gate_record.sh $W $G $RT $T "$IN" "$OUT" $P $EXTRA TS_IVF=$IVF >> $L 2>&1
+  recs="$recs $T"
 done
+# every launched shard is waited for before the verdict on any (an abort leaves no recording running unseen)
+RBAD=""
+for T in $recs; do
+  $HOME/ramq/bin/ramq wait rec-$PFTAG-$T > /dev/null 2>&1; RRC=$?
+  grep -v "^REC_" $G/rec_$T.status >> $L 2>/dev/null
+  [ "$(tail -1 $G/rec_$T.status 2>/dev/null)" = REC_OK ] || { RBAD="$RBAD $T"; echo "recording $T failed (ramq wait rc=$RRC): $(tail -1 $G/rec_$T.status 2>/dev/null) $(grep -E '^ramq: ' $G/rec_$T.launch.log | tail -1 | cut -c1-160)" >> $L; }
+done
+[ -z "$RBAD" ] || { echo "ABORT: recordings failed:$RBAD" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
+echo "recordings done $(date -u +%H:%M)" >> $L
 # D. the synth, the funcsim netlist, one Verilator build, the shards in parallel
 # ramq says how the synth ended (2026-11-17: this was a loop that looked for ^ERROR in vivado.log, and waited nine
 # hours on a synth that had been killed). A kept directory of an earlier launch has no live job: wait then
