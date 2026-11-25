@@ -350,6 +350,8 @@ module recon_top
     logic [1:0]  pq_h, pq_t;                                 // queue head / tail (mod 4; the entry is bit 0)
     logic [1:0]  pq_n;
     logic [2:0]  pq_seq [0:1]; logic pq_has_rf [0:1], pq_last [0:1], pq_buf [0:1], pq_par [0:1];
+    logic        pq_chase [0:1];                             // the run may start with its request: its horizontal pass follows the patch writer (K60-94; unscaled and warp runs, not the intra block copy)
+    logic        st_chase; logic [2:0] st_seq; logic mc_h_chase; logic [2:0] mc_h_seq, rf_pw_seq;
     logic        pq_l [0:1], pq_warp [0:1], pq_sx [0:1], pq_sy [0:1];
     logic [6:0]  pq_sw [0:1], pq_sh [0:1];
     logic [1:0]  pq_i0 [0:1], pq_i1 [0:1], pq_pl [0:1];
@@ -374,7 +376,7 @@ module recon_top
     assign pq_n = pq_t - pq_h;
     assign pq_empty = (pq_n == 2'd0); assign pq_full = (pq_n == 2'd2);
     assign qh_d = done_cnt - pq_seq[pq_h[0]];
-    assign qh_ready = !pq_has_rf[pq_h[0]] || (qh_d == 3'd1) || (qh_d == 3'd2);
+    assign qh_ready = !pq_has_rf[pq_h[0]] || pq_chase[pq_h[0]] || (qh_d == 3'd1) || (qh_d == 3'd2);
     // A run record is reused by the run after next (the one-bit tag), and the blend pipelines (OBMC, inter-intra, masked)
     // read the record of their words for a few cycles after the run's last word and its done. mc_filt's done comes one
     // cycle after the last word since the output FIFO (rung B), so a start right behind it took the record while those
@@ -545,18 +547,20 @@ module recon_top
     ref_fetch #(.PW(12), .RING(REF_RING)) u_rf (.clk, .rst,
         .req_valid(rf_req_valid && !pq_full), .req_ready(rf_req_ready), .req_lst(rf_lst), .req_fmt16(mc_ibc ? cur_fmt16 : ref_fmt16), .req_base(rf_base),
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
-        .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .req_buf(pbuf), .buf_busy(mc_buf_busy), .done(rf_done), .err(rf_err), .perf_flags(rf_pf),
+        .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .req_buf(pbuf), .req_seq(acc_cnt), .chase_v(mc_h_chase), .chase_seq(mc_h_seq),
+        .buf_busy(mc_buf_busy), .done(rf_done), .err(rf_err), .perf_flags(rf_pf),
         .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
         .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
-        .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_n(rf_pw_n), .patch_dq(rf_pw_dq));
+        .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_seq(rf_pw_seq), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_n(rf_pw_n), .patch_dq(rf_pw_dq));
     fb_fetch #(.PW(12), .FBX(FBX), .FBY(FBY)) u_ff (.clk, .rst,
         .req_valid(ff_req_valid), .req_ready(ff_req_ready), .req_lst(rf_lst), .req_plane(mc_pl), .req_lastx(rf_lastx), .req_lasty(rf_lasty),
         .req_x0(rf_x0), .req_y0(rf_y0), .req_w(rf_w), .req_r_lo(ff_r_lo), .req_r_hi(ff_r_hi), .done(ff_done),
         .fb_re(ff_fb_re), .fb_plane(ff_fb_plane), .fb_x(ff_fb_x), .fb_y(ff_fb_y), .fb_rdata4,
         .patch_we(ff_pw_we), .patch_list(ff_pw_list), .patch_row(ff_pw_row), .patch_w4(ff_pw_w4), .patch_d4(ff_pw_d4));
     mc_filt #(.PW(12)) u_mc (.clk, .rst,
-        .patch_we(pw_we), .patch_buf(pw_buf), .patch_list(pw_list), .patch_row(pw_row), .patch_w4(pw_w4), .patch_n(pw_n), .patch_dq(pw_dq),
-        .start(mc_start), .run_tag(mc_tag), .lst(st_l), .rbuf(run_buf), .w(st_sw), .h(st_sh), .interp_x(st_i1), .interp_y(st_i0),
+        .patch_we(pw_we), .patch_buf(pw_buf), .patch_list(pw_list), .patch_seq(rf_pw_seq), .patch_row(pw_row), .patch_w4(pw_w4), .patch_n(pw_n), .patch_dq(pw_dq),
+        .start(mc_start), .run_tag(mc_tag), .lst(st_l), .rbuf(run_buf), .chase(st_chase), .run_seq(st_seq), .h_chase(mc_h_chase), .h_seq(mc_h_seq),
+        .w(st_sw), .h(st_sh), .interp_x(st_i1), .interp_y(st_i0),
         .x_frac0(st_xf0), .y_frac0(st_yf0), .x_step(st_xs), .y_step(st_ys),
         .warp(st_warp), .w_alpha(st_wa), .w_beta(st_wb), .w_gamma(st_wg), .w_delta(st_wd), .w_sx4(st_wsx), .w_sy4(st_wsy),
         .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .perf_flags(mc_pf), .v_hold(rs != R_IDLE),
@@ -670,6 +674,7 @@ module recon_top
             // mc_start next cycle, the output path reads the record rq_*[srun] (as before)
             mc_start <= 1'b1; run_v <= 1'b1; mc_tag <= srun; srun <= srun + 2'd1;
             mc_direct <= !pq_ob_active[pq_h[0]] && !pq_ii_active[pq_h[0]] && !pq_mb_active[pq_h[0]]; run_buf <= pq_buf[pq_h[0]];
+            st_chase <= pq_chase[pq_h[0]]; st_seq <= pq_seq[pq_h[0]];
             st_l <= pq_l[pq_h[0]]; st_warp <= pq_warp[pq_h[0]]; st_sw <= pq_sw[pq_h[0]]; st_sh <= pq_sh[pq_h[0]];
             st_i0 <= pq_i0[pq_h[0]]; st_i1 <= pq_i1[pq_h[0]]; st_xf0 <= pq_xf0[pq_h[0]]; st_yf0 <= pq_yf0[pq_h[0]]; st_xs <= pq_xs[pq_h[0]]; st_ys <= pq_ys[pq_h[0]];
             st_wa <= pq_wa[pq_h[0]]; st_wb <= pq_wb[pq_h[0]]; st_wg <= pq_wg[pq_h[0]]; st_wd <= pq_wd[pq_h[0]]; st_wsx <= pq_wsx[pq_h[0]]; st_wsy <= pq_wsy[pq_h[0]];
@@ -946,6 +951,7 @@ module recon_top
                         if (mc_ibc) begin ibc_acc <= 1'b1; ibc_seq <= acc_cnt; end
                         else begin
                             pq_has_rf[pq_t[0]] <= 1'b1; pq_seq[pq_t[0]] <= acc_cnt; pq_buf[pq_t[0]] <= pbuf; pq_last[pq_t[0]] <= 1'b0; pq_par[pq_t[0]] <= cur_par;
+                            pq_chase[pq_t[0]] <= mc_warp || ((sc_xs == 12'd1024) && (sc_ys == 12'd1024));
                             pq_l[pq_t[0]] <= mc_l; pq_warp[pq_t[0]] <= mc_warp; pq_sw[pq_t[0]] <= mc_sw; pq_sh[pq_t[0]] <= mc_sh;
                             pq_i0[pq_t[0]] <= u_i0; pq_i1[pq_t[0]] <= u_i1; pq_xf0[pq_t[0]] <= mc_xf0; pq_yf0[pq_t[0]] <= mc_yf0; pq_xs[pq_t[0]] <= sc_xs; pq_ys[pq_t[0]] <= sc_ys;
                             pq_wa[pq_t[0]] <= w_al[mc_l]; pq_wb[pq_t[0]] <= w_be[mc_l]; pq_wg[pq_t[0]] <= w_ga[mc_l]; pq_wd[pq_t[0]] <= w_de[mc_l]; pq_wsx[pq_t[0]] <= mc_wsx; pq_wsy[pq_t[0]] <= mc_wsy;
@@ -969,6 +975,7 @@ module recon_top
                         if (ff_pend && rf_in) begin ff_req_valid <= 1'b1; ff_pend <= 1'b0; end
                         if (rf_in && !ff_pend && !ff_req_valid && !(ff_wait && !ff_done) && !pq_full) begin
                             pq_has_rf[pq_t[0]] <= ibc_has_rf; pq_seq[pq_t[0]] <= ibc_seq; pq_buf[pq_t[0]] <= ibc_buf; pq_last[pq_t[0]] <= 1'b0; pq_par[pq_t[0]] <= cur_par;
+                            pq_chase[pq_t[0]] <= 1'b0;
                             pq_l[pq_t[0]] <= mc_l; pq_warp[pq_t[0]] <= mc_warp; pq_sw[pq_t[0]] <= mc_sw; pq_sh[pq_t[0]] <= mc_sh;
                             pq_i0[pq_t[0]] <= u_i0; pq_i1[pq_t[0]] <= u_i1; pq_xf0[pq_t[0]] <= mc_xf0; pq_yf0[pq_t[0]] <= mc_yf0; pq_xs[pq_t[0]] <= sc_xs; pq_ys[pq_t[0]] <= sc_ys;
                             pq_wa[pq_t[0]] <= w_al[mc_l]; pq_wb[pq_t[0]] <= w_be[mc_l]; pq_wg[pq_t[0]] <= w_ga[mc_l]; pq_wd[pq_t[0]] <= w_de[mc_l]; pq_wsx[pq_t[0]] <= mc_wsx; pq_wsy[pq_t[0]] <= mc_wsy;

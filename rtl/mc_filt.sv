@@ -39,6 +39,12 @@
 // four groups a cycle (128 products): quad k completes groups 4k - 2 .. 4k + 1. Its vertical pass reads a strip quad a
 // cycle and computes groups g .. g + 3 (four windows, 128 products). Scaled runs keep one word and one group a cycle
 // (per-lane geometry; rare) on lane set 0 of both pipelines.
+// Chasing runs (2026-11-24, K60-94). An unscaled or warp run of a ref_fetch request may start before its patch is in
+// (chase, with the request's number run_seq): its horizontal pass reads quad (row, k) once the writer has written it,
+// so the patch write and the horizontal pass overlap instead of following one another (the writer and the pass both
+// take a quad a cycle; start to start was 311 clocks on the crop clip where either alone is ~200). The writer's rows
+// carry their request's number (patch_seq) and must come in order, whole quads at a time, as ref_fetch delivers
+// them; the single-word writers (the block-copy loader, the scaled path's reads) are never chased.
 // The outputs go through a FIFO (OUT_FIFO entries of one to four words) and leave one word a cycle, or two for a run
 // whose words go straight to the frame memory (direct: its second write port takes the word at out_x + 4), in the order (group g, row i) .. (group g + 3, row i), (g, i + 1), ...;
 // the vertical side stalls while the FIFO is nearly full. done is an entry of the FIFO as well: it pulses after the
@@ -63,12 +69,17 @@ module mc_filt
     input  logic [4:0]    patch_w4,            // the first word written, 0 .. 17 (samples 4 w4 .. 4 w4 + 3)
     input  logic [1:0]    patch_n,             // words written - 1; more than one word only from a patch_w4 that is a multiple of 4
     input  logic [16*PW-1:0] patch_dq,         // words patch_w4 .. patch_w4 + patch_n, the first in the low bits
+    input  logic [2:0]    patch_seq,           // the request the written row belongs to (recon_top's accept count; ref_fetch's rows only)
     // ---- run (parameters sampled at start) ----
     input  logic          start,
     input  logic [1:0]    run_tag,             // returned with the run's outputs (out_tag): recon_top's run record index
     input  logic          v_hold,              // hold the vertical side in V_IDLE (recon_top: while the transform FSM writes the frame buffer)
     input  logic          lst,                 // the patch list to filter
     input  logic          rbuf,                // the patch buffer to filter from
+    input  logic          chase,               // the run may start before its patch is complete: the horizontal pass follows the writer (unscaled / warp runs of ref_fetch requests)
+    input  logic [2:0]    run_seq,             // the request whose rows the run filters (with chase)
+    output logic          h_chase,             // the horizontal side is on a chasing run of request h_seq: ref_fetch's writer may write that request's rows into the buffer being read
+    output logic [2:0]    h_seq,
     output logic [1:0]    h_buf_busy,          // per patch buffer: the horizontal side reads it (or a start claims it this cycle); ref_fetch's writer waits
     input  logic [6:0]    w,                   // 2, 4, 8, .. 64 (<= 32 when scaled)
     input  logic [6:0]    h,
@@ -167,6 +178,16 @@ module mc_filt
     // ================================================================ run parameters
     logic        p_list;
     logic        p_buf;
+    logic        p_chase;                                // the run follows the writer (K60-94)
+    logic [2:0]  p_seq;
+    // The writer's progress per patch buffer: the request whose rows were written last and the next quad it will write
+    // (rows in order, quads of a row in order). A chasing run reads quad (hr, hk) only once it lies behind that point
+    // (the registers follow a write by one clock, as the memory's registered read does). The mark is dropped when the
+    // horizontal side finishes a run on the buffer: only the run of a request reads its rows, so a mark never outlives them.
+    logic        nx_v [0:1];
+    logic [2:0]  nx_seq [0:1];
+    logic [6:0]  nx_row [0:1];
+    logic [2:0]  nx_q [0:1];
     logic        p_scaled;                               // x_step or y_step != 1024
     logic        p_quad;                                 // unscaled or warp: the horizontal pass takes a word quad a cycle
     logic        p_warp;                                 // block_warp: 15 x 8 horizontal, 8 x 8 vertical, per-sample taps; on the pair path since 2026-11-12
@@ -292,6 +313,11 @@ module mc_filt
     assign h_buf_busy = ((hst != H_IDLE) ? (2'b01 << p_buf) : 2'b00) | (start ? (2'b01 << rbuf) : 2'b00);
     assign v_active = pend || (vst != V_IDLE) || !f_empty;
     assign perf_flags = {!f_empty, pend, vst != V_IDLE, hst != H_IDLE};
+    logic        h_av;                                   // H_RUN4: the quad to read is in the patch
+    assign h_av = !p_chase || (nx_v[p_buf] && (nx_seq[p_buf] == p_seq)
+                               && ((hr < nx_row[p_buf]) || ((hr == nx_row[p_buf]) && (hk[2:0] < nx_q[p_buf]))));
+    assign h_chase = (hst != H_IDLE) && p_chase;
+    assign h_seq = p_seq;
 
     // ---------------------------------------------------------------- memory ports
     // every memory is four lanes at one quad address: a quad pass takes all four, a single-word (scaled) pass the lane it asked for
@@ -447,6 +473,7 @@ module mc_filt
         if (rst) begin
             f_wp <= '0; f_rp <= '0; f_cnt <= '0; f_qv <= 1'b0; f_curv <= 1'b0; f_sel <= 2'd0; alive <= 3'd0; f_first <= 1'b1;
             hst <= H_IDLE; vst <= V_IDLE; pend <= 1'b0; hb <= 1'b0; vb <= 1'b0; hdrain <= 3'd0;
+            nx_v[0] <= 1'b0; nx_v[1] <= 1'b0; p_chase <= 1'b0;
             h1_v <= 1'b0; h2_v <= 1'b0; h3_v <= 1'b0; h4_v <= 1'b0;
             v1_v <= 1'b0; v2_v <= 1'b0; v3_v <= 1'b0; v4_v <= 1'b0;
         end else begin
@@ -460,6 +487,7 @@ module mc_filt
             case (hst)
                 H_IDLE: if (start) begin
                     p_list <= lst; p_buf <= rbuf;
+                    p_chase <= chase && (warp || ((x_step == 12'd1024) && (y_step == 12'd1024))); p_seq <= run_seq;
                     p_scaled <= !warp && ((x_step != 12'd1024) || (y_step != 12'd1024));
                     p_quad <= warp || ((x_step == 12'd1024) && (y_step == 12'd1024));
                     p_warp <= warp; p_wa <= w_alpha; p_wb <= w_beta; p_wg <= w_gamma; p_wd <= w_delta; p_wsx <= w_sx4; p_wsy <= w_sy4;
@@ -493,7 +521,7 @@ module mc_filt
                     ppos <= ppos + 17'(p_xs) * 17'd4;
                     if (pg == 5'(GRP - 1)) hst <= H_RUNS; else pg <= pg + 5'd1;
                 end
-                H_RUN4: begin                              // unscaled and warp: one word quad per cycle, groups 4 hk - 2 .. 4 hk + 1 emitted at quad hk
+                H_RUN4: if (h_av) begin                    // unscaled and warp: one word quad per cycle, groups 4 hk - 2 .. 4 hk + 1 emitted at quad hk (a chasing run: once the writer has passed it)
                     h0_v <= 1'b1; h0_rd <= 1'b1; h0_q <= 1'b1; h0_em <= 1'b1; h0_r <= hr; h0_k <= hk;
                     for (int j = 0; j < 4; j++)
                         h0_gv[j] <= (7'({hk, 2'b00}) + 7'(j) >= 7'd2) && (7'({hk, 2'b00}) + 7'(j) < 7'(p_ngrp) + 7'd2);
@@ -520,6 +548,7 @@ module mc_filt
                     end
                 end
                 H_DRAIN: if (hdrain == 3'd0) begin                  // the last strip words have landed (h1 .. h4 + the write)
+                    nx_v[p_buf] <= 1'b0;                            // the buffer's rows are used up (a write this cycle sets the mark again, below)
                     pend <= 1'b1; hb <= !hb; q_sb <= hb; q_tag <= p_tag;
                     q_scaled <= p_scaled; q_warp <= p_warp; q_wg <= p_wg; q_wd <= p_wd; q_wsy <= p_wsy;
                     q_ngrp <= p_ngrp; q_h <= p_h; q_nrow <= p_nrow; q_bd <= p_bd; q_mode <= p_mode; q_direct <= p_direct; q_wt0 <= p_wt0; q_wt1 <= p_wt1;
@@ -529,6 +558,10 @@ module mc_filt
                 end else hdrain <= hdrain - 3'd1;
                 default: hst <= H_IDLE;
             endcase
+            // the writer's progress (after the horizontal side's case: a write wins over the drop of the mark)
+            if (patch_we) begin
+                nx_v[patch_buf] <= 1'b1; nx_seq[patch_buf] <= patch_seq; nx_row[patch_buf] <= patch_row; nx_q[patch_buf] <= patch_w4[4:2] + 3'd1;
+            end
             // ---------------- vertical side: strip words in, prediction out
             case (vst)
                 V_IDLE: if (pend && !v_hold) begin                  // take the pending run (not while the transform FSM owns the write port)
