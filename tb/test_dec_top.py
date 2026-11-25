@@ -585,7 +585,7 @@ async def dec_vs_model(dut):
                 dut.phase.value = 0
         dut.phase.value = 0
         cocotb.start_soon(phase_gen())
-    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "frame_start", "n_tile_cols", "h_buf", "h_plane", "h_x", "h_y"):
+    for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "rh", "lh", "ch", "frame_start", "n_tile_cols", "h_buf", "fl_re", "h_plane", "h_x", "h_y"):
         getattr(dut, s).value = 0
     dut.rst.value = 1
     run_tile._perf_prev = None  # counters reset with the DUT

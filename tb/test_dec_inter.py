@@ -235,7 +235,7 @@ async def dec_inter_vs_model(dut):
         dut.phase.value = 0
         cocotb.start_soon(phase_gen())
     for s in ("in_valid", "in_eos", "def_we", "tile_start", "hdr", "ihdr", "rh", "lh", "ch",
-              "frame_start", "n_tile_cols", "h_buf", "h_plane", "h_x", "h_y", "mf_we", "sp_we",
+              "frame_start", "n_tile_cols", "h_buf", "fl_re", "h_plane", "h_x", "h_y", "mf_we", "sp_we",
               "ref_slot", "ref_planes", "ref_dims", "ref_scales", "ref_fmt16"):
         if hasattr(dut, s):
             getattr(dut, s).value = 0

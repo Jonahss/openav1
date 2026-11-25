@@ -113,6 +113,13 @@ module dec_top
     output logic              row_final,           // 1-cycle pulse: superblock row row_final_idx is final
     output logic [SBW-1:0]    row_final_idx,
     input  logic              flush_done,          // 1-cycle pulse: the oldest released row is in DDR
+    // the flush's read of the final picture (2026-11-24, K60-37): fb2's two read ports, which no decoder stage uses.
+    // fl_re asks for the groups at fl_x and fl_x + 4 of line fl_y; both are on fl_rdata8 two cycles later (always served).
+    input  logic              fl_re,
+    input  logic [1:0]        fl_plane,
+    input  logic [FBX-1:0]    fl_x,
+    input  logic [FBY-1:0]    fl_y,
+    output logic [95:0]       fl_rdata8,           // {the group at fl_x + 4, the group at fl_x}, lane 0 lowest
     // frame-state sideband (rtl/frame_state_w.sv): finished rows for dec_host's sideband DMA + its read port
     // frame-state loader (rtl/fs_load.sv, stage B): the segment map and the CDF rows from the reference slot's areas
     input  logic              ld_start,
@@ -390,15 +397,15 @@ module dec_top
                                                                            .we({fb4b_we, w_rc_we}), .w_be({4'hF, w_rc_be}), .w_plane({fb4b_plane, w_rc_pl}), .w_x({fb4b_x, w_rc_x}), .w_y({fb4b_y, w_rc_y}), .w_data({fb4b_wdata, w_rc_d}),
                                                                            .h_plane, .h_x, .h_y, .h_rdata(h_rdata0), .h_rdata4(h_rdata40), .h_ok(h_ok0));
     end endgenerate
-    // fb2 = the final picture: the chain's two write ports (fc_out), no decoder-side reader, so the host port (and the row
-    // flush through it) is always served
+    // fb2 = the final picture: the chain's two write ports (fc_out); its two read ports are the row flush's (two groups
+    // a clock, K60-37), and the host port is served whenever the flush does not read
     generate if (FRAME_URAM != 0) begin : g_fb2_uram
         frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN2), .SB128(SB128)) u_fb2 (.clk, .clk2x, .phase, .sb128(hdr.sb128),
-            .re(2'b00), .r_plane(4'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
+            .re({fl_re, fl_re}), .r_plane({fl_plane, fl_plane}), .r_x({fl_x + FBX'(4), fl_x}), .r_y({fl_y, fl_y}), .rdata(), .rdata4(fl_rdata8),
             .we(fo_we), .w_be({{4{fo_we[1]}}, {4{fo_we[0]}}}), .w_plane({fo_plane[1], fo_plane[0]}), .w_x({fo_x[1], fo_x[0]}), .w_y({fo_y[1], fo_y[0]}), .w_data({fo_d[1], fo_d[0]}),
             .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42), .h_ok(h_ok2));
     end else begin : g_fb2_model
-        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(1), .NWR(2)) u_fb2 (.clk, .re(1'b0), .r_plane(2'd0), .r_x('0), .r_y('0), .rdata(), .rdata4(),
+        frame_mem #(.FBX(FBX), .FBY(FBY), .PW(12), .NRD(2), .NWR(2)) u_fb2 (.clk, .re({fl_re, fl_re}), .r_plane({fl_plane, fl_plane}), .r_x({fl_x + FBX'(4), fl_x}), .r_y({fl_y, fl_y}), .rdata(), .rdata4(fl_rdata8),
                                                                             .we(fo_we), .w_be({{4{fo_we[1]}}, {4{fo_we[0]}}}), .w_plane({fo_plane[1], fo_plane[0]}), .w_x({fo_x[1], fo_x[0]}),
                                                                             .w_y({fo_y[1], fo_y[0]}), .w_data({fo_d[1], fo_d[0]}),
                                                                             .h_plane, .h_x, .h_y, .h_rdata(h_rdata2), .h_rdata4(h_rdata42), .h_ok(h_ok2));
