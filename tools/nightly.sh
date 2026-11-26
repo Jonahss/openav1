@@ -110,16 +110,19 @@ runsh_one() {
     ( tok_get; timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "${envs[@]}" TS_IVF="${shards[i]}" ${shard_frames[i]:+TS_FRAMES=${shard_frames[i]}} TS_TEST_DIR="$PWD/logs/shards/$tag-$name-$i" "${cmd[@]}" > "$log.$i" 2>&1; r=$?; tok_put; exit $r ) &
     pids+=($!); sleep 2
   done
-  local fails=0 oks="" nf total=0
+  local fails=0 oks="" nf total=0 bad failed=""
   for ((i = 0; i < n; i++)); do
-    wait "${pids[i]}" || fails=$((fails + 1))
-    grep -q "OK:" "$log.$i" || fails=$((fails + 1))
+    bad=0
+    wait "${pids[i]}" || bad=1
+    grep -q "OK:" "$log.$i" || bad=1
     nf=$(grep -o 'OK: {.*}' "$log.$i" | tail -1 | grep -oE "'frames': [0-9]+" | grep -oE '[0-9]+')
-    [[ -n "${shard_frames[i]}" && "${nf:-0}" -eq 0 ]] && fails=$((fails + 1))     # a frame range that ran no frame on the RTL is not a pass
+    [[ -n "${shard_frames[i]}" && "${nf:-0}" -eq 0 ]] && bad=1     # a frame range that ran no frame on the RTL is not a pass
+    fails=$((fails + bad))                                         # a shard counts once ("29 of 17 shards failed", 2026-11-26)
+    [[ $bad -eq 1 ]] && failed="$failed,$i${shard_frames[i]:+@${shard_frames[i]%%,*}-${shard_frames[i]##*,}}"
     oks="$oks $i:${nf:-FAIL}"; total=$((total + ${nf:-0}))
   done
   if [[ $fails -eq 0 ]]; then printf "PASS %-22s %5ss  OK: %d shards, frames per shard:%s (%d frames)\n" "$name" "$(( $(date +%s) - t0 ))" "$n" "$oks" "$total" >> "$out"
-  else local why; why=$(grep -h -m1 'AssertionError\|%Error\|fatal' "$log".[0-9]* | head -1 | cut -c1-150); printf "FAIL %-22s %5ss  %d of %d shards failed: %s\n" "$name" "$(( $(date +%s) - t0 ))" "$fails" "$n" "$why" >> "$out"; rc=1; fi
+  else local why; why=$(grep -h -m1 'AssertionError\|%Error\|fatal' "$log".[0-9]* | head -1 | cut -c1-150); printf "FAIL %-22s %5ss  %d of %d shards failed (%s): %s\n" "$name" "$(( $(date +%s) - t0 ))" "$fails" "$n" "${failed#,}" "$why" >> "$out"; rc=1; fi
 }
 # identifiers used before their declaration: Verilator accepts them, Vivado makes implicit 1-bit nets (2026-11-09: mc_filt's
 # v_hold was tied to 0 in three netlists while every suite and gate rung passed)
