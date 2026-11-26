@@ -230,11 +230,16 @@ runsh dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAM
 # band is never in before the map's; a decoder without the wait on the map passed the clip that has both). TS_SEG_SLOW
 # delays the segment-id area's reads alone (a band is 16 one-burst lines here: 300 cycles a burst left the map ahead of
 # the engines and the same broken decoder passed again; 4000 puts a band at 64k cycles).
-runsh dec_host_segband    FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$PWD/streams/inter/seg_tall_8bit.ivf,$PWD/streams/inter/seg_tall128_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
-run dec_host_segband_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_SEG_SLOW=4000 TS_IVF="$PWD/streams/inter/seg_tall_nomf_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+# Frame ranges, one a process (WF-18, 2026-11-26): in one process a clip took up to 8,696 s (segband's 256 x 768 clip),
+# _slow 6,796 s, te4 below 9,528 s (nightly-sf-shardproof). The intra frame 0 of a 256 x 768 clip is about 22 M simulated
+# ns (about 2,400 s) alone and runs by itself; every other range has two frames or more, so each range still decodes
+# frames that read the previous frame's segment map and motion field on the RTL.
+SEGS=$PWD/streams/inter
+runsh dec_host_segband    FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$SEGS/seg_tall_8bit.ivf@0-3,$SEGS/seg_tall_8bit.ivf@4-,$SEGS/seg_tall128_8bit.ivf@0-0,$SEGS/seg_tall128_8bit.ivf@1-3,$SEGS/seg_tall128_8bit.ivf@4-5,$SEGS/seg_tall128_8bit.ivf@6-" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_segband_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_SEG_SLOW=4000 TS_IVF="$SEGS/seg_tall_nomf_8bit.ivf@0-2,$SEGS/seg_tall_nomf_8bit.ivf@3-5,$SEGS/seg_tall_nomf_8bit.ivf@6-" python tb/runner.py dec_host test_dec_host_inter
 # Four tile engines (2026-11-20; nothing above runs more than two): the 256 x 768 picture in four tile columns of one
 # 64-pixel superblock (aomenc --tile-columns=2 --aq-mode=3: a motion field and a segment map, both as bands).
-run dec_host_te4          FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=4 REF_RING=8 TS_IVF="$PWD/streams/inter/te4_tall_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_te4        FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=4 REF_RING=8 TS_IVF="$SEGS/te4_tall_8bit.ivf@0-0,$SEGS/te4_tall_8bit.ivf@1-3,$SEGS/te4_tall_8bit.ivf@4-5,$SEGS/te4_tall_8bit.ivf@6-" python tb/runner.py dec_host test_dec_host_inter
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
 # WF-18 (2026-11-20): the eight-frame streams of ~40 M simulated ns (inter2b/c/d, OBMC, the masks, inter-intra) as frames
 # 0-3 and 4-7 in processes of their own, the three short ones round-robin over three; in four shards it took 10,367 s
