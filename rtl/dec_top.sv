@@ -386,8 +386,9 @@ module dec_top
     generate if (FRAME_URAM != 0) begin : g_fb0_uram
         // the on-chip memory has two read and two write ports (double-pumped); reconstruction uses the first read port and
         // both write ports (the second for the second motion-compensation word of a cycle)
+        // one memory per plane class (frame_mem_uram_pc, K60-103): the luma and the chroma writes do not share a slot
         logic [11:0] unused_rd; logic [47:0] unused_rd4;
-        frame_mem_uram #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN), .SB128(SB128)) u_fb (.clk, .clk2x, .phase, .sb128(hdr.sb128),
+        frame_mem_uram_pc #(.FBX(FBX), .FBY(FBY), .PW(12), .FRAME_WIN(FRAME_WIN), .SB128(SB128)) u_fb (.clk, .clk2x, .phase, .sb128(hdr.sb128),
             .re({1'b0, fb_re}), .r_plane({2'd0, fb_plane}), .r_x({FBX'(0), fb_x}), .r_y({FBY'(0), fb_y}),
             .rdata({unused_rd, fb_rdata}), .rdata4({unused_rd4, fb_rdata4}),
             .we({fb4b_we, w_rc_we}), .w_be({4'hF, w_rc_be}), .w_plane({fb4b_plane, w_rc_pl}), .w_x({fb4b_x, w_rc_x}), .w_y({fb4b_y, w_rc_y}), .w_data({fb4b_wdata, w_rc_d}),
