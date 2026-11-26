@@ -23,7 +23,7 @@ W=${PFW:?PFW=<worktree at the commit>}; G=${PFG:-~/gate/dec_host9fc}; SP=${PFSP:
 # gate's -O0 16,291 / 13,939 / 16,373 / 16,281 / 16,242 s: the replay step 4 h 33 min -> 3 h 22 min. -O2 was no faster
 # than -O1 per cycle (20k cycles side by side: -O0 970 s, -O1 719 s, -O2 736 s) for 21 % more compile CPU (74,828 against
 # 61,969 s cold). --threads: no gain at HIER 5000 or 40000 (two cores busy). A 10-LUT mutant fails at -O1 (cycle 40,997).
-# NOT measured: the -O1 C++ stage at VJ=40 against -O0's ~25 min (the hierarchy makes it a chain: recon_top after mc_filt).
+# Compile cost, the same cold build side by side at -j 4: -O0 75,470 s CPU (wall 19,196 s), -O1 76,687 s (19,463 s): +1.6 %.
 VOPT=${VOPT:--O1}; VTHR=${VTHR:-}
 source /opt/Xilinx/2025.2.1/Vivado/settings64.sh >/dev/null
 cd $W || { echo "no worktree $W" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
