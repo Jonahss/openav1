@@ -190,6 +190,14 @@ module recon_top
     logic        tx_pending_other;
     assign tx_pending_other = ev_valid && (ev_kind == 2'd0) && (ev_par != cur_par);                //   block FSM's block during an inter-intra intra prediction (ii_run)
     assign bt = bq[tx_par];
+    // A transform block of a motion-compensated (or block-copied) block without coefficients writes no sample: the
+    // transform FSM only marks its area (R_FIN) and its transform sizes (R_MIW, which waits for the previous block's
+    // area write: 99 clocks a transform block on the 64x64 crop frame). Such a block needs no turn on the frame
+    // memory's write port: it is taken while the filter's vertical side runs, and the vertical side is not held for
+    // it (K60-107; before, three such blocks waited up to 530 clocks for a gap and held the filter ~300 more).
+    logic        tx_nowr;                                    // the transform event at the head is one of those
+    logic        tx_quiet;                                   // the transform FSM is on one
+    assign tx_nowr = (bq[ev_par].is_inter || bq[ev_par].intrabc) && (ev_tx.skip || (ev_tx.eob == 11'd0));
     // Block-ahead MC step 2 (2026-11-08): the block FSM leaves a block once its last run has STARTED; the block is ready
     // for its transform events when every run of its parity has finished (mc_filt done, counted per parity through the
     // run record) and the blend pipelines have drained. An intra block (or a block copy / inter-intra, which read the
@@ -563,7 +571,7 @@ module recon_top
         .w(st_sw), .h(st_sh), .interp_x(st_i1), .interp_y(st_i0),
         .x_frac0(st_xf0), .y_frac0(st_yf0), .x_step(st_xs), .y_step(st_ys),
         .warp(st_warp), .w_alpha(st_wa), .w_beta(st_wb), .w_gamma(st_wg), .w_delta(st_wd), .w_sx4(st_wsx), .w_sy4(st_wsy),
-        .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .perf_flags(mc_pf), .v_hold(rs != R_IDLE),
+        .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .perf_flags(mc_pf), .v_hold((rs != R_IDLE) && !tx_quiet),
         .out_wait(!out_drained), .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair),
         .direct(mc_direct), .out_valid_b(mc_out_valid_b), .out_pix4_b(mc_out_pix4_b));
     end else begin : g_nointer
@@ -1470,7 +1478,7 @@ module recon_top
         perf_c <= {ev_valid && (ev_kind == 2'd2),                                                       // 31: a superblock start waits for both FSMs
                    !ev_valid,                                                                           // 30: nothing offered (empty, or held outside: dec_top's counters)
                    (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && !blk_ready_q[ev_par],             // 29: a transform block waits for its block's prediction
-                   (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && blk_ready_q[ev_par] && (mc_v_active || !out_drained),   // 28: ... for the MC output to drain
+                   (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && blk_ready_q[ev_par] && !tx_nowr && (mc_v_active || !out_drained),   // 28: ... for the MC output to drain
                    (bst == B_IDLE) && nb_valid && blk_ready_q[nb_par] && (rs != R_IDLE) && (tx_par == nb_par),                // 27: the next block waits for the transform FSM on its parity
                    (bst == B_IDLE) && ev_valid && nb_valid && !blk_ready_q[nb_par],                     // 26: the next block waits for the block before it to land
                    (bst == B_IDLE) && ev_valid && !nb_valid};                                           // 25: no block record to take
@@ -1530,7 +1538,7 @@ module recon_top
     assign nb_sb_ack = blk_take_ok && nb_sb;
     assign blk_take = blk_take_ok && !nb_sb;
     assign nb_pop = blk_take && !nb_at_head;
-    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && !mc_v_active && out_drained;
+    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && (tx_nowr || (!mc_v_active && out_drained));
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)
     assign tx_rel = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;   // the slot release stays at the end (rec_fifo's in-flight count)
     assign ev_pop = sb_start || (blk_take && nb_at_head) || tx_pop || (ev_valid && ev_taken);   // a taken block record at the head pops as a no-op
@@ -1858,15 +1866,16 @@ module recon_top
         ep2_xb <= ep_xb; ep2_side <= ep_side; ep2_idx <= ep_idx; ep2_val <= ep_val;
         px2_valid <= px_valid && !rst; px2_i <= px_i; px2_j <= px_j; px2_src <= px_src;
         if (rst) begin
-            rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0); ii_run <= 1'b0;
+            rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0); ii_run <= 1'b0; tx_quiet <= 1'b0;
             bdf_wr <= '0; fy <= '0; l_sb_r <= '0; l_sb_c <= '0;
         end else begin
             // 5.11.3 clear_block_decoded_flags at each superblock start
             if (sb_start) begin bdf_wr <= '0; l_sb_r <= sb_r; l_sb_c <= sb_c; end
             case (rs)
                 R_IDLE: if (tx_take) begin
-                    t <= ev_tx; t_par <= ev_par; rs <= R_SETUP;
+                    t <= ev_tx; t_par <= ev_par; rs <= R_SETUP; tx_quiet <= tx_nowr;
                 end else if (ii_req) begin
+                    tx_quiet <= 1'b0;
                     // inter-intra: the intra prediction of the plane block through the edge / ipred flow
                     t <= '{plane: ii_pl, x: ii_x, y: ii_y, txsz: ii_txsz, txtype: 4'd0, eob: 11'd0, skip: 1'b1, lossless: 1'b0, slot: 3'd0};
                     ii_run <= 1'b1; rs <= R_SETUP;
