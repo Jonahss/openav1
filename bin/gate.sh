@@ -17,7 +17,14 @@ set -u
 BIN=$(cd "$(dirname "$0")" && pwd)   # bin/ of the worktree this script runs from (gate_record.sh beside it)
 L=~/measure1080/pf_gate${PFTAG:?PFTAG=<name of this rung>}.txt; : > $L
 W=${PFW:?PFW=<worktree at the commit>}; G=${PFG:-~/gate/dec_host9fc}; SP=${PFSP:-q2}; PFM=${PFM:-fc1}; BLK=${BLK:-dec_host9fc}; VJ=${VJ:-40}; S=~/openav1-synth/dec_host-$PFM; mkdir -p $G
-VOPT=${VOPT:--O0}; VTHR=${VTHR:-}
+# VOPT -O1 since WF-22 (Ossipago run 5 on the fl8 netlist, bdf5dc9; files in atium ~/fork/run5): the replay's time is spread
+# over the netlist in proportion to its code (no hot block to single out), so a whole-binary level is the lever. The five
+# 450k shards side by side at -O1: 11,522 / 10,336 / 12,148 / 11,860 / 11,528 s (ramq), all 0 mismatches, against the
+# gate's -O0 16,291 / 13,939 / 16,373 / 16,281 / 16,242 s: the replay step 4 h 33 min -> 3 h 22 min. -O2 was no faster
+# than -O1 per cycle (20k cycles side by side: -O0 970 s, -O1 719 s, -O2 736 s) for 21 % more compile CPU (74,828 against
+# 61,969 s cold). --threads: no gain at HIER 5000 or 40000 (two cores busy). A 10-LUT mutant fails at -O1 (cycle 40,997).
+# NOT measured: the -O1 C++ stage at VJ=40 against -O0's ~25 min (the hierarchy makes it a chain: recon_top after mc_filt).
+VOPT=${VOPT:--O1}; VTHR=${VTHR:-}
 source /opt/Xilinx/2025.2.1/Vivado/settings64.sh >/dev/null
 cd $W || { echo "no worktree $W" >> $L; echo PF_GATE_ABORT >> $L; exit 1; }
 echo "worktree $(git log --oneline -1 | cut -c1-60) $(date -u +%H:%M) vgate OPT=$VOPT $VTHR" >> $L
