@@ -334,14 +334,32 @@ module ref_fetch #(
         end
     end
 
-    // lane k of the row's beat b lands at sample 64 b + k (32 b + k with 16-bit samples): an entry's only select is its beat
+    // lane k of the row's beat b lands at sample 64 b + k (32 b + k with 16-bit samples): an entry's only select is its beat.
+    // The beat is registered first (rd_q) and so are its enables, one a slot, beat and format (we8_q, we16_q): taken
+    // straight from beats_rx and slot_rx the select was one LUT with 11 ns of wire to the 16 x 2304 ring bits
+    // (u200-k4fl90-4045218 missed 90 MHz there, K60-102). The row counts as received a clock later (rx_last_q).
+    logic [511:0] rd_q;
+    logic         rx_last_q;
+    always_ff @(posedge clk) begin
+        rd_q <= m_axi_rdata;
+        rx_last_q <= !rst && rx_last;
+    end
     for (genvar gs = 0; gs < RING; gs++) begin : g_line
-        always_ff @(posedge clk) if (rx_beat && slot_rx == SW'(gs)) begin
-            for (int b = 0; b < 4; b++) if (beats_rx[1:0] == 2'(b)) begin
-                if (s_fmt16[gs]) begin
-                    for (int k = 0; k < 32; k++) line_q[gs][(32*b + k)*PW +: PW] <= beat_sample(m_axi_rdata, 1'b1, k);
-                end else if (b < 3) begin
-                    for (int k = 0; k < 64; k++) line_q[gs][(64*b + k)*PW +: PW] <= beat_sample(m_axi_rdata, 1'b0, k);
+        logic [3:0] we16_q;
+        logic [2:0] we8_q;                                // an 8-bit row is three beats at most
+        always_ff @(posedge clk) begin
+            for (int b = 0; b < 4; b++) we16_q[b] <= !rst && rx_beat && slot_rx == SW'(gs) && beats_rx[1:0] == 2'(b) && s_fmt16[gs];
+            for (int b = 0; b < 3; b++) we8_q[b]  <= !rst && rx_beat && slot_rx == SW'(gs) && beats_rx[1:0] == 2'(b) && !s_fmt16[gs];
+        end
+        always_ff @(posedge clk) begin
+            for (int b = 0; b < 4; b++) begin
+                if (we16_q[b]) begin
+                    for (int k = 0; k < 32; k++) line_q[gs][(32*b + k)*PW +: PW] <= beat_sample(rd_q, 1'b1, k);
+                end
+            end
+            for (int b = 0; b < 3; b++) begin
+                if (we8_q[b]) begin
+                    for (int k = 0; k < 64; k++) line_q[gs][(64*b + k)*PW +: PW] <= beat_sample(rd_q, 1'b0, k);
                 end
             end
         end
@@ -371,7 +389,7 @@ module ref_fetch #(
             rows_alloc <= CW'(0); rows_ready <= CW'(0);
         end else begin
             rows_alloc <= rows_alloc + CW'(alloc) - CW'(wr_last);
-            rows_ready <= rows_ready + CW'(rx_last) - CW'(wr_take);
+            rows_ready <= rows_ready + CW'(rx_last_q) - CW'(wr_take);
         end
     end
 endmodule
