@@ -57,6 +57,8 @@ async def fuzz_vs_model(dut):
     pending = None          # expectations for the reads issued last cycle: [(port, plane, x, y, exp_sample, exp_group)]
     host_pending = None
     checked = 0
+    NWR = len(dut.we)                                       # 2: frame_mem_uram; 4: frame_mem_uram_pc
+    lane_writes = 0
     prev_exp, prev_hexp = None, None                     # two-cycle read (2026-10-31): a cycle's reads land after the NEXT edge
     for it in range(iters):
         cyc["n"] = it
@@ -65,11 +67,16 @@ async def fuzz_vs_model(dut):
         we = [rng.random() < 0.4, rng.random() < 0.4]
         hp = rng.randrange(3); hx, hy = rnd_pos(hp)
         wr = []
-        for i in range(2):
-            p = rng.randrange(3); x, y = rnd_pos(p)
+        # frame_mem_uram_pc has four write ports: 2 and 3 are the chroma lane's (chroma planes only), and in a cycle
+        # in which they write, ports 0 and 1 write luma or nothing
+        lane = NWR == 4 and rng.random() < 0.4
+        we += [lane and rng.random() < 0.8, lane and rng.random() < 0.8] if NWR == 4 else []
+        for i in range(NWR):
+            p = rng.randrange(1, 3) if i >= 2 else (0 if lane else rng.randrange(3)); x, y = rnd_pos(p)
             be = rng.randrange(1, 16) if rng.random() < 0.5 else 0xF
             data = [rng.randrange(1 << PW) for _ in range(4)]
             wr.append((p, x, y, be, data))
+        lane_writes += sum(we[2:])
         rp = []
         for i in range(2):
             p = rng.randrange(3); x, y = rnd_pos(p)
@@ -78,13 +85,13 @@ async def fuzz_vs_model(dut):
         dut.r_plane.value = (rp[1][0] << 2) | rp[0][0]
         dut.r_x.value = (rp[1][1] << FBX) | rp[0][1]
         dut.r_y.value = (rp[1][2] << FBY) | rp[0][2]
-        dut.we.value = (we[1] << 1) | we[0]
-        dut.w_be.value = (wr[1][3] << 4) | wr[0][3]
-        dut.w_plane.value = (wr[1][0] << 2) | wr[0][0]
-        dut.w_x.value = (wr[1][1] << FBX) | wr[0][1]
-        dut.w_y.value = (wr[1][2] << FBY) | wr[0][2]
+        dut.we.value = sum(int(we[i]) << i for i in range(NWR))
+        dut.w_be.value = sum(wr[i][3] << (4 * i) for i in range(NWR))
+        dut.w_plane.value = sum(wr[i][0] << (2 * i) for i in range(NWR))
+        dut.w_x.value = sum(wr[i][1] << (FBX * i) for i in range(NWR))
+        dut.w_y.value = sum(wr[i][2] << (FBY * i) for i in range(NWR))
         wd = 0
-        for i in range(2):
+        for i in range(NWR):
             for l in range(4):
                 wd |= wr[i][4][l] << ((i * 4 + l) * PW)
         dut.w_data.value = wd
@@ -98,7 +105,7 @@ async def fuzz_vs_model(dut):
                 exp.append((i, p, x, y, pic[p][y][x], g))
         hexp = None if re[1] else (hp, hx, hy, pic[hp][hy][hx])
         # ---- apply the writes to the picture (both ports; the stages never write the same sample together)
-        for i in range(2):
+        for i in range(NWR):
             if we[i]:
                 p, x, y, be, data = wr[i]
                 for l in range(4):
@@ -129,4 +136,4 @@ async def fuzz_vs_model(dut):
             assert gh == eh, f"iter {it}: host plane {hp_} ({hx_},{hy_}): {gh} vs {eh}"
             checked += 1
         await Timer(1, "ns")
-    dut._log.info(f"OK: {checked} reads matched the picture over {iters} cycles ({W}x{H})")
+    dut._log.info(f"OK: {checked} reads matched the picture over {iters} cycles ({W}x{H}), {NWR} write ports, {lane_writes} chroma-lane writes")

@@ -90,6 +90,8 @@ async def mc_trace(dut, rc):
 
 MC_TL = ("bst rs pq_n rf_req_valid ast wr_busy rows_alloc rows_ready buf_busy hst vst pend alive f_stall f_empty run_v rec_held "
          "out_drained mc_start rf_done mc_done blk_take ev_valid ev_kind nb_valid ready0 ready1 q_count tx_inflight tx_done tx_ack blk_info").split()
+# the chroma lane (rtl/mc_lane.sv), when the build has one: its request, strip FIFO, run queue, filter sides, hold and pulses
+MC_TL_LB = "tx_quiet lb_req_valid lb_sq_n lb_pq_n lb_hst lb_vst lb_pend lb_v_hold lb_v_active lb_start lb_done".split()
 
 
 async def mc_timeline(dut, rc, path):
@@ -105,9 +107,14 @@ async def mc_timeline(dut, rc, path):
     sig = [rc.bst, rc.rs, rc.pq_n, rc.rf_req_valid, rf.ast, rf.wr_busy, rf.rows_alloc, rf.rows_ready, rc.g_inter.mc_buf_busy, mc.hst, mc.vst, mc.pend,
            mc.alive, mc.f_stall, mc.f_empty, rc.run_v, rc.rec_held, rc.out_drained, rc.mc_start, rc.rf_done, rc.mc_done, rc.blk_take,
            rc.ev_valid, rc.ev_kind, rc.nb_valid, rc.blk_ready_q[0], rc.blk_ready_q[1], q.count, q.tx_inflight, q.tx_done, q.tx_ack, q.blk_info]
+    cols = list(MC_TL)
+    if hasattr(rc.g_inter, "u_lb"):
+        lb = rc.g_inter.u_lb
+        sig += [rc.tx_quiet, rc.lb_req_valid, lb.sq_n, lb.pq_n, lb.u_mc.hst, lb.u_mc.vst, lb.u_mc.pend, rc.lb_v_hold, rc.lb_v_active, rc.lb_start, rc.lb_done]
+        cols += MC_TL_LB
     prev, n = None, 0
     with open(path, "w") as f:
-        f.write("cycle " + " ".join(MC_TL) + "\n")
+        f.write("cycle " + " ".join(cols) + "\n")
         while True:
             await RisingEdge(dut.clk)
             cur = tuple(int(x.value) for x in sig)

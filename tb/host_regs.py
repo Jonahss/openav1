@@ -199,7 +199,8 @@ RECON_MC = ("M_strip_waits_run_queue M_strip_waits_fetch_engine M_run_waits_patc
             "M_filt_h_busy M_filt_v_busy M_filt_h_and_v M_filt_run_between_sides M_filt_out_fifo M_filt_idle M_out_not_drained "
             "M_rf_addr_idle M_rf_ring_full M_rf_writer_busy M_rf_waits_data M_rf_writer_waits_buffer M_rf_engine_idle "
             "M_rf_reads M_rf_beats M_patch_writes M_patch_multi_writes M_filt_out_clocks "
-            "M_idle_pipeline_busy M_idle_pipeline_empty M_fetch_and_filter M_fetch_only M_filter_only").split()
+            "M_idle_pipeline_busy M_idle_pipeline_empty M_fetch_and_filter M_fetch_only M_filter_only "
+            "M_lb_strip_waits M_lb_h_busy M_lb_v_busy M_lb_run_held").split()      # the chroma lane (rtl/mc_lane.sv)
 R_TILE_ENG, R_TILE_COL, R_TILE_FIFO = 0x038, 0x060, 0x070      # tile engines: mask, columns per engine (+4e), FIFO status per engine (+4e)
 CTRL_ENG_SHIFT, CTRL_ENG_MASK = 24, 3 << 24                     # CTRL[25:24]: the engine DATA1 / DATA4 push to
 R_DATA1, R_DATA4, R_DEF_ADDR = 0x01C, 0x020, 0x02C
