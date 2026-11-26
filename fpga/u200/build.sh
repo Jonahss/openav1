@@ -31,6 +31,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$size" in 1080p) fb=11;; 4k) fb=12;; *) echo "build.sh: --size is 1080p or 4k, not $size" >&2; exit 2;; esac
+# a strategy Vivado does not know fails two minutes into the build (2026-11-25: "Explore" for Performance_Explore, both images of a pair)
+case "$strategy" in default|Performance_*|Area_*|Congestion_*|Flow_*|Power_*) ;; *) echo "build.sh: unknown strategy $strategy (Performance_Explore, Performance_ExtraTimingOpt, ..., or default)" >&2; exit 2;; esac
 config="$size TE=$te RING=$ring $mhz MHz $strategy"
 if [ $print = 1 ]; then echo "$config"; exit 0; fi
 [ -n "$tag" ] || { echo "usage: build.sh <tag> [--size 1080p|4k] [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR] | --print [options]" >&2; exit 2; }
