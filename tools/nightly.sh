@@ -20,6 +20,17 @@ rc=0
 # CPU ran hot; 22 of them took 3.4 h on a 64-thread machine (2026-11-11).
 PAR=${NIGHTLY_PAR:-1}
 slot() { [[ $PAR -gt 1 ]] || return 0; while (( $(jobs -rp | wc -l) >= PAR )); do sleep 2; done; }
+# NIGHTLY_PAR is also the number of simulator processes at a time (2026-11-26, WF-18 / WF-28). runsh starts a process per
+# shard inside its one suite slot (dec_inter: 17), so with only the suites counted a run could hold many more processes
+# than NIGHTLY_PAR and than the width ramq gave it. Each process (a run suite, a runsh build, a runsh shard) takes a token
+# from a pool of NIGHTLY_PAR before it starts and puts it back when it ends: a pipe holding that many bytes, as make's
+# jobserver does. A process never holds more than one token, so the pool cannot deadlock. (A build still runs make -j4.)
+if [[ $PAR -gt 1 ]]; then
+  pool=$(mktemp -u "${TMPDIR:-/tmp}/nightly-pool.XXXXXX"); mkfifo "$pool"; exec 9<>"$pool"; rm -f "$pool"
+  for ((i = 0; i < PAR; i++)); do printf x >&9; done
+fi
+tok_get() { [[ $PAR -gt 1 ]] || return 0; local t; read -r -N1 -u 9 t; }
+tok_put() { [[ $PAR -gt 1 ]] || return 0; printf x >&9; }
 run() {
   [[ -n "${NIGHTLY_ONLY:-}" && ! "$1" =~ ${NIGHTLY_ONLY} ]] && return 0
   if [[ $PAR -gt 1 ]]; then slot; local n="$1"; shift; ( run_one "$n" TS_BUILD_TAG="$n" "$@" ) & sleep 1
@@ -39,7 +50,9 @@ run_one() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the sui
   # 2026-10-31 a hung simulation (test4592, intrabc at the top edge) held argon_features for 10.5 h and the rest of
   # the night with it. SIGINT lets cocotb print what it had; the FAIL line says it was a timeout.
   local step_rc=0
+  tok_get
   timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "$@" > "$log" 2>&1 || step_rc=$?
+  tok_put
   if [[ $step_rc -eq 0 ]] && grep -q "OK:" "$log"; then
     printf "PASS %-22s %5ss  %s\n" "$name" "$(( $(date +%s) - t0 ))" "$(grep -o 'OK: {.*}' "$log" | tail -1 | cut -c1-140)" >> "$out"
   else
@@ -53,31 +66,59 @@ run_one() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the sui
 # runsh: like run, but the streams of TS_IVF are split round-robin over NIGHTLY_SHARDS processes (default 4) after one
 # build (TS_BUILD_ONLY=1), each shard in its own run directory (TS_TEST_DIR). The suites that loop over many streams
 # (dec_inter 3 h, corpus_full_rtl 2 h, argon_features 1 h) were the nightly's wall; 2026-11-07. PASS needs every shard OK.
-#   runsh name env... TS_IVF="a,b,c" python tb/runner.py top [test]
+#   runsh name [SHARDS=n] env... TS_IVF="a,b,c" python tb/runner.py top [test]
+# SHARDS=n: this suite's number of round-robin shards (default NIGHTLY_SHARDS, 4). A stream written "path@a-b" or "path@a-"
+# runs in a process of its own with TS_FRAMES=a..b (a- = from a to the stream's end); the other frames of that process are
+# decoded by the model only, so a long stream is cut into frame ranges (2026-11-20, WF-18: dec_inter's and dec_host_band's
+# longest streams were each over an hour in one process). Only the model-compare tests take TS_FRAMES (test_dec_inter,
+# test_dec_host_inter), and the ranges of a stream must start at 0, follow each other and end open: checked before the build.
 runsh_one() {
   local name="$1"; shift
   [[ -n "${NIGHTLY_ONLY:-}" && ! "$name" =~ ${NIGHTLY_ONLY} ]] && return 0
   local t0=$(date +%s) n=${NIGHTLY_SHARDS:-4} envs=() ivf="" cmd=()
-  while [[ $# -gt 0 ]]; do case "$1" in TS_IVF=*) ivf="${1#TS_IVF=}";; python) cmd=("$@"); break;; *) envs+=("$1");; esac; shift; done
-  IFS=, read -r -a list <<< "$ivf"
+  while [[ $# -gt 0 ]]; do case "$1" in SHARDS=*) n="${1#SHARDS=}";; TS_IVF=*) ivf="${1#TS_IVF=}";; python) cmd=("$@"); break;; *) envs+=("$1");; esac; shift; done
+  IFS=, read -r -a all <<< "$ivf"
+  local list=() cuts=() e p r a b bad="" k
+  declare -A nextf=()
+  for e in "${all[@]}"; do
+    if [[ "$e" == *@* ]]; then
+      p=${e%@*}; r=${e##*@}; a=${r%-*}; b=${r#*-}
+      [[ "$r" =~ ^[0-9]+-[0-9]*$ && "${nextf[$p]:-0}" == "$a" && ( -z "$b" || "$b" -ge "$a" ) ]] || bad="$bad $e"
+      [[ -n "$b" ]] && nextf[$p]=$((b + 1)) || nextf[$p]=open
+      cuts+=("$e")
+    else list+=("$e"); fi
+  done
+  for k in "${!nextf[@]}"; do [[ "${nextf[$k]}" == open ]] || bad="$bad $k(not open-ended)"; done
+  if [[ -n "$bad" ]]; then printf "FAIL %-22s %5ss  frame ranges: %s\n" "$name" 0 "$bad" >> "$out"; rc=1; return; fi
   [[ ${#list[@]} -lt $n ]] && n=${#list[@]}
-  local log="logs/nightly-$tag-$name.log" step_rc=0
-  env "${envs[@]}" TS_IVF="${list[0]}" TS_BUILD_ONLY=1 "${cmd[@]}" > "$log" 2>&1 || step_rc=$?
+  local log="logs/nightly-$tag-$name.log" step_rc=0 first="${all[0]%@*}"
+  tok_get
+  env "${envs[@]}" TS_IVF="$first" TS_BUILD_ONLY=1 "${cmd[@]}" > "$log" 2>&1 || step_rc=$?
+  tok_put
   if [[ $step_rc -ne 0 ]]; then printf "FAIL %-22s %5ss  build: %s\n" "$name" "$(( $(date +%s) - t0 ))" "$(grep -m1 '%Error' "$log" | cut -c1-140)" >> "$out"; rc=1; return; fi
-  local i pids=() shard_ivf
+  local i pids=() shard_ivf shard_frames=() shards=()
   for ((i = 0; i < n; i++)); do
-    shard_ivf=$(for ((j = i; j < ${#list[@]}; j += n)); do echo -n "${list[j]},"; done | sed 's/,$//')
+    shards+=("$(for ((j = i; j < ${#list[@]}; j += n)); do echo -n "${list[j]},"; done | sed 's/,$//')"); shard_frames+=("")
+  done
+  for e in "${cuts[@]}"; do
+    r=${e##*@}; a=${r%-*}; b=${r#*-}; [[ -n "$b" ]] || b=$((a + 999))
+    shards+=("${e%@*}"); shard_frames+=("$(seq -s, "$a" "$b")")
+  done
+  n=${#shards[@]}
+  for ((i = 0; i < n; i++)); do
     mkdir -p "logs/shards/$tag-$name-$i"
-    ( timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "${envs[@]}" TS_IVF="$shard_ivf" TS_TEST_DIR="$PWD/logs/shards/$tag-$name-$i" "${cmd[@]}" > "$log.$i" 2>&1 ) &
+    ( tok_get; timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "${envs[@]}" TS_IVF="${shards[i]}" ${shard_frames[i]:+TS_FRAMES=${shard_frames[i]}} TS_TEST_DIR="$PWD/logs/shards/$tag-$name-$i" "${cmd[@]}" > "$log.$i" 2>&1; r=$?; tok_put; exit $r ) &
     pids+=($!); sleep 2
   done
-  local fails=0 oks=""
+  local fails=0 oks="" nf total=0
   for ((i = 0; i < n; i++)); do
     wait "${pids[i]}" || fails=$((fails + 1))
     grep -q "OK:" "$log.$i" || fails=$((fails + 1))
-    oks="$oks $i:$(grep -o 'OK: {.*}' "$log.$i" | tail -1 | grep -oE "'frames': [0-9]+" | grep -oE '[0-9]+' || echo FAIL)"
+    nf=$(grep -o 'OK: {.*}' "$log.$i" | tail -1 | grep -oE "'frames': [0-9]+" | grep -oE '[0-9]+')
+    [[ -n "${shard_frames[i]}" && "${nf:-0}" -eq 0 ]] && fails=$((fails + 1))     # a frame range that ran no frame on the RTL is not a pass
+    oks="$oks $i:${nf:-FAIL}"; total=$((total + ${nf:-0}))
   done
-  if [[ $fails -eq 0 ]]; then printf "PASS %-22s %5ss  OK: %d shards, frames per shard:%s\n" "$name" "$(( $(date +%s) - t0 ))" "$n" "$oks" >> "$out"
+  if [[ $fails -eq 0 ]]; then printf "PASS %-22s %5ss  OK: %d shards, frames per shard:%s (%d frames)\n" "$name" "$(( $(date +%s) - t0 ))" "$n" "$oks" "$total" >> "$out"
   else local why; why=$(grep -h -m1 'AssertionError\|%Error\|fatal' "$log".[0-9]* | head -1 | cut -c1-150); printf "FAIL %-22s %5ss  %d of %d shards failed: %s\n" "$name" "$(( $(date +%s) - t0 ))" "$fails" "$n" "$why" >> "$out"; rc=1; fi
 }
 # identifiers used before their declaration: Verilator accepts them, Vivado makes implicit 1-bit nets (2026-11-09: mc_filt's
@@ -135,12 +176,12 @@ run dec_host_inter     FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_
 run dec_host_bd10      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_IVF="$PWD/streams/synth/natural_lf_cdef_lr_10bit.ivf" python tb/runner.py dec_host test_dec_host_inter   # 16-bit samples through the flush (2026-11-24: no host suite had them)
 IVFS=$(ls "$PWD"/streams/synth/*.ivf "$PWD"/streams/synth2/*.ivf | paste -sd,)
 # the corpus, model-free: the RTL alone decodes every stream and its final picture (fb2) is compared with dav1d's
-runsh corpus_full_rtl  TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
+runsh corpus_full_rtl  SHARDS=8 TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py dec_top
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
 ARGON=$PWD/streams/argon/profile0_core/streams
 if [ -d "$ARGON" ]; then
   AIVFS=$(for s in 4592 8304 5297 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
-  runsh argon_features   TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
+  runsh argon_features   SHARDS=8 TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
   # inter frames through the RTL tile syntax vs the model (the frame sequence: inherited CDFs, segmentation map, motion field)
   IIVFS=$(for s in 10046 10001 10041; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
   run tile_syntax_inter  TS_IVF="$IIVFS" python tb/runner.py tile_syntax
@@ -170,9 +211,13 @@ fi
 # two engines, 64- and 128-pixel superblocks. The engine hold itself is only tested when the projection falls behind
 # the engines, which TS_MF_SLOW does (extra cycles on the reads of the state areas): a decoder without the hold passes
 # every other suite and fails these two at frame 4 (mutant runs of 2026-11-19, 300 and 1000 cycles; 300 is enough).
-run dec_host_band      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$PWD/streams/inter/mf_tall_8bit.ivf,$PWD/streams/inter/mf_tall128_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
-run dec_host_band_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_MF_SLOW=300 TS_IVF="$PWD/streams/inter/mf_tall_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
-run dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_MF_SLOW=300 TS_IVF="$PWD/streams/inter/mf_tall1c_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+# The four band suites run as frame ranges, one a process (runsh, WF-18): in one process dec_host_band took 11,155 s and
+# the other two 4,484 / 4,132 s (2026-11-19). The ranges of _slow and _te1 start with frames 0-4 in one process, the frame
+# at which a decoder without the hold fails.
+BANDS=$PWD/streams/inter
+runsh dec_host_band      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$BANDS/mf_tall_8bit.ivf@0-3,$BANDS/mf_tall_8bit.ivf@4-,$BANDS/mf_tall128_8bit.ivf@0-1,$BANDS/mf_tall128_8bit.ivf@2-4,$BANDS/mf_tall128_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_band_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_MF_SLOW=300 TS_IVF="$BANDS/mf_tall_8bit.ivf@0-4,$BANDS/mf_tall_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_MF_SLOW=300 TS_IVF="$BANDS/mf_tall1c_8bit.ivf@0-4,$BANDS/mf_tall1c_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
 # The segment map as a band (docs/segment-map-band.md): the same tall pictures encoded with aomenc --aq-mode=3 (cyclic
 # refresh: segmentation with temporal update, six of eight frames read the previous frame's map; headers checked with
 # tb/obu_parser.py, 2026-11-20). dec_host_segband: both superblock sizes on two engines, a clip a process (in one
@@ -188,8 +233,11 @@ run dec_host_segband_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRA
 # 64-pixel superblock (aomenc --tile-columns=2 --aq-mode=3: a motion field and a segment map, both as bands).
 run dec_host_te4          FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=4 REF_RING=8 TS_IVF="$PWD/streams/inter/te4_tall_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
-GIVFS=$(for s in inter2a_8bit inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done | sed 's/,$//')
-runsh dec_inter          TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
+# WF-18 (2026-11-20): the eight-frame streams of ~40 M simulated ns (inter2b/c/d, OBMC, the masks, inter-intra) as frames
+# 0-3 and 4-7 in processes of their own, the three short ones round-robin over three; in four shards it took 10,367 s
+GIVFS=$(for s in inter2a_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done
+        for s in inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit; do echo -n "$PWD/streams/inter/$s.ivf@0-3,$PWD/streams/inter/$s.ivf@4-,"; done | sed 's/,$//')
+runsh dec_inter          SHARDS=3 TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
 wait
 [[ $PAR -gt 1 ]] && rc=$(( $(grep -c '^FAIL' "$out") > 0 ? 1 : 0 ))
 echo "DONE rc=$rc $(date -Is)" >> "$out"
