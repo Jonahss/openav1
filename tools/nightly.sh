@@ -23,14 +23,12 @@ slot() { [[ $PAR -gt 1 ]] || return 0; while (( $(jobs -rp | wc -l) >= PAR )); d
 # NIGHTLY_PAR is also the number of simulator processes at a time (2026-11-26, WF-18 / WF-28). runsh starts a process per
 # shard inside its one suite slot (dec_inter: 17), so with only the suites counted a run could hold many more processes
 # than NIGHTLY_PAR and than the width ramq gave it. Each process (a run suite, a runsh build, a runsh shard) takes a token
-# from a pool of NIGHTLY_PAR before it starts and puts it back when it ends: a pipe holding that many bytes, as make's
-# jobserver does. A process never holds more than one token, so the pool cannot deadlock. (A build still runs make -j4.)
-if [[ $PAR -gt 1 ]]; then
-  pool=$(mktemp -u "${TMPDIR:-/tmp}/nightly-pool.XXXXXX"); mkfifo "$pool"; exec 9<>"$pool"; rm -f "$pool"
-  for ((i = 0; i < PAR; i++)); do printf x >&9; done
-fi
-tok_get() { [[ $PAR -gt 1 ]] || return 0; local t; read -r -N1 -u 9 t; }
-tok_put() { [[ $PAR -gt 1 ]] || return 0; printf x >&9; }
+# from a pool of NIGHTLY_PAR before it starts and puts it back when it ends. A process never holds more than one token,
+# so the pool cannot deadlock. (A build still runs make -j4.) Since 2026-11-27 the waiter expecting the longest run takes
+# the next token (tools/nightly_pool.sh), from the process times of earlier nights, which every night records in
+# logs/nightly-<tag>-times.txt.
+source tools/nightly_pool.sh
+pool_init "$PAR" "logs/nightly-$tag-times.txt"
 run() {
   [[ -n "${NIGHTLY_ONLY:-}" && ! "$1" =~ ${NIGHTLY_ONLY} ]] && return 0
   if [[ $PAR -gt 1 ]]; then slot; local n="$1"; shift; ( run_one "$n" TS_BUILD_TAG="$n" "$@" ) & sleep 1
@@ -49,10 +47,10 @@ run_one() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the sui
   # Every step is capped (NIGHTLY_STEP_TIMEOUT seconds, default 4 h; the longest step, dec_inter, takes ~2.7 h): on
   # 2026-10-31 a hung simulation (test4592, intrabc at the top edge) held argon_features for 10.5 h and the rest of
   # the night with it. SIGINT lets cocotb print what it had; the FAIL line says it was a timeout.
-  local step_rc=0
-  tok_get
+  local step_rc=0 t1
+  tok_get "$(expect "$name" -)"; t1=$(date +%s)
   timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "$@" > "$log" 2>&1 || step_rc=$?
-  tok_put
+  tok_put; record "$name" - $(( $(date +%s) - t1 ))
   if [[ $step_rc -eq 0 ]] && grep -q "OK:" "$log"; then
     printf "PASS %-22s %5ss  %s\n" "$name" "$(( $(date +%s) - t0 ))" "$(grep -o 'OK: {.*}' "$log" | tail -1 | cut -c1-140)" >> "$out"
   else
@@ -95,10 +93,10 @@ runsh_one() {
   for k in "${!nextf[@]}"; do [[ "${nextf[$k]}" == open ]] || bad="$bad $k(not open-ended)"; done
   if [[ -n "$bad" ]]; then printf "FAIL %-22s %5ss  frame ranges: %s\n" "$name" 0 "$bad" >> "$out"; rc=1; return; fi
   [[ ${#list[@]} -lt $n ]] && n=${#list[@]}
-  local log="logs/nightly-$tag-$name.log" step_rc=0 first="${all[0]%@*}"
-  tok_get
+  local log="logs/nightly-$tag-$name.log" step_rc=0 first="${all[0]%@*}" t1
+  tok_get "$(expect_build "$name")"; t1=$(date +%s)
   env "${envs[@]}" TS_IVF="$first" TS_BUILD_ONLY=1 "${cmd[@]}" > "$log" 2>&1 || step_rc=$?
-  tok_put
+  tok_put; record "$name" b $(( $(date +%s) - t1 ))
   if [[ $step_rc -ne 0 ]]; then printf "FAIL %-22s %5ss  build: %s\n" "$name" "$(( $(date +%s) - t0 ))" "$(grep -m1 '%Error' "$log" | cut -c1-140)" >> "$out"; rc=1; return; fi
   local i pids=() shard_ivf shard_frames=() shards=()
   for ((i = 0; i < n; i++)); do
@@ -111,7 +109,9 @@ runsh_one() {
   n=${#shards[@]}
   for ((i = 0; i < n; i++)); do
     mkdir -p "logs/shards/$tag-$name-$i"
-    ( tok_get; timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "${envs[@]}" TS_IVF="${shards[i]}" ${shard_frames[i]:+TS_FRAMES=${shard_frames[i]}} TS_TEST_DIR="$PWD/logs/shards/$tag-$name-$i" "${cmd[@]}" > "$log.$i" 2>&1; r=$?; tok_put; exit $r ) &
+    ( tok_get "$(expect "$name" "$i")"; t1=$(date +%s)
+      timeout --signal=INT --kill-after=60 "${NIGHTLY_STEP_TIMEOUT:-14400}" env "${envs[@]}" TS_IVF="${shards[i]}" ${shard_frames[i]:+TS_FRAMES=${shard_frames[i]}} TS_TEST_DIR="$PWD/logs/shards/$tag-$name-$i" "${cmd[@]}" > "$log.$i" 2>&1; r=$?
+      tok_put; record "$name" "$i" $(( $(date +%s) - t1 )); exit $r ) &
     pids+=($!); sleep 2
   done
   local fails=0 oks="" nf total=0 bad failed=""
