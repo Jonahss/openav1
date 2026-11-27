@@ -70,8 +70,8 @@ run_one() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the sui
 # SHARDS=n: this suite's number of round-robin shards (default NIGHTLY_SHARDS, 4). A stream written "path@a-b" or "path@a-"
 # runs in a process of its own with TS_FRAMES=a..b (a- = from a to the stream's end); the other frames of that process are
 # decoded by the model only, so a long stream is cut into frame ranges (2026-11-20, WF-18: dec_inter's and dec_host_band's
-# longest streams were each over an hour in one process). Only the model-compare tests take TS_FRAMES (test_dec_inter,
-# test_dec_host_inter), and the ranges of a stream must start at 0, each start at the frame where the one before it ends
+# longest streams were each over an hour in one process). The model-compare tests take TS_FRAMES (test_dec_inter,
+# test_dec_host_inter), and test_dec_top's model-free mode for streams of intra frames only; the ranges of a stream must start at 0, each start at the frame where the one before it ends
 # (they overlap by one frame) and end open: checked before the build. The overlap (2026-11-26, WF-18): the first RTL frame
 # of a process runs on what the model left (reference pictures and the motion-field / segment-map / CDF areas packed by
 # the testbench, a decoder fresh from reset), not on what the RTL's previous frame left, so the hand-over k-1 -> k is
@@ -187,7 +187,9 @@ runsh corpus_full_rtl  SHARDS=8 TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py 
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
 ARGON=$PWD/streams/argon/profile0_core/streams
 if [ -d "$ARGON" ]; then
-  AIVFS=$(for s in 4592 8304 5297 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
+  # test5297 (eight intra frames, 2048 x 72 bd10) took 6,057 s in one process (2026-11-26): four frame ranges
+  AIVFS=$(for s in 4592 8304 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done
+          echo -n "$ARGON/test5297.obu@0-2,$ARGON/test5297.obu@2-4,$ARGON/test5297.obu@4-6,$ARGON/test5297.obu@6-")
   runsh argon_features   SHARDS=8 TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
   # inter frames through the RTL tile syntax vs the model (the frame sequence: inherited CDFs, segmentation map, motion field)
   IIVFS=$(for s in 10046 10001 10041; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')

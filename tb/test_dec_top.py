@@ -8,7 +8,8 @@ compared with dav1d's (refout/, or the Argon md5).
 
 Env: TS_SEEDS (as in test_tile_syntax), TS_W / TS_H (frame size, default 128x96), TS_FMT, TS_SCREEN (1/0/rand),
 TS_NOLR, TD_DEBUG=1 (per-tile record counting + hang dump), TS_FRAMES=2,5 (model-compare mode with TS_IVF: only these
-decoded-frame indices; frames with primary_ref_frame = NONE are independent).
+decoded-frame indices; frames with primary_ref_frame = NONE are independent; model-free mode: a frame range of a stream
+of intra frames, compared with dav1d's pictures, see rtl_only_stream).
 """
 import copy
 import os
@@ -387,7 +388,19 @@ async def rtl_only_stream(dut, path, stats):
                        ((h_k.FrameHeight + (h_k.subsampling_y if p_ else 0)) >> (h_k.subsampling_y if p_ else 0))
                        for p_ in range(h_k.NumPlanes)) * (1 if h_k.BitDepth == 8 else 2)
         pictures = {}                                      # decoded frame -> read-back planes (md5 mode)
+        # TS_FRAMES (a frame range, tools/nightly.sh runsh "stream@a-b"): without a model the frames before the range are
+        # not decoded at all, so the range may only hold frames that need nothing from an earlier frame (intra frames:
+        # primary_ref_frame NONE, no references), each compared with dav1d's own picture (the md5 covers the whole stream)
+        frames_sel = {int(x) for x in os.environ.get("TS_FRAMES", "").split(",") if x}
+        assert not (frames_sel and md5_ref is not None), f"{Path(path).name}: TS_FRAMES needs dav1d's pictures ({ref_path}), not the stream's md5"
         for fi, tile_idx in enumerate(d.frames):
+            if frames_sel and fi > max(frames_sel):
+                dut._log.info(f"{Path(path).name}: frames after {max(frames_sel)} not run (TS_FRAMES)")
+                break
+            if frames_sel and fi not in frames_sel:
+                continue
+            assert not frames_sel or d.tiles[tile_idx[0]][0].FrameIsIntra, \
+                f"{Path(path).name} frame {fi}: an inter frame in a model-free frame range (TS_FRAMES): it would reference frames the RTL never decoded"
             hdr0 = None
             await pipe_start(dut, d.tiles[tile_idx[0]][0], len({d.tiles[ti][0].MiColStart for ti in tile_idx}))
             for ti in tile_idx:
