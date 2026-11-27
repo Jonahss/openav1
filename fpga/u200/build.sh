@@ -16,16 +16,18 @@
 #   --strategy Performance_ExtraTimingOpt   implementation strategy ("default" = Vivado's own)
 #   --threads 8     general.maxThreads (16 helps synthesis; place/route stay at 8)
 #   --board-repo ~/vivado-dl/boards         directory holding au200/<ver>/ (AMD's au200_board_files zip, unpacked)
+#   --bd-only       stop after the block design is made and validated (minutes): the smoke of a change to the shell's
+#                   wiring or address map before an image is launched
 # Output in ~/openav1-synth/u200-<tag>/: the Vivado project (proj/), impl_*.rpt, and sys_wrapper.bit for JTAG
 # programming (fpga/u200/program.sh).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-size=1080p; te=2; mhz=100; ring=16; strategy=Performance_ExtraTimingOpt; threads=8; board_repo=$HOME/vivado-dl/boards; tag=; print=0
+size=1080p; te=2; mhz=100; ring=16; strategy=Performance_ExtraTimingOpt; threads=8; board_repo=$HOME/vivado-dl/boards; tag=; print=0; bdonly=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --size) size=$2; shift 2;; --te) te=$2; shift 2;; --mhz) mhz=$2; shift 2;; --ring) ring=$2; shift 2;; --strategy) strategy=$2; shift 2;;
-    --threads) threads=$2; shift 2;; --board-repo) board_repo=$2; shift 2;; --print) print=1; shift;;
+    --threads) threads=$2; shift 2;; --board-repo) board_repo=$2; shift 2;; --print) print=1; shift;; --bd-only) bdonly=1; shift;;
     -*) echo "build.sh: unknown option $1" >&2; exit 2;;
     *) [ -z "$tag" ] || { echo "build.sh: one tag, got '$tag' and '$1'" >&2; exit 2; }; tag=$1; shift;;
   esac
@@ -35,10 +37,11 @@ case "$size" in 1080p) fb=11;; 4k) fb=12;; *) echo "build.sh: --size is 1080p or
 case "$strategy" in default|Performance_*|Area_*|Congestion_*|Flow_*|Power_*) ;; *) echo "build.sh: unknown strategy $strategy (Performance_Explore, Performance_ExtraTimingOpt, ..., or default)" >&2; exit 2;; esac
 config="$size TE=$te RING=$ring $mhz MHz $strategy"
 if [ $print = 1 ]; then echo "$config"; exit 0; fi
-[ -n "$tag" ] || { echo "usage: build.sh <tag> [--size 1080p|4k] [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR] | --print [options]" >&2; exit 2; }
+[ -n "$tag" ] || { echo "usage: build.sh <tag> [--size 1080p|4k] [--te N] [--mhz N] [--ring N] [--strategy NAME] [--threads N] [--board-repo DIR] [--bd-only] | --print [options]" >&2; exit 2; }
 out=$HOME/openav1-synth/u200-$tag
 # build.tcl's inputs, every one set here
-unset U200_TWIN
+unset U200_TWIN U200_BD_ONLY
+[ $bdonly = 1 ] && export U200_BD_ONLY=1
 export U200_ROOT=$root U200_OUT=$out U200_MHZ=$mhz U200_FB=$fb U200_TE=$te U200_REF_RING=$ring U200_THREADS=$threads U200_BOARD_REPO=$board_repo
 [ "$strategy" = default ] && export U200_STRATEGY= || export U200_STRATEGY=$strategy
 [ -d "$U200_BOARD_REPO/au200" ] || { echo "no board files at $U200_BOARD_REPO/au200 (unpack au200_board_files_*.zip there)" >&2; exit 1; }
@@ -52,6 +55,8 @@ sources="$root/synth/vivado/frame_mem_pr.sv"
 for f in $files; do sources="$sources $root/rtl/$f.sv"; done
 # the Verilog shells (the module-reference flow wants a Verilog top)
 sources="$sources $here/dec_host_v.v $here/phase_gen_v.v"
+# reference fetch's own way to the DDR4 controller (Vivado only: XPM FIFOs), with its shell
+sources="$sources $here/rf_ddr_bridge.sv $here/rf_ddr_bridge_v.v"
 export U200_SOURCES=$sources
 # qm_rom loads rtl/qm_rom.hex by a path relative to a simulation build dir (../../rtl/): the runs execute in
 # proj/u200.runs/<run>/, so proj/rtl must be the rtl directory
@@ -59,6 +64,11 @@ mkdir -p "$out/proj"; ln -sfn "$root/rtl" "$out/proj/rtl"
 echo "u200 build $tag: $config"
 cd "$out/work"
 vivado -mode batch -nojournal -log "$out/vivado.log" -source "$here/build.tcl"
+if [ $bdonly = 1 ]; then
+  grep -q BD_ONLY_DONE "$out/vivado.log" || { echo "block design failed, see $out/vivado.log" >&2; exit 1; }
+  grep -E "^memory map:|^decoder:|^clk = |CRITICAL WARNING|^ERROR" "$out/vivado.log" || true
+  echo "block design made and validated: $out/proj (no image)"; exit 0
+fi
 grep -q BUILD_DONE "$out/vivado.log" || { echo "build failed, see $out/vivado.log" >&2; exit 1; }
 cp "$out/proj/u200.runs/impl_1/sys_wrapper.bit" "$out/"
 grep -A2 "WNS" "$out/impl_timing.rpt" | head -8 || true
