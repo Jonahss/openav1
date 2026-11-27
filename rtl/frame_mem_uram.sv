@@ -17,7 +17,8 @@ module frame_mem_uram #(
     parameter int FBY = 9,
     parameter int PW = 12,
     parameter int FRAME_WIN = 0,                            // 0: the whole picture; N: a window of N superblock rows
-    parameter int SB128 = 0                                 // 1: the window's slots hold 128-line superblock rows (sb128 streams; twice the words)
+    parameter int SB128 = 0,                                // 1: the window's slots hold 128-line superblock rows (sb128 streams; twice the words)
+    parameter int PCLASS = 0                                // 0: all three planes; 1: the luma plane alone; 2: the two chroma planes alone (frame_mem_uram_pc)
 ) (
     input  logic                clk,
     input  logic                clk2x,
@@ -52,7 +53,9 @@ module frame_mem_uram #(
     localparam int WLINES = (FRAME_WIN > 0) ? FRAME_WIN * (SB128 != 0 ? 128 : 64) : (1 << FBY);
     localparam int NW0   = WPR * WLINES;                     // luma words
     localparam int NW1   = NW0 >> 2;                         // chroma plane words (4:2:0)
-    localparam int NWORD = NW0 + 2 * NW1;
+    // a memory of one plane class holds only that class's words: requests for the other class must not be made
+    localparam int BASE1 = (PCLASS == 2) ? 0 : NW0;         // where plane 1 starts (plane 2 follows it)
+    localparam int NWORD = (PCLASS == 1) ? NW0 : BASE1 + 2 * NW1;
     localparam int AW    = $clog2(NWORD);
 
     // The window line of picture line y: luma superblock rows are 64 lines, chroma (4:2:0) 32, slot = row mod FRAME_WIN,
@@ -83,8 +86,8 @@ module frame_mem_uram #(
         yw = wline(p, y);
         case (p)
             2'd0:    a = (AW'(yw) << (FBX - 2)) | AW'(x[FBX-1:2]);
-            2'd1:    a = AW'(NW0) + ((AW'(yw) << (FBX - 3)) | AW'(x[FBX-2:2]));
-            default: a = AW'(NW0 + NW1) + ((AW'(yw) << (FBX - 3)) | AW'(x[FBX-2:2]));
+            2'd1:    a = AW'(BASE1) + ((AW'(yw) << (FBX - 3)) | AW'(x[FBX-2:2]));
+            default: a = AW'(BASE1 + NW1) + ((AW'(yw) << (FBX - 3)) | AW'(x[FBX-2:2]));
         endcase
         return a;
     endfunction

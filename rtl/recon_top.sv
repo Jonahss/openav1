@@ -111,6 +111,17 @@ module recon_top
     output logic [FBX-1:0] fb4b_x,
     output logic [FBY-1:0] fb4b_y,
     output logic [47:0] fb4b_wdata,
+    // the chroma lane's two write streams (K60-105: direct chroma runs on a lane of their own, rtl/mc_lane.sv): 4-wide,
+    // the second the next group of the row (same plane and line). Never in a cycle in which fb4 / fb4b write a chroma plane.
+    output logic        fb4c_we,
+    output logic [1:0]  fb4c_plane,
+    output logic [FBX-1:0] fb4c_x,
+    output logic [FBY-1:0] fb4c_y,
+    output logic [47:0] fb4c_wdata,
+    output logic [3:0]  fb4c_be,
+    output logic        fb4d_we,
+    output logic [FBX-1:0] fb4d_x,
+    output logic [47:0] fb4d_wdata,
     // ---- inter prediction (stage 2a, docs/inter-syntax.md / the design note §8): the inter header, the reference
     //      slot table (software: REF_SLOT, the slots' plane bases / strides / sizes) and the AXI read master of ref_fetch
     input  ihdr_t       ihdr,
@@ -190,6 +201,14 @@ module recon_top
     logic        tx_pending_other;
     assign tx_pending_other = ev_valid && (ev_kind == 2'd0) && (ev_par != cur_par);                //   block FSM's block during an inter-intra intra prediction (ii_run)
     assign bt = bq[tx_par];
+    // A transform block of a motion-compensated (or block-copied) block without coefficients writes no sample: the
+    // transform FSM only marks its area (R_FIN) and its transform sizes (R_MIW, which waits for the previous block's
+    // area write: 99 clocks a transform block on the 64x64 crop frame). Such a block needs no turn on the frame
+    // memory's write port: it is taken while the filter's vertical side runs, and the vertical side is not held for
+    // it (K60-107; before, three such blocks waited up to 530 clocks for a gap and held the filter ~300 more).
+    logic        tx_nowr;                                    // the transform event at the head is one of those
+    logic        tx_quiet;                                   // the transform FSM is on one
+    assign tx_nowr = (bq[ev_par].is_inter || bq[ev_par].intrabc) && (ev_tx.skip || (ev_tx.eob == 11'd0));
     // Block-ahead MC step 2 (2026-11-08): the block FSM leaves a block once its last run has STARTED; the block is ready
     // for its transform events when every run of its parity has finished (mc_filt done, counted per parity through the
     // run record) and the blend pipelines have drained. An intra block (or a block copy / inter-intra, which read the
@@ -318,7 +337,8 @@ module recon_top
     logic [1:0]  u_i0, u_i1;
     // ref_fetch request / mc_filt run
     logic        rf_req_valid, rf_req_ready, rf_done, rf_err, rf_lst;
-    always_ff @(posedge clk) if (rst) mem_err <= 1'b0; else if (rf_err) mem_err <= 1'b1;   // 2026-10-30 audit: a failed reference read was collected as pixels and never reported
+    logic        lb_err;                                     // the chroma lane's (below): a failed reference read
+    always_ff @(posedge clk) if (rst) mem_err <= 1'b0; else if (rf_err || lb_err) mem_err <= 1'b1;   // 2026-10-30 audit: a failed reference read was collected as pixels and never reported
     logic        blk_inter;
     assign blk_inter = b.is_inter;
     logic [39:0] rf_base; logic [31:0] rf_stride; logic [15:0] rf_lastx, rf_lasty; logic signed [16:0] rf_x0, rf_y0;
@@ -373,6 +393,25 @@ module recon_top
     logic        pq_pend [0:1];                              // a queued (not started) run of that block parity
     logic        ibc_buf, ibc_has_rf, ibc_acc; logic [2:0] ibc_seq;   // the intra block copy's strip: buffer, DDR part, its accept and sequence
     logic        blk_last_run_q, blk_last_par_q;            // the run thread started a block's last run (with its parity)
+    // The chroma lane (K60-105, rtl/mc_lane.sv): the strips of a chroma plane go to a second fetch + filter with its own
+    // run queue and write streams when the block has no overlapped-block pass, no inter-intra and no mask (those
+    // read-modify-write what the plane's own prediction wrote, or blend outside the filter: such a block stays whole on
+    // this lane) and is not an intra block copy. lb_ok is the block's rule, lb_req_valid the strip's request.
+    logic        lb_ok, lb_req_valid, lb_acc, lb_start, lb_start_par, lb_done, lb_done_par, lb_v_active, lb_v_hold;
+    logic [1:0]  lb_pend;
+    logic [3:0]  lb_mc_pf; logic [5:0] lb_rf_pf;
+    // The chroma write streams have one user at a time. This lane writes a chroma plane with a chroma run of its own
+    // (ach_n: such runs started and not finished; their blend pipelines: out_drained) and with the transform FSM
+    // (rs != R_IDLE); the chroma lane takes no run into its vertical side then (lb_v_hold), and a chroma run of this
+    // lane and a transform block start only when the chroma lane's vertical side is empty (lb_v_active), as the
+    // transform FSM and this lane's filter have always done with each other. A chroma run waiting at the head of this
+    // lane's queue also holds the chroma lane, so that it gets its turn; it then waits only for the words the chroma
+    // lane's vertical side has already taken (lb_v_writing), not for a run that waits between that filter's sides:
+    // the hold keeps such a run where it is, and waiting for it stopped both lanes (nightly 2026-11-26,
+    // mf_tall1c frame 2: an 8x8 chroma strip at the head of this lane, a held run pending in the chroma lane).
+    logic [2:0]  ach_n;
+    logic        ach_head;                                   // the head of this lane's queue is a chroma run
+    logic        lb_v_writing;                               // the chroma lane's vertical side is on a run or its output FIFO holds words
     assign pq_n = pq_t - pq_h;
     assign pq_empty = (pq_n == 2'd0); assign pq_full = (pq_n == 2'd2);
     assign qh_d = done_cnt - pq_seq[pq_h[0]];
@@ -385,7 +424,7 @@ module recon_top
     // chroma plane). The start waits while words of the record it would take are still on their way.
     logic        rec_held;
     assign rec_held = (mc_out_valid || !out_drained) && (mc_out_tag == srun);
-    assign run_go = !pq_empty && qh_ready && mc_h_ready && !run_v && !rec_held;
+    assign run_go = !pq_empty && qh_ready && mc_h_ready && !run_v && !rec_held && !(ach_head && lb_v_writing);
     assign pq_pend[0] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b0) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b0);
     assign pq_pend[1] = (pq_n != 2'd0 && pq_par[pq_h[0]] == 1'b1) || (pq_n == 2'd2 && pq_par[!pq_h[0]] == 1'b1);
     // Four run records (two from 2026-11-08 to 2026-11-23; mc_filt allows four runs alive): mc_filt overlaps the horizontal pass of run n + 1 with the vertical pass of run n, so a
@@ -453,12 +492,16 @@ module recon_top
     assign filt_free = !mc_busy && !run_v && out_drained;
     logic mc_tag_par;                                        // the block parity of the run being started (declared before its use:
     assign mc_tag_par = rq_par[mc_tag];                      // Vivado binds an identifier used before its declaration to an implicit net, Synth 8-6901)
+    assign ach_head = !pq_empty && (pq_pl[pq_h[0]] != 2'd0);
+    assign lb_v_writing = lb_mc_pf[1] || lb_mc_pf[3];
+    assign lb_v_hold = ((rs != R_IDLE) && !tx_quiet) || (ach_n != 3'd0) || !out_drained || ach_head;
     // a run in its start cycle has left the queue (pq_pend) but is not counted yet (runs_started follows mc_start): without
     // the mc_start term the block read as landed for that one cycle, and the next block's wedge mask fill, which only
     // holds its first write, started under a queued inter-intra run of the previous block and overwrote its mask
     // (2026-11-09, Argon test6641 frame 1: the early block take puts the next block in B_MC_MASK at that moment)
-    assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained && !pq_pend[0] && !(mc_start && (mc_tag_par == 1'b0));
-    assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained && !pq_pend[1] && !(mc_start && (mc_tag_par == 1'b1));
+    // (the chroma lane's runs count the same way: queued, starting, started and finished)
+    assign pred_done[0] = (runs_started[0] == runs_done[0]) && out_drained && !pq_pend[0] && !(mc_start && (mc_tag_par == 1'b0)) && !lb_pend[0] && !(lb_start && (lb_start_par == 1'b0));
+    assign pred_done[1] = (runs_started[1] == runs_done[1]) && out_drained && !pq_pend[1] && !(mc_start && (mc_tag_par == 1'b1)) && !lb_pend[1] && !(lb_start && (lb_start_par == 1'b1));
     logic blk_last_run, blk_ready_set;
     // the tracker: runs started per parity (with the start pulse), runs finished per parity (mc_filt done, the run's
     // record says which block); the block is ready once its last run has started and all of its runs are done
@@ -466,8 +509,10 @@ module recon_top
         if (rst) begin
             runs_started <= '{default: 8'd0}; runs_done <= '{default: 8'd0}; blk_last_started <= '{default: 1'b0}; blk_ready_q <= '{default: 1'b1};
         end else begin
-            if (mc_start) runs_started[mc_tag_par] <= runs_started[mc_tag_par] + 8'd1;
-            if (mc_done) runs_done[rq_par[mc_done_tag]] <= runs_done[rq_par[mc_done_tag]] + 8'd1;
+            for (int p = 0; p < 2; p++) begin               // both lanes may start or finish a run of one parity in a cycle
+                runs_started[p] <= runs_started[p] + 8'(mc_start && (mc_tag_par == 1'(p))) + 8'(lb_start && (lb_start_par == 1'(p)));
+                runs_done[p] <= runs_done[p] + 8'(mc_done && (rq_par[mc_done_tag] == 1'(p))) + 8'(lb_done && (lb_done_par == 1'(p)));
+            end
             if (blk_take) begin blk_ready_q[nb_par] <= 1'b0; blk_last_started[nb_par] <= 1'b0; end
             if (blk_last_run) blk_last_started[cur_par] <= 1'b1;
             if (blk_last_run_q) blk_last_started[blk_last_par_q] <= 1'b1;
@@ -536,7 +581,36 @@ module recon_top
     logic        pw_we, pw_buf, pw_list; logic [6:0] pw_row; logic [4:0] pw_w4;
     logic [1:0]  pw_n, rf_pw_n; logic [191:0] pw_dq, rf_pw_dq;        // ref_fetch writes up to four words a cycle (2026-11-23); the ring loader single words
 
+`ifndef SYNTHESIS
+    // sim only: runs started on each lane (the test prints the last line: is the chroma lane in use?)
+    int lane_runs [2];
+    always_ff @(posedge clk) begin
+        if (rst) lane_runs <= '{default: 0};
+        else begin
+            if (mc_start) lane_runs[0] <= lane_runs[0] + 1;
+            if (lb_start) lane_runs[1] <= lane_runs[1] + 1;
+            if (lb_start && (lane_runs[1] % 1000) == 0) $display("[lane] t=%0t runs started: lane A %0d, chroma lane %0d", $time, lane_runs[0], lane_runs[1]);
+        end
+    end
+`endif
+    assign lb_ok = (mc_pl != 2'd0) && !mc_ibc && (b.motion_mode != 2'd1) && !ii_active && !mb_active && !ob_active;
     generate if (1) begin : g_inter
+    // the two lanes' reference fetches share the read master (rtl/rf_axi_mux.sv): lane 0 this module's, lane 1 the chroma lane's
+    logic [39:0] la_araddr [2]; logic [7:0] la_arlen [2]; logic [1:0] la_arvalid, la_arready, la_rvalid;
+    logic [2:0] lb_arsize; logic [1:0] lb_arburst; logic [3:0] lb_arcache; logic [2:0] lb_arprot; logic lb_rready;   // as lane 0's (constants)
+    rf_axi_mux u_rmux (.clk, .rst, .s_araddr(la_araddr), .s_arlen(la_arlen), .s_arvalid(la_arvalid), .s_arready(la_arready), .s_rvalid(la_rvalid),
+        .m_araddr(m_axi_araddr), .m_arlen(m_axi_arlen), .m_arvalid(m_axi_arvalid), .m_arready(m_axi_arready), .m_rlast(m_axi_rlast), .m_rvalid(m_axi_rvalid));
+    mc_lane #(.PW(12), .PXW(PXW), .FBX(FBX), .FBY(FBY), .RING(REF_RING)) u_lb (.clk, .rst, .bit_depth(hdr.bit_depth),
+        .req_valid(lb_req_valid), .req_acc(lb_acc), .req_lst(rf_lst), .req_fmt16(ref_fmt16), .req_base(rf_base), .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty),
+        .req_x0(rf_x0), .req_y0(rf_y0), .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi),
+        .q_chase(mc_warp || ((sc_xs == 12'd1024) && (sc_ys == 12'd1024))), .q_warp(mc_warp), .q_sw(mc_sw), .q_sh(mc_sh), .q_i0(u_i0), .q_i1(u_i1),
+        .q_xf0(mc_xf0), .q_yf0(mc_yf0), .q_xs(sc_xs), .q_ys(sc_ys), .q_wa(w_al[mc_l]), .q_wb(w_be[mc_l]), .q_wg(w_ga[mc_l]), .q_wd(w_de[mc_l]), .q_wsx(mc_wsx), .q_wsy(mc_wsy),
+        .q_mode(mc_mode), .q_wt0(mc_wt0), .q_wt1(mc_wt1), .q_px(mc_px), .q_py(mc_py), .q_pl(mc_pl), .q_par(cur_par),
+        .start(lb_start), .start_par(lb_start_par), .done(lb_done), .done_par(lb_done_par), .pend(lb_pend), .v_hold(lb_v_hold), .v_active(lb_v_active), .err(lb_err),
+        .mc_pf(lb_mc_pf), .rf_pf(lb_rf_pf),
+        .w_we(fb4c_we), .w_plane(fb4c_plane), .w_x(fb4c_x), .w_y(fb4c_y), .w_data(fb4c_wdata), .w_be(fb4c_be), .wb_we(fb4d_we), .wb_x(fb4d_x), .wb_data(fb4d_wdata),
+        .m_axi_araddr(la_araddr[1]), .m_axi_arlen(la_arlen[1]), .m_axi_arsize(lb_arsize), .m_axi_arburst(lb_arburst), .m_axi_arcache(lb_arcache), .m_axi_arprot(lb_arprot),
+        .m_axi_arvalid(la_arvalid[1]), .m_axi_arready(la_arready[1]), .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(la_rvalid[1]), .m_axi_rready(lb_rready));
     logic rf_pw_we, ff_pw_we, rf_pw_list, ff_pw_list; logic [6:0] rf_pw_row, ff_pw_row; logic [4:0] rf_pw_w4, ff_pw_w4; logic [47:0] ff_pw_d4;
     logic rf_pw_buf; logic [1:0] mc_buf_busy;
     assign pw_we = rf_pw_we || ff_pw_we;
@@ -549,8 +623,8 @@ module recon_top
         .req_stride(rf_stride), .req_lastx(rf_lastx), .req_lasty(rf_lasty), .req_x0(rf_x0), .req_y0(rf_y0),
         .req_w(rf_w), .req_h(rf_h), .req_r_lo(rf_r_lo), .req_r_hi(rf_r_hi), .req_buf(pbuf), .req_seq(acc_cnt), .chase_v(mc_h_chase), .chase_seq(mc_h_seq),
         .buf_busy(mc_buf_busy), .done(rf_done), .err(rf_err), .perf_flags(rf_pf),
-        .m_axi_araddr, .m_axi_arlen, .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid, .m_axi_arready,
-        .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid, .m_axi_rready,
+        .m_axi_araddr(la_araddr[0]), .m_axi_arlen(la_arlen[0]), .m_axi_arsize, .m_axi_arburst, .m_axi_arcache, .m_axi_arprot, .m_axi_arvalid(la_arvalid[0]), .m_axi_arready(la_arready[0]),
+        .m_axi_rdata, .m_axi_rresp, .m_axi_rlast, .m_axi_rvalid(la_rvalid[0]), .m_axi_rready,
         .patch_we(rf_pw_we), .patch_buf(rf_pw_buf), .patch_list(rf_pw_list), .patch_seq(rf_pw_seq), .patch_row(rf_pw_row), .patch_w4(rf_pw_w4), .patch_n(rf_pw_n), .patch_dq(rf_pw_dq));
     fb_fetch #(.PW(12), .FBX(FBX), .FBY(FBY)) u_ff (.clk, .rst,
         .req_valid(ff_req_valid), .req_ready(ff_req_ready), .req_lst(rf_lst), .req_plane(mc_pl), .req_lastx(rf_lastx), .req_lasty(rf_lasty),
@@ -563,7 +637,7 @@ module recon_top
         .w(st_sw), .h(st_sh), .interp_x(st_i1), .interp_y(st_i0),
         .x_frac0(st_xf0), .y_frac0(st_yf0), .x_step(st_xs), .y_step(st_ys),
         .warp(st_warp), .w_alpha(st_wa), .w_beta(st_wb), .w_gamma(st_wg), .w_delta(st_wd), .w_sx4(st_wsx), .w_sy4(st_wsy),
-        .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .perf_flags(mc_pf), .v_hold(rs != R_IDLE),
+        .bit_depth(hdr.bit_depth), .mode(st_mode), .wt0(st_wt0), .wt1(st_wt1), .busy(mc_busy), .h_ready(mc_h_ready), .h_buf_busy(mc_buf_busy), .done(mc_done), .done_tag(mc_done_tag), .v_active(mc_v_active), .perf_flags(mc_pf), .v_hold((rs != R_IDLE) && !tx_quiet),
         .out_wait(!out_drained), .out_valid(mc_out_valid), .out_tag(mc_out_tag), .out_x(mc_out_x), .out_y(mc_out_y), .out_pix4(mc_out_pix4), .out_mask(mc_out_mask), .out_pair(mc_out_pair),
         .direct(mc_direct), .out_valid_b(mc_out_valid_b), .out_pix4_b(mc_out_pix4_b));
     end else begin : g_nointer
@@ -572,6 +646,9 @@ module recon_top
         assign m_axi_araddr = '0; assign m_axi_arlen = '0; assign m_axi_arsize = '0; assign m_axi_arburst = '0;
         assign m_axi_arcache = '0; assign m_axi_arprot = '0; assign m_axi_arvalid = 1'b0; assign m_axi_rready = 1'b0;
         assign pw_we = 1'b0; assign pw_buf = 1'b0; assign pw_list = 1'b0; assign pw_row = '0; assign pw_w4 = '0; assign pw_n = '0; assign pw_dq = '0;
+        assign lb_acc = 1'b0; assign lb_start = 1'b0; assign lb_start_par = 1'b0; assign lb_done = 1'b0; assign lb_done_par = 1'b0; assign lb_v_active = 1'b0; assign lb_err = 1'b0;
+        assign lb_pend = '0; assign lb_mc_pf = '0; assign lb_rf_pf = '0; assign fb4c_we = 1'b0; assign fb4c_plane = '0; assign fb4c_x = '0; assign fb4c_y = '0; assign fb4c_wdata = '0; assign fb4c_be = '0;
+        assign fb4d_we = 1'b0; assign fb4d_x = '0; assign fb4d_wdata = '0;
         assign mc_busy = 1'b0; assign mc_h_ready = 1'b1; assign mc_done = 1'b0; assign mc_done_tag = 2'd0; assign mc_v_active = 1'b0; assign mc_out_valid = 1'b0; assign mc_out_valid_b = 1'b0; assign mc_out_pix4_b = '0; assign mc_out_tag = 2'd0; assign mc_out_x = '0; assign mc_out_y = '0;
         assign mc_out_pix4 = '0; assign mc_out_mask = '0; assign mc_out_pair = '0; assign mc_pf = '0; assign rf_pf = '0;
     end endgenerate
@@ -669,6 +746,7 @@ module recon_top
         mm_we <= 1'b0; mi_blk_we <= 1'b0; mi_cd_we <= 1'b0; mc_start <= 1'b0; ii_req <= 1'b0; blk_last_run <= 1'b0; blk_ready_set <= 1'b0; blk_last_run_q <= 1'b0;
         if (mc_busy) run_v <= 1'b0;
         if (rf_done) done_cnt <= done_cnt + 3'd1;
+        ach_n <= ach_n + 3'(run_go && ach_head) - 3'(mc_done && (rq_pl[mc_done_tag] != 2'd0));
         if (!rst && run_go) begin
             // the run thread: the oldest queued run's patch is in and the horizontal side is free; mc_filt samples st_* with
             // mc_start next cycle, the output path reads the record rq_*[srun] (as before)
@@ -691,6 +769,7 @@ module recon_top
             bst <= B_IDLE; mc_unsup <= 1'b0; rf_req_valid <= 1'b0; run_v <= 1'b0; pbuf <= 1'b0; srun <= 2'd0; mc_tag <= 2'd0; cur_par <= 1'b0;
             ff_req_valid <= 1'b0; ff_pend <= 1'b0; rf_wait <= 1'b0; ff_wait <= 1'b0; mc_ibc <= 1'b0;
             acc_cnt <= 3'd0; done_cnt <= 3'd0; pq_h <= 2'd0; pq_t <= 2'd0; ibc_acc <= 1'b0; ibc_has_rf <= 1'b0; pq_last <= '{default: 1'b0};
+            lb_req_valid <= 1'b0; ach_n <= 3'd0;
             ws_start <= 1'b0;                                // a reset between the start and its clear left warp_setup a stale start (2026-10-30 audit)
         end else if (int'(bst) >= int'(B_MC_INIT)) begin
             // motion compensation states (inter blocks)
@@ -782,7 +861,7 @@ module recon_top
                         // fetch (fc34a84) the sequencer gets here while that run is in flight, and an intra write that lost
                         // the port was dropped (Argon test7588_6663 frame 8, plane 2 (0,79): the census-7 narrow-chroma
                         // diffs, 2026-11-07). The request waits for the filter and its blends to drain.
-                        if (filt_free && pq_empty && rs == R_IDLE && pred_done[!cur_par] && !tx_pending_other) begin ii_req <= 1'b1; bst <= B_MC_II; end
+                        if (filt_free && pq_empty && rs == R_IDLE && pred_done[!cur_par] && !tx_pending_other && !lb_v_active) begin ii_req <= 1'b1; bst <= B_MC_II; end
                     end else bst <= B_MC_UNIT;
                 end
                 B_MC_II: if (ii_done) bst <= B_MC_UNIT;                              // the intra prediction is in the frame memory
@@ -935,8 +1014,9 @@ module recon_top
                         cw = 19'(sc_sw - 7'd1) * 19'(sc_xs) + 19'd1023; ch = 19'(sc_sh - 7'd1) * 19'(sc_ys) + 19'd1023;
                         rf_w <= 7'(cw[18:10] + 9'd1); rf_h <= 7'(ch[18:10] + 9'd1);
                     end
-                    rf_req_valid <= !mc_ibc || (rf_r_hi != 7'd0);
-                    rf_wait <= !mc_ibc || (rf_r_hi != 7'd0);
+                    rf_req_valid <= !lb_ok && (!mc_ibc || (rf_r_hi != 7'd0));
+                    rf_wait <= !lb_ok && (!mc_ibc || (rf_r_hi != 7'd0));
+                    lb_req_valid <= lb_ok;
                     ff_pend <= mc_ibc && (ff_r_lo != ff_r_hi); ff_wait <= mc_ibc && (ff_r_lo != ff_r_hi);
                     ibc_buf <= pbuf; ibc_has_rf <= (rf_r_hi != 7'd0); ibc_acc <= 1'b0;
                     bst <= B_MC_FETCH;
@@ -946,6 +1026,7 @@ module recon_top
                     // room; the run is queued (the run thread starts it when its patch is in) and the strip iteration moves on.
                     // The intra block copy keeps the serial handoff: ref_fetch first, the ring loader after it (they share
                     // mc_filt's patch write port), the run queued once both are in.
+                    if (lb_acc) begin lb_req_valid <= 1'b0; bst <= B_MC_NEXT; end      // the chroma lane has the strip and its run
                     if (rf_req_valid && rf_req_ready && !pq_full) begin
                         rf_req_valid <= 1'b0; rf_wait <= 1'b0; acc_cnt <= acc_cnt + 3'd1; pbuf <= !pbuf;
                         if (mc_ibc) begin ibc_acc <= 1'b1; ibc_seq <= acc_cnt; end
@@ -1470,7 +1551,7 @@ module recon_top
         perf_c <= {ev_valid && (ev_kind == 2'd2),                                                       // 31: a superblock start waits for both FSMs
                    !ev_valid,                                                                           // 30: nothing offered (empty, or held outside: dec_top's counters)
                    (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && !blk_ready_q[ev_par],             // 29: a transform block waits for its block's prediction
-                   (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && blk_ready_q[ev_par] && (mc_v_active || !out_drained),   // 28: ... for the MC output to drain
+                   (rs == R_IDLE) && ev_valid && (ev_kind == 2'd0) && blk_ready_q[ev_par] && !tx_nowr && (mc_v_active || !out_drained),   // 28: ... for the MC output to drain
                    (bst == B_IDLE) && nb_valid && blk_ready_q[nb_par] && (rs != R_IDLE) && (tx_par == nb_par),                // 27: the next block waits for the transform FSM on its parity
                    (bst == B_IDLE) && ev_valid && nb_valid && !blk_ready_q[nb_par],                     // 26: the next block waits for the block before it to land
                    (bst == B_IDLE) && ev_valid && !nb_valid};                                           // 25: no block record to take
@@ -1480,11 +1561,15 @@ module recon_top
     // Inside motion compensation (PERF_SEL 64 + 0 .. 27; 2026-11-21): B_MC_FETCH waits for the fetch engine to take the
     // strip AND for room in the run queue, so its 59 % of a 4K frame did not say whether the reference fetch or the
     // filter sets the pace. Conditions registered first, counted a clock late, since the decoder's reset.
-    logic [27:0] perf_m;
+    logic [31:0] perf_m;
     logic        perf_pipe;                                  // something is in the fetch engine, the run queue or the filter
     assign perf_pipe = mc_busy || !pq_empty || !rf_pf[5];
     always_ff @(posedge clk) begin
-        perf_m <= {rf_pf[5] && mc_busy,                                             // 27: the filter works, the fetch engine is idle
+        perf_m <= {lb_mc_pf[2] && lb_v_hold,                                           // 31: a chroma-lane run waits between its filter's sides while the lane is held (the transform FSM or a chroma run of this lane has the chroma write streams)
+                   lb_mc_pf[1],                                                      // 30: the chroma lane's vertical side busy
+                   lb_mc_pf[0],                                                      // 29: its horizontal side busy
+                   lb_req_valid && !lb_acc,                                          // 28: a strip waits for the chroma lane to take it
+                   rf_pf[5] && mc_busy,                                             // 27: the filter works, the fetch engine is idle
                    !rf_pf[5] && !mc_busy,                                            // 26: the fetch engine works, the filter is idle
                    !rf_pf[5] && mc_busy,                                             // 25: both work
                    (bst == B_IDLE) && ev_valid && !nb_valid && !perf_pipe,           // 24: no block record to take, nothing in the MC pipeline
@@ -1513,7 +1598,7 @@ module recon_top
                    (bst == B_MC_FETCH) && rf_req_valid && !pq_full && !rf_req_ready, //  1: the strip waits for the fetch engine
                    (bst == B_MC_FETCH) && rf_req_valid && pq_full};                  //  0: the strip waits for room in the run queue
         if (rst) for (int i = 0; i < 32; i++) perf_mc[i] <= 32'd0;
-        else for (int i = 0; i < 28; i++) if (perf_m[i]) perf_mc[i] <= perf_mc[i] + 32'd1;
+        else for (int i = 0; i < 32; i++) if (perf_m[i]) perf_mc[i] <= perf_mc[i] + 32'd1;
     end
     logic tx_take, tx_pop;
     assign sb_start = ev_valid && (ev_kind == 2'd2) && (rs == R_IDLE) && ((bst == B_IDLE) || ev_sb_early);
@@ -1530,7 +1615,7 @@ module recon_top
     assign nb_sb_ack = blk_take_ok && nb_sb;
     assign blk_take = blk_take_ok && !nb_sb;
     assign nb_pop = blk_take && !nb_at_head;
-    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && !mc_v_active && out_drained;
+    assign tx_take = ev_valid && (ev_kind == 2'd0) && (rs == R_IDLE) && blk_ready_q[ev_par] && !tx_ack && (tx_nowr || (!mc_v_active && out_drained && !lb_v_active));
     assign tx_pop = tx_take;                                 // popped at take since 2026-11-08 (was at R_MIW: it kept the next block behind the adds)
     assign tx_rel = (rs == R_MIW) && !mi_tx_busy && !mi_tx_we;   // the slot release stays at the end (rec_fifo's in-flight count)
     assign ev_pop = sb_start || (blk_take && nb_at_head) || tx_pop || (ev_valid && ev_taken);   // a taken block record at the head pops as a no-op
@@ -1858,15 +1943,16 @@ module recon_top
         ep2_xb <= ep_xb; ep2_side <= ep_side; ep2_idx <= ep_idx; ep2_val <= ep_val;
         px2_valid <= px_valid && !rst; px2_i <= px_i; px2_j <= px_j; px2_src <= px_src;
         if (rst) begin
-            rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0); ii_run <= 1'b0;
+            rs <= R_IDLE; max_luma_w <= PXW'(0); max_luma_h <= PXW'(0); ii_run <= 1'b0; tx_quiet <= 1'b0;
             bdf_wr <= '0; fy <= '0; l_sb_r <= '0; l_sb_c <= '0;
         end else begin
             // 5.11.3 clear_block_decoded_flags at each superblock start
             if (sb_start) begin bdf_wr <= '0; l_sb_r <= sb_r; l_sb_c <= sb_c; end
             case (rs)
                 R_IDLE: if (tx_take) begin
-                    t <= ev_tx; t_par <= ev_par; rs <= R_SETUP;
+                    t <= ev_tx; t_par <= ev_par; rs <= R_SETUP; tx_quiet <= tx_nowr;
                 end else if (ii_req) begin
+                    tx_quiet <= 1'b0;
                     // inter-intra: the intra prediction of the plane block through the edge / ipred flow
                     t <= '{plane: ii_pl, x: ii_x, y: ii_y, txsz: ii_txsz, txtype: 4'd0, eob: 11'd0, skip: 1'b1, lossless: 1'b0, slot: 3'd0};
                     ii_run <= 1'b1; rs <= R_SETUP;

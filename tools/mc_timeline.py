@@ -63,6 +63,14 @@ def summary(cols, cyc, v):
     if "nb_valid" in C:
         rows += [("block FSM idle, event offered, no block record to take", (g("bst") == 0) & (g("ev_valid") == 1) & (g("nb_valid") == 0)),
                  ("syntax holds a transform block (tx_done, no ack)", (g("tx_done") == 1) & (g("tx_ack") == 0))]
+    if "lb_hst" in C:                                        # a build with the chroma lane
+        LH, LV = g("lb_hst") != 0, g("lb_vst") != 0
+        rows += [("chroma lane: H busy", LH), ("chroma lane: V busy", LV), ("chroma lane: both idle, nothing queued", ~LH & ~LV & (g("lb_pq_n") == 0) & (g("lb_sq_n") == 0)),
+                 ("chroma lane: a strip waits to be taken", g("lb_req_valid") == 1), ("chroma lane: strips waiting for its fetch engine", g("lb_sq_n") != 0),
+                 ("chroma lane: a run waits between the sides, lane held", (g("lb_pend") == 1) & (g("lb_v_hold") == 1)),
+                 ("chroma lane held (v_hold)", g("lb_v_hold") == 1), ("luma H busy and chroma H busy", H & LH), ("luma V busy and chroma V busy", V & LV),
+                 ("transform FSM busy on a block that writes nothing", (g("rs") != 0) & (g("tx_quiet") == 1)),
+                 ("a transform block waits: its block not ready", (g("rs") == 0) & (g("ev_valid") == 1) & (g("ev_kind") == 0) & (g("ready0") == 0) & (g("ready1") == 0))]
     for name, m in rows:
         print(f"  {name:56s} {dur[m].sum():9d} {100 * dur[m].sum() / T:5.1f} %")
     print("  events: " + ", ".join(f"{n} {int((g(n) * dur).sum())}" for n in ("mc_start", "rf_done", "mc_done", "blk_take")))

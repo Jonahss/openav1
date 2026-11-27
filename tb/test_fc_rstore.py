@@ -16,10 +16,10 @@ async def fc_rstore_vs_picture(dut):
     rng = random.Random(int(os.environ.get("RS_SEED", "1")))
     n_sb = int(os.environ.get("RS_ROWS", "9")); W = int(os.environ.get("RS_W", "144"))
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
-    for s in ("we", "be", "wplane", "wx", "wy", "wdata", "row0", "bk_re", "bk_row", "bk_col", "ssy"):
+    for s in ("we", "be", "wplane", "wx", "wy", "wdata", "we_b", "we_c", "we_d", "row0", "bk_re", "bk_row", "bk_col", "ssy"):
         getattr(dut, s).value = 0
     await ClockCycles(dut.clk, 2); await Timer(1, "ns")
-    stats = dict(writes=0, partial=0, blocks=0, old_rows=0, together=0, second=0)
+    stats = dict(writes=0, partial=0, blocks=0, old_rows=0, together=0, second=0, lane=0, lane_with_luma=0)
     for ssy, sb in ((1, 64), (0, 64), (1, 128)):
         dut.ssy.value = ssy
         ssx = 1                                               # the store does not care about the chroma width
@@ -46,28 +46,50 @@ async def fc_rstore_vs_picture(dut):
             for i, t in enumerate(todo):
                 keyed.setdefault(t[:3], []).append(t)
             groups = list(keyed.values()); rng.shuffle(groups)
-            for grp in groups:
-                for (p, y, g, be) in grp:
-                    d = [rng.getrandbits(12) for _ in range(4)]
-                    dut.we.value = 1; dut.be.value = be; dut.wplane.value = p; dut.wx.value = 4 * g + rng.randrange(4); dut.wy.value = y
-                    dut.wdata.value = sum(v << (12 * i) for i, v in enumerate(d))
+            # Two streams of writes a clock: reconstruction's (port a, with its second word b) and the chroma lane's
+            # (port c, with its second word d: chroma planes only). In a cycle in which the lane writes, port a writes
+            # luma or nothing; chroma groups also come through port a in cycles without the lane.
+            lum = [t for grp in groups for t in grp if t[0] == 0]
+            chr_ = [t for grp in groups for t in grp if t[0] != 0]
+
+            def drive(t, first, second):
+                """One write on a port pair: first = (we, be, plane, x, y, data) signal names, second likewise without be."""
+                (p, y, g, be) = t
+                d = [rng.getrandbits(12) for _ in range(4)]
+                getattr(dut, first[0]).value = 1; getattr(dut, first[1]).value = be; getattr(dut, first[2]).value = p
+                getattr(dut, first[3]).value = 4 * g + rng.randrange(4); getattr(dut, first[4]).value = y
+                getattr(dut, first[5]).value = sum(v << (12 * i) for i, v in enumerate(d))
+                for i in range(4):
+                    if (be >> i) & 1:
+                        pic[p][(y, 4 * g + i)] = d[i]
+                stats["writes"] += 1; stats["partial"] += be != 0xF
+                if g + 1 < pw[p] // 4 and rng.random() < 0.3:          # the second write of a cycle: the next group, all lanes
+                    d2 = [rng.getrandbits(12) for _ in range(4)]
+                    getattr(dut, second[0]).value = 1; getattr(dut, second[2]).value = 4 * (g + 1); getattr(dut, second[4]).value = sum(v << (12 * i) for i, v in enumerate(d2))
+                    if second[1]:
+                        getattr(dut, second[1]).value = p; getattr(dut, second[3]).value = y
                     for i in range(4):
-                        if (be >> i) & 1:
-                            pic[p][(y, 4 * g + i)] = d[i]
-                    stats["writes"] += 1; stats["partial"] += be != 0xF
-                    if g + 1 < pw[p] // 4 and rng.random() < 0.3:      # the second write of a cycle: the next group, all lanes
-                        d2 = [rng.getrandbits(12) for _ in range(4)]
-                        dut.we_b.value = 1; dut.wplane_b.value = p; dut.wx_b.value = 4 * (g + 1); dut.wy_b.value = y
-                        dut.wdata_b.value = sum(v << (12 * i) for i, v in enumerate(d2))
-                        for i in range(4):
-                            pic[p][(y, 4 * (g + 1) + i)] = d2[i]
-                        stats["second"] += 1
-                    else:
-                        dut.we_b.value = 0
+                        pic[p][(y, 4 * (g + 1) + i)] = d2[i]
+                    stats["second"] += 1
+
+            A = ("we", "be", "wplane", "wx", "wy", "wdata"); B = ("we_b", "wplane_b", "wx_b", "wy_b", "wdata_b")
+            C = ("we_c", "be_c", "wplane_c", "wx_c", "wy_c", "wdata_c"); D = ("we_d", None, "wx_d", None, "wdata_d")
+            while lum or chr_:
+                for sig in ("we", "we_b", "we_c", "we_d"):
+                    getattr(dut, sig).value = 0
+                if chr_ and (not lum or rng.random() < 0.5):
+                    drive(chr_.pop(0), C, D); stats["lane"] += 1
+                    if lum and rng.random() < 0.7:
+                        drive(lum.pop(0), A, B); stats["lane_with_luma"] += 1
+                else:
+                    drive((lum or chr_).pop(0), A, B)
+                await RisingEdge(dut.clk); await Timer(1, "ns")
+                if rng.random() < 0.1:
+                    for sig in ("we", "we_b", "we_c", "we_d"):
+                        getattr(dut, sig).value = 0
+                    dut.wdata.value = rng.getrandbits(48)
                     await RisingEdge(dut.clk); await Timer(1, "ns")
-                    if rng.random() < 0.1:
-                        dut.we.value = 0; dut.we_b.value = 0; dut.wdata.value = rng.getrandbits(48)
-                        await RisingEdge(dut.clk); await Timer(1, "ns")
+            dut.we_c.value = 0; dut.we_d.value = 0
             dut.we.value = 0; dut.we_b.value = 0
             # one clock for the write register to empty: the chain reads a band only after its reconstruction is over, and
             # the store stops the simulation on a read of a word still in that register

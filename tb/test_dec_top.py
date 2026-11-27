@@ -200,18 +200,37 @@ async def run_tile(dut, th, dec, data, tag, stats, debug, frame_parity=0, rows=N
         if int(dut.unsupported.value):
             raise AssertionError(f"{tag}: RTL flagged unsupported syntax")
         if idle > int(os.environ.get("TD_IDLE_LIMIT", "2000000")):   # a 128x128 compound scaled 4:4:4 block predicts for ~500k cycles (test20017 frame 35)
-            state = (f"ts st={int(dut.u_ts.st.value)} blk st={int(dut.u_ts.u_blk.st.value)} rc rs={int(dut.u_rc.rs.value)} "
-                     f"bst={int(dut.u_rc.bst.value)} blk_ready={int(dut.u_rc.blk_ready.value)} tx_done={int(dut.tx_done.value)} "
-                     f"ip_busy={int(dut.u_rc.u_ip.busy.value)} itx_busy={int(dut.u_rc.u_itx.busy.value)} cfl_busy={int(dut.u_rc.u_cfl.busy.value)}")
+            # What stands where, read by name: a signal that no longer exists prints as '?'. (Until 2026-11-26 this was
+            # one f-string of fixed paths; the tile engines moved the syntax decoder, the report raised AttributeError
+            # and a hang read as a test error with no state.)
+            def rd(path):
+                h = dut
+                try:
+                    for part in path.split("."):
+                        if "[" in part:
+                            name, idx = part[:-1].split("[")
+                            h = getattr(h, name)[int(idx)]
+                        else:
+                            h = getattr(h, part)
+                    return str(int(h.value))
+                except Exception:
+                    return "?"
+            ts0 = "u_ts.g_e[0].u_ts" if hasattr(dut.u_ts, "g_e") else "u_ts"
+            names = [("ts st", f"{ts0}.st"), ("blk st", f"{ts0}.u_blk.st"), ("rs", "u_rc.rs"), ("bst", "u_rc.bst"), ("blk_ready0", "u_rc.blk_ready_q[0]"),
+                     ("blk_ready1", "u_rc.blk_ready_q[1]"), ("tx_done", "tx_done"), ("ev_valid", "u_rc.ev_valid"), ("ev_kind", "u_rc.ev_kind"), ("nb_valid", "u_rc.nb_valid"),
+                     ("ip_busy", "u_rc.u_ip.busy"), ("itx_busy", "u_rc.u_itx.busy"), ("cfl_busy", "u_rc.u_cfl.busy")]
             if hasattr(dut.u_rc, "g_inter"):
-                state += (f" mc st={int(dut.u_rc.g_inter.u_mc.st.value)} busy={int(dut.u_rc.g_inter.u_mc.busy.value)} pg={int(dut.u_rc.g_inter.u_mc.pg.value)} "
-                          f"rf st={int(dut.u_rc.g_inter.u_rf.st.value)} mc_start={int(dut.u_rc.mc_start.value)} mc_mode={int(dut.u_rc.mc_mode.value)} "
-                          f"mc_sw={int(dut.u_rc.mc_sw.value)} mc_sh={int(dut.u_rc.mc_sh.value)} rf_w={int(dut.u_rc.rf_w.value)} rf_h={int(dut.u_rc.rf_h.value)} "
-                          f"rf_x0={int(dut.u_rc.rf_x0.value.signed_integer)} rf_y0={int(dut.u_rc.rf_y0.value.signed_integer)} rf_lastx={int(dut.u_rc.rf_lastx.value)} rf_lasty={int(dut.u_rc.rf_lasty.value)} "
-                          f"axi arvalid={int(dut.m_axi_arvalid.value)} araddr=0x{int(dut.m_axi_araddr.value):x} arlen={int(dut.m_axi_arlen.value)} rvalid={int(dut.m_axi_rvalid.value)} rready={int(dut.m_axi_rready.value)}")
-                rf = dut.u_rc.g_inter.u_rf
-                state += (f" | rf r={int(rf.r.value)} q_nrow={int(rf.q_nrow.value)} q_h={int(rf.q_h.value)} q_nw={int(rf.q_nw.value)} nsamp={int(rf.nsamp.value)} cx_lo={int(rf.cx_lo.value)} cx_hi={int(rf.cx_hi.value)} "
-                          f"beats_left={int(rf.beats_left.value)} len={int(rf.len.value)} wptr={int(rf.wptr.value)} cur_addr=0x{int(rf.cur_addr.value):x} src_y={int(rf.src_y.value)} q_stride={int(rf.q_stride.value)} q_base=0x{int(rf.q_base.value):x} q_x0={int(rf.q_x0.value.signed_integer)} q_y0={int(rf.q_y0.value.signed_integer)} read_bursts={getattr(mem, 'read_bursts', '?') if 'mem' in dir() else '?'}")
+                g = "u_rc.g_inter"
+                names += [("rf_req_valid", "u_rc.rf_req_valid"), ("rf_req_ready", "u_rc.rf_req_ready"), ("pq_n", "u_rc.pq_n"), ("pq_pl head", "u_rc.pq_pl[0]"), ("run_go", "u_rc.run_go"),
+                          ("qh_ready", "u_rc.qh_ready"), ("mc_h_ready", "u_rc.mc_h_ready"), ("run_v", "u_rc.run_v"), ("rec_held", "u_rc.rec_held"), ("out_drained", "u_rc.out_drained"),
+                          ("mc hst", f"{g}.u_mc.hst"), ("mc vst", f"{g}.u_mc.vst"), ("mc pend", f"{g}.u_mc.pend"), ("mc busy", f"{g}.u_mc.busy"), ("rf ast", f"{g}.u_rf.ast"),
+                          ("mc_sw", "u_rc.mc_sw"), ("mc_sh", "u_rc.mc_sh"), ("mc_pl", "u_rc.mc_pl"), ("rf_w", "u_rc.rf_w"), ("rf_h", "u_rc.rf_h"), ("rf_x0", "u_rc.rf_x0"), ("rf_y0", "u_rc.rf_y0"),
+                          ("rf arvalid", "m_rf_axi_arvalid"), ("rf arready", "m_rf_axi_arready"), ("rf rvalid", "m_rf_axi_rvalid"),
+                          # the chroma lane (rtl/mc_lane.sv), when the build has one
+                          ("lb_req_valid", "u_rc.lb_req_valid"), ("lb sq_n", f"{g}.u_lb.sq_n"), ("lb pq_n", f"{g}.u_lb.pq_n"), ("lb hst", f"{g}.u_lb.u_mc.hst"), ("lb vst", f"{g}.u_lb.u_mc.vst"),
+                          ("lb pend", f"{g}.u_lb.u_mc.pend"), ("lb_v_hold", "u_rc.lb_v_hold"), ("lb_v_active", "u_rc.lb_v_active"), ("ach_head", "u_rc.ach_head"), ("ach_n", "u_rc.ach_n"),
+                          ("tx_quiet", "u_rc.tx_quiet")]
+            state = " ".join(f"{n}={rd(p_)}" for n, p_ in names)
             raise AssertionError(f"{tag}: hang after {blocks} blocks / {txb} tx blocks (model {len(dec.recon_events) + len(dec.pred_events)} events); {state}")
         if int(dut.tile_done.value):
             break

@@ -8,8 +8,8 @@
 // Early block take (2026-11-09): reconstruction's block FSM may take the next block record before the transform
 // events ahead of it are consumed (they wait for that block's prediction to land, which kept the next block behind
 // them). Every record carries its block's parity (ppar, toggled per block record pushed; a transform record takes its
-// block's); nb_* is the next untaken block record at or after the head, found by a scan that stops at a superblock
-// event (registered pointer, validated live); nb_pop marks it taken, and a taken record is popped as a no-op when it
+// block's); nb_* is the next untaken block record at or after the head, found by a scan that passes one superblock
+// start of the row being decoded and stops at the next, and at a record already taken (registered pointer, validated live); nb_pop marks it taken, and a taken record is popped as a no-op when it
 // reaches the head (ev_taken), so the pop order seen by the frame-state tap is unchanged.
 module rec_fifo
   import syn_pkg::*;
@@ -89,7 +89,7 @@ module rec_fifo
     assign ev_tx = tx_rec_t'(tx_q[rd]);
     assign ev_par = par_q[rd];
     assign ev_taken = (kind_q[rd] == 2'd1) && taken_q[rd];
-    // the next untaken block record: scanned from the head, stopping at a superblock event; the pointer is registered
+    // the next untaken block record: scanned from the head (the stop rules are in the loop); the pointer is registered
     // (the scan is a long priority chain) and validated against the live flags, so a stale pointer never reads as valid
     logic [AW-1:0] nb_scan, nb_idx, sb_scan, nb_sbi;
     logic          nb_found, sb_passed;

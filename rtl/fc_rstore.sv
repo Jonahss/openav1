@@ -40,6 +40,17 @@ module fc_rstore
     input  logic [FBX-1:0]      wx_b,
     input  logic [FBY-1:0]      wy_b,
     input  logic [47:0]         wdata_b,
+    // the chroma lane's two 4-wide writes (K60-105; a chroma plane, neighbouring groups of one line; never in a cycle
+    // in which the writes above are to a chroma plane)
+    input  logic                we_c,
+    input  logic [3:0]          be_c,
+    input  logic [1:0]          wplane_c,
+    input  logic [FBX-1:0]      wx_c,
+    input  logic [FBY-1:0]      wy_c,
+    input  logic [47:0]         wdata_c,
+    input  logic                we_d,
+    input  logic [FBX-1:0]      wx_d,
+    input  logic [47:0]         wdata_d,
     // the chain's reads, per plane
     input  logic [MIW-1:0]      row0,        // the band's first 4x4 luma row
     input  logic [2:0]          bk_re,
@@ -53,6 +64,17 @@ module fc_rstore
     logic [FBX-1:0]  wx_r, wx_b_r;
     logic [FBY-1:0]  wy_r, wy_b_r;
     logic [71:0]     wd72, wd72_b;
+    logic            we_c_r, we_d_r;
+    logic [3:0]      be_c_r;
+    logic [1:0]      wplane_c_r;
+    logic [FBX-1:0]  wx_c_r, wx_d_r;
+    logic [FBY-1:0]  wy_c_r;
+    logic [71:0]     wd72_c, wd72_d;
+    always_ff @(posedge clk) begin
+        we_c_r <= we_c; be_c_r <= be_c; wplane_c_r <= wplane_c; wx_c_r <= wx_c; wy_c_r <= wy_c; we_d_r <= we_d; wx_d_r <= wx_d;
+        wd72_c <= '0; wd72_d <= '0;
+        for (int i = 0; i < 4; i++) begin wd72_c[18 * i +: 12] <= wdata_c[12 * i +: 12]; wd72_d[18 * i +: 12] <= wdata_d[12 * i +: 12]; end
+    end
     always_ff @(posedge clk) begin
         we_r <= we; be_r <= be; wplane_r <= wplane; wx_r <= wx; wy_r <= wy;
         we_b_r <= we_b; wplane_b_r <= wplane_b; wx_b_r <= wx_b; wy_b_r <= wy_b;
@@ -63,12 +85,14 @@ module fc_rstore
         localparam int RB = (p == 0) ? RBY : RBC;
         localparam int CWP = (p == 0) ? CW : CWC;
         localparam int AW = RB + CWP - 1;                    // {4x4 row, 4x4 column pair}
-        logic [AW-1:0]  wa_a, wa_b, ra;
+        logic [AW-1:0]  wa_a, wa_b, wa_c, wa_d, ra;
         logic [MIW-1:0] rrow;
         logic           rpar_q;                              // column parity of the block last read
         always_comb begin
             wa_a = {RB'(wy_r >> 2), (CWP-1)'(wx_r >> 3)};
             wa_b = {RB'(wy_b_r >> 2), (CWP-1)'(wx_b_r >> 3)};
+            wa_c = {RB'(wy_c_r >> 2), (CWP-1)'(wx_c_r >> 3)};
+            wa_d = {RB'(wy_c_r >> 2), (CWP-1)'(wx_d_r >> 3)};
             rrow = ((p != 0 && ssy) ? (row0 >> 1) : row0) + MIW'(bk_row[p]);
             ra = {RB'(rrow), (CWP-1)'(bk_col[p] >> 1)};
         end
@@ -79,16 +103,18 @@ module fc_rstore
             // memory sees at most one of them (2026-11-23, K60-92)
             for (genvar c = 0; c < 2; c++) begin : g_c
                 (* ram_style = "block" *) logic [71:0] mem [1 << AW];
-                logic hit_a, hit_b;
+                logic hit_a, hit_b, hit_c, hit_d;
                 logic [AW-1:0] wa;
                 logic [71:0] wd;
                 logic [3:0]  wbe;
                 always_comb begin
                     hit_a = we_r && wplane_r == 2'(p) && wy_r[1:0] == 2'(l) && wx_r[2] == 1'(c);
                     hit_b = we_b_r && wplane_b_r == 2'(p) && wy_b_r[1:0] == 2'(l) && wx_b_r[2] == 1'(c);
-                    wa  = hit_a ? wa_a : wa_b;
-                    wd  = hit_a ? wd72 : wd72_b;
-                    wbe = hit_a ? be_r : {4{hit_b}};
+                    hit_c = (p != 0) && we_c_r && wplane_c_r == 2'(p) && wy_c_r[1:0] == 2'(l) && wx_c_r[2] == 1'(c);
+                    hit_d = (p != 0) && we_d_r && wplane_c_r == 2'(p) && wy_c_r[1:0] == 2'(l) && wx_d_r[2] == 1'(c);
+                    wa  = hit_a ? wa_a : hit_b ? wa_b : hit_c ? wa_c : wa_d;
+                    wd  = hit_a ? wd72 : hit_b ? wd72_b : hit_c ? wd72_c : wd72_d;
+                    wbe = hit_a ? be_r : hit_b ? 4'hF : hit_c ? be_c_r : {4{hit_d}};
                 end
                 always_ff @(posedge clk) begin
                     for (int b = 0; b < 8; b++)
@@ -97,9 +123,9 @@ module fc_rstore
                 end
 `ifndef SYNTHESIS
                 always_ff @(posedge clk) begin
-                    if (hit_a && hit_b) $fatal(1, "fc_rstore: plane %0d line %0d: both writes of a cycle in column parity %0d", p, l, c);
+                    if (32'(hit_a) + 32'(hit_b) + 32'(hit_c) + 32'(hit_d) > 1) $fatal(1, "fc_rstore: plane %0d line %0d: two writes of a cycle in column parity %0d", p, l, c);
                     // the write register is unseen only if no read asks for a word whose write is still in it
-                    if (bk_re[p] && (hit_a || hit_b) && bk_col[p][0] == 1'(c) && ra == wa)
+                    if (bk_re[p] && (hit_a || hit_b || hit_c || hit_d) && bk_col[p][0] == 1'(c) && ra == wa)
                         $fatal(1, "fc_rstore: plane %0d line %0d read of a word still in the write register", p, l);
                 end
 `endif
