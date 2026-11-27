@@ -104,7 +104,9 @@ class AxiMem:
     async def run_read(self):
         """Serve the read channels: INCR bursts of whole-bus beats from self.mem (unwritten bytes read fill). Up to
         TS_AXI_OUT bursts are accepted ahead (default 1: one at a time, as before 2026-11-03) and each is answered
-        TS_AXI_LAT cycles (default 0) after its address was accepted, in order (one ID). TS_AXI_LAT=48 TS_AXI_OUT=16
+        TS_AXI_LAT cycles (default 0) after its address was accepted, in order (one ID). TS_AXI_ARGAP=n (default 0):
+        on a 64-byte port (reference fetch's) an address is accepted no sooner than n cycles after the one before, as
+        the U200's smartconnect does with n = 4 (measured on the memory twin, 2026-11-27, K60-110). TS_AXI_LAT=48 TS_AXI_OUT=16
         is the U200's XDMA / DDR4 path as measured on 2026-11-02 (docs/reference-prefetch.md): the configuration that
         shows what the pipelined ref_fetch buys; the default keeps the quick answers the suites always had."""
         import collections
@@ -114,6 +116,8 @@ class AxiMem:
         out = max(1, int(os.environ.get("TS_AXI_OUT", "1")))
         s = self.sig
         nb = len(s("rdata")) // 8            # bytes a beat = the read data bus (8: the 64-bit master; 64: reference fetch's)
+        argap = int(os.environ.get("TS_AXI_ARGAP", "0")) if nb == 64 else 0
+        last_ar = -argap
         self.rsize = nb.bit_length() - 1
         q = collections.deque()
         self.cycle = 0
@@ -125,8 +129,9 @@ class AxiMem:
                 self.cycle += 1
 
         async def ar_side():
+            nonlocal last_ar
             while True:
-                while len(q) + self.in_flight >= out or self.rng.random() < self.stall:
+                while len(q) + self.in_flight >= out or self.cycle < last_ar + argap - 1 or self.rng.random() < self.stall:
                     await RisingEdge(self.clk)
                 s("arready").value = 1
                 while True:
@@ -148,6 +153,7 @@ class AxiMem:
                 if (addr & 0xFFF) + nb * length > 0x1000:
                     self.errors.append(f"read burst at 0x{addr:x} of {length} beats crosses 4 KB")
                 q.append((addr & ~(nb - 1), length, self.cycle))
+                last_ar = self.cycle
 
         cocotb.start_soon(ticks())
         cocotb.start_soon(ar_side())
