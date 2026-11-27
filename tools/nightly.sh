@@ -70,8 +70,12 @@ run_one() {  # name, env..., -- command  (NIGHTLY_ONLY=<regex> runs just the sui
 # SHARDS=n: this suite's number of round-robin shards (default NIGHTLY_SHARDS, 4). A stream written "path@a-b" or "path@a-"
 # runs in a process of its own with TS_FRAMES=a..b (a- = from a to the stream's end); the other frames of that process are
 # decoded by the model only, so a long stream is cut into frame ranges (2026-11-20, WF-18: dec_inter's and dec_host_band's
-# longest streams were each over an hour in one process). Only the model-compare tests take TS_FRAMES (test_dec_inter,
-# test_dec_host_inter), and the ranges of a stream must start at 0, follow each other and end open: checked before the build.
+# longest streams were each over an hour in one process). The model-compare tests take TS_FRAMES (test_dec_inter,
+# test_dec_host_inter), and test_dec_top's model-free mode for streams of intra frames only; the ranges of a stream must start at 0, each start at the frame where the one before it ends
+# (they overlap by one frame) and end open: checked before the build. The overlap (2026-11-26, WF-18): the first RTL frame
+# of a process runs on what the model left (reference pictures and the motion-field / segment-map / CDF areas packed by
+# the testbench, a decoder fresh from reset), not on what the RTL's previous frame left, so the hand-over k-1 -> k is
+# exercised only where frame k-1 runs on the RTL in the same process; with the overlap every consecutive pair does.
 runsh_one() {
   local name="$1"; shift
   [[ -n "${NIGHTLY_ONLY:-}" && ! "$name" =~ ${NIGHTLY_ONLY} ]] && return 0
@@ -83,8 +87,8 @@ runsh_one() {
   for e in "${all[@]}"; do
     if [[ "$e" == *@* ]]; then
       p=${e%@*}; r=${e##*@}; a=${r%-*}; b=${r#*-}
-      [[ "$r" =~ ^[0-9]+-[0-9]*$ && "${nextf[$p]:-0}" == "$a" && ( -z "$b" || "$b" -ge "$a" ) ]] || bad="$bad $e"
-      [[ -n "$b" ]] && nextf[$p]=$((b + 1)) || nextf[$p]=open
+      [[ "$r" =~ ^[0-9]+-[0-9]*$ && "${nextf[$p]:-0}" == "$a" && ( -z "$b" || "$b" -gt "$a" || "$a" -eq 0 ) ]] || bad="$bad $e"
+      [[ -n "$b" ]] && nextf[$p]=$b || nextf[$p]=open
       cuts+=("$e")
     else list+=("$e"); fi
   done
@@ -183,7 +187,9 @@ runsh corpus_full_rtl  SHARDS=8 TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py 
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
 ARGON=$PWD/streams/argon/profile0_core/streams
 if [ -d "$ARGON" ]; then
-  AIVFS=$(for s in 4592 8304 5297 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
+  # test5297 (eight intra frames, 2048 x 72 bd10) took 6,057 s in one process (2026-11-26): four frame ranges
+  AIVFS=$(for s in 4592 8304 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done
+          echo -n "$ARGON/test5297.obu@0-2,$ARGON/test5297.obu@2-4,$ARGON/test5297.obu@4-6,$ARGON/test5297.obu@6-")
   runsh argon_features   SHARDS=8 TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
   # inter frames through the RTL tile syntax vs the model (the frame sequence: inherited CDFs, segmentation map, motion field)
   IIVFS=$(for s in 10046 10001 10041; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
@@ -216,11 +222,11 @@ fi
 # every other suite and fails these two at frame 4 (mutant runs of 2026-11-19, 300 and 1000 cycles; 300 is enough).
 # The four band suites run as frame ranges, one a process (runsh, WF-18): in one process dec_host_band took 11,155 s and
 # the other two 4,484 / 4,132 s (2026-11-19). The ranges of _slow and _te1 start with frames 0-4 in one process, the frame
-# at which a decoder without the hold fails.
+# at which a decoder without the hold fails. Consecutive ranges share a frame (see runsh): 0-3 / 3-, 0-1 / 1-3 / 3-.
 BANDS=$PWD/streams/inter
-runsh dec_host_band      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$BANDS/mf_tall_8bit.ivf@0-3,$BANDS/mf_tall_8bit.ivf@4-,$BANDS/mf_tall128_8bit.ivf@0-1,$BANDS/mf_tall128_8bit.ivf@2-4,$BANDS/mf_tall128_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
-runsh dec_host_band_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_MF_SLOW=300 TS_IVF="$BANDS/mf_tall_8bit.ivf@0-4,$BANDS/mf_tall_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
-runsh dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_MF_SLOW=300 TS_IVF="$BANDS/mf_tall1c_8bit.ivf@0-4,$BANDS/mf_tall1c_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_band      FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$BANDS/mf_tall_8bit.ivf@0-3,$BANDS/mf_tall_8bit.ivf@3-,$BANDS/mf_tall128_8bit.ivf@0-1,$BANDS/mf_tall128_8bit.ivf@1-3,$BANDS/mf_tall128_8bit.ivf@3-" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_band_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_MF_SLOW=300 TS_IVF="$BANDS/mf_tall_8bit.ivf@0-4,$BANDS/mf_tall_8bit.ivf@4-" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TS_MF_SLOW=300 TS_IVF="$BANDS/mf_tall1c_8bit.ivf@0-4,$BANDS/mf_tall1c_8bit.ivf@4-" python tb/runner.py dec_host test_dec_host_inter
 # The segment map as a band (docs/segment-map-band.md): the same tall pictures encoded with aomenc --aq-mode=3 (cyclic
 # refresh: segmentation with temporal update, six of eight frames read the previous frame's map; headers checked with
 # tb/obu_parser.py, 2026-11-20). dec_host_segband: both superblock sizes on two engines, a clip a process (in one
@@ -230,16 +236,21 @@ runsh dec_host_band_te1  FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAM
 # band is never in before the map's; a decoder without the wait on the map passed the clip that has both). TS_SEG_SLOW
 # delays the segment-id area's reads alone (a band is 16 one-burst lines here: 300 cycles a burst left the map ahead of
 # the engines and the same broken decoder passed again; 4000 puts a band at 64k cycles).
-runsh dec_host_segband    FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$PWD/streams/inter/seg_tall_8bit.ivf,$PWD/streams/inter/seg_tall128_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
-run dec_host_segband_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_SEG_SLOW=4000 TS_IVF="$PWD/streams/inter/seg_tall_nomf_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+# Frame ranges, one a process (WF-18, 2026-11-26): in one process a clip took up to 8,696 s (segband's 256 x 768 clip),
+# _slow 6,796 s, te4 below 9,528 s (nightly-sf-shardproof). The intra frame 0 of a 256 x 768 clip is about 22 M simulated
+# ns (about 2,400 s); since the ranges overlap by one frame (see runsh) it runs with frame 1, so the hand-over from the
+# intra frame runs on the RTL too.
+SEGS=$PWD/streams/inter
+runsh dec_host_segband    FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 SB128=1 TE=2 TS_IVF="$SEGS/seg_tall_8bit.ivf@0-3,$SEGS/seg_tall_8bit.ivf@3-,$SEGS/seg_tall128_8bit.ivf@0-1,$SEGS/seg_tall128_8bit.ivf@1-3,$SEGS/seg_tall128_8bit.ivf@3-5,$SEGS/seg_tall128_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_segband_slow FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=2 TS_SEG_SLOW=4000 TS_IVF="$SEGS/seg_tall_nomf_8bit.ivf@0-2,$SEGS/seg_tall_nomf_8bit.ivf@2-4,$SEGS/seg_tall_nomf_8bit.ivf@4-6,$SEGS/seg_tall_nomf_8bit.ivf@6-" python tb/runner.py dec_host test_dec_host_inter
 # Four tile engines (2026-11-20; nothing above runs more than two): the 256 x 768 picture in four tile columns of one
 # 64-pixel superblock (aomenc --tile-columns=2 --aq-mode=3: a motion field and a segment map, both as bands).
-run dec_host_te4          FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=4 REF_RING=8 TS_IVF="$PWD/streams/inter/te4_tall_8bit.ivf" python tb/runner.py dec_host test_dec_host_inter
+runsh dec_host_te4        FBX=10 FBY=10 ITX_LANES=2 FRAME_URAM=1 FRAME_WIN=5 FRAME_WIN2=3 TS_POOL=10 TE=4 REF_RING=8 TS_IVF="$SEGS/te4_tall_8bit.ivf@0-1,$SEGS/te4_tall_8bit.ivf@1-3,$SEGS/te4_tall_8bit.ivf@3-5,$SEGS/te4_tall_8bit.ivf@5-" python tb/runner.py dec_host test_dec_host_inter
 # the stage-2a / 2b / 2c.1 streams (OBMC, wedge + DIFFWTD masks, inter-intra, scaled references via aomenc --resize-mode) encoded from streams/gen/motion_8bit.y4m (tools/gen_y4m_motion.py + aomenc, features restricted)
 # WF-18 (2026-11-20): the eight-frame streams of ~40 M simulated ns (inter2b/c/d, OBMC, the masks, inter-intra) as frames
-# 0-3 and 4-7 in processes of their own, the three short ones round-robin over three; in four shards it took 10,367 s
+# 0-3 and 3-7 in processes of their own (overlapping by one frame, see runsh), the three short ones round-robin over three; in four shards it took 10,367 s
 GIVFS=$(for s in inter2a_8bit inter_scaled_8bit inter_scaled2_8bit; do echo -n "$PWD/streams/inter/$s.ivf,"; done
-        for s in inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit; do echo -n "$PWD/streams/inter/$s.ivf@0-3,$PWD/streams/inter/$s.ivf@4-,"; done | sed 's/,$//')
+        for s in inter2b_8bit inter2c_8bit inter2d_8bit inter_obmc_8bit inter_mask_8bit inter_mask2_8bit inter_ii_8bit; do echo -n "$PWD/streams/inter/$s.ivf@0-3,$PWD/streams/inter/$s.ivf@3-,"; done | sed 's/,$//')
 runsh dec_inter          SHARDS=3 TS_STAGE=recon TS_IVF="$GIVFS" python tb/runner.py dec_top test_dec_inter
 wait
 [[ $PAR -gt 1 ]] && rc=$(( $(grep -c '^FAIL' "$out") > 0 ? 1 : 0 ))
