@@ -360,6 +360,9 @@ async def dec_host_inter_vs_model(dut):
         slot_mem = {}                                        # slot -> (gen, [(base, stride) per plane]) of the model picture loaded at the slot's own address
         hdr_iter = iter(d.frame_headers)
         for fi, tile_idx in enumerate(d.frames):
+            if frames_sel and fi > max(frames_sel):          # nothing after the last selected frame is compared: stop (as test_dec_inter)
+                dut._log.info(f"{name}: frames after {max(frames_sel)} not run (TS_FRAMES)")
+                break
             ph = None
             for ph in hdr_iter:
                 if ph.show_existing_frame:
