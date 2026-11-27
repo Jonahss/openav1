@@ -187,9 +187,12 @@ runsh corpus_full_rtl  SHARDS=8 TS_NOMODEL=1 TS_IVF="$IVFS" python tb/runner.py 
 # Argon feature streams (intra block copy, super-resolution, re-shown frames) when the Argon set is present
 ARGON=$PWD/streams/argon/profile0_core/streams
 if [ -d "$ARGON" ]; then
-  # test5297 (eight intra frames, 2048 x 72 bd10) took 6,057 s in one process (2026-11-26): four frame ranges
-  AIVFS=$(for s in 4592 8304 5366 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done
-          echo -n "$ARGON/test5297.obu@0-2,$ARGON/test5297.obu@2-4,$ARGON/test5297.obu@4-6,$ARGON/test5297.obu@6-")
+  # test5297 (eight intra frames, 2048 x 72 bd10) took 6,057 s in one process (2026-11-26): four frame ranges.
+  # test8304 (seven intra frames) and test5366 (five) took 3,241 s and 3,153 s (nightly-main-dacf14a, 2026-11-27): two
+  # ranges each, cut where the shared frame is cheap (test8304 frame 3: 44 s; test5366 frame 2: 731 s, the even split)
+  AIVFS=$(for s in 4592 60 5644 6617 7463; do echo -n "$ARGON/test$s.obu,"; done
+          echo -n "$ARGON/test5297.obu@0-2,$ARGON/test5297.obu@2-4,$ARGON/test5297.obu@4-6,$ARGON/test5297.obu@6-,"
+          echo -n "$ARGON/test8304.obu@0-3,$ARGON/test8304.obu@3-,$ARGON/test5366.obu@0-2,$ARGON/test5366.obu@2-")
   runsh argon_features   SHARDS=8 TS_NOMODEL=1 FBX=12 FBY=9 TS_IVF="$AIVFS" python tb/runner.py dec_top
   # inter frames through the RTL tile syntax vs the model (the frame sequence: inherited CDFs, segmentation map, motion field)
   IIVFS=$(for s in 10046 10001 10041; do echo -n "$ARGON/test$s.obu,"; done | sed 's/,$//')
