@@ -152,7 +152,7 @@ module rf_ddr_bridge #(
     // ---- the credit: beats issued for reference fetch that have not arrived yet
     reg  [LGD+1:0]  owed;
     wire [8:0]      rf_beats = {1'b0, af_dout[AW+7:AW]} + 9'd1;
-    wire [LGD+2:0]  need = {1'b0, owed} + {2'b0, df_fill} + {{(LGD-6){1'b0}}, rf_beats} + 3'd4;   // 4: the fill count's own delay
+    wire [LGD+2:0]  need = (LGD+3)'(owed) + (LGD+3)'(df_fill) + (LGD+3)'(rf_beats) + (LGD+3)'(4);   // 4: the fill count's own delay
     wire            rf_ok = !af_empty && !af_rd_busy && !df_wr_busy && (need <= (1 << LGD));
 
     // ---- read addresses: one register stage; the source that did not go last wins a tie
@@ -175,7 +175,7 @@ module rf_ddr_bridge #(
                     m_arsize <= s_sc_arsize; m_arburst <= s_sc_arburst; m_arcache <= s_sc_arcache; last_rf <= 1'b0;
                 end
             end
-            owed <= owed + (af_pop ? {{(LGD-7){1'b0}}, rf_beats} : '0) - {{(LGD+1){1'b0}}, df_wr};
+            owed <= owed + (af_pop ? (LGD+2)'(rf_beats) : '0) - (LGD+2)'(df_wr);
         end
     end
 
