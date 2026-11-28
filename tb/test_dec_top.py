@@ -450,17 +450,22 @@ async def rtl_only_stream(dut, path, stats):
                 rows = []
                 for y in range(H):
                     row = []
-                    for x in range(W):
+                    # four samples a read: h_rdata4 is the aligned group of h_x (x & ~3 .. +3, lane 0 lowest), from the
+                    # same memory, registered like h_rdata with the same two-cycle latency (frame_mem.sv). One sample a
+                    # read was 2 clocks a sample: 37 % of test5297's simulated time (WF-18, 2026-11-27)
+                    for x in range(0, W, 4):
                         dut.h_plane.value = plane
                         dut.h_x.value = x
                         dut.h_y.value = y
                         await RisingEdge(dut.clk)
                         await RisingEdge(dut.clk)   # two-cycle frame-memory read (2026-10-31)
                         await ReadOnly()
-                        v = int(dut.h_rdata.value)
-                        row.append(v)
-                        if ref is not None and v != ref[plane][y][x]:
-                            bad.append((y, x, v, ref[plane][y][x]))
+                        g = int(dut.h_rdata4.value)
+                        for l in range(min(4, W - x)):
+                            v = (g >> (12 * l)) & 0xFFF
+                            row.append(v)
+                            if ref is not None and v != ref[plane][y][x + l]:
+                                bad.append((y, x + l, v, ref[plane][y][x + l]))
                         await Timer(1, "ns")
                     rows.append(bytes(row) if hdr.BitDepth == 8 else struct.pack("<%dH" % W, *row))
                 planes_rb.append(rows)
